@@ -94,7 +94,6 @@ Resources:
           AGENT_VOICE_ID: !Ref AgentVoiceIdParam
           AUDIO_BUCKET: !Ref AudioBucketName
           VERBOSE: "1"
-          AWS_REGION: !Ref AWS::Region
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref AgentStateTable
@@ -136,7 +135,6 @@ Resources:
           AGENT_STATE_TABLE: !Ref AgentStateTable
           AGENT_ID: !Ref AgentIdParam
           VERBOSE: "1"
-          AWS_REGION: !Ref AWS::Region
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref AgentStateTable
