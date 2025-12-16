@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 import subprocess
@@ -8,9 +10,23 @@ from typing import Any, Dict, Optional
 
 import boto3
 import requests
-from fastapi import BackgroundTasks, FastAPI, Form, Request
+from fastapi import BackgroundTasks, FastAPI, Form, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+
+# Optional dependency: server-side streaming ASR via AWS Transcribe Streaming.
+# Install with: pip install amazon-transcribe
+try:
+    from amazon_transcribe.client import TranscribeStreamingClient
+    from amazon_transcribe.handlers import TranscriptResultStreamHandler
+    from amazon_transcribe.model import TranscriptEvent
+
+    _HAS_TRANSCRIBE_STREAMING = True
+except Exception:
+    TranscribeStreamingClient = None  # type: ignore
+    TranscriptResultStreamHandler = object  # type: ignore
+    TranscriptEvent = object  # type: ignore
+    _HAS_TRANSCRIBE_STREAMING = False
 
 
 app = FastAPI(title="marvain — Agent Manager")
@@ -267,3 +283,205 @@ async def send_message(request: Request):
         return JSONResponse(content={"error": "Invalid response from agent."}, status_code=500)
 
     return JSONResponse(content=result)
+
+
+def _effective_region() -> str:
+    return (
+        STATE.aws_region
+        or os.environ.get("AWS_REGION")
+        or os.environ.get("AWS_DEFAULT_REGION")
+        or "us-east-1"
+    )
+
+
+async def _call_agent_broker(
+    *,
+    transcript: str,
+    session_id: str = "ui-session",
+    voice_id: Optional[str] = None,
+    speaker_name: Optional[str] = None,
+    personality_prompt: Optional[str] = None,
+    source: str = "gui-asr",
+    channel: str = "audio",
+) -> Dict[str, Any]:
+    """Call the deployed broker endpoint. Runs in a thread to avoid blocking the event loop."""
+
+    if not STATE.selected_endpoint:
+        return {"error": "No agent endpoint configured.", "reply_text": "", "actions": []}
+
+    payload: Dict[str, Any] = {
+        "transcript": transcript,
+        "channel": channel,
+        "source": source,
+    }
+    if voice_id:
+        payload["voice_id"] = voice_id
+    if speaker_name:
+        payload["speaker_name"] = speaker_name
+    if personality_prompt:
+        payload["personality_prompt"] = personality_prompt
+
+    headers = {"Content-Type": "application/json", "X-Session-Id": session_id}
+
+    def _do_req() -> Dict[str, Any]:
+        resp = requests.post(STATE.selected_endpoint, headers=headers, json=payload, timeout=25)
+        try:
+            return resp.json()
+        except Exception:
+            return {"error": "Invalid JSON response from agent.", "raw": resp.text}
+
+    try:
+        return await asyncio.to_thread(_do_req)
+    except Exception as e:
+        return {"error": f"Failed to reach agent endpoint: {e}", "reply_text": "", "actions": []}
+
+
+if _HAS_TRANSCRIBE_STREAMING:
+
+    class _WsTranscriptHandler(TranscriptResultStreamHandler):
+        """Transcribe streaming handler that forwards partial/final transcripts to the browser."""
+
+        def __init__(self, output_stream, websocket: WebSocket):
+            super().__init__(output_stream)
+            self.websocket = websocket
+            self.final_chunks: list[str] = []
+            self.last_partial: str = ""
+
+        async def handle_transcript_event(self, transcript_event: TranscriptEvent):
+            results = transcript_event.transcript.results
+            for res in results:
+                if not res.alternatives:
+                    continue
+                text = (res.alternatives[0].transcript or "").strip()
+                if not text:
+                    continue
+                if res.is_partial:
+                    self.last_partial = text
+                    await self.websocket.send_text(json.dumps({"type": "partial", "text": text}))
+                else:
+                    self.final_chunks.append(text)
+                    await self.websocket.send_text(json.dumps({"type": "final_chunk", "text": text}))
+
+        def final_text(self) -> str:
+            return " ".join(self.final_chunks).strip()
+
+
+@app.websocket("/ws/asr")
+async def ws_asr(websocket: WebSocket):
+    """Server-side streaming ASR.
+
+    Browser sends:
+      1) a JSON text frame: {type:'start', language_code, sample_rate_hz, session_id, voice_id, speaker_name, personality_prompt}
+      2) binary frames containing little-endian 16-bit PCM at sample_rate_hz (default 16000)
+      3) a JSON text frame: {type:'stop'}
+
+    Server streams to AWS Transcribe Streaming, sends partial transcripts back,
+    then (optionally) calls the deployed Broker and returns the agent reply.
+    """
+
+    await websocket.accept()
+
+    if not _HAS_TRANSCRIBE_STREAMING:
+        await websocket.send_text(json.dumps({"type": "error", "error": "amazon-transcribe not installed"}))
+        await websocket.close()
+        return
+
+    # Read start config
+    try:
+        raw = await websocket.receive_text()
+        cfg = json.loads(raw)
+    except Exception:
+        cfg = {}
+
+    language_code = (cfg.get("language_code") or "en-US").strip()
+    sample_rate_hz = int(cfg.get("sample_rate_hz") or 16000)
+    session_id = (cfg.get("session_id") or "ui-session").strip()
+    voice_id = (cfg.get("voice_id") or "").strip() or None
+    speaker_name = (cfg.get("speaker_name") or "").strip() or None
+    personality_prompt = (cfg.get("personality_prompt") or "").strip() or None
+    region = _effective_region()
+
+    await websocket.send_text(
+        json.dumps(
+            {
+                "type": "asr_ready",
+                "provider": "aws-transcribe",
+                "language_code": language_code,
+                "sample_rate_hz": sample_rate_hz,
+                "region": region,
+            }
+        )
+    )
+
+    # Start transcribe stream
+    try:
+        client = TranscribeStreamingClient(region=region)
+        stream = await client.start_stream_transcription(
+            language_code=language_code,
+            media_sample_rate_hz=sample_rate_hz,
+            media_encoding="pcm",
+        )
+    except Exception as e:
+        await websocket.send_text(json.dumps({"type": "error", "error": f"Failed to start Transcribe stream: {e}"}))
+        await websocket.close()
+        return
+
+    handler = _WsTranscriptHandler(stream.output_stream, websocket)
+
+    async def _recv_audio():
+        try:
+            while True:
+                msg = await websocket.receive()
+                if msg.get("type") == "websocket.disconnect":
+                    break
+                if msg.get("bytes") is not None:
+                    chunk = msg.get("bytes")
+                    if chunk:
+                        await stream.input_stream.send_audio_event(audio_chunk=chunk)
+                    continue
+                if msg.get("text"):
+                    try:
+                        j = json.loads(msg["text"])
+                    except Exception:
+                        j = {}
+                    if (j.get("type") or "").lower() == "stop":
+                        break
+        except WebSocketDisconnect:
+            pass
+        except Exception as e:
+            await websocket.send_text(json.dumps({"type": "error", "error": f"Audio receive error: {e}"}))
+        finally:
+            try:
+                await stream.input_stream.end_stream()
+            except Exception:
+                pass
+
+    handler_task = asyncio.create_task(handler.handle_events())
+    recv_task = asyncio.create_task(_recv_audio())
+
+    await recv_task
+    # handler completes after end_stream
+    try:
+        # Give AWS Transcribe time to flush the final transcript after end_stream.
+        await asyncio.wait_for(handler_task, timeout=60)
+    except Exception:
+        # If output handler doesn't finish, cancel it.
+        handler_task.cancel()
+
+    final_text = handler.final_text()
+    await websocket.send_text(json.dumps({"type": "final", "text": final_text}))
+
+    if final_text:
+        # Feed transcript into broker
+        agent_resp = await _call_agent_broker(
+            transcript=final_text,
+            session_id=session_id,
+            voice_id=voice_id,
+            speaker_name=speaker_name,
+            personality_prompt=personality_prompt,
+            source="gui-asr",
+            channel="audio",
+        )
+        await websocket.send_text(json.dumps({"type": "agent_reply", "payload": agent_resp}))
+
+    await websocket.close()
