@@ -12,6 +12,7 @@ from agent_core import aws_model_client, llm_client, logging_utils, memory_store
 from agent_core.schema import Event
 from agent_core.speech import SpeechSynthesizer
 from agent_core.actions import dispatch_background_actions
+from agent_core.tools import ToolExecutor, create_tool_executor
 
 
 logging_utils.configure_logging(os.environ.get("VERBOSE", "0"))
@@ -21,9 +22,18 @@ AGENT_VOICE_ID = os.environ.get("AGENT_VOICE_ID", "Matthew")
 AGENT_VOICE_ENGINE = os.environ.get("AGENT_VOICE_ENGINE")
 AUDIO_BUCKET = os.environ.get("AUDIO_BUCKET") or ""
 REGION = os.environ.get("AWS_REGION") or os.environ.get("REGION") or None
+ENABLE_TOOL_EXECUTION = os.environ.get("ENABLE_TOOL_EXECUTION", "1") == "1"
 
 # Bedrock model client
 _MODEL_CLIENT = aws_model_client.AwsModelClient.from_env()
+
+# Tool executor (created per-request to ensure fresh state)
+def _create_tool_executor() -> ToolExecutor:
+    return create_tool_executor(
+        agent_id=AGENT_ID,
+        memory_store_module=memory_store,
+        voice_registry_module=voice_registry,
+    )
 
 
 _NAME_RE = re.compile(r"(?i)\bmy name is\s+([\w\-\s]{1,80})")
@@ -169,6 +179,7 @@ def handler(event, context):
                 )
 
     # Persist inbound event
+    effective_speaker_id = str(voice_id) if voice_id is not None else None
     agent_event = Event(
         agent_id=AGENT_ID,
         session_id=session_id,
@@ -177,18 +188,50 @@ def handler(event, context):
         ts=_now_iso(),
         payload={
             "transcript": transcript,
-            "voice_id": str(voice_id) if voice_id is not None else None,
+            "voice_id": effective_speaker_id,
             "speaker_name": resolved_name,
             "had_voice_embedding": had_voice_embedding,
             "raw": raw_for_storage,
         },
+        speaker_id=effective_speaker_id,
     )
     memory_store.put_event(agent_event)
-    logging.info("Event persisted (session=%s channel=%s)", session_id, channel)
+    # Sanitize user input before logging to prevent log injection
+    safe_session_id = str(session_id).replace('\n','').replace('\r','')
+    safe_channel = str(channel).replace('\n','').replace('\r','')
+    safe_effective_speaker_id = str(effective_speaker_id).replace('\n','').replace('\r','')
+    logging.info("Event persisted (session=%s channel=%s speaker=%s)", safe_session_id, safe_channel, safe_effective_speaker_id)
 
-    # Retrieve recent context
-    context_items = memory_store.recent_memories(AGENT_ID, limit=40, session_id=session_id)
+    # Extract implicit memories from transcript
+    implicit_memories = planner.extract_implicit_memories(
+        transcript,
+        speaker_id=effective_speaker_id,
+        speaker_name=resolved_name,
+    )
+    for imp_mem in implicit_memories:
+        try:
+            memory_store.put_memory(imp_mem, speaker_id=effective_speaker_id)
+            logging.info("Stored implicit memory: %s", imp_mem.get("text", "")[:50])
+        except Exception as e:
+            logging.error("Failed to store implicit memory: %s", e)
+
+    # Retrieve recent context with speaker awareness
+    context_items = memory_store.recent_memories(
+        AGENT_ID,
+        limit=40,
+        session_id=session_id,
+        speaker_id=effective_speaker_id,
+    )
     logging.info("Context retrieved: %d items", len(context_items))
+
+    # Build speaker context for the system prompt
+    speaker_context = None
+    if resolved_name or voice_id:
+        speaker_context = {
+            "current_speaker_name": resolved_name,
+            "current_speaker_voice_id": str(voice_id) if voice_id else None,
+            "is_new_speaker": is_new_voice,
+        }
 
     # Build system prompt
     system_prompt = llm_client.build_system_prompt(
@@ -197,6 +240,7 @@ def handler(event, context):
         voice_extra=voice_extra_instructions,
         heartbeat_mode=False,
         tools_spec=tools.TOOLS_SPEC,
+        speaker_context=speaker_context,
     )
 
     messages = [
@@ -204,12 +248,30 @@ def handler(event, context):
         {"role": "user", "content": transcript},
     ]
 
-    # Call LLM
-    llm_raw = llm_client.chat_with_tools(_MODEL_CLIENT, messages, tools=tools.TOOLS_SPEC)
+    # Create tool executor for this request
+    tool_executor = None
+    if ENABLE_TOOL_EXECUTION:
+        tool_executor = _create_tool_executor()
+        logging.info("Tool execution enabled")
+
+    # Call LLM with optional tool execution
+    llm_raw = llm_client.chat_with_tools(
+        _MODEL_CLIENT,
+        messages,
+        tools=tools.TOOLS_SPEC,
+        tool_executor=tool_executor.execute if tool_executor else None,
+    )
 
     # Plan -> actions + memories + reply
     action_list, new_memories, reply_text = planner.handle_llm_result(llm_raw, agent_event)
     logging.info("Planner result: actions=%d new_memories=%d", len(action_list), len(new_memories))
+
+    # Add any queued actions from tool execution
+    if tool_executor:
+        queued_actions = tool_executor.get_queued_actions()
+        if queued_actions:
+            logging.info("Adding %d queued actions from tool execution", len(queued_actions))
+            action_list.extend(queued_actions)
 
     # Persist new memories
     for mem in new_memories:
