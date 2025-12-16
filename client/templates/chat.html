@@ -30,6 +30,7 @@
   <div class="meta">
     Connected to: <strong>{{ stack_name }}</strong>
     (<code>{{ state.selected_endpoint }}</code>)
+    <div>Session: <strong>{{ state.selected_session or "Auto-generated" }}</strong>{% if not state.selected_session %} (new ID will be generated as you chat){% endif %}</div>
   </div>
 
   <div class="row" style="margin-top: 10px;">
