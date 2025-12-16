@@ -3,12 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <title>Chat — marvain</title>
+  <link rel="stylesheet" href="/static/css/panels.css" />
   <style>
     body { font-family: system-ui, -apple-system, Arial, sans-serif; margin: 24px; line-height: 1.35; }
-    #conversation { border: 1px solid #ddd; border-radius: 10px; padding: 12px; height: 55vh; overflow-y: auto; background: #fff; }
+    #conversation { border: 1px solid #ddd; border-radius: 10px; padding: 12px; height: 45vh; overflow-y: auto; background: #fff; }
     .msg { margin: 8px 0; padding: 8px 10px; border-radius: 10px; max-width: 72ch; }
-    .user { border: 1px solid #cfd; }
-    .agent { border: 1px solid #ddf; }
+    .user { border: 1px solid #cfd; background: #f0fff0; }
+    .agent { border: 1px solid #ddf; background: #f0f0ff; }
     .meta { color: #666; font-size: 0.92em; }
     #input-area { display:flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap; }
     input[type="text"] { padding: 9px; border-radius: 10px; border: 1px solid #bbb; min-width: 320px; flex: 1; }
@@ -27,10 +28,20 @@
     .debug-tool { border: 1px dashed #ccc; padding: 8px; border-radius: 8px; }
     .debug-tool-title { font-weight: 600; }
     .debug-output { background: #0b1021; color: #e3e3e3; padding: 10px; border-radius: 8px; white-space: pre-wrap; max-height: 260px; overflow-y: auto; }
+    .nav { display: flex; gap: 12px; margin-bottom: 12px; }
+    .nav a { padding: 6px 12px; border: 1px solid #ddd; border-radius: 8px; text-decoration: none; color: inherit; }
+    .nav a:hover { background: #f5f5f5; }
+    .side-panels { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+    @media (max-width: 900px) { .side-panels { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <h1>Chat</h1>
+  <div class="nav">
+    <a href="/">← Home</a>
+    <a href="/speakers">Speakers</a>
+    <a href="/memories">Memories</a>
+  </div>
   <div class="meta">
     Connected to: <strong>{{ stack_name }}</strong>
     (<code>{{ state.selected_endpoint }}</code>)
