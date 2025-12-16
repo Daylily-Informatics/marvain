@@ -8,6 +8,7 @@ import subprocess
 import threading
 import tomllib
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -67,6 +68,7 @@ class UiState:
     selected_stack: Optional[str] = None
     selected_endpoint: Optional[str] = None
     stack_prefix: str = DEFAULT_STACK_PREFIX
+    verbose: bool = False
 
 
 STATE = UiState()
@@ -130,6 +132,22 @@ def _prefixed_stack_name(name: str) -> str:
     if base.startswith(prefix):
         return base
     return f"{prefix}{base}"
+
+
+def _verbose_log(msg: str, stack_name: Optional[str] = None) -> None:
+    if not STATE.verbose:
+        return
+
+    safe_stack = (stack_name or STATE.selected_stack or "stack").replace("/", "-")
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{timestamp}] {msg}"
+    logging.info(line)
+
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+    log_path = log_dir / f"{safe_stack}-local.log"
+    with log_path.open("a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
 
 
 @app.get("/")
@@ -261,11 +279,15 @@ def settings_page(request: Request):
 
 @app.post("/settings")
 def update_settings(
-    aws_profile: str = Form(""), aws_region: str = Form(""), stack_prefix: str = Form("")
+    aws_profile: str = Form(""),
+    aws_region: str = Form(""),
+    stack_prefix: str = Form(""),
+    verbose: bool = Form(False),
 ):
     STATE.aws_profile = aws_profile.strip() or None
     STATE.aws_region = aws_region.strip() or None
     STATE.stack_prefix = stack_prefix.strip() or DEFAULT_STACK_PREFIX
+    STATE.verbose = bool(verbose)
     # also set env so subprocess tools (sam/aws) inherit by default
     if STATE.aws_profile:
         os.environ["AWS_PROFILE"] = STATE.aws_profile
@@ -348,6 +370,7 @@ def deploy_agent(
     polly_voice: str = Form("Matthew"),
     polly_voice_engine: str = Form(""),
     audio_bucket: str = Form(""),
+    verbose: bool = Form(False),
 ):
     stack_name = _prefixed_stack_name(stack_name)
     agent_id = agent_id.strip() or "marvain-agent"
@@ -355,6 +378,7 @@ def deploy_agent(
     polly_voice = polly_voice.strip() or "Matthew"
     polly_voice_engine = polly_voice_engine.strip()
     audio_bucket = audio_bucket.strip()
+    verbose_enabled = bool(verbose)
 
     if audio_bucket:
         try:
@@ -396,6 +420,7 @@ def deploy_agent(
         f"AgentVoiceIdParam={polly_voice}",
         f"AgentVoiceEngineParam={polly_voice_engine}",
         f"AudioBucketName={audio_bucket}",
+        f"VerboseLogging={1 if verbose_enabled else 0}",
     ]
     cmd_deploy += ["--parameter-overrides", " ".join(overrides)]
 
@@ -406,10 +431,42 @@ def deploy_agent(
         env["AWS_REGION"] = STATE.aws_region
         env["AWS_DEFAULT_REGION"] = STATE.aws_region
 
+    log_path: Optional[Path] = None
+    if verbose_enabled:
+        deploy_ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        log_dir = Path("logfs")
+        log_dir.mkdir(exist_ok=True)
+        safe_stack = stack_name.replace("/", "-")
+        log_path = log_dir / f"{safe_stack}-deploy-{deploy_ts}.log"
+
+    def _stream_and_log(cmd):
+        if not log_path:
+            subprocess.run(cmd, check=True, env=env)
+            return
+
+        with log_path.open("a", encoding="utf-8") as fh:
+            fh.write(f"Running: {' '.join(cmd)}\n")
+            fh.flush()
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                env=env,
+            )
+            assert process.stdout is not None
+            for line in process.stdout:
+                fh.write(line)
+                fh.flush()
+                logging.info(line.rstrip())
+            process.wait()
+            if process.returncode != 0:
+                raise subprocess.CalledProcessError(process.returncode, cmd)
+
     def do_deploy():
         try:
-            subprocess.run(cmd_build, check=True, env=env)
-            subprocess.run(cmd_deploy, check=True, env=env)
+            _stream_and_log(cmd_build)
+            _stream_and_log(cmd_deploy)
             logging.info("SAM deploy succeeded for stack %s", stack_name)
         except Exception as e:
             logging.error("SAM deploy failed: %s", e)
@@ -439,6 +496,10 @@ async def send_message(request: Request):
 
     # Optional persona prompt passthrough
     personality = (data.get("personality_prompt") or "").strip() or None
+    verbose_logs: list[str] = []
+    if STATE.verbose:
+        verbose_logs.append(f"Sending message to {STATE.selected_endpoint}: {text}")
+        _verbose_log(verbose_logs[-1])
 
     try:
         headers = {"Content-Type": "application/json", "X-Session-Id": "ui-session"}
@@ -454,6 +515,18 @@ async def send_message(request: Request):
         result = resp.json()
     except Exception:
         return JSONResponse(content={"error": "Invalid response from agent."}, status_code=500)
+
+    if STATE.verbose:
+        reply_txt = result.get("reply_text") or ""
+        if reply_txt:
+            verbose_logs.append(f"Agent reply: {reply_txt}")
+            _verbose_log(verbose_logs[-1])
+        if result.get("actions"):
+            verbose_logs.append(f"Actions: {result['actions']}")
+            _verbose_log(verbose_logs[-1])
+
+    if verbose_logs:
+        result["verbose_logs"] = verbose_logs
 
     return JSONResponse(content=result)
 
@@ -495,6 +568,10 @@ async def _call_agent_broker(
         payload["personality_prompt"] = personality_prompt
 
     headers = {"Content-Type": "application/json", "X-Session-Id": session_id}
+    if STATE.verbose:
+        _verbose_log(
+            f"Calling broker at {STATE.selected_endpoint or 'custom endpoint'} with channel={channel}"
+        )
 
     def _do_req() -> Dict[str, Any]:
         resp = requests.post(STATE.selected_endpoint, headers=headers, json=payload, timeout=25)
@@ -504,7 +581,11 @@ async def _call_agent_broker(
             return {"error": "Invalid JSON response from agent.", "raw": resp.text}
 
     try:
-        return await asyncio.to_thread(_do_req)
+        result = await asyncio.to_thread(_do_req)
+        if STATE.verbose:
+            summary = result.get("reply_text") or result.get("error") or "(no reply)"
+            _verbose_log(f"Broker response: {summary}")
+        return result
     except Exception as e:
         return {"error": f"Failed to reach agent endpoint: {e}", "reply_text": "", "actions": []}
 
