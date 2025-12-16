@@ -23,8 +23,9 @@
   <div class="card">
     <form action="/deploy" method="post">
       <label>Stack name</label>
-      <input name="stack_name" placeholder="marvain-demo" required />
+      <input id="stack_name" name="stack_name" placeholder="marvain-demo" required />
       <div class="muted">Will be prefixed with {{ state.stack_prefix or 'marai' }}.</div>
+      <div id="stack-name-error" class="muted" style="color: #c00; display: none;"></div>
 
       <label>Agent ID (AGENT_ID)</label>
       <input name="agent_id" value="marvain-agent" />
@@ -59,7 +60,7 @@
       </label>
 
       <div style="margin-top:14px;">
-        <button class="btn" type="submit">Deploy</button>
+        <button class="btn" type="submit" id="deploy_btn">Deploy</button>
         <a class="btn" href="/">Cancel</a>
       </div>
     </form>
@@ -74,10 +75,47 @@
     </ul>
   </div>
 
-  {% if polly_voices %}
   <script>
     const voiceSelect = document.getElementById('polly_voice');
     const engineSelect = document.getElementById('polly_voice_engine');
+    const stackInput = document.getElementById('stack_name');
+    const deployButton = document.getElementById('deploy_btn');
+    const stackError = document.getElementById('stack-name-error');
+
+    function showStackError(message) {
+      stackError.textContent = message;
+      stackError.style.display = 'block';
+      deployButton.disabled = true;
+    }
+
+    function clearStackError() {
+      stackError.textContent = '';
+      stackError.style.display = 'none';
+      deployButton.disabled = false;
+    }
+
+    async function validateStackName() {
+      const rawName = stackInput.value.trim();
+      if (!rawName) {
+        clearStackError();
+        return;
+      }
+
+      try {
+        const resp = await fetch(`/api/stack_exists?stack_name=${encodeURIComponent(rawName)}`);
+        if (!resp.ok) {
+          throw new Error('Unable to validate stack name.');
+        }
+        const data = await resp.json();
+        if (data.exists) {
+          showStackError(`Stack "${data.stack_name}" already exists. Please choose a different name.`);
+        } else {
+          clearStackError();
+        }
+      } catch (err) {
+        showStackError(err.message || 'Unable to validate stack name.');
+      }
+    }
 
     function updateEngineOptions() {
       if (!voiceSelect) return;
@@ -100,8 +138,14 @@
     }
 
     voiceSelect?.addEventListener('change', updateEngineOptions);
+    stackInput?.addEventListener('blur', validateStackName);
+    stackInput?.addEventListener('change', validateStackName);
+    stackInput?.addEventListener('input', () => {
+      if (!stackInput.value.trim()) {
+        clearStackError();
+      }
+    });
     updateEngineOptions();
   </script>
-  {% endif %}
 </body>
 </html>
