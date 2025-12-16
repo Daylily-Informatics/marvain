@@ -1070,6 +1070,203 @@ def _effective_region() -> str:
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Memory and Speaker API Endpoints (for Rank 4/5 features)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/memories")
+async def get_memories(
+    limit: int = 50,
+    speaker_id: Optional[str] = None,
+    kind: Optional[str] = None,
+):
+    """Retrieve memories from the agent state table."""
+    table = _agent_state_table()
+    if not table:
+        return {"memories": [], "error": "No table configured"}
+
+    agent_id = STATE.selected_agent_id or "agent1"
+
+    try:
+        # Query main agent partition
+        pk = f"AGENT#{agent_id}"
+        resp = table.query(
+            KeyConditionExpression=Key("pk").eq(pk),
+            ScanIndexForward=False,
+            Limit=limit * 2,  # Fetch extra for filtering
+        )
+        items = resp.get("Items", [])
+
+        # Also query speaker-specific partition if speaker_id provided
+        if speaker_id:
+            speaker_pk = f"AGENT#{agent_id}#SPEAKER#{speaker_id}"
+            speaker_resp = table.query(
+                KeyConditionExpression=Key("pk").eq(speaker_pk),
+                ScanIndexForward=False,
+                Limit=limit,
+            )
+            items.extend(speaker_resp.get("Items", []))
+
+        # Filter to memories only
+        memories = [i for i in items if "#MEMORY#" in i.get("sk", "") or i.get("item_type") == "MEMORY"]
+
+        # Filter by kind if specified
+        if kind and kind.upper() != "ALL":
+            memories = [m for m in memories if m.get("kind") == kind.upper()]
+
+        # Filter by speaker_id if specified (in meta)
+        if speaker_id:
+            memories = [
+                m for m in memories
+                if m.get("speaker_id") == speaker_id or m.get("meta", {}).get("speaker_id") == speaker_id
+            ]
+
+        # Sort by timestamp and limit
+        memories.sort(key=lambda x: x.get("ts", ""), reverse=True)
+        memories = memories[:limit]
+
+        return {
+            "memories": memories,
+            "total": len(memories),
+            "agent_id": agent_id,
+        }
+
+    except ClientError as e:
+        logging.error("get_memories failed: %s", e)
+        return {"memories": [], "error": str(e)}
+
+
+@app.get("/api/speakers")
+async def list_speakers():
+    """List all known speakers for the current agent."""
+    table = _agent_state_table()
+    if not table:
+        return {"speakers": [], "error": "No table configured"}
+
+    agent_id = STATE.selected_agent_id or "agent1"
+
+    try:
+        # Query VOICE partition for speakers
+        pk = f"AGENT#{agent_id}#VOICE"
+        resp = table.query(
+            KeyConditionExpression=Key("pk").eq(pk),
+            Limit=100,
+        )
+
+        speakers = []
+        for item in resp.get("Items", []):
+            speakers.append({
+                "speaker_id": item.get("sk") or item.get("speaker_id"),
+                "speaker_name": item.get("speaker_name"),
+                "first_seen": item.get("first_seen_ts"),
+                "last_seen": item.get("last_seen_ts"),
+                "interaction_count": item.get("interaction_count", 0),
+                "enrollment_status": item.get("enrollment_status", "unknown"),
+            })
+
+        return {
+            "speakers": speakers,
+            "total": len(speakers),
+            "agent_id": agent_id,
+        }
+
+    except ClientError as e:
+        logging.error("list_speakers failed: %s", e)
+        return {"speakers": [], "error": str(e)}
+
+
+@app.get("/api/speakers/{speaker_id}")
+async def get_speaker_profile(speaker_id: str):
+    """Get detailed profile for a specific speaker."""
+    table = _agent_state_table()
+    if not table:
+        return {"error": "No table configured"}
+
+    agent_id = STATE.selected_agent_id or "agent1"
+
+    try:
+        pk = f"AGENT#{agent_id}#VOICE"
+        resp = table.get_item(Key={"pk": pk, "sk": speaker_id})
+        item = resp.get("Item")
+
+        if not item:
+            return {"error": "Speaker not found", "speaker_id": speaker_id}
+
+        # Also fetch speaker-specific memories
+        memories_pk = f"AGENT#{agent_id}#SPEAKER#{speaker_id}"
+        mem_resp = table.query(
+            KeyConditionExpression=Key("pk").eq(memories_pk),
+            ScanIndexForward=False,
+            Limit=20,
+        )
+
+        return {
+            "profile": {
+                "speaker_id": item.get("sk") or item.get("speaker_id"),
+                "speaker_name": item.get("speaker_name"),
+                "first_seen": item.get("first_seen_ts"),
+                "last_seen": item.get("last_seen_ts"),
+                "interaction_count": item.get("interaction_count", 0),
+                "enrollment_status": item.get("enrollment_status", "unknown"),
+                "notes": item.get("notes"),
+                "preferences": item.get("preferences", {}),
+                "voice_samples": item.get("voice_samples", []),
+            },
+            "memories": mem_resp.get("Items", []),
+            "agent_id": agent_id,
+        }
+
+    except ClientError as e:
+        logging.error("get_speaker_profile failed: %s", e)
+        return {"error": str(e)}
+
+
+@app.get("/api/context")
+async def get_conversation_context(session_id: Optional[str] = None):
+    """Get full conversation context for a session."""
+    table = _agent_state_table()
+    if not table:
+        return {"context": [], "error": "No table configured"}
+
+    agent_id = STATE.selected_agent_id or "agent1"
+    session_id = session_id or STATE.selected_session
+
+    try:
+        pk = f"AGENT#{agent_id}"
+        resp = table.query(
+            KeyConditionExpression=Key("pk").eq(pk),
+            ScanIndexForward=False,
+            Limit=100,
+        )
+
+        items = resp.get("Items", [])
+
+        # Filter by session if specified
+        if session_id:
+            items = [
+                i for i in items
+                if i.get("session_id") == session_id or not i.get("session_id")
+            ]
+
+        # Separate events and memories
+        events = [i for i in items if "#EVENT#" in i.get("sk", "") or i.get("item_type") == "EVENT"]
+        memories = [i for i in items if "#MEMORY#" in i.get("sk", "") or i.get("item_type") == "MEMORY"]
+
+        return {
+            "events": events[:50],
+            "memories": memories[:50],
+            "agent_id": agent_id,
+            "session_id": session_id,
+        }
+
+    except ClientError as e:
+        logging.error("get_conversation_context failed: %s", e)
+        return {"context": [], "error": str(e)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 async def _call_agent_broker(
     *,
     transcript: str,

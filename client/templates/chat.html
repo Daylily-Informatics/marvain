@@ -16,8 +16,12 @@
     button:hover { border-color: #888; }
     .row { display:flex; gap: 10px; flex-wrap: wrap; align-items: center; }
     select { padding: 6px; border-radius: 8px; border: 1px solid #bbb; max-width: 360px; }
-    .pill { border: 1px solid #ddd; border-radius: 999px; padding: 4px 9px; }
+    .pill { border: 1px solid #ddd; border-radius: 999px; padding: 4px 9px; font-size: 0.85em; }
     .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; margin-top: 14px; }
+    #statusPanel { background: #f8f9fa; }
+    #statusPanel strong { color: #495057; }
+    #memoryPanel { background: #fefefe; max-height: 250px; overflow-y: auto; }
+    #toolDetails { background: #f1f3f4; padding: 6px 10px; border-radius: 6px; font-family: monospace; font-size: 0.85em; }
     .debug-log { max-height: 180px; overflow-y: auto; background: #f7f7f7; border: 1px solid #eee; padding: 8px; border-radius: 8px; }
     .debug-tools { display: grid; gap: 10px; margin-top: 10px; }
     .debug-tool { border: 1px dashed #ccc; padding: 8px; border-radius: 8px; }
@@ -96,6 +100,28 @@
     <input type="text" id="speaker_name_input" placeholder="e.g. Major" style="min-width: 260px;" />
   </div>
 
+  <!-- Speaker & Tool Status Panel -->
+  <div class="card" id="statusPanel" style="display: none;">
+    <div class="row" style="gap: 20px;">
+      <div id="speakerStatus">
+        <strong>Speaker:</strong> <span id="currentSpeaker">Unknown</span>
+        <span id="speakerBadge" class="pill" style="display: none;"></span>
+      </div>
+      <div id="toolStatus" style="display: none;">
+        <strong>Tools:</strong> <span id="toolIterations">-</span>
+        <span id="toolProgress" class="pill"></span>
+      </div>
+    </div>
+    <div id="toolDetails" class="meta" style="margin-top: 8px; display: none;"></div>
+  </div>
+
+  <!-- Memory Context Panel -->
+  <div class="card" id="memoryPanel" style="display: none;">
+    <h3 style="margin-top: 0;">Recent Context</h3>
+    <div id="memoryList" style="max-height: 150px; overflow-y: auto;"></div>
+    <button onclick="loadMemories()" class="btn" style="margin-top: 8px;">Refresh Memories</button>
+  </div>
+
   <div class="card" id="debugCard">
     <h2 style="margin-top:0">Debug</h2>
     <div class="meta">Verbose logging is {{ 'enabled' if state.verbose else 'disabled' }} (toggle in <a href="/settings">Settings</a>).</div>
@@ -156,6 +182,114 @@
   function setDebugOutput(text) {
     if (!debugOutput) return;
     debugOutput.textContent = text || '';
+  }
+
+  // Speaker and tool status management
+  const statusPanel = document.getElementById('statusPanel');
+  const currentSpeakerEl = document.getElementById('currentSpeaker');
+  const speakerBadgeEl = document.getElementById('speakerBadge');
+  const toolStatusEl = document.getElementById('toolStatus');
+  const toolIterationsEl = document.getElementById('toolIterations');
+  const toolProgressEl = document.getElementById('toolProgress');
+  const toolDetailsEl = document.getElementById('toolDetails');
+  const memoryPanel = document.getElementById('memoryPanel');
+  const memoryListEl = document.getElementById('memoryList');
+
+  function updateSpeakerStatus(speakerInfo) {
+    if (!speakerInfo) return;
+    statusPanel.style.display = 'block';
+
+    const name = speakerInfo.speaker_name || speakerInfo.current_speaker_name || 'Unknown';
+    const voiceId = speakerInfo.voice_id || speakerInfo.current_speaker_voice_id || '';
+    const isNew = speakerInfo.is_new_speaker || speakerInfo.is_new_voice || false;
+
+    currentSpeakerEl.textContent = name;
+
+    if (isNew) {
+      speakerBadgeEl.textContent = 'New Speaker';
+      speakerBadgeEl.style.background = '#ffe066';
+      speakerBadgeEl.style.display = 'inline-block';
+    } else if (voiceId) {
+      speakerBadgeEl.textContent = 'Recognized';
+      speakerBadgeEl.style.background = '#90EE90';
+      speakerBadgeEl.style.display = 'inline-block';
+    } else {
+      speakerBadgeEl.style.display = 'none';
+    }
+  }
+
+  function updateToolStatus(toolInfo) {
+    if (!toolInfo || !toolInfo.tool_calls || toolInfo.tool_calls.length === 0) {
+      toolStatusEl.style.display = 'none';
+      toolDetailsEl.style.display = 'none';
+      return;
+    }
+
+    statusPanel.style.display = 'block';
+    toolStatusEl.style.display = 'block';
+
+    const iterations = toolInfo.iterations || 1;
+    const calls = toolInfo.tool_calls || [];
+
+    toolIterationsEl.textContent = `${iterations} iteration(s)`;
+    toolProgressEl.textContent = `${calls.length} tool(s) executed`;
+
+    // Show tool details
+    if (calls.length > 0) {
+      toolDetailsEl.style.display = 'block';
+      toolDetailsEl.innerHTML = calls.map(c =>
+        `<div>• ${c.name}: ${JSON.stringify(c.input).substring(0, 50)}...</div>`
+      ).join('');
+    }
+  }
+
+  function displayMemoryItem(memory) {
+    const div = document.createElement('div');
+    div.className = 'msg';
+    div.style.fontSize = '0.9em';
+    div.style.padding = '4px 8px';
+
+    const kind = memory.kind || 'UNKNOWN';
+    const text = memory.text || '';
+    const speaker = memory.speaker_id || memory.meta?.speaker_id || '';
+
+    // Color by kind
+    const kindColors = {
+      'FACT': '#e3f2fd',
+      'PREFERENCE': '#fff3e0',
+      'AI_INSIGHT': '#f3e5f5',
+      'RELATIONSHIP': '#e8f5e9',
+      'ACTION': '#fce4ec',
+      'META': '#f5f5f5'
+    };
+    div.style.background = kindColors[kind] || '#fff';
+
+    let html = `<strong>[${kind}]</strong> ${text}`;
+    if (speaker) html += ` <em>(${speaker})</em>`;
+    div.innerHTML = html;
+
+    return div;
+  }
+
+  async function loadMemories() {
+    try {
+      const resp = await fetch('/api/memories?limit=20');
+      if (!resp.ok) throw new Error('Failed to load memories');
+      const data = await resp.json();
+
+      memoryPanel.style.display = 'block';
+      memoryListEl.innerHTML = '';
+
+      (data.memories || []).forEach(m => {
+        memoryListEl.appendChild(displayMemoryItem(m));
+      });
+
+      if (!data.memories || data.memories.length === 0) {
+        memoryListEl.innerHTML = '<div class="meta">No memories found</div>';
+      }
+    } catch (e) {
+      appendMeta('Failed to load memories: ' + e);
+    }
   }
 
   function setAsrStatus(t) {
@@ -470,6 +604,21 @@
           if (data.reply_text) appendMsg('agent', data.reply_text);
           if (data.actions && data.actions.length) appendMeta('actions: ' + JSON.stringify(data.actions));
           if (data.audio) playAgentAudio(data.audio);
+          // Update speaker status from response
+          if (data.speaker_info || data.speaker_name || data.voice_id) {
+            updateSpeakerStatus({
+              speaker_name: data.speaker_name || data.speaker_info?.speaker_name,
+              voice_id: data.voice_id || data.speaker_info?.voice_id,
+              is_new_speaker: data.is_new_voice || data.speaker_info?.is_new_speaker
+            });
+          }
+          // Update tool status from response
+          if (data.tool_info || data.tool_calls) {
+            updateToolStatus({
+              iterations: data.tool_info?.iterations || 1,
+              tool_calls: data.tool_calls || data.tool_info?.tool_calls || []
+            });
+          }
         } else if (msg.type === 'error') {
           appendMeta('ASR error: ' + (msg.error || 'unknown'));
         }
@@ -496,11 +645,13 @@
       const persona = (document.getElementById('persona_input').value || '').trim();
       const speakerName = (document.getElementById('speaker_name_input').value || '').trim();
 
+      // Use actual session from state, not hardcoded value
+      const sessionId = '{{ state.selected_session or "" }}' || 'session-' + Date.now();
       ws.send(JSON.stringify({
         type: 'start',
         language_code: (languageSel.value || 'en-US'),
         sample_rate_hz: 16000,
-        session_id: 'ui-session',
+        session_id: sessionId,
         voice_id: selectedMicDeviceId || null,
         speaker_name: speakerName || null,
         personality_prompt: persona || null,
