@@ -1,9 +1,15 @@
 version = 0.1
 
 [default.deploy.parameters]
-stack_name = "marvain-agent-stack"
-region = "us-east-1"
+stack_name = "blah"
+region = "us-west-2"
 s3_bucket = "<YOUR_SAM_S3_BUCKET_FOR_ARTIFACTS>"
-s3_prefix = "marvain-agent"
+s3_prefix = "blah"
 capabilities = "CAPABILITY_IAM"
 confirm_changeset = true
+resolve_s3 = true
+parameter_overrides = "AgentIdParam=\"marvain-agent\" ModelIdParam=\"meta.llama3-1-8b-instruct-v1:0\" AgentVoiceIdParam=\"Matthew\" AudioBucketName=\"okokokok\""
+image_repositories = []
+
+[default.global.parameters]
+region = "us-west-2"
