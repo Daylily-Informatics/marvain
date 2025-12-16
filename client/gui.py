@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 
 import boto3
 import re
+from botocore.exceptions import ClientError
 import requests
 from fastapi import FastAPI, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -496,6 +497,22 @@ def select_stack(name: str):
     return RedirectResponse(url="/chat", status_code=302)
 
 
+def _stack_exists(name: str, already_prefixed: bool = False) -> bool:
+    stack_name = name if already_prefixed else _prefixed_stack_name(name)
+    try:
+        cf = cf_client()
+        cf.describe_stacks(StackName=stack_name)
+        return True
+    except ClientError as e:  # pragma: no cover - network dependency
+        if e.response.get("Error", {}).get("Code") == "ValidationError":
+            return False
+        logging.error("Error checking stack existence for %s: %s", stack_name, e)
+        return False
+    except Exception as e:  # pragma: no cover - network dependency
+        logging.error("Unexpected error checking stack existence for %s: %s", stack_name, e)
+        return False
+
+
 @app.get("/delete_stack")
 def delete_stack(name: str):
     name = _prefixed_stack_name(name)
@@ -521,6 +538,13 @@ def deploy_form(request: Request):
     )
 
 
+@app.get("/api/stack_exists")
+def stack_exists_api(stack_name: str):
+    prefixed = _prefixed_stack_name(stack_name)
+    exists = _stack_exists(prefixed, already_prefixed=True)
+    return {"exists": exists, "stack_name": prefixed}
+
+
 @app.post("/deploy")
 def deploy_agent(
     stack_name: str = Form(...),
@@ -538,6 +562,13 @@ def deploy_agent(
     polly_voice_engine = polly_voice_engine.strip()
     audio_bucket = audio_bucket.strip()
     verbose_enabled = bool(verbose)
+
+    if _stack_exists(stack_name, already_prefixed=True):
+        logging.error("Stack already exists: %s", stack_name)
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Stack '{stack_name}' already exists."},
+        )
 
     if audio_bucket:
         try:
