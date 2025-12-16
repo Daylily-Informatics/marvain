@@ -270,7 +270,7 @@ def _current_session_id() -> str:
         STATE.generated_session = f"session-{timestamp}-{uuid4().hex[:8]}"
     return STATE.generated_session
 
-def X_current_verbose_log_path() -> Optional[Path]:
+def _current_verbose_log_path() -> Optional[Path]:
     safe_stack = _secure_log_filename(STATE.selected_stack or "stack")
     log_dir = Path("logs").resolve()
     log_path = (log_dir / f"{safe_stack}-local.log").resolve()
@@ -281,7 +281,7 @@ def X_current_verbose_log_path() -> Optional[Path]:
     return log_path if log_path.exists() else None
 
 
-def X_debug_env() -> Dict[str, str]:
+def _debug_env() -> Dict[str, str]:
     env = os.environ.copy()
     if STATE.aws_profile:
         env["AWS_PROFILE"] = STATE.aws_profile
@@ -291,7 +291,7 @@ def X_debug_env() -> Dict[str, str]:
     return env
 
 
-def X_build_debug_command(tool_id: str, params: Dict[str, Any]) -> list[str]:
+def _build_debug_command(tool_id: str, params: Dict[str, Any]) -> list[str]:
     if tool_id == "dump_memories":
         target = (params.get("target") or "both").strip()
         cmd = ["python3", "bin/dump_memory.py", "--target", target]
