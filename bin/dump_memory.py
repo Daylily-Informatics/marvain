@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dump short- and long-term memory DynamoDB tables as JSON."""
+"""Dump agent DynamoDB state (events + memories) as JSON."""
 
 import argparse
 import json
@@ -7,18 +7,18 @@ import os
 import sys
 
 import boto3
-from boto3.dynamodb.types import TypeDeserializer
+from boto3.dynamodb.conditions import Key
 
 
-def _scan_all(client, table_name: str):
-    """Read the entire table via Scan with pagination."""
+def _query_items(table, partition_key: str):
+    """Query all items for a given partition key."""
     items = []
     start_key = None
     while True:
-        params = {"TableName": table_name}
+        params = {"KeyConditionExpression": Key("pk").eq(partition_key)}
         if start_key:
             params["ExclusiveStartKey"] = start_key
-        resp = client.scan(**params)
+        resp = table.query(**params)
         items.extend(resp.get("Items", []))
         start_key = resp.get("LastEvaluatedKey")
         if not start_key:
@@ -26,19 +26,27 @@ def _scan_all(client, table_name: str):
     return items
 
 
-def _deserialize_items(raw_items):
-    deserializer = TypeDeserializer()
-    return [{k: deserializer.deserialize(v) for k, v in item.items()} for item in raw_items]
+def _categorize_items(items):
+    buckets = {"events": [], "memories": [], "other": []}
+    for item in items:
+        sk = str(item.get("sk", ""))
+        if "#EVENT#" in sk:
+            buckets["events"].append(item)
+        elif "#MEMORY#" in sk:
+            buckets["memories"].append(item)
+        else:
+            buckets["other"].append(item)
+    return buckets
 
 
-def _dump_table(client, table_name: str, label: str):
-    raw_items = _scan_all(client, table_name)
+def _dump(label: str, table_name: str, agent_id: str, items):
     payload = {
         "table": table_name,
-        "count": len(raw_items),
-        "items": _deserialize_items(raw_items),
+        "agent_id": agent_id,
+        "count": len(items),
+        "items": items,
     }
-    print(f"# {label}: {table_name}")
+    print(f"# {label} (agent_id={agent_id})")
     print(json.dumps(payload, indent=2, default=str))
     print()
 
@@ -51,34 +59,41 @@ def main():
         help="AWS region for DynamoDB operations (default: %(default)s)",
     )
     parser.add_argument(
-        "--conversation-table",
-        default=os.environ.get("CONVERSATION_TABLE", ""),
-        help="DynamoDB table name for short-term session memory",
+        "--state-table",
+        default=os.environ.get("AGENT_STATE_TABLE", ""),
+        help="DynamoDB table name for unified agent state (events + memories)",
     )
     parser.add_argument(
-        "--ais-table",
-        default=os.environ.get("AIS_MEMORY_TABLE", ""),
-        help="DynamoDB table name for long-term AIS memory",
+        "--agent-id",
+        default=os.environ.get("AGENT_ID", "marvain-agent"),
+        help="Agent id / partition key suffix to query (default: %(default)s)",
     )
     parser.add_argument(
         "--target",
-        choices=["short", "long", "both"],
-        default="both",
-        help="Select which memory tables to dump (default: both)",
+        choices=["all", "events", "memories", "other"],
+        default="all",
+        help="Select which categories to dump (default: all)",
     )
     args = parser.parse_args()
 
-    client = boto3.client("dynamodb", region_name=args.region)
+    if not args.state_table:
+        sys.exit("Missing state table name (set AGENT_STATE_TABLE or --state-table)")
 
-    if args.target in {"short", "both"}:
-        if not args.conversation_table:
-            sys.exit("Missing conversation table name (set CONVERSATION_TABLE or --conversation-table)")
-        _dump_table(client, args.conversation_table, "Short-term conversation memory")
+    dynamodb = boto3.resource("dynamodb", region_name=args.region)
+    table = dynamodb.Table(args.state_table)
 
-    if args.target in {"long", "both"}:
-        if not args.ais_table:
-            sys.exit("Missing AIS memory table name (set AIS_MEMORY_TABLE or --ais-table)")
-        _dump_table(client, args.ais_table, "Long-term AIS memory")
+    partition_key = f"AGENT#{args.agent_id}"
+    items = _query_items(table, partition_key)
+    buckets = _categorize_items(items)
+
+    if args.target in {"events", "all"}:
+        _dump("Events", args.state_table, args.agent_id, buckets["events"])
+
+    if args.target in {"memories", "all"}:
+        _dump("Memories", args.state_table, args.agent_id, buckets["memories"])
+
+    if args.target in {"other", "all"}:
+        _dump("Other items", args.state_table, args.agent_id, buckets["other"])
 
 
 if __name__ == "__main__":
