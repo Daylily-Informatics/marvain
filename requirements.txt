@@ -5,6 +5,7 @@ uvicorn
 jinja2
 requests
 python-multipart
+websockets
 
 # Server-side streaming ASR (AWS Transcribe Streaming)
 amazon-transcribe

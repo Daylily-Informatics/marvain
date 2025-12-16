@@ -71,4 +71,4 @@ sam deploy \
   --stack-name "$STACKNAME" \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides LLMSecretArn=arn:aws:secretsmanager:...:secret:ai-companion \
-  --resolve-s3 --region "$AWS_REGION"
+  --guided --region "$AWS_REGION"
