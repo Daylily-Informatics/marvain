@@ -81,52 +81,111 @@ def cf_client():
     return boto_sess().client("cloudformation")
 
 
+def _stack_console_url(stack_id: str) -> str:
+    region = _effective_region()
+    return f"https://{region}.console.aws.amazon.com/cloudformation/home?region={region}#/stacks/stackinfo?stackId={stack_id}"
+
+
 @app.get("/")
 def home(request: Request):
-    stacks = []
+    stacks_available = []
+    stacks_building = []
+    stacks_failed = []
     try:
         cf = cf_client()
-        summaries = cf.list_stacks(
-            StackStatusFilter=[
-                "CREATE_COMPLETE",
-                "UPDATE_COMPLETE",
-                "UPDATE_ROLLBACK_COMPLETE",
-                "IMPORT_COMPLETE",
-                "ROLLBACK_COMPLETE",
-            ]
-        )["StackSummaries"]
+        summaries = []
+        paginator = cf.get_paginator("list_stacks")
+        for page in paginator.paginate():
+            summaries.extend(page.get("StackSummaries", []))
     except Exception as e:
         logging.error("Error listing stacks: %s", e)
         summaries = []
+
+    available_statuses = {
+        "CREATE_COMPLETE",
+        "UPDATE_COMPLETE",
+        "UPDATE_ROLLBACK_COMPLETE",
+        "IMPORT_COMPLETE",
+        "ROLLBACK_COMPLETE",
+    }
+    building_statuses = {
+        "CREATE_IN_PROGRESS",
+        "ROLLBACK_IN_PROGRESS",
+        "DELETE_IN_PROGRESS",
+        "UPDATE_IN_PROGRESS",
+        "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS",
+        "UPDATE_ROLLBACK_IN_PROGRESS",
+        "UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS",
+        "REVIEW_IN_PROGRESS",
+        "IMPORT_IN_PROGRESS",
+        "IMPORT_ROLLBACK_IN_PROGRESS",
+    }
+    failed_statuses = {
+        "CREATE_FAILED",
+        "ROLLBACK_FAILED",
+        "DELETE_FAILED",
+        "UPDATE_ROLLBACK_FAILED",
+        "IMPORT_ROLLBACK_FAILED",
+    }
 
     for s in summaries:
         stack_name = s.get("StackName")
         if not stack_name:
             continue
-        try:
-            detail = cf.describe_stacks(StackName=stack_name)["Stacks"][0]
-            outputs = {o["OutputKey"]: o["OutputValue"] for o in detail.get("Outputs", [])}
-        except Exception:
-            outputs = {}
+        status = s.get("StackStatus") or ""
+        stack_id = s.get("StackId") or stack_name
 
-        endpoint = outputs.get("BrokerEndpointURL")
-        if endpoint:
-            stacks.append(
+        if status == "DELETE_COMPLETE":
+            continue
+
+        if status in available_statuses:
+            try:
+                detail = cf.describe_stacks(StackName=stack_name)["Stacks"][0]
+                outputs = {o["OutputKey"]: o["OutputValue"] for o in detail.get("Outputs", [])}
+            except Exception:
+                outputs = {}
+
+            endpoint = outputs.get("BrokerEndpointURL")
+            if endpoint:
+                stacks_available.append(
+                    {
+                        "name": stack_name,
+                        "endpoint": endpoint,
+                        "table": outputs.get("AgentStateTableName", ""),
+                        "api_id": outputs.get("ApiGatewayId", ""),
+                        "console_url": _stack_console_url(stack_id),
+                    }
+                )
+        elif status in building_statuses:
+            stacks_building.append(
                 {
                     "name": stack_name,
-                    "endpoint": endpoint,
-                    "table": outputs.get("AgentStateTableName", ""),
-                    "api_id": outputs.get("ApiGatewayId", ""),
+                    "status": status.replace("_", " ").title(),
+                    "reason": s.get("StackStatusReason", ""),
+                    "console_url": _stack_console_url(stack_id),
+                }
+            )
+        elif status in failed_statuses:
+            stacks_failed.append(
+                {
+                    "name": stack_name,
+                    "status": status.replace("_", " ").title(),
+                    "reason": s.get("StackStatusReason", ""),
+                    "console_url": _stack_console_url(stack_id),
                 }
             )
 
-    stacks.sort(key=lambda x: x["name"])
+    stacks_available.sort(key=lambda x: x["name"])
+    stacks_building.sort(key=lambda x: x["name"])
+    stacks_failed.sort(key=lambda x: x["name"])
 
     return templates.TemplateResponse(
         "home.html",
         {
             "request": request,
-            "stacks": stacks,
+            "stacks": stacks_available,
+            "building_stacks": stacks_building,
+            "failed_stacks": stacks_failed,
             "state": STATE,
             "deploying": request.query_params.get("deploying"),
         },
