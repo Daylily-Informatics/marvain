@@ -207,14 +207,17 @@ def _agent_state_table():
 def _load_sessions_from_db() -> list[dict[str, str]]:
     table = _agent_state_table()
     if not table or not STATE.selected_agent_id:
+        logging.debug("_load_sessions_from_db: no table (%s) or agent_id (%s)", table, STATE.selected_agent_id)
         return []
 
     pk = f"AGENT#{STATE.selected_agent_id}"
+    logging.info("Loading sessions from DynamoDB: pk=%s, table=%s", pk, STATE.selected_table)
     try:
         resp = table.query(
             KeyConditionExpression=Key("pk").eq(pk) & Key("sk").begins_with("SESSION#"),
             Limit=200,
         )
+        logging.info("Sessions query returned %d items", len(resp.get("Items", [])))
     except Exception as e:
         logging.error("Failed to list sessions from DynamoDB: %s", e)
         return []
@@ -233,13 +236,14 @@ def _load_sessions_from_db() -> list[dict[str, str]]:
         )
 
     sessions.sort(key=lambda s: s.get("created") or "", reverse=True)
+    logging.info("Loaded %d sessions from DynamoDB", len(sessions))
     return sessions
 
 
 def _persist_session_to_db(name: str, description: str) -> None:
     table = _agent_state_table()
     if not table or not STATE.selected_agent_id:
-        logging.warning("Cannot persist session; missing table or agent id.")
+        logging.warning("Cannot persist session; missing table (%s) or agent id (%s).", STATE.selected_table, STATE.selected_agent_id)
         return
 
     pk = f"AGENT#{STATE.selected_agent_id}"
@@ -250,6 +254,7 @@ def _persist_session_to_db(name: str, description: str) -> None:
         existing = table.get_item(Key={"pk": pk, "sk": sk}).get("Item")
         if existing and existing.get("created"):
             created = existing["created"]
+            logging.info("Session %s already exists, preserving created timestamp", name)
     except Exception as e:
         logging.warning("Failed to read existing session (soft): %s", e)
 
@@ -265,6 +270,7 @@ def _persist_session_to_db(name: str, description: str) -> None:
 
     try:
         table.put_item(Item=item)
+        logging.info("Session %s persisted to DynamoDB (pk=%s, sk=%s)", name, pk, sk)
     except Exception as e:
         logging.error("Failed to persist session %s: %s", name, e)
 
@@ -983,6 +989,31 @@ def memories_page(request: Request):
     return templates.TemplateResponse("memories.html", {"request": request, "state": STATE})
 
 
+@app.get("/stack_outputs")
+def stack_outputs_page(request: Request):
+    """Stack outputs and connectivity testing page."""
+    prefix = _normalized_stack_prefix()
+    stacks_available, _, _, _ = _list_stacks_by_status(prefix)
+
+    # Get outputs for selected stack
+    outputs = []
+    if STATE.selected_stack:
+        try:
+            cf = cf_client()
+            resp = cf.describe_stacks(StackName=STATE.selected_stack)
+            stack_data = resp.get("Stacks", [{}])[0]
+            outputs = stack_data.get("Outputs", [])
+        except Exception as e:
+            logging.error("Failed to get stack outputs: %s", e)
+
+    return templates.TemplateResponse("stack_outputs.html", {
+        "request": request,
+        "state": STATE,
+        "stacks": stacks_available,
+        "outputs": outputs,
+    })
+
+
 @app.post("/api/send_message")
 async def send_message(request: Request):
     if not STATE.selected_endpoint:
@@ -1088,6 +1119,85 @@ def _effective_region() -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Connectivity Testing Endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/test_broker")
+async def test_broker():
+    """Test connectivity to the broker endpoint."""
+    if not STATE.selected_endpoint:
+        return {"success": False, "message": "No broker endpoint configured"}
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Send a minimal test request
+            resp = await client.post(
+                STATE.selected_endpoint,
+                json={"transcript": "ping", "channel": "test"},
+                headers={"Content-Type": "application/json"},
+            )
+            if resp.status_code in (200, 201, 400, 401, 403):
+                return {"success": True, "message": f"Broker reachable (HTTP {resp.status_code})"}
+            return {"success": False, "message": f"Unexpected status: {resp.status_code}"}
+    except Exception as e:
+        return {"success": False, "message": f"Connection failed: {str(e)}"}
+
+
+@app.get("/api/test_dynamo")
+async def test_dynamo():
+    """Test connectivity to DynamoDB table."""
+    if not STATE.selected_table:
+        return {"success": False, "message": "No DynamoDB table configured"}
+
+    try:
+        table = _agent_state_table()
+        if not table:
+            return {"success": False, "message": "Could not connect to table"}
+
+        # Try a simple describe operation
+        resp = table.meta.client.describe_table(TableName=STATE.selected_table)
+        status = resp.get("Table", {}).get("TableStatus", "UNKNOWN")
+        item_count = resp.get("Table", {}).get("ItemCount", 0)
+        return {"success": True, "message": f"Table status: {status}, Items: {item_count}"}
+    except Exception as e:
+        return {"success": False, "message": f"Connection failed: {str(e)}"}
+
+
+@app.get("/api/test_s3")
+async def test_s3():
+    """Test connectivity to S3 bucket."""
+    if not STATE.selected_bucket:
+        return {"success": False, "message": "No S3 bucket configured"}
+
+    try:
+        s3 = boto_sess().client("s3")
+        # Try to list a few objects
+        resp = s3.list_objects_v2(Bucket=STATE.selected_bucket, MaxKeys=1)
+        return {"success": True, "message": f"Bucket accessible, {resp.get('KeyCount', 0)} objects found"}
+    except Exception as e:
+        return {"success": False, "message": f"Connection failed: {str(e)}"}
+
+
+@app.post("/api/test_endpoint")
+async def test_endpoint(request: Request):
+    """Test connectivity to an arbitrary endpoint."""
+    data = await request.json()
+    url = data.get("url", "").strip()
+
+    if not url:
+        return {"success": False, "message": "No URL provided"}
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            return {"success": True, "message": f"HTTP {resp.status_code}"}
+    except Exception as e:
+        return {"success": False, "message": f"Failed: {str(e)}"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Memory and Speaker API Endpoints (for Rank 4/5 features)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -1100,9 +1210,11 @@ async def get_memories(
     """Retrieve memories from the agent state table."""
     table = _agent_state_table()
     if not table:
+        logging.warning("get_memories: No table configured (table=%s)", STATE.selected_table)
         return {"memories": [], "error": "No table configured"}
 
     agent_id = STATE.selected_agent_id or "agent1"
+    logging.info("get_memories: agent_id=%s, speaker_id=%s, kind=%s, limit=%d", agent_id, speaker_id, kind, limit)
 
     try:
         # Query main agent partition
@@ -1110,33 +1222,36 @@ async def get_memories(
         resp = table.query(
             KeyConditionExpression=Key("pk").eq(pk),
             ScanIndexForward=False,
-            Limit=limit * 2,  # Fetch extra for filtering
+            Limit=limit * 3,  # Fetch extra for filtering
         )
         items = resp.get("Items", [])
-
-        # Also query speaker-specific partition if speaker_id provided
-        if speaker_id:
-            speaker_pk = f"AGENT#{agent_id}#SPEAKER#{speaker_id}"
-            speaker_resp = table.query(
-                KeyConditionExpression=Key("pk").eq(speaker_pk),
-                ScanIndexForward=False,
-                Limit=limit,
-            )
-            items.extend(speaker_resp.get("Items", []))
+        logging.info("get_memories: Query returned %d items from pk=%s", len(items), pk)
 
         # Filter to memories only
         memories = [i for i in items if "#MEMORY#" in i.get("sk", "") or i.get("item_type") == "MEMORY"]
+        logging.info("get_memories: Filtered to %d memories", len(memories))
 
         # Filter by kind if specified
         if kind and kind.upper() != "ALL":
             memories = [m for m in memories if m.get("kind") == kind.upper()]
+            logging.info("get_memories: After kind filter (%s): %d memories", kind, len(memories))
 
-        # Filter by speaker_id if specified (in meta)
-        if speaker_id:
+        # Filter by speaker_id if specified
+        # Special case: __UNKNOWN__ means filter for memories with no speaker_id
+        if speaker_id == "__UNKNOWN__":
+            memories = [
+                m for m in memories
+                if not m.get("speaker_id") and not m.get("meta", {}).get("speaker_id")
+            ]
+            logging.info("get_memories: After unknown speaker filter: %d memories", len(memories))
+        elif speaker_id:
+            # Filter for specific speaker
             memories = [
                 m for m in memories
                 if m.get("speaker_id") == speaker_id or m.get("meta", {}).get("speaker_id") == speaker_id
             ]
+            logging.info("get_memories: After speaker filter (%s): %d memories", speaker_id, len(memories))
+        # If speaker_id is None/empty, return ALL memories (no filtering)
 
         # Sort by timestamp and limit
         memories.sort(key=lambda x: x.get("ts", ""), reverse=True)
@@ -1153,38 +1268,85 @@ async def get_memories(
         return {"memories": [], "error": str(e)}
 
 
+@app.get("/api/memory_stats")
+async def get_memory_stats():
+    """Get memory statistics from the agent state table."""
+    table = _agent_state_table()
+    if not table:
+        return {"total": 0, "by_kind": {}, "error": "No table configured"}
+
+    agent_id = STATE.selected_agent_id or "agent1"
+
+    try:
+        # Query all memories from main agent partition
+        pk = f"AGENT#{agent_id}"
+        resp = table.query(
+            KeyConditionExpression=Key("pk").eq(pk),
+            ScanIndexForward=False,
+            Limit=500,  # Get enough for stats
+        )
+        items = resp.get("Items", [])
+
+        # Filter to memories only
+        memories = [i for i in items if "#MEMORY#" in i.get("sk", "") or i.get("item_type") == "MEMORY"]
+
+        # Count by kind
+        by_kind: dict[str, int] = {}
+        for m in memories:
+            k = m.get("kind", "UNKNOWN")
+            by_kind[k] = by_kind.get(k, 0) + 1
+
+        return {
+            "total": len(memories),
+            "by_kind": by_kind,
+            "agent_id": agent_id,
+        }
+
+    except ClientError as e:
+        logging.error("get_memory_stats failed: %s", e)
+        return {"total": 0, "by_kind": {}, "error": str(e)}
+
+
 @app.get("/api/speakers")
 async def list_speakers():
     """List all known speakers for the current agent."""
     table = _agent_state_table()
     if not table:
-        return {"speakers": [], "error": "No table configured"}
+        logging.warning("list_speakers: No table configured (table=%s)", STATE.selected_table)
+        return {"speakers": [], "error": "No table configured", "debug": {"table": STATE.selected_table}}
 
     agent_id = STATE.selected_agent_id or "agent1"
 
     try:
         # Query VOICE partition for speakers
         pk = f"AGENT#{agent_id}#VOICE"
+        logging.info("list_speakers: Querying pk=%s from table=%s", pk, STATE.selected_table)
         resp = table.query(
             KeyConditionExpression=Key("pk").eq(pk),
             Limit=100,
         )
 
+        items = resp.get("Items", [])
+        logging.info("list_speakers: Query returned %d items", len(items))
+
         speakers = []
-        for item in resp.get("Items", []):
-            speakers.append({
+        for item in items:
+            speaker = {
                 "speaker_id": item.get("sk") or item.get("speaker_id"),
                 "speaker_name": item.get("speaker_name"),
                 "first_seen": item.get("first_seen_ts"),
                 "last_seen": item.get("last_seen_ts"),
                 "interaction_count": item.get("interaction_count", 0),
                 "enrollment_status": item.get("enrollment_status", "unknown"),
-            })
+            }
+            speakers.append(speaker)
+            logging.debug("list_speakers: Found speaker %s (%s)", speaker["speaker_id"], speaker["speaker_name"])
 
         return {
             "speakers": speakers,
             "total": len(speakers),
             "agent_id": agent_id,
+            "debug": {"pk": pk, "table": STATE.selected_table},
         }
 
     except ClientError as e:
