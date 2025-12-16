@@ -138,6 +138,10 @@ class MultiAgentMemoryStore:
             logging.error("put_event: failed: %s", e)
             return None
 
+    def _sanitize_for_log(self, value: str) -> str:
+        """Remove newlines and carriage returns to prevent log injection."""
+        return value.replace('\r', '').replace('\n', '')
+
     def put_memory(
         self,
         agent_id: str,
@@ -202,7 +206,7 @@ class MultiAgentMemoryStore:
 
         try:
             self.table.put_item(Item=item)
-            logging.debug("put_memory: stored %s %s", pk, sk)
+            logging.debug("put_memory: stored %s %s", self._sanitize_for_log(pk), sk)
             return sk
         except ClientError as e:
             logging.error("put_memory: failed: %s", e)
