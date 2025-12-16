@@ -51,8 +51,13 @@ except Exception:
     _HAS_TRANSCRIBE_STREAMING = False
 
 
+from fastapi.staticfiles import StaticFiles
+
 app = FastAPI(title="marvain — Agent Manager")
 templates = Jinja2Templates(directory="client/templates")
+
+# Mount static files directory
+app.mount("/static", StaticFiles(directory="client/static"), name="static")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -966,6 +971,18 @@ def chat_page(request: Request):
     return templates.TemplateResponse("chat.html", {"request": request, "state": STATE, "stack_name": label})
 
 
+@app.get("/speakers")
+def speakers_page(request: Request):
+    """Speaker management page."""
+    return templates.TemplateResponse("speakers.html", {"request": request, "state": STATE})
+
+
+@app.get("/memories")
+def memories_page(request: Request):
+    """Memory visualization page."""
+    return templates.TemplateResponse("memories.html", {"request": request, "state": STATE})
+
+
 @app.post("/api/send_message")
 async def send_message(request: Request):
     if not STATE.selected_endpoint:
@@ -1262,6 +1279,135 @@ async def get_conversation_context(session_id: Optional[str] = None):
     except ClientError as e:
         logging.error("get_conversation_context failed: %s", e)
         return {"context": [], "error": str(e)}
+
+
+@app.post("/api/speakers/enroll")
+async def enroll_speaker(request: Request):
+    """Enroll a new speaker with voice samples."""
+    from fastapi import UploadFile
+    import io
+
+    table = _agent_state_table()
+    if not table:
+        return JSONResponse(content={"error": "No table configured"}, status_code=400)
+
+    agent_id = STATE.selected_agent_id or "agent1"
+
+    try:
+        form = await request.form()
+        speaker_name = form.get("speaker_name", "").strip()
+        if not speaker_name:
+            return JSONResponse(content={"error": "Speaker name is required"}, status_code=400)
+
+        # Get audio files
+        audio_files = form.getlist("audio_files")
+        voice_samples = []
+
+        for i, audio_file in enumerate(audio_files):
+            if hasattr(audio_file, "read"):
+                content = await audio_file.read()
+                # Store as base64 (for simplicity; in production, upload to S3)
+                import base64
+                voice_samples.append({
+                    "index": i,
+                    "size": len(content),
+                    "data_b64": base64.b64encode(content).decode("utf-8")[:1000],  # Truncate for storage
+                })
+
+        # Generate speaker ID
+        speaker_id = f"spk_{speaker_name.lower().replace(' ', '_')}_{uuid4().hex[:8]}"
+
+        # Store in DynamoDB
+        pk = f"AGENT#{agent_id}#VOICE"
+        item = {
+            "pk": pk,
+            "sk": speaker_id,
+            "speaker_id": speaker_id,
+            "speaker_name": speaker_name,
+            "enrollment_status": "enrolled",
+            "first_seen_ts": datetime.utcnow().isoformat(),
+            "last_seen_ts": datetime.utcnow().isoformat(),
+            "interaction_count": 0,
+            "voice_samples": voice_samples,
+        }
+        table.put_item(Item=item)
+
+        return {
+            "success": True,
+            "speaker_id": speaker_id,
+            "speaker_name": speaker_name,
+            "samples_count": len(voice_samples),
+        }
+
+    except Exception as e:
+        logging.error("enroll_speaker failed: %s", e)
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+@app.get("/api/tool_status")
+async def get_tool_status():
+    """Get status of recent tool executions from the agent state."""
+    table = _agent_state_table()
+    if not table:
+        return {"tools": [], "error": "No table configured"}
+
+    agent_id = STATE.selected_agent_id or "agent1"
+
+    try:
+        pk = f"AGENT#{agent_id}"
+        resp = table.query(
+            KeyConditionExpression=Key("pk").eq(pk),
+            ScanIndexForward=False,
+            Limit=50,
+        )
+
+        # Filter for events that include tool executions
+        tool_events = []
+        for item in resp.get("Items", []):
+            payload = item.get("payload", {})
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = {}
+
+            # Check if this event has tool info
+            if payload.get("tool_calls") or item.get("source") == "tool":
+                tool_events.append({
+                    "ts": item.get("ts"),
+                    "session_id": item.get("session_id"),
+                    "tool_calls": payload.get("tool_calls", []),
+                    "iterations": payload.get("iterations", 1),
+                })
+
+        return {
+            "tools": tool_events[:20],
+            "total": len(tool_events),
+            "agent_id": agent_id,
+        }
+
+    except ClientError as e:
+        logging.error("get_tool_status failed: %s", e)
+        return {"tools": [], "error": str(e)}
+
+
+@app.delete("/api/speakers/{speaker_id}")
+async def delete_speaker(speaker_id: str):
+    """Delete a speaker from the registry."""
+    table = _agent_state_table()
+    if not table:
+        return JSONResponse(content={"error": "No table configured"}, status_code=400)
+
+    agent_id = STATE.selected_agent_id or "agent1"
+
+    try:
+        pk = f"AGENT#{agent_id}#VOICE"
+        table.delete_item(Key={"pk": pk, "sk": speaker_id})
+        return {"success": True, "speaker_id": speaker_id}
+
+    except ClientError as e:
+        logging.error("delete_speaker failed: %s", e)
+        return JSONResponse(content={"error": str(e)}, status_code=500)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
