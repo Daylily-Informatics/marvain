@@ -1,0 +1,186 @@
+Transform: AWS::Serverless-2016-10-31
+Description: marvain - Whaddya-Want Rank-4 agent skeleton (Broker + Heartbeat + unified memory)
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 30
+    MemorySize: 512
+
+Parameters:
+  AgentIdParam:
+    Type: String
+    Default: "marvain-agent"
+    Description: Logical agent id (partition key prefix)
+  ModelIdParam:
+    Type: String
+    Default: "meta.llama3-1-8b-instruct-v1:0"
+    Description: Bedrock model ID (e.g., meta.llama3-1-8b-instruct-v1:0)
+  AgentVoiceIdParam:
+    Type: String
+    Default: "Matthew"
+    Description: Default Polly voice id (optional)
+  AudioBucketName:
+    Type: String
+    Default: ""
+    Description: (Optional) S3 bucket name to save synthesized audio
+
+Conditions:
+  AudioBucketProvided: !Not [!Equals [!Ref AudioBucketName, ""]]
+
+Resources:
+  AgentStateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: gsi1pk
+          AttributeType: S
+        - AttributeName: gsi1sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: gsi1
+          KeySchema:
+            - AttributeName: gsi1pk
+              KeyType: HASH
+            - AttributeName: gsi1sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  SharedDependenciesLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub "${AWS::StackName}-shared-deps"
+      Description: "Shared dependencies and core logic for marvain agent"
+      ContentUri: layers/shared
+      CompatibleRuntimes: [python3.11]
+      RetentionPolicy: Delete
+    Metadata:
+      BuildMethod: makefile
+
+  AgentConfigLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub "${AWS::StackName}-config"
+      Description: "Agent configuration (prompts, etc.)"
+      ContentUri: layers/config
+      CompatibleRuntimes: [python3.11]
+      RetentionPolicy: Delete
+
+  BrokerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-broker"
+      CodeUri: lambda/broker/
+      Handler: app.handler
+      Layers:
+        - !Ref SharedDependenciesLayer
+        - !Ref AgentConfigLayer
+      Environment:
+        Variables:
+          MODEL_ID: !Ref ModelIdParam
+          AGENT_STATE_TABLE: !Ref AgentStateTable
+          AGENT_ID: !Ref AgentIdParam
+          AGENT_VOICE_ID: !Ref AgentVoiceIdParam
+          AUDIO_BUCKET: !Ref AudioBucketName
+          VERBOSE: "1"
+          AWS_REGION: !Ref AWS::Region
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AgentStateTable
+        - Statement:
+            - Sid: BedrockAccess
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+                - bedrock:Converse
+                - bedrock:ConverseStream
+              Resource: "*"
+            - Sid: PollyAccess
+              Effect: Allow
+              Action: polly:SynthesizeSpeech
+              Resource: "*"
+        # To enable S3 audio output persistence, add:
+        # - S3WritePolicy:
+        #     BucketName: !Ref AudioBucketName
+      Events:
+        ApiRequest:
+          Type: Api
+          Properties:
+            Path: /agent
+            Method: post
+
+  HeartbeatFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-heartbeat"
+      CodeUri: lambda/agent_heartbeat/
+      Handler: handler.handler
+      Layers:
+        - !Ref SharedDependenciesLayer
+        - !Ref AgentConfigLayer
+      Environment:
+        Variables:
+          MODEL_ID: !Ref ModelIdParam
+          AGENT_STATE_TABLE: !Ref AgentStateTable
+          AGENT_ID: !Ref AgentIdParam
+          VERBOSE: "1"
+          AWS_REGION: !Ref AWS::Region
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AgentStateTable
+        - Statement:
+            - Sid: BedrockAccessHB
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+                - bedrock:Converse
+                - bedrock:ConverseStream
+              Resource: "*"
+
+  HeartbeatRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${AWS::StackName}-heartbeat-rule"
+      ScheduleExpression: rate(5 minutes)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt HeartbeatFunction.Arn
+          Id: HeartbeatTarget
+
+  HeartbeatLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt HeartbeatFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt HeartbeatRule.Arn
+
+Outputs:
+  BrokerEndpointURL:
+    Description: "API Gateway endpoint for the agent broker"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/agent"
+  ApiGatewayId:
+    Description: "API Gateway REST API ID"
+    Value: !Ref ServerlessRestApi
+  AgentStateTableName:
+    Description: "DynamoDB Agent State Table name"
+    Value: !Ref AgentStateTable
+  BrokerFunctionArn:
+    Description: "Broker Lambda ARN"
+    Value: !GetAtt BrokerFunction.Arn
+  HeartbeatFunctionArn:
+    Description: "Heartbeat Lambda ARN"
+    Value: !GetAtt HeartbeatFunction.Arn

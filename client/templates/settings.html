@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Settings — marvain</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Arial, sans-serif; margin: 24px; line-height: 1.35; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 14px; margin: 12px 0; max-width: 760px; }
+    label { display:block; margin-top: 10px; font-weight: 600; }
+    input { padding: 7px; border-radius: 8px; border: 1px solid #bbb; width: 100%; }
+    .btn { padding: 7px 10px; border: 1px solid #bbb; border-radius: 8px; background: #fff; cursor: pointer; }
+    .btn:hover { border-color: #888; }
+    .muted { color: #666; font-size: 0.92em; }
+    code { background: #f6f6f6; padding: 1px 4px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <h1>Settings</h1>
+  <div class="muted">These settings affect AWS calls made by the GUI and the SAM deploy command.</div>
+
+  <div class="card">
+    <form action="/settings" method="post">
+      <label>AWS profile</label>
+      <input name="aws_profile" value="{{ state.aws_profile or '' }}" placeholder="(leave blank for default)" />
+
+      <label>AWS region</label>
+      <input name="aws_region" value="{{ state.aws_region or '' }}" placeholder="us-east-1" />
+
+      <div style="margin-top:14px;">
+        <button class="btn" type="submit">Save</button>
+        <a class="btn" href="/">Back</a>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <strong>Tip</strong>
+    <div class="muted">
+      You can also set these via shell:
+      <pre><code>source initwyw &lt;PROFILE&gt; &lt;REGION&gt;</code></pre>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Chat — marvain</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Arial, sans-serif; margin: 24px; line-height: 1.35; }
+    #conversation { border: 1px solid #ddd; border-radius: 10px; padding: 12px; height: 55vh; overflow-y: auto; background: #fff; }
+    .msg { margin: 8px 0; padding: 8px 10px; border-radius: 10px; max-width: 72ch; }
+    .user { border: 1px solid #cfd; }
+    .agent { border: 1px solid #ddf; }
+    .meta { color: #666; font-size: 0.92em; }
+    #input-area { display:flex; gap: 8px; margin-top: 10px; align-items: center; flex-wrap: wrap; }
+    input[type="text"] { padding: 9px; border-radius: 10px; border: 1px solid #bbb; min-width: 320px; flex: 1; }
+    button { padding: 9px 10px; border-radius: 10px; border: 1px solid #bbb; background: #fff; cursor:pointer; }
+    button:hover { border-color: #888; }
+    .row { display:flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    select { padding: 6px; border-radius: 8px; border: 1px solid #bbb; max-width: 360px; }
+    .pill { border: 1px solid #ddd; border-radius: 999px; padding: 4px 9px; }
+  </style>
+</head>
+<body>
+  <h1>Chat</h1>
+  <div class="meta">
+    Connected to: <strong>{{ stack_name }}</strong>
+    (<code>{{ state.selected_endpoint }}</code>)
+  </div>
+
+  <div class="row" style="margin-top: 10px;">
+    <span class="pill">Push-to-talk: <button id="micBtn" onclick="toggleMic()">🎤</button></span>
+    <label class="pill">
+      <input type="checkbox" id="ambientToggle" /> Ambient (auto-restart)
+    </label>
+    <span class="pill" id="asrStatus">ASR: unknown</span>
+  </div>
+
+  <div class="row" style="margin-top: 10px;">
+    <div>
+      <div class="meta">Audio input device (display only)</div>
+      <select id="audioIn"></select>
+    </div>
+    <div>
+      <div class="meta">Audio output device (display only)</div>
+      <select id="audioOut"></select>
+    </div>
+    <div>
+      <div class="meta">Video input device (display only)</div>
+      <select id="videoIn"></select>
+    </div>
+  </div>
+
+  <div id="conversation" style="margin-top: 12px;"></div>
+
+  <div id="input-area">
+    <input type="text" id="user_input" placeholder="Type your message"
+           onkeydown="if(event.key==='Enter'){ sendMessage(); }" />
+    <button onclick="sendMessage()">Send</button>
+  </div>
+
+  <div class="row" style="margin-top: 10px;">
+    <div class="meta">Optional extra personality prompt (sent with each message)</div>
+    <input type="text" id="persona_input" placeholder="e.g. be terse, ask clarifying questions, etc." style="min-width: 520px;" />
+  </div>
+
+  <p style="margin-top: 12px;"><a href="/">← Back</a></p>
+
+<script>
+  const convo = document.getElementById('conversation');
+
+  function appendMsg(role, text) {
+    const div = document.createElement('div');
+    div.className = 'msg ' + role;
+    div.textContent = text;
+    convo.appendChild(div);
+    convo.scrollTop = convo.scrollHeight;
+  }
+
+  function appendMeta(text) {
+    const div = document.createElement('div');
+    div.className = 'meta';
+    div.textContent = text;
+    convo.appendChild(div);
+    convo.scrollTop = convo.scrollHeight;
+  }
+
+  async function sendToAgent(messageText) {
+    const persona = (document.getElementById('persona_input').value || '').trim();
+    try {
+      const response = await fetch('/api/send_message', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ text: messageText, personality_prompt: persona })
+      });
+      const data = await response.json();
+
+      if (!response.ok || data.error) {
+        appendMsg('agent', '[Error] ' + (data.error || ('HTTP ' + response.status)));
+        return;
+      }
+
+      if (data.reply_text) appendMsg('agent', data.reply_text);
+      if (data.actions && data.actions.length) appendMeta('actions: ' + JSON.stringify(data.actions));
+
+      // audio playback (url or base64)
+      if (data.audio) {
+        try {
+          let audio = new Audio();
+          if (data.audio.url) {
+            audio.src = data.audio.url;
+          } else if (data.audio.data && data.audio.content_type) {
+            audio.src = 'data:' + data.audio.content_type + ';base64,' + data.audio.data;
+          }
+          audio.play();
+        } catch (e) {
+          appendMeta('audio playback failed: ' + e);
+        }
+      }
+    } catch (e) {
+      appendMsg('agent', '[Error] Agent not reachable');
+    }
+  }
+
+  async function sendMessage() {
+    const input = document.getElementById('user_input');
+    const text = (input.value || '').trim();
+    if (!text) return;
+    appendMsg('user', text);
+    input.value = '';
+    await sendToAgent(text);
+  }
+
+  // --- Device enumeration (display-only) ---
+  async function populateDevices() {
+    const audioIn = document.getElementById('audioIn');
+    const audioOut = document.getElementById('audioOut');
+    const videoIn = document.getElementById('videoIn');
+
+    function addOpt(sel, label, value) {
+      const o = document.createElement('option');
+      o.value = value;
+      o.textContent = label;
+      sel.appendChild(o);
+    }
+
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      audioIn.innerHTML = '';
+      audioOut.innerHTML = '';
+      videoIn.innerHTML = '';
+
+      devices.filter(d => d.kind === 'audioinput').forEach((d, i) => addOpt(audioIn, d.label || ('mic ' + (i+1)), d.deviceId));
+      devices.filter(d => d.kind === 'audiooutput').forEach((d, i) => addOpt(audioOut, d.label || ('speaker ' + (i+1)), d.deviceId));
+      devices.filter(d => d.kind === 'videoinput').forEach((d, i) => addOpt(videoIn, d.label || ('camera ' + (i+1)), d.deviceId));
+    } catch (e) {
+      appendMeta('device enumeration blocked (try granting mic permissions): ' + e);
+    }
+  }
+
+  // --- Speech recognition (Web Speech API; Chrome/Edge) ---
+  let recognizing = false;
+  let recognition = null;
+
+  const asrStatus = document.getElementById('asrStatus');
+
+  function setAsrStatus(t) {
+    asrStatus.textContent = 'ASR: ' + t;
+  }
+
+  if ('webkitSpeechRecognition' in window) {
+    recognition = new webkitSpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
+
+    setAsrStatus('ready');
+
+    recognition.onresult = function(event) {
+      if (event.results && event.results.length > 0) {
+        const transcript = event.results[0][0].transcript;
+        appendMsg('user', transcript);
+        recognizing = false;
+        try { recognition.stop(); } catch(e) {}
+        document.getElementById('micBtn').innerText = '🎤';
+        sendToAgent(transcript);
+      }
+    };
+
+    recognition.onerror = function(event) {
+      setAsrStatus('error: ' + event.error);
+      recognizing = false;
+      document.getElementById('micBtn').innerText = '🎤';
+    };
+
+    recognition.onend = function() {
+      recognizing = false;
+      document.getElementById('micBtn').innerText = '🎤';
+      setAsrStatus('idle');
+      const ambient = document.getElementById('ambientToggle').checked;
+      if (ambient) {
+        try {
+          setAsrStatus('ambient listening…');
+          recognition.start();
+          recognizing = true;
+          document.getElementById('micBtn').innerText = '🔴';
+        } catch (e) {
+          setAsrStatus('ambient failed');
+        }
+      }
+    };
+  } else {
+    setAsrStatus('unsupported');
+  }
+
+  function toggleMic() {
+    if (!recognition) {
+      alert("Speech recognition not supported in this browser (try Chrome/Edge).");
+      return;
+    }
+    if (!recognizing) {
+      recognizing = true;
+      setAsrStatus('listening…');
+      document.getElementById('micBtn').innerText = '🔴';
+      try { recognition.start(); } catch(e) {}
+    } else {
+      recognizing = false;
+      setAsrStatus('idle');
+      document.getElementById('micBtn').innerText = '🎤';
+      try { recognition.stop(); } catch(e) {}
+    }
+  }
+
+  // Try to force a permission prompt so enumerateDevices returns labels
+  async function primePermissions() {
+    try {
+      await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  (async () => {
+    await primePermissions();
+    await populateDevices();
+  })();
+</script>
+</body>
+</html>
