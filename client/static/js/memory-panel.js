@@ -54,7 +54,13 @@ class MemoryPanel {
     try {
       const params = new URLSearchParams({ limit: this.options.limit });
       if (this.filter.kind && this.filter.kind !== 'ALL') params.append('kind', this.filter.kind);
-      if (this.filter.speaker_id) params.append('speaker_id', this.filter.speaker_id);
+      // Handle "Unknown Speaker" special filter
+      if (this.filter.speaker_id === '__UNKNOWN__') {
+        params.append('speaker_id', '__UNKNOWN__');
+      } else if (this.filter.speaker_id) {
+        params.append('speaker_id', this.filter.speaker_id);
+      }
+      // Note: When speaker_id is null/empty, we get ALL memories (fixed behavior)
       const resp = await fetch(`/api/memories?${params}`);
       const data = await resp.json();
       this.memories = data.memories || [];
@@ -89,6 +95,8 @@ class MemoryPanel {
       const kindClass = kind.toLowerCase().replace(/_/g, '-');
       const speaker = m.speaker_id || m.meta?.speaker_id || '';
       const importance = m.importance || m.meta?.importance;
+      const sessionId = m.session_id || m.meta?.session_id || '';
+      const source = m.meta?.source || '';
       const ts = m.ts ? new Date(m.ts).toLocaleString() : '';
       return `
         <div class="memory-item ${kindClass}" onclick="memoryPanel.selectMemory('${m.sk || ''}')">
@@ -96,9 +104,13 @@ class MemoryPanel {
             <span class="memory-kind-badge ${kindClass}">${kind}</span>
             ${importance ? `<span class="importance-badge">${importance}</span>` : ''}
             ${speaker ? `<span class="speaker-badge">👤 ${speaker}</span>` : ''}
+            ${source ? `<span class="source-badge" style="background:#e0e0e0;padding:1px 6px;border-radius:8px;font-size:0.7em;">${source}</span>` : ''}
           </div>
           <div class="memory-text">${m.text || ''}</div>
-          ${ts ? `<div class="memory-ts">${ts}</div>` : ''}
+          <div class="memory-footer" style="display:flex;gap:12px;font-size:0.8em;color:#888;margin-top:4px;">
+            ${ts ? `<span>${ts}</span>` : ''}
+            ${sessionId ? `<span>Session: ${sessionId.substring(0, 12)}...</span>` : ''}
+          </div>
         </div>
       `;
     }).join('');
