@@ -21,6 +21,36 @@
   </div>
 
   <div class="card">
+    <h2 style="margin-top:0">Sessions</h2>
+    <form action="/session/create" method="post">
+      <label>Session name</label>
+      <input type="text" name="session_name" placeholder="e.g. new-session" required />
+      <label>Description</label>
+      <input type="text" name="session_description" placeholder="Optional description" />
+      <div class="muted">Creates or updates a named session and stores its description + created time.</div>
+      <div style="margin-top:10px;">
+        <button class="btn" type="submit">Save session</button>
+      </div>
+    </form>
+
+    <form action="/session/select" method="post" style="margin-top:14px;">
+      <label>Select session for this deployment</label>
+      <select name="session_name" style="padding: 7px; border-radius: 8px; border: 1px solid #bbb; width: 100%;">
+        <option value="" {% if not state.selected_session %}selected{% endif %}>(Generate new session)</option>
+        {% for sess in sessions %}
+          <option value="{{ sess.name }}" {% if state.selected_session == sess.name %}selected{% endif %}>
+            {{ sess.name }} — {{ sess.description or "No description" }} ({{ sess.created }})
+          </option>
+        {% endfor %}
+      </select>
+      <div class="muted">Leave blank to create a fresh session when interacting with the stack.</div>
+      <div style="margin-top:10px;">
+        <button class="btn" type="submit">Use session</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
     <form action="/deploy" method="post">
       <label>Stack name</label>
       <input id="stack_name" name="stack_name" placeholder="marvain-demo" required />
@@ -31,7 +61,9 @@
       <input name="agent_id" value="marvain-agent" />
 
       <label>Bedrock MODEL_ID</label>
-      <input name="model_id" value="meta.llama3-1-8b-instruct-v1:0" />
+      <input id="model_id" name="model_id" value="meta.llama3-1-8b-instruct-v1:0" />
+      <div class="muted">Validated against Bedrock availability in {{ region }}.</div>
+      <div id="model-error" class="muted" style="color: #c00; display: none;"></div>
 
       <label>Polly voice</label>
       {% if polly_voices %}
@@ -42,6 +74,7 @@
             </option>
           {% endfor %}
         </select>
+        <div class="muted">Voices available in region {{ region }} (sorted alphabetically).</div>
       {% else %}
         <input name="polly_voice" value="Matthew" />
         <div class="muted">Unable to load Polly voices; using manual entry.</div>
@@ -53,7 +86,8 @@
       </select>
 
       <label>Audio S3 bucket (optional)</label>
-      <input name="audio_bucket" placeholder="(blank for inline base64 audio)" />
+      <input id="audio_bucket" name="audio_bucket" placeholder="(blank for inline base64 audio)" />
+      <div id="bucket-error" class="muted" style="color: #c00; display: none;"></div>
 
       <label style="margin-top: 12px;">
         <input type="checkbox" name="verbose" value="1" /> Verbose logging (UI + ./logfs/&lt;stack&gt;-deploy-&lt;timestamp&gt;.log)
@@ -81,17 +115,29 @@
     const stackInput = document.getElementById('stack_name');
     const deployButton = document.getElementById('deploy_btn');
     const stackError = document.getElementById('stack-name-error');
+    const bucketInput = document.getElementById('audio_bucket');
+    const bucketError = document.getElementById('bucket-error');
+    const modelInput = document.getElementById('model_id');
+    const modelError = document.getElementById('model-error');
 
-    function showStackError(message) {
-      stackError.textContent = message;
-      stackError.style.display = 'block';
-      deployButton.disabled = true;
+    const validationErrors = new Set();
+
+    function toggleDeploy() {
+      deployButton.disabled = validationErrors.size > 0;
     }
 
-    function clearStackError() {
-      stackError.textContent = '';
-      stackError.style.display = 'none';
-      deployButton.disabled = false;
+    function showError(el, key, message) {
+      el.textContent = message;
+      el.style.display = 'block';
+      validationErrors.add(key);
+      toggleDeploy();
+    }
+
+    function clearError(el, key) {
+      el.textContent = '';
+      el.style.display = 'none';
+      validationErrors.delete(key);
+      toggleDeploy();
     }
 
     async function validateStackName() {
@@ -108,12 +154,55 @@
         }
         const data = await resp.json();
         if (data.exists) {
-          showStackError(`Stack "${data.stack_name}" already exists. Please choose a different name.`);
+          showError(stackError, 'stack', `Stack "${data.stack_name}" already exists. Please choose a different name.`);
         } else {
-          clearStackError();
+          clearError(stackError, 'stack');
         }
       } catch (err) {
-        showStackError(err.message || 'Unable to validate stack name.');
+        showError(stackError, 'stack', err.message || 'Unable to validate stack name.');
+      }
+    }
+
+    async function validateBucket() {
+      const name = bucketInput.value.trim();
+      if (!name) {
+        clearError(bucketError, 'bucket');
+        return;
+      }
+
+      try {
+        const resp = await fetch(`/api/bucket_exists?bucket_name=${encodeURIComponent(name)}`);
+        if (!resp.ok) throw new Error('Unable to validate bucket.');
+        const data = await resp.json();
+        if (!data.exists) {
+          showError(bucketError, 'bucket', `Bucket "${name}" does not exist.`);
+        } else {
+          clearError(bucketError, 'bucket');
+        }
+      } catch (err) {
+        showError(bucketError, 'bucket', err.message || 'Unable to validate bucket.');
+      }
+    }
+
+    async function validateModel() {
+      const model = modelInput.value.trim();
+      if (!model) {
+        clearError(modelError, 'model');
+        return;
+      }
+
+      try {
+        const resp = await fetch(`/api/model_available?model_id=${encodeURIComponent(model)}`);
+        if (!resp.ok) throw new Error('Unable to validate model.');
+        const data = await resp.json();
+        if (!data.available) {
+          const detail = data.error ? ` (${data.error})` : '';
+          showError(modelError, 'model', `Model "${model}" is not available in ${data.region || 'this region'}.${detail}`);
+        } else {
+          clearError(modelError, 'model');
+        }
+      } catch (err) {
+        showError(modelError, 'model', err.message || 'Unable to validate model.');
       }
     }
 
@@ -142,9 +231,13 @@
     stackInput?.addEventListener('change', validateStackName);
     stackInput?.addEventListener('input', () => {
       if (!stackInput.value.trim()) {
-        clearStackError();
+        clearError(stackError, 'stack');
       }
     });
+    bucketInput?.addEventListener('blur', validateBucket);
+    bucketInput?.addEventListener('change', validateBucket);
+    modelInput?.addEventListener('blur', validateModel);
+    modelInput?.addEventListener('change', validateModel);
     updateEngineOptions();
   </script>
 </body>

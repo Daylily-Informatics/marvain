@@ -22,7 +22,8 @@
     AWS profile: <strong>{{ state.aws_profile or "(default)" }}</strong> |
     region: <strong>{{ state.aws_region or "(default)" }}</strong> |
     selected: <strong>{{ state.selected_stack or (state.selected_endpoint and "Custom endpoint") or "(none)" }}</strong> |
-    stack prefix: <strong>{{ stack_prefix }}</strong>
+    stack prefix: <strong>{{ stack_prefix }}</strong> |
+    session: <strong>{{ state.selected_session or "(auto generate)" }}</strong>
     — <a href="/settings">Settings</a>
   </div>
 
@@ -37,6 +38,36 @@
       }, 60000);
     </script>
   {% endif %}
+
+  <div class="card">
+    <h2 style="margin-top:0">Sessions</h2>
+    <form action="/session/create" method="post">
+      <label>Session name</label>
+      <input type="text" name="session_name" placeholder="e.g. support-session" required />
+      <label>Description</label>
+      <input type="text" name="session_description" placeholder="Optional context for this session" />
+      <div class="muted">Creates or updates a named session with a creation timestamp.</div>
+      <div style="margin-top:10px;">
+        <button class="btn" type="submit">Save session</button>
+      </div>
+    </form>
+
+    <form action="/session/select" method="post" style="margin-top:14px;">
+      <label>Select session for this stack</label>
+      <select name="session_name" style="padding:7px; border-radius:8px; border:1px solid #bbb; width:100%;">
+        <option value="" {% if not state.selected_session %}selected{% endif %}>(Generate new session)</option>
+        {% for sess in sessions %}
+          <option value="{{ sess.name }}" {% if state.selected_session == sess.name %}selected{% endif %}>
+            {{ sess.name }} — {{ sess.description or "No description" }} ({{ sess.created }})
+          </option>
+        {% endfor %}
+      </select>
+      <div class="muted">Default is blank to generate a new session ID when interacting.</div>
+      <div style="margin-top:10px;">
+        <button class="btn" type="submit">Use session</button>
+      </div>
+    </form>
+  </div>
 
   <div class="card">
     <h2 style="margin-top:0">Connect</h2>
