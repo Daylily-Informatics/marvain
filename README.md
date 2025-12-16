@@ -95,6 +95,44 @@ Response schema:
 
 ---
 
+## GUI usage (manual interface + chat)
+
+The FastAPI/Jinja2 GUI exposes two major workflows:
+
+1. **Manual interface (stack/deployment management)** — browse, create, and delete stacks, or jump to AWS consoles.
+2. **Chat GUI** — talk to a deployed broker (text or voice), switch ASR modes, and inspect request/response metadata.
+
+### 1) Manual interface
+
+From the home page (`/`):
+
+- **List stacks**: Fetches CloudFormation stacks matching the optional `AGENT_RESOURCE_STACK_PREFIX` (defaults to `marai-`). Stacks are grouped by status (available / creating / deleting / failed) to make it clear what you can select.
+- **Select a stack**: Choosing a stack reveals the API endpoint used for chat and a direct **AWS console link** for the stack so you can debug events/outputs.
+- **Delete**: Removes a selected stack (uses `cf.delete_stack` under the hood). A confirmation prompt appears in the browser before issuing the request.
+- **Deploy new stack** (`/deploy`):
+  1. Enter the stack name and optional `AGENT_RESOURCE_STACK_PREFIX` override.
+  2. The GUI runs `sam build` + `sam deploy --guided` with the generated build directory (`.aws-<STACK_NAME>`). Output streams to the page so you can watch progress.
+  3. When deployment finishes, the resulting broker endpoint is shown and the new stack is selectable on the home page.
+- **Settings** (`/settings`):
+  - Set `AWS_PROFILE` / `AWS_REGION` for subsequent requests.
+  - Toggle “Use s3_bucket in samconfig.toml” to force/skip the `samconfig.toml` S3 bucket (handy when bootstrapping a new environment).
+  - Adjust the stack prefix. The prefix is applied automatically when creating or selecting stacks.
+
+### 2) Chat GUI
+
+After selecting a stack, open `/chat` to talk to the broker:
+
+- **Text chat**: Enter text and send; responses appear in the thread. If the broker returns actions, they are rendered inline for debugging.
+- **Voice input**: Choose an ASR mode:
+  - **Server (AWS Transcribe Streaming)**: Requires locally configured AWS credentials with `transcribe:StartStreamTranscription*` permissions. The browser streams audio to the FastAPI server, which forwards to AWS Transcribe; final transcripts are sent to the broker.
+  - **Browser (Web Speech API)**: Uses the browser’s built-in recognizer; no AWS creds needed. Device selection is browser-dependent.
+- **Audio output**: If the broker returns `audio.url`, the GUI provides a play button so you can listen without leaving the page.
+- **Session management**: Each chat uses the `X-Session-Id` header with the current stack name by default. You can override the session ID in the UI to simulate multiple conversations.
+- **Endpoint override**: Advanced users can paste a broker URL directly to test alternate deployments without switching stacks.
+- **Debug panel**: Expand the request/response JSON to verify payloads, headers, and timing information when troubleshooting.
+
+---
+
 ## Local-only development notes
 
 - This skeleton is built for **AWS deployment**. The GUI can talk to a deployed stack.
