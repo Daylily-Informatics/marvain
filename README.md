@@ -14,7 +14,7 @@ This repository is a **reference implementation** of a Rank‑4 agent skeleton:
 ## Prereqs
 
 ### Local
-- Python **3.11**
+- Python **3.12**
 - `pip`
 - AWS CLI v2
 - AWS SAM CLI (`sam`)
