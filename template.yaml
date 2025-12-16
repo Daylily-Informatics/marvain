@@ -3,7 +3,7 @@ Description: marvain - Whaddya-Want Rank-4 agent skeleton (Broker + Heartbeat + 
 
 Globals:
   Function:
-    Runtime: python3.11
+    Runtime: python3.12
     Timeout: 30
     MemorySize: 512
 
@@ -63,7 +63,7 @@ Resources:
       LayerName: !Sub "${AWS::StackName}-shared-deps"
       Description: "Shared dependencies and core logic for marvain agent"
       ContentUri: layers/shared
-      CompatibleRuntimes: [python3.11]
+      CompatibleRuntimes: [python3.12]
       RetentionPolicy: Delete
     Metadata:
       BuildMethod: makefile
@@ -74,7 +74,7 @@ Resources:
       LayerName: !Sub "${AWS::StackName}-config"
       Description: "Agent configuration (prompts, etc.)"
       ContentUri: layers/config
-      CompatibleRuntimes: [python3.11]
+      CompatibleRuntimes: [python3.12]
       RetentionPolicy: Delete
 
   BrokerFunction:
