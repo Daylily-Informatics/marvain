@@ -42,10 +42,22 @@
     <a href="/speakers">Speakers</a>
     <a href="/memories">Memories</a>
   </div>
-  <div class="meta">
-    Connected to: <strong>{{ stack_name }}</strong>
-    (<code>{{ state.selected_endpoint }}</code>)
-    <div>Session: <strong>{{ state.selected_session or "Auto-generated" }}</strong>{% if not state.selected_session %} (new ID will be generated as you chat){% endif %}</div>
+  <div class="card" style="background: #e3f2fd; border-color: #90caf9; margin-top: 0; margin-bottom: 12px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+      <div>
+        <strong>Connected to:</strong> {{ stack_name }}
+        <span class="muted" style="font-size: 0.85em;">(<code>{{ state.selected_endpoint }}</code>)</span>
+      </div>
+      <div>
+        <strong>Session:</strong>
+        <code style="background: #fff; padding: 4px 8px; border-radius: 4px;" id="currentSessionId">{{ state.selected_session or "(auto-generate)" }}</code>
+        {% if state.selected_session %}
+          <span class="pill" style="background: #90EE90;">Named</span>
+        {% else %}
+          <span class="pill" style="background: #ffe066;">Auto</span>
+        {% endif %}
+      </div>
+    </div>
   </div>
 
   <div class="row" style="margin-top: 10px;">
@@ -134,12 +146,16 @@
   </div>
 
   <div class="card" id="debugCard">
-    <h2 style="margin-top:0">Debug</h2>
-    <div class="meta">Verbose logging is {{ 'enabled' if state.verbose else 'disabled' }} (toggle in <a href="/settings">Settings</a>).</div>
-    <div class="meta">Use the tools below to run debug helpers and view their output directly in the GUI.</div>
-    <div id="verboseLogs" class="debug-log"></div>
-    <div class="debug-tools" id="debugTools"></div>
-    <pre id="debugOutput" class="debug-output"></pre>
+    <details>
+      <summary style="cursor: pointer; font-weight: 600; font-size: 1.1em; margin-bottom: 8px;">
+        🔧 Debug Tools <span style="font-weight: normal; font-size: 0.85em; color: #666;">(click to expand)</span>
+      </summary>
+      <div class="meta">Verbose logging is {{ 'enabled' if state.verbose else 'disabled' }} (toggle in <a href="/settings">Settings</a>).</div>
+      <div class="meta" style="margin-bottom: 10px;">Use the tools below to run debug helpers and view their output directly in the GUI.</div>
+      <div id="verboseLogs" class="debug-log" style="margin-bottom: 10px;"></div>
+      <div class="debug-tools" id="debugTools"></div>
+      <pre id="debugOutput" class="debug-output"></pre>
+    </details>
   </div>
 
   <p style="margin-top: 12px;"><a href="/">← Back</a></p>

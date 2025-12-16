@@ -202,6 +202,24 @@ def handler(event, context):
     safe_effective_speaker_id = str(effective_speaker_id).replace('\n','').replace('\r','')
     logging.info("Event persisted (session=%s channel=%s speaker=%s)", safe_session_id, safe_channel, safe_effective_speaker_id)
 
+    # Store RAW memory for every user interaction (for Rank 4/5 memory visualization)
+    if transcript and source == "user":
+        raw_memory = {
+            "kind": "RAW",
+            "text": transcript,
+            "meta": {
+                "source": source,
+                "channel": channel,
+                "speaker_name": resolved_name,
+                "session_id": session_id,
+            },
+        }
+        try:
+            memory_store.put_memory(raw_memory, speaker_id=effective_speaker_id)
+            logging.info("Stored RAW memory for user input")
+        except Exception as e:
+            logging.error("Failed to store RAW memory: %s", e)
+
     # Extract implicit memories from transcript
     implicit_memories = planner.extract_implicit_memories(
         transcript,
@@ -298,6 +316,22 @@ def handler(event, context):
                 payload={"transcript": reply_text},
             )
         )
+
+        # Store RAW memory for agent response (for Rank 4/5 memory visualization)
+        agent_raw_memory = {
+            "kind": "RAW",
+            "text": reply_text,
+            "meta": {
+                "source": "agent",
+                "channel": channel,
+                "session_id": session_id,
+            },
+        }
+        try:
+            memory_store.put_memory(agent_raw_memory)
+            logging.info("Stored RAW memory for agent response")
+        except Exception as e:
+            logging.error("Failed to store agent RAW memory: %s", e)
 
     # Speech synthesis (optional, fail-soft)
     audio_obj = None

@@ -22,10 +22,20 @@
     AWS profile: <strong>{{ state.aws_profile or "(default)" }}</strong> |
     region: <strong>{{ state.aws_region or "(default)" }}</strong> |
     selected: <strong>{{ state.selected_stack or (state.selected_endpoint and "Custom endpoint") or "(none)" }}</strong> |
-    stack prefix: <strong>{{ stack_prefix }}</strong> |
-    session: <strong>{{ state.selected_session or "(auto generate)" }}</strong>
+    stack prefix: <strong>{{ stack_prefix }}</strong>
     — <a href="/settings">Settings</a>
   </div>
+  {% if state.selected_endpoint %}
+  <div class="card" style="background: #e3f2fd; border-color: #90caf9;">
+    <strong>Active Session:</strong>
+    <code style="background: #fff; padding: 4px 8px; border-radius: 4px;">{{ state.selected_session or "(auto-generated on first message)" }}</code>
+    {% if state.selected_session %}
+      <span class="muted">— Using named session</span>
+    {% else %}
+      <span class="muted">— A new session ID will be created when you chat</span>
+    {% endif %}
+  </div>
+  {% endif %}
 
   {% if deploying %}
     <div class="card">
@@ -67,6 +77,20 @@
         <button class="btn" type="submit">Use session</button>
       </div>
     </form>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">Quick Links</h2>
+    <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+      {% if state.selected_endpoint %}
+        <a href="/chat" class="btn">💬 Chat</a>
+        <a href="/speakers" class="btn">👤 Speakers</a>
+        <a href="/memories" class="btn">🧠 Memories</a>
+        <a href="/stack_outputs" class="btn">📊 Stack Outputs</a>
+      {% else %}
+        <span class="muted">Select a stack to access Chat, Speakers, Memories, and Stack Outputs</span>
+      {% endif %}
+    </div>
   </div>
 
   <div class="card">

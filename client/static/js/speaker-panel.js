@@ -21,7 +21,10 @@ class SpeakerPanel {
   }
 
   init() {
-    if (!this.container) return;
+    if (!this.container) {
+      console.error('SpeakerPanel: Container not found');
+      return;
+    }
     this.render();
     this.loadSpeakers();
     setInterval(() => this.loadSpeakers(), this.options.refreshInterval);
@@ -34,7 +37,9 @@ class SpeakerPanel {
           <h3>Speakers</h3>
           <button class="btn btn-sm" onclick="speakerPanel.showEnrollmentModal()">+ Enroll</button>
         </div>
-        <div class="speaker-list" id="speakerList"></div>
+        <div class="speaker-list" id="speakerList">
+          <div class="no-speakers">Loading speakers...</div>
+        </div>
         <div class="speaker-detail" id="speakerDetail" style="display: none;"></div>
       </div>
       <div class="modal" id="enrollmentModal" style="display: none;">
@@ -72,12 +77,16 @@ class SpeakerPanel {
 
   async loadSpeakers() {
     try {
+      console.log('SpeakerPanel: Loading speakers...');
       const resp = await fetch('/api/speakers');
       const data = await resp.json();
+      console.log('SpeakerPanel: Received data:', data);
       this.speakers = data.speakers || [];
       this.renderSpeakerList();
     } catch (e) {
-      console.error('Failed to load speakers:', e);
+      console.error('SpeakerPanel: Failed to load speakers:', e);
+      const listEl = document.getElementById('speakerList');
+      if (listEl) listEl.innerHTML = '<div class="no-speakers">Failed to load speakers</div>';
     }
   }
 
@@ -85,34 +94,34 @@ class SpeakerPanel {
     const listEl = document.getElementById('speakerList');
     if (!listEl) return;
     if (this.speakers.length === 0) {
-      listEl.innerHTML = '<div class="no-speakers">No speakers enrolled</div>';
+      listEl.innerHTML = '<div class="no-speakers">No speakers enrolled yet</div>';
       return;
     }
-    listEl.innerHTML = this.speakers.map(s => \`
-      <div class="speaker-item \${this.selectedSpeaker?.speaker_id === s.speaker_id ? 'selected' : ''}"
-           onclick="speakerPanel.selectSpeaker('\${s.speaker_id}')">
-        <div class="speaker-avatar">\${(s.speaker_name || 'U')[0].toUpperCase()}</div>
+    listEl.innerHTML = this.speakers.map(s => `
+      <div class="speaker-item ${this.selectedSpeaker?.speaker_id === s.speaker_id ? 'selected' : ''}"
+           onclick="speakerPanel.selectSpeaker('${s.speaker_id}')">
+        <div class="speaker-avatar">${(s.speaker_name || 'U')[0].toUpperCase()}</div>
         <div class="speaker-info">
-          <div class="speaker-name">\${s.speaker_name || 'Unknown'}</div>
+          <div class="speaker-name">${s.speaker_name || 'Unknown'}</div>
           <div class="speaker-meta">
-            <span class="badge \${s.enrollment_status}">\${s.enrollment_status}</span>
-            <span>\${s.interaction_count || 0} chats</span>
+            <span class="badge ${s.enrollment_status || 'unknown'}">${s.enrollment_status || 'unknown'}</span>
+            <span>${s.interaction_count || 0} chats</span>
           </div>
         </div>
       </div>
-    \`).join('');
+    `).join('');
   }
 
   async selectSpeaker(speakerId) {
     try {
-      const resp = await fetch(\`/api/speakers/\${speakerId}\`);
+      const resp = await fetch(`/api/speakers/${speakerId}`);
       const data = await resp.json();
       this.selectedSpeaker = data.profile;
       this.renderSpeakerDetail(data);
       this.renderSpeakerList();
       this.options.onSpeakerSelect(this.selectedSpeaker);
     } catch (e) {
-      console.error('Failed to load speaker:', e);
+      console.error('SpeakerPanel: Failed to load speaker:', e);
     }
   }
 
@@ -122,30 +131,30 @@ class SpeakerPanel {
     const p = data.profile;
     const mems = data.memories || [];
     detailEl.style.display = 'block';
-    detailEl.innerHTML = \`
+    detailEl.innerHTML = `
       <div class="detail-header">
         <button class="btn-back" onclick="speakerPanel.hideDetail()">← Back</button>
-        <h4>\${p.speaker_name || 'Unknown'}</h4>
+        <h4>${p.speaker_name || 'Unknown'}</h4>
       </div>
       <div class="detail-content">
         <div class="detail-section">
           <h5>Profile</h5>
           <div class="detail-grid">
-            <div><strong>ID:</strong> \${p.speaker_id}</div>
-            <div><strong>Status:</strong> <span class="badge \${p.enrollment_status}">\${p.enrollment_status}</span></div>
-            <div><strong>First:</strong> \${p.first_seen ? new Date(p.first_seen).toLocaleDateString() : 'N/A'}</div>
-            <div><strong>Chats:</strong> \${p.interaction_count || 0}</div>
+            <div><strong>ID:</strong> ${p.speaker_id}</div>
+            <div><strong>Status:</strong> <span class="badge ${p.enrollment_status || 'unknown'}">${p.enrollment_status || 'unknown'}</span></div>
+            <div><strong>First:</strong> ${p.first_seen ? new Date(p.first_seen).toLocaleDateString() : 'N/A'}</div>
+            <div><strong>Chats:</strong> ${p.interaction_count || 0}</div>
           </div>
         </div>
         <div class="detail-section">
-          <h5>Memories (\${mems.length})</h5>
-          <div class="memory-list">\${mems.length === 0 ? '<div class="no-data">No memories</div>' : 
-            mems.slice(0, 10).map(m => \`<div class="memory-item \${(m.kind || '').toLowerCase()}">
-              <span class="memory-kind">[\${m.kind || '?'}]</span> \${m.text || ''}</div>\`).join('')}
+          <h5>Memories (${mems.length})</h5>
+          <div class="memory-list">${mems.length === 0 ? '<div class="no-data">No memories</div>' : 
+            mems.slice(0, 10).map(m => `<div class="memory-item ${(m.kind || '').toLowerCase()}">
+              <span class="memory-kind">[${m.kind || '?'}]</span> ${m.text || ''}</div>`).join('')}
           </div>
         </div>
       </div>
-    \`;
+    `;
   }
 
   hideDetail() {
@@ -156,8 +165,14 @@ class SpeakerPanel {
   }
 
   showEnrollmentModal() {
+    console.log('SpeakerPanel: showEnrollmentModal called');
     const modal = document.getElementById('enrollmentModal');
-    if (modal) modal.style.display = 'flex';
+    if (modal) {
+      modal.style.display = 'flex';
+      console.log('SpeakerPanel: Modal display set to flex');
+    } else {
+      console.error('SpeakerPanel: Modal element not found');
+    }
     this.audioChunks = [];
     this.enrollmentSamples = [];
     this.updateEnrollmentProgress();
@@ -198,8 +213,8 @@ class SpeakerPanel {
       this.updateRecordingUI();
       setTimeout(() => { if (this.isRecording) this.stopRecording(); }, 5000);
     } catch (e) {
-      console.error('Recording failed:', e);
-      alert('Could not access microphone');
+      console.error('SpeakerPanel: Recording failed:', e);
+      alert('Could not access microphone. Please check permissions.');
     }
   }
 
@@ -232,13 +247,13 @@ class SpeakerPanel {
   renderSamplesList() {
     const listEl = document.getElementById('samplesList');
     if (!listEl) return;
-    listEl.innerHTML = this.enrollmentSamples.map((sample, i) => \`
+    listEl.innerHTML = this.enrollmentSamples.map((sample, i) => `
       <div class="sample-item">
-        <span>Sample \${i + 1}</span>
-        <audio controls src="\${URL.createObjectURL(sample)}"></audio>
-        <button class="btn-sm" onclick="speakerPanel.removeSample(\${i})">✕</button>
+        <span>Sample ${i + 1}</span>
+        <audio controls src="${URL.createObjectURL(sample)}"></audio>
+        <button class="btn-sm" onclick="speakerPanel.removeSample(${i})">✕</button>
       </div>
-    \`).join('');
+    `).join('');
   }
 
   removeSample(index) {
@@ -254,34 +269,48 @@ class SpeakerPanel {
     const textEl = document.getElementById('progressText');
     const enrollBtn = document.getElementById('enrollBtn');
     if (progressEl) progressEl.style.display = count > 0 ? 'block' : 'none';
-    if (fillEl) fillEl.style.width = \`\${Math.min(count / 3, 1) * 100}%\`;
-    if (textEl) textEl.textContent = \`\${count}/3 samples\`;
+    if (fillEl) fillEl.style.width = `${Math.min(count / 3, 1) * 100}%`;
+    if (textEl) textEl.textContent = `${count}/3 samples`;
     if (enrollBtn) enrollBtn.disabled = count < 1;
   }
 
   async submitEnrollment() {
-    const name = document.getElementById('enrollSpeakerName')?.value.trim();
-    if (!name) { alert('Enter a speaker name'); return; }
-    if (this.enrollmentSamples.length < 1) { alert('Record at least one sample'); return; }
+    const nameInput = document.getElementById('enrollSpeakerName');
+    const name = nameInput?.value.trim();
+    if (!name) { alert('Please enter a speaker name'); return; }
+    if (this.enrollmentSamples.length < 1) { alert('Please record at least one voice sample'); return; }
+    
     const formData = new FormData();
     formData.append('speaker_name', name);
     this.enrollmentSamples.forEach((sample, i) => {
-      formData.append('audio_files', sample, \`sample_\${i}.wav\`);
+      formData.append('audio_files', sample, `sample_${i}.wav`);
     });
+    
     try {
+      console.log('SpeakerPanel: Submitting enrollment for', name);
       const resp = await fetch('/api/speakers/enroll', { method: 'POST', body: formData });
       const data = await resp.json();
-      if (data.error) { alert('Enrollment failed: ' + data.error); }
-      else { this.hideEnrollmentModal(); this.loadSpeakers(); this.options.onEnrollmentComplete(data); }
+      console.log('SpeakerPanel: Enrollment response:', data);
+      if (data.error) { 
+        alert('Enrollment failed: ' + data.error); 
+      } else { 
+        this.hideEnrollmentModal(); 
+        this.loadSpeakers(); 
+        this.options.onEnrollmentComplete(data);
+        alert('Speaker enrolled successfully!');
+      }
     } catch (e) {
-      console.error('Enrollment failed:', e);
+      console.error('SpeakerPanel: Enrollment failed:', e);
       alert('Enrollment failed: ' + e.message);
     }
   }
 }
 
+// Global instance
 let speakerPanel = null;
+
 function initSpeakerPanel(containerId, options = {}) {
+  console.log('initSpeakerPanel called with containerId:', containerId);
   speakerPanel = new SpeakerPanel(containerId, options);
   return speakerPanel;
 }

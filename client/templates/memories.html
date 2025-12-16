@@ -65,18 +65,20 @@
         <div class="card">
           <div class="filter-section">
             <h4>Filter by Type</h4>
-            <button class="filter-btn active" data-kind="ALL" onclick="setKindFilter('ALL', this)">All Types</button>
-            <button class="filter-btn" data-kind="FACT" onclick="setKindFilter('FACT', this)">📋 Facts</button>
-            <button class="filter-btn" data-kind="PREFERENCE" onclick="setKindFilter('PREFERENCE', this)">❤️ Preferences</button>
-            <button class="filter-btn" data-kind="RELATIONSHIP" onclick="setKindFilter('RELATIONSHIP', this)">🤝 Relationships</button>
-            <button class="filter-btn" data-kind="AI_INSIGHT" onclick="setKindFilter('AI_INSIGHT', this)">🧠 AI Insights</button>
-            <button class="filter-btn" data-kind="ACTION" onclick="setKindFilter('ACTION', this)">⚡ Actions</button>
-            <button class="filter-btn" data-kind="META" onclick="setKindFilter('META', this)">📌 Meta</button>
+            <button class="filter-btn active" data-kind="ALL" onclick="setKindFilter('ALL', this)">All Types <span id="count-ALL"></span></button>
+            <button class="filter-btn" data-kind="RAW" onclick="setKindFilter('RAW', this)">💬 Raw <span id="count-RAW"></span></button>
+            <button class="filter-btn" data-kind="FACT" onclick="setKindFilter('FACT', this)">📋 Facts <span id="count-FACT"></span></button>
+            <button class="filter-btn" data-kind="PREFERENCE" onclick="setKindFilter('PREFERENCE', this)">❤️ Preferences <span id="count-PREFERENCE"></span></button>
+            <button class="filter-btn" data-kind="RELATIONSHIP" onclick="setKindFilter('RELATIONSHIP', this)">🤝 Relationships <span id="count-RELATIONSHIP"></span></button>
+            <button class="filter-btn" data-kind="AI_INSIGHT" onclick="setKindFilter('AI_INSIGHT', this)">🧠 AI Insights <span id="count-AI_INSIGHT"></span></button>
+            <button class="filter-btn" data-kind="ACTION" onclick="setKindFilter('ACTION', this)">⚡ Actions <span id="count-ACTION"></span></button>
+            <button class="filter-btn" data-kind="META" onclick="setKindFilter('META', this)">📌 Meta <span id="count-META"></span></button>
           </div>
           <div class="filter-section">
             <h4>Filter by Speaker</h4>
             <select id="speakerFilter" onchange="setSpeakerFilter(this.value)" style="width: 100%; padding: 8px; border-radius: 6px;">
               <option value="">All Speakers</option>
+              <option value="__UNKNOWN__">Unknown Speaker (no speaker_id)</option>
             </select>
           </div>
           <div class="filter-section">
@@ -125,28 +127,58 @@
     }
 
     function setSpeakerFilter(speakerId) {
-      memoryPanel.setSpeakerFilter(speakerId || null);
+      // Handle "Unknown Speaker" filter
+      if (speakerId === '__UNKNOWN__') {
+        memoryPanel.setSpeakerFilter('__UNKNOWN__');
+      } else {
+        memoryPanel.setSpeakerFilter(speakerId || null);
+      }
     }
 
     function setSearch(term) {
       memoryPanel.setSearch(term);
     }
 
+    // Fetch real statistics from API
     function updateStats() {
-      fetch('/api/memories?limit=200')
-        .then(r => r.json())
-        .then(data => {
-          const mems = data.memories || [];
-          document.getElementById('statTotal').textContent = mems.length;
-          const speakers = new Set(mems.map(m => m.speaker_id || m.meta?.speaker_id).filter(Boolean));
-          document.getElementById('statSpeakers').textContent = speakers.size;
-          const kinds = new Set(mems.map(m => m.kind).filter(Boolean));
-          document.getElementById('statKinds').textContent = kinds.size;
+      // Get accurate stats using dedicated API endpoints
+      Promise.all([
+        fetch('/api/memory_stats').then(r => r.json()),
+        fetch('/api/speakers').then(r => r.json())
+      ]).then(([statsData, speakersData]) => {
+        // Update total memories count
+        document.getElementById('statTotal').textContent = statsData.total || 0;
+
+        // Update speakers count from actual speakers query
+        document.getElementById('statSpeakers').textContent = (speakersData.speakers || []).length;
+
+        // Update memory types count
+        document.getElementById('statKinds').textContent = Object.keys(statsData.by_kind || {}).length;
+
+        // Update counts on filter buttons
+        const counts = statsData.by_kind || {};
+        const allCount = statsData.total || 0;
+        document.getElementById('count-ALL').textContent = allCount > 0 ? `(${allCount})` : '';
+        ['RAW', 'FACT', 'PREFERENCE', 'RELATIONSHIP', 'AI_INSIGHT', 'ACTION', 'META'].forEach(kind => {
+          const el = document.getElementById(`count-${kind}`);
+          if (el) el.textContent = counts[kind] ? `(${counts[kind]})` : '';
         });
+      }).catch(e => {
+        console.error('Failed to update stats:', e);
+        // Fallback to basic count
+        fetch('/api/memories?limit=500')
+          .then(r => r.json())
+          .then(data => {
+            const mems = data.memories || [];
+            document.getElementById('statTotal').textContent = mems.length;
+          });
+      });
     }
 
     function showMemoryDetail(memory) {
-      alert(`Memory Detail:\n\nType: ${memory.kind}\nText: ${memory.text}\nSpeaker: ${memory.speaker_id || 'N/A'}\nTime: ${memory.ts || 'N/A'}`);
+      const sessionInfo = memory.session_id ? `\nSession: ${memory.session_id}` : '';
+      const sourceInfo = memory.meta?.source ? `\nSource: ${memory.meta.source}` : '';
+      alert(`Memory Detail:\n\nType: ${memory.kind}\nText: ${memory.text}\nSpeaker: ${memory.speaker_id || 'N/A'}${sessionInfo}${sourceInfo}\nTime: ${memory.ts || 'N/A'}`);
     }
 
     setInterval(updateStats, 30000);
