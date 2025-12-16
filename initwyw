@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# initwyw - Usage: source initwyw <AWS_PROFILE> <AWS_REGION>
-# Sets AWS_PROFILE/AWS_REGION/AWS_DEFAULT_REGION and activates .venv if present.
+# initwyw - Usage: source initwyw <AWS_PROFILE> <AWS_REGION> [STACK_PREFIX]
+# Sets AWS_PROFILE/AWS_REGION/AWS_DEFAULT_REGION, AGENT_RESOURCE_STACK_PREFIX, and activates .venv if present.
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   echo "ERROR: this script must be sourced, not executed."
@@ -9,13 +9,14 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 fi
 
 if [ "$#" -lt 2 ]; then
-  echo "Usage: source initwyw <AWS_PROFILE> <AWS_REGION>"
+  echo "Usage: source initwyw <AWS_PROFILE> <AWS_REGION> [STACK_PREFIX]"
   return 1
 fi
 
 export AWS_PROFILE="$1"
 export AWS_REGION="$2"
 export AWS_DEFAULT_REGION="$2"
+export AGENT_RESOURCE_STACK_PREFIX="${3:-agent-resource-stack-prefix}"
 
 if [ -d ".venv" ]; then
   # shellcheck disable=SC1091
@@ -25,3 +26,4 @@ fi
 echo "Environment initialized:"
 echo "  AWS_PROFILE=$AWS_PROFILE"
 echo "  AWS_REGION=$AWS_REGION"
+echo "  AGENT_RESOURCE_STACK_PREFIX=$AGENT_RESOURCE_STACK_PREFIX"
