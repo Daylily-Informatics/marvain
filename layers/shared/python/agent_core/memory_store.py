@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import boto3
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 
 from agent_core.schema import Event, MemoryItem, MemoryKind
 
@@ -104,10 +104,13 @@ def put_memory(memory_obj: Any) -> None:
         logging.error("put_memory: failed: %s", e)
 
 
-def recent_memories(agent_id: str, limit: int = 40) -> List[Dict[str, Any]]:
+def recent_memories(
+    agent_id: str, limit: int = 40, session_id: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """Retrieve most recent items for an agent (events + memories), truncated to ~6000 chars.
 
-    Returns a chronological list (oldest->newest) of DynamoDB items.
+    When ``session_id`` is provided, events are filtered to the selected session but memories
+    (which are global) are still included. Returns a chronological list (oldest->newest).
     """
     table = _get_table()
     if table is None:
@@ -115,11 +118,21 @@ def recent_memories(agent_id: str, limit: int = 40) -> List[Dict[str, Any]]:
         return []
 
     pk = f"AGENT#{agent_id}"
+    filter_expr = None
+    query_limit = max(1, int(limit))
+
+    if session_id:
+        # Include items where the session matches OR where there is no session id (e.g., agent memories).
+        filter_expr = Attr("session_id").eq(session_id) | Attr("session_id").not_exists()
+        # Increase the raw limit because filter expressions are applied after fetching.
+        query_limit = max(query_limit * 3, query_limit + 20)
+
     try:
         resp = table.query(
             KeyConditionExpression=Key("pk").eq(pk),
             ScanIndexForward=False,
-            Limit=max(1, int(limit)),
+            Limit=query_limit,
+            **({"FilterExpression": filter_expr} if filter_expr is not None else {}),
         )
     except Exception as e:
         logging.error("recent_memories: query failed: %s", e)

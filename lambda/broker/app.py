@@ -187,7 +187,7 @@ def handler(event, context):
     logging.info("Event persisted (session=%s channel=%s)", session_id, channel)
 
     # Retrieve recent context
-    context_items = memory_store.recent_memories(AGENT_ID, limit=40)
+    context_items = memory_store.recent_memories(AGENT_ID, limit=40, session_id=session_id)
     logging.info("Context retrieved: %d items", len(context_items))
 
     # Build system prompt
