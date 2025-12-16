@@ -5,7 +5,9 @@ import json
 import logging
 import os
 import subprocess
+import tomllib
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import boto3
@@ -33,6 +35,26 @@ app = FastAPI(title="marvain — Agent Manager")
 templates = Jinja2Templates(directory="client/templates")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+SAMCONFIG_PATH = Path("samconfig.toml")
+
+
+def _samconfig_has_s3_bucket() -> bool:
+    if not SAMCONFIG_PATH.exists():
+        return False
+    try:
+        data = tomllib.load(SAMCONFIG_PATH.open("rb"))
+    except Exception as e:  # pragma: no cover - best-effort guardrail
+        logging.warning("Unable to parse samconfig.toml: %s", e)
+        return False
+
+    s3_bucket = (
+        data.get("default", {})
+        .get("deploy", {})
+        .get("parameters", {})
+        .get("s3_bucket")
+    )
+    return bool(s3_bucket)
 
 
 @dataclass
@@ -209,10 +231,14 @@ def deploy_agent(
         stack_name,
         "--capabilities",
         "CAPABILITY_IAM",
-        "--resolve-s3",
         "--no-confirm-changeset",
         "--no-fail-on-empty-changeset",
     ]
+
+    if _samconfig_has_s3_bucket():
+        logging.info("samconfig.toml defines s3_bucket; skipping --resolve-s3")
+    else:
+        cmd_deploy.append("--resolve-s3")
 
     if STATE.aws_region:
         cmd_deploy += ["--region", STATE.aws_region]
