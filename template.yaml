@@ -20,6 +20,10 @@ Parameters:
     Type: String
     Default: "Matthew"
     Description: Default Polly voice id (optional)
+  AgentVoiceEngineParam:
+    Type: String
+    Default: ""
+    Description: Default Polly voice engine (standard/neural/generative)
   AudioBucketName:
     Type: String
     Default: ""
@@ -92,6 +96,7 @@ Resources:
           AGENT_STATE_TABLE: !Ref AgentStateTable
           AGENT_ID: !Ref AgentIdParam
           AGENT_VOICE_ID: !Ref AgentVoiceIdParam
+          AGENT_VOICE_ENGINE: !Ref AgentVoiceEngineParam
           AUDIO_BUCKET: !Ref AudioBucketName
           VERBOSE: "1"
       Policies:

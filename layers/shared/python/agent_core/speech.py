@@ -15,9 +15,16 @@ class SpeechSynthesizer:
     Otherwise, MP3 is returned inline as base64.
     """
 
-    def __init__(self, voice_id: str = "Matthew", region: Optional[str] = None, bucket: Optional[str] = None):
+    def __init__(
+        self,
+        voice_id: str = "Matthew",
+        region: Optional[str] = None,
+        bucket: Optional[str] = None,
+        engine: Optional[str] = None,
+    ):
         self.voice_id = voice_id or "Matthew"
         self.bucket = bucket or None
+        self.engine = engine or None
 
         if region:
             self.polly = boto3.client("polly", region_name=region)
@@ -31,7 +38,10 @@ class SpeechSynthesizer:
             return None
 
         try:
-            resp = self.polly.synthesize_speech(Text=text, VoiceId=self.voice_id, OutputFormat="mp3")
+            synth_kwargs = {"Text": text, "VoiceId": self.voice_id, "OutputFormat": "mp3"}
+            if self.engine:
+                synth_kwargs["Engine"] = self.engine
+            resp = self.polly.synthesize_speech(**synth_kwargs)
         except Exception as e:
             logging.error("SpeechSynthesizer: Polly synthesize failed: %s", e)
             return None

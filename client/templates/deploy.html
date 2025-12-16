@@ -32,8 +32,24 @@
       <label>Bedrock MODEL_ID</label>
       <input name="model_id" value="meta.llama3-1-8b-instruct-v1:0" />
 
-      <label>Polly voice id</label>
-      <input name="polly_voice" value="Matthew" />
+      <label>Polly voice</label>
+      {% if polly_voices %}
+        <select id="polly_voice" name="polly_voice" style="padding: 7px; border-radius: 8px; border: 1px solid #bbb; width: 100%;">
+          {% for voice in polly_voices %}
+            <option value="{{ voice.id }}" data-engines="{{ voice.engines | join(',') }}">
+              {{ voice.name }}{% if voice.language %} — {{ voice.language }}{% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      {% else %}
+        <input name="polly_voice" value="Matthew" />
+        <div class="muted">Unable to load Polly voices; using manual entry.</div>
+      {% endif %}
+
+      <label>Voice mode</label>
+      <select id="polly_voice_engine" name="polly_voice_engine" style="padding: 7px; border-radius: 8px; border: 1px solid #bbb; width: 100%;">
+        <option value="">(auto)</option>
+      </select>
 
       <label>Audio S3 bucket (optional)</label>
       <input name="audio_bucket" placeholder="(blank for inline base64 audio)" />
@@ -53,5 +69,35 @@
       <li>If you set an audio bucket, you must also grant S3 PutObject permissions (see template.yaml comments).</li>
     </ul>
   </div>
+
+  {% if polly_voices %}
+  <script>
+    const voiceSelect = document.getElementById('polly_voice');
+    const engineSelect = document.getElementById('polly_voice_engine');
+
+    function updateEngineOptions() {
+      if (!voiceSelect) return;
+      const selected = voiceSelect.options[voiceSelect.selectedIndex];
+      const enginesRaw = selected ? selected.dataset.engines || '' : '';
+      const engines = enginesRaw.split(',').filter(Boolean);
+
+      engineSelect.innerHTML = '';
+      const autoOpt = document.createElement('option');
+      autoOpt.value = '';
+      autoOpt.textContent = '(auto)';
+      engineSelect.appendChild(autoOpt);
+
+      engines.forEach((engine) => {
+        const opt = document.createElement('option');
+        opt.value = engine;
+        opt.textContent = engine.charAt(0).toUpperCase() + engine.slice(1);
+        engineSelect.appendChild(opt);
+      });
+    }
+
+    voiceSelect?.addEventListener('change', updateEngineOptions);
+    updateEngineOptions();
+  </script>
+  {% endif %}
 </body>
 </html>
