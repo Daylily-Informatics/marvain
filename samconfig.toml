@@ -1,0 +1,11 @@
+version = 0.1
+
+[default]
+[default.deploy]
+[default.deploy.parameters]
+stack_name = "whaddya-want-agent"
+region = "us-east-1"
+s3_prefix = "whaddya-want-agent"
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+resolve_s3 = true
