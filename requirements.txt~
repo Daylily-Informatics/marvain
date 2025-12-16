@@ -4,7 +4,6 @@ fastapi
 uvicorn
 jinja2
 requests
-python-multipart
 
 # Server-side streaming ASR (AWS Transcribe Streaming)
 amazon-transcribe

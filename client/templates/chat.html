@@ -27,20 +27,42 @@
   </div>
 
   <div class="row" style="margin-top: 10px;">
-    <span class="pill">Push-to-talk: <button id="micBtn" onclick="toggleMic()">🎤</button></span>
     <label class="pill">
-      <input type="checkbox" id="ambientToggle" /> Ambient (auto-restart)
+      ASR mode:
+      <select id="asrMode">
+        <option value="server" selected>Server (AWS Transcribe)</option>
+        <option value="browser">Browser (Web Speech API fallback)</option>
+      </select>
     </label>
-    <span class="pill" id="asrStatus">ASR: unknown</span>
+    <label class="pill">
+      Language:
+      <select id="languageCode">
+        <option value="en-US" selected>en-US</option>
+        <option value="en-GB">en-GB</option>
+        <option value="es-US">es-US</option>
+        <option value="fr-FR">fr-FR</option>
+      </select>
+    </label>
+    <button id="enableAudioBtn">Enable audio</button>
+    <span class="pill" id="asrStatus">ASR: idle</span>
+    <span class="pill" id="partialPill" style="display:none;"></span>
+  </div>
+
+  <div class="row" style="margin-top: 10px;">
+    <span class="pill">Push-to-talk: <button id="pttBtn">Hold to talk</button></span>
+    <label class="pill">
+      <input type="checkbox" id="ambientToggle" /> Ambient listening
+    </label>
+    <span class="pill meta">Output device selection needs Chrome/Edge + HTTPS/localhost.</span>
   </div>
 
   <div class="row" style="margin-top: 10px;">
     <div>
-      <div class="meta">Audio input device (display only)</div>
+      <div class="meta">Audio input device</div>
       <select id="audioIn"></select>
     </div>
     <div>
-      <div class="meta">Audio output device (display only)</div>
+      <div class="meta">Audio output device</div>
       <select id="audioOut"></select>
     </div>
     <div>
@@ -62,10 +84,30 @@
     <input type="text" id="persona_input" placeholder="e.g. be terse, ask clarifying questions, etc." style="min-width: 520px;" />
   </div>
 
+  <div class="row" style="margin-top: 10px;">
+    <div class="meta">Optional speaker name (helps voice registry)</div>
+    <input type="text" id="speaker_name_input" placeholder="e.g. Major" style="min-width: 260px;" />
+  </div>
+
   <p style="margin-top: 12px;"><a href="/">← Back</a></p>
 
 <script>
   const convo = document.getElementById('conversation');
+
+  const asrModeSel = document.getElementById('asrMode');
+  const languageSel = document.getElementById('languageCode');
+  const enableAudioBtn = document.getElementById('enableAudioBtn');
+  const pttBtn = document.getElementById('pttBtn');
+  const ambientToggle = document.getElementById('ambientToggle');
+  const asrStatus = document.getElementById('asrStatus');
+  const partialPill = document.getElementById('partialPill');
+
+  const audioInSel = document.getElementById('audioIn');
+  const audioOutSel = document.getElementById('audioOut');
+  const videoInSel = document.getElementById('videoIn');
+
+  let selectedOutputDeviceId = null;
+  let selectedMicDeviceId = null;
 
   function appendMsg(role, text) {
     const div = document.createElement('div');
@@ -83,6 +125,64 @@
     convo.scrollTop = convo.scrollHeight;
   }
 
+  function setAsrStatus(t) {
+    asrStatus.textContent = 'ASR: ' + t;
+  }
+
+  function setPartial(text) {
+    if (!text) {
+      partialPill.style.display = 'none';
+      partialPill.textContent = '';
+      return;
+    }
+    partialPill.style.display = 'inline-block';
+    partialPill.textContent = 'partial: ' + text;
+  }
+
+  // Downsample Float32 audio buffer to 16kHz for AWS Transcribe.
+  // Uses a simple averaging approach (good enough for speech).
+  function downsampleBuffer(buffer, inputSampleRate, outputSampleRate) {
+    if (outputSampleRate === inputSampleRate) {
+      return buffer;
+    }
+    const sampleRateRatio = inputSampleRate / outputSampleRate;
+    const newLength = Math.round(buffer.length / sampleRateRatio);
+    const result = new Float32Array(newLength);
+    let offsetResult = 0;
+    let offsetBuffer = 0;
+    while (offsetResult < result.length) {
+      const nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio);
+      // average the samples in the old buffer between these two points
+      let accum = 0;
+      let count = 0;
+      for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+        accum += buffer[i];
+        count++;
+      }
+      result[offsetResult] = count > 0 ? (accum / count) : 0;
+      offsetResult++;
+      offsetBuffer = nextOffsetBuffer;
+    }
+    return result;
+  }
+
+  async function playAgentAudio(audioObj) {
+    try {
+      const audio = new Audio();
+      if (audioObj.url) audio.src = audioObj.url;
+      else if (audioObj.data && audioObj.content_type) audio.src = 'data:' + audioObj.content_type + ';base64,' + audioObj.data;
+      else return;
+
+      // Route playback to selected output device when supported.
+      if (selectedOutputDeviceId && typeof audio.setSinkId === 'function') {
+        try { await audio.setSinkId(selectedOutputDeviceId); } catch(e) { /* ignore */ }
+      }
+      await audio.play();
+    } catch (e) {
+      appendMeta('audio playback failed: ' + e);
+    }
+  }
+
   async function sendToAgent(messageText) {
     const persona = (document.getElementById('persona_input').value || '').trim();
     try {
@@ -92,29 +192,13 @@
         body: JSON.stringify({ text: messageText, personality_prompt: persona })
       });
       const data = await response.json();
-
       if (!response.ok || data.error) {
         appendMsg('agent', '[Error] ' + (data.error || ('HTTP ' + response.status)));
         return;
       }
-
       if (data.reply_text) appendMsg('agent', data.reply_text);
       if (data.actions && data.actions.length) appendMeta('actions: ' + JSON.stringify(data.actions));
-
-      // audio playback (url or base64)
-      if (data.audio) {
-        try {
-          let audio = new Audio();
-          if (data.audio.url) {
-            audio.src = data.audio.url;
-          } else if (data.audio.data && data.audio.content_type) {
-            audio.src = 'data:' + data.audio.content_type + ';base64,' + data.audio.data;
-          }
-          audio.play();
-        } catch (e) {
-          appendMeta('audio playback failed: ' + e);
-        }
-      }
+      if (data.audio) await playAgentAudio(data.audio);
     } catch (e) {
       appendMsg('agent', '[Error] Agent not reachable');
     }
@@ -129,50 +213,291 @@
     await sendToAgent(text);
   }
 
-  // --- Device enumeration (display-only) ---
-  async function populateDevices() {
-    const audioIn = document.getElementById('audioIn');
-    const audioOut = document.getElementById('audioOut');
-    const videoIn = document.getElementById('videoIn');
+  // --- Device enumeration + selection ---
+  function addOpt(sel, label, value) {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = label;
+    sel.appendChild(o);
+  }
 
-    function addOpt(sel, label, value) {
-      const o = document.createElement('option');
-      o.value = value;
-      o.textContent = label;
-      sel.appendChild(o);
-    }
+  async function refreshDevices() {
+    const devices = await navigator.mediaDevices.enumerateDevices();
 
+    const prevMic = audioInSel.value;
+    const prevOut = audioOutSel.value;
+    const prevVid = videoInSel.value;
+
+    audioInSel.innerHTML = '';
+    audioOutSel.innerHTML = '';
+    videoInSel.innerHTML = '';
+
+    const mics = devices.filter(d => d.kind === 'audioinput');
+    const outs = devices.filter(d => d.kind === 'audiooutput');
+    const cams = devices.filter(d => d.kind === 'videoinput');
+
+    mics.forEach((d, i) => addOpt(audioInSel, d.label || ('mic ' + (i+1)), d.deviceId));
+    outs.forEach((d, i) => addOpt(audioOutSel, d.label || ('speaker ' + (i+1)), d.deviceId));
+    cams.forEach((d, i) => addOpt(videoInSel, d.label || ('camera ' + (i+1)), d.deviceId));
+
+    if (prevMic) audioInSel.value = prevMic;
+    if (prevOut) audioOutSel.value = prevOut;
+    if (prevVid) videoInSel.value = prevVid;
+
+    selectedMicDeviceId = audioInSel.value || null;
+    selectedOutputDeviceId = audioOutSel.value || null;
+  }
+
+  enableAudioBtn.addEventListener('click', async () => {
     try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      audioIn.innerHTML = '';
-      audioOut.innerHTML = '';
-      videoIn.innerHTML = '';
-
-      devices.filter(d => d.kind === 'audioinput').forEach((d, i) => addOpt(audioIn, d.label || ('mic ' + (i+1)), d.deviceId));
-      devices.filter(d => d.kind === 'audiooutput').forEach((d, i) => addOpt(audioOut, d.label || ('speaker ' + (i+1)), d.deviceId));
-      devices.filter(d => d.kind === 'videoinput').forEach((d, i) => addOpt(videoIn, d.label || ('camera ' + (i+1)), d.deviceId));
+      // Request permissions so device labels are available.
+      const constraints = { audio: true, video: false };
+      const s = await navigator.mediaDevices.getUserMedia(constraints);
+      s.getTracks().forEach(t => t.stop());
+      await refreshDevices();
+      appendMeta('audio permissions granted');
     } catch (e) {
-      appendMeta('device enumeration blocked (try granting mic permissions): ' + e);
+      appendMeta('audio permission failed: ' + e);
     }
-  }
+  });
 
-  // --- Speech recognition (Web Speech API; Chrome/Edge) ---
-  let recognizing = false;
+  audioInSel.addEventListener('change', () => {
+    selectedMicDeviceId = audioInSel.value || null;
+    // Restart capture with new device if running.
+    if (serverAsr.captureActive) {
+      serverAsr.stopCapture();
+      // If ambient is enabled, restart capture.
+      if (ambientToggle.checked && asrModeSel.value === 'server') {
+        serverAsr.startCapture().catch(e => appendMeta('capture restart failed: ' + e));
+      }
+    }
+  });
+
+  audioOutSel.addEventListener('change', () => {
+    selectedOutputDeviceId = audioOutSel.value || null;
+  });
+
+  // --- Server-side ASR (AWS Transcribe streaming via FastAPI websocket) ---
+  const serverAsr = {
+    ws: null,
+    wsCanSend: false,
+    sessionActive: false,
+    captureActive: false,
+    audioCtx: null,
+    processor: null,
+    source: null,
+    stream: null,
+    gain: null,
+    preRoll: [],
+    preRollMax: 6,
+    lastVoiceMs: 0,
+    vadThreshold: 0.020,
+    silenceMs: 900,
+
+    async startCapture() {
+      if (this.captureActive) return;
+      const deviceId = selectedMicDeviceId;
+      const constraints = {
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          ...(deviceId ? { deviceId: { exact: deviceId } } : {})
+        },
+        video: false
+      };
+
+      this.stream = await navigator.mediaDevices.getUserMedia(constraints);
+      const AC = window.AudioContext || window.webkitAudioContext;
+      // Ask for 16k; browser will resample if needed.
+      this.audioCtx = new AC({ sampleRate: 16000 });
+      this.source = this.audioCtx.createMediaStreamSource(this.stream);
+
+      // ScriptProcessor is widely supported; buffer size 2048 keeps latency reasonable.
+      this.processor = this.audioCtx.createScriptProcessor(2048, 1, 1);
+      this.gain = this.audioCtx.createGain();
+      this.gain.gain.value = 0; // prevent audible loopback
+
+      this.source.connect(this.processor);
+      this.processor.connect(this.gain);
+      this.gain.connect(this.audioCtx.destination);
+
+      this.processor.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+        if (!input) return;
+
+        // Ensure we feed AWS Transcribe 16kHz PCM.
+        const inRate = (this.audioCtx && this.audioCtx.sampleRate) ? this.audioCtx.sampleRate : 16000;
+        const buf = (inRate === 16000) ? input : downsampleBuffer(input, inRate, 16000);
+
+        // Compute RMS for simple VAD.
+        let sum = 0;
+        for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+        const rms = Math.sqrt(sum / buf.length);
+        const now = performance.now();
+
+        // Convert Float32 [-1,1] to Int16 PCM LE.
+        const ab = new ArrayBuffer(buf.length * 2);
+        const dv = new DataView(ab);
+        for (let i = 0; i < buf.length; i++) {
+          let s = Math.max(-1, Math.min(1, buf[i]));
+          dv.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        }
+
+        const ambient = ambientToggle.checked && asrModeSel.value === 'server';
+
+        if (ambient) {
+          if (rms > this.vadThreshold) {
+            this.lastVoiceMs = now;
+            if (!this.sessionActive) {
+              this.startSession('ambient').catch(err => appendMeta('ASR start failed: ' + err));
+            }
+          }
+
+          if (this.sessionActive && this.wsCanSend && this.ws && this.ws.readyState === 1) {
+            if (this.ws.bufferedAmount < 2_000_000) this.ws.send(ab);
+          } else {
+            // keep a short pre-roll so we don't clip the start
+            this.preRoll.push(ab);
+            if (this.preRoll.length > this.preRollMax) this.preRoll.shift();
+          }
+
+          if (this.sessionActive && this.lastVoiceMs && (now - this.lastVoiceMs) > this.silenceMs) {
+            this.stopSession();
+          }
+        } else {
+          // push-to-talk mode: send only while sessionActive
+          if (this.sessionActive && this.wsCanSend && this.ws && this.ws.readyState === 1) {
+            if (this.ws.bufferedAmount < 2_000_000) this.ws.send(ab);
+          } else {
+            this.preRoll.push(ab);
+            if (this.preRoll.length > this.preRollMax) this.preRoll.shift();
+          }
+        }
+      };
+
+      this.captureActive = true;
+      appendMeta('capture started' + (deviceId ? (' (mic: ' + deviceId.slice(0,8) + '…)') : ''));
+    },
+
+    stopCapture() {
+      try { if (this.processor) this.processor.disconnect(); } catch(e) {}
+      try { if (this.source) this.source.disconnect(); } catch(e) {}
+      try { if (this.gain) this.gain.disconnect(); } catch(e) {}
+      try { if (this.audioCtx) this.audioCtx.close(); } catch(e) {}
+      try {
+        if (this.stream) this.stream.getTracks().forEach(t => t.stop());
+      } catch(e) {}
+      this.audioCtx = null;
+      this.processor = null;
+      this.source = null;
+      this.stream = null;
+      this.gain = null;
+      this.captureActive = false;
+      this.preRoll = [];
+    },
+
+    _wsUrl() {
+      const proto = (location.protocol === 'https:') ? 'wss' : 'ws';
+      return proto + '://' + location.host + '/ws/asr';
+    },
+
+    async startSession(reason) {
+      if (this.sessionActive) return;
+
+      await this.startCapture();
+
+      setAsrStatus('connecting…');
+      setPartial('');
+
+      const ws = new WebSocket(this._wsUrl());
+      ws.binaryType = 'arraybuffer';
+      this.ws = ws;
+      this.sessionActive = true;
+      this.wsCanSend = false;
+
+      ws.onmessage = (evt) => {
+        let msg = null;
+        try { msg = JSON.parse(evt.data); } catch(e) { return; }
+        if (msg.type === 'asr_ready') {
+          setAsrStatus('listening (server)');
+        } else if (msg.type === 'partial') {
+          setPartial(msg.text || '');
+        } else if (msg.type === 'final_chunk') {
+          // optional debug
+        } else if (msg.type === 'final') {
+          setPartial('');
+          if (msg.text) appendMsg('user', msg.text);
+          setAsrStatus('processing…');
+        } else if (msg.type === 'agent_reply') {
+          const data = (msg.payload || {});
+          if (data.error) appendMeta('agent error: ' + data.error);
+          if (data.reply_text) appendMsg('agent', data.reply_text);
+          if (data.actions && data.actions.length) appendMeta('actions: ' + JSON.stringify(data.actions));
+          if (data.audio) playAgentAudio(data.audio);
+        } else if (msg.type === 'error') {
+          appendMeta('ASR error: ' + (msg.error || 'unknown'));
+        }
+      };
+
+      ws.onclose = () => {
+        this.ws = null;
+        this.wsCanSend = false;
+        this.sessionActive = false;
+        setAsrStatus('idle');
+        // If we're not in ambient mode, release the mic after each utterance.
+        const ambient = ambientToggle.checked && asrModeSel.value === 'server';
+        if (!ambient) {
+          this.stopCapture();
+        }
+      };
+
+      // Wait for connection open
+      await new Promise((resolve, reject) => {
+        ws.onopen = () => resolve();
+        ws.onerror = (e) => reject(e);
+      });
+
+      const persona = (document.getElementById('persona_input').value || '').trim();
+      const speakerName = (document.getElementById('speaker_name_input').value || '').trim();
+
+      ws.send(JSON.stringify({
+        type: 'start',
+        language_code: (languageSel.value || 'en-US'),
+        sample_rate_hz: 16000,
+        session_id: 'ui-session',
+        voice_id: selectedMicDeviceId || null,
+        speaker_name: speakerName || null,
+        personality_prompt: persona || null,
+        reason: reason || ''
+      }));
+
+      // send pre-roll first
+      this.wsCanSend = true;
+      for (const chunk of this.preRoll) {
+        if (ws.readyState === 1) ws.send(chunk);
+      }
+      this.preRoll = [];
+      setAsrStatus('listening (server)');
+    },
+
+    stopSession() {
+      if (!this.sessionActive || !this.ws) return;
+      this.wsCanSend = false;
+      try { this.ws.send(JSON.stringify({ type: 'stop' })); } catch(e) {}
+      setAsrStatus('finalizing…');
+    }
+  };
+
+  // --- Browser ASR fallback (Web Speech API) ---
   let recognition = null;
-
-  const asrStatus = document.getElementById('asrStatus');
-
-  function setAsrStatus(t) {
-    asrStatus.textContent = 'ASR: ' + t;
-  }
-
+  let recognizing = false;
   if ('webkitSpeechRecognition' in window) {
     recognition = new webkitSpeechRecognition();
     recognition.continuous = false;
     recognition.interimResults = false;
     recognition.lang = 'en-US';
-
-    setAsrStatus('ready');
 
     recognition.onresult = function(event) {
       if (event.results && event.results.length > 0) {
@@ -180,7 +505,7 @@
         appendMsg('user', transcript);
         recognizing = false;
         try { recognition.stop(); } catch(e) {}
-        document.getElementById('micBtn').innerText = '🎤';
+        setAsrStatus('idle');
         sendToAgent(transcript);
       }
     };
@@ -188,59 +513,82 @@
     recognition.onerror = function(event) {
       setAsrStatus('error: ' + event.error);
       recognizing = false;
-      document.getElementById('micBtn').innerText = '🎤';
     };
 
     recognition.onend = function() {
       recognizing = false;
-      document.getElementById('micBtn').innerText = '🎤';
       setAsrStatus('idle');
-      const ambient = document.getElementById('ambientToggle').checked;
-      if (ambient) {
-        try {
-          setAsrStatus('ambient listening…');
-          recognition.start();
-          recognizing = true;
-          document.getElementById('micBtn').innerText = '🔴';
-        } catch (e) {
-          setAsrStatus('ambient failed');
-        }
+      if (ambientToggle.checked && asrModeSel.value === 'browser') {
+        try { recognition.start(); recognizing = true; setAsrStatus('ambient listening…'); } catch(e) {}
       }
     };
-  } else {
-    setAsrStatus('unsupported');
   }
 
-  function toggleMic() {
-    if (!recognition) {
-      alert("Speech recognition not supported in this browser (try Chrome/Edge).");
+  async function startPtt() {
+    if (asrModeSel.value === 'server') {
+      serverAsr.startSession('ptt').catch(e => appendMeta('ASR start failed: ' + e));
       return;
     }
-    if (!recognizing) {
-      recognizing = true;
-      setAsrStatus('listening…');
-      document.getElementById('micBtn').innerText = '🔴';
-      try { recognition.start(); } catch(e) {}
-    } else {
+    if (!recognition) {
+      alert('Web Speech API not supported. Use Server (AWS Transcribe) mode.');
+      return;
+    }
+    recognition.lang = languageSel.value || 'en-US';
+    try { recognition.start(); recognizing = true; setAsrStatus('listening (browser)…'); } catch(e) {}
+  }
+
+  function stopPtt() {
+    if (asrModeSel.value === 'server') {
+      serverAsr.stopSession();
+      return;
+    }
+    if (recognition && recognizing) {
+      try { recognition.stop(); } catch(e) {}
       recognizing = false;
       setAsrStatus('idle');
-      document.getElementById('micBtn').innerText = '🎤';
-      try { recognition.stop(); } catch(e) {}
     }
   }
 
-  // Try to force a permission prompt so enumerateDevices returns labels
-  async function primePermissions() {
-    try {
-      await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-    } catch (e) {
-      // ignore
-    }
-  }
+  // PTT button: hold to talk
+  pttBtn.addEventListener('mousedown', startPtt);
+  pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startPtt(); }, {passive:false});
+  window.addEventListener('mouseup', stopPtt);
+  window.addEventListener('touchend', stopPtt);
 
+  // Ambient toggle behavior
+  ambientToggle.addEventListener('change', () => {
+    const on = ambientToggle.checked;
+    if (asrModeSel.value === 'server') {
+      if (on) {
+        serverAsr.startCapture().then(() => setAsrStatus('ambient armed')).catch(e => appendMeta('capture failed: ' + e));
+      } else {
+        serverAsr.stopSession();
+        serverAsr.stopCapture();
+        setAsrStatus('idle');
+      }
+    } else {
+      if (on && recognition) {
+        try { recognition.lang = languageSel.value || 'en-US'; recognition.start(); recognizing = true; setAsrStatus('ambient listening…'); } catch(e) {}
+      }
+    }
+  });
+
+  // ASR mode change: stop current sessions.
+  asrModeSel.addEventListener('change', () => {
+    setPartial('');
+    stopPtt();
+    serverAsr.stopSession();
+    serverAsr.stopCapture();
+    setAsrStatus('idle');
+  });
+
+  // Initialize device lists.
   (async () => {
-    await primePermissions();
-    await populateDevices();
+    try {
+      await refreshDevices();
+    } catch (e) {
+      appendMeta('device enumeration blocked (click “Enable audio”): ' + e);
+    }
   })();
 </script>
 </body>
