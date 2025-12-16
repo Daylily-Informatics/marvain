@@ -1,9 +1,0 @@
-boto3
-python-dateutil
-fastapi
-uvicorn
-jinja2
-requests
-
-# Server-side streaming ASR (AWS Transcribe Streaming)
-amazon-transcribe

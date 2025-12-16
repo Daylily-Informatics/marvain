@@ -24,7 +24,7 @@
     <form action="/deploy" method="post">
       <label>Stack name</label>
       <input name="stack_name" placeholder="marvain-demo" required />
-      <div class="muted">Will be prefixed with {{ state.stack_prefix or 'agent-resource-stack-prefix' }}.</div>
+      <div class="muted">Will be prefixed with {{ state.stack_prefix or 'marai' }}.</div>
 
       <label>Agent ID (AGENT_ID)</label>
       <input name="agent_id" value="marvain-agent" />

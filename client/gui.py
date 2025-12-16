@@ -38,7 +38,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 SAMCONFIG_PATH = Path("samconfig.toml")
 STACK_PREFIX_ENV_VAR = "AGENT_RESOURCE_STACK_PREFIX"
-DEFAULT_STACK_PREFIX = os.environ.get(STACK_PREFIX_ENV_VAR, "agent-resource-stack-prefix")
+DEFAULT_STACK_PREFIX = os.environ.get(STACK_PREFIX_ENV_VAR, "marai")
 
 
 def _samconfig_has_s3_bucket() -> bool:

@@ -16,7 +16,7 @@ fi
 export AWS_PROFILE="$1"
 export AWS_REGION="$2"
 export AWS_DEFAULT_REGION="$2"
-export AGENT_RESOURCE_STACK_PREFIX="${3:-agent-resource-stack-prefix}"
+export AGENT_RESOURCE_STACK_PREFIX="${3:-marai}"
 
 if [ -d ".venv" ]; then
   # shellcheck disable=SC1091
