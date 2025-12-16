@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Deploy — marvain</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Arial, sans-serif; margin: 24px; line-height: 1.35; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 14px; margin: 12px 0; max-width: 760px; }
+    label { display:block; margin-top: 10px; font-weight: 600; }
+    input { padding: 7px; border-radius: 8px; border: 1px solid #bbb; width: 100%; }
+    .btn { padding: 7px 10px; border: 1px solid #bbb; border-radius: 8px; background: #fff; cursor: pointer; }
+    .btn:hover { border-color: #888; }
+    .muted { color: #666; font-size: 0.92em; }
+    code { background: #f6f6f6; padding: 1px 4px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <h1>Deploy a new agent stack</h1>
+  <div class="muted">
+    This calls <code>sam build</code> + <code>sam deploy</code> in the background. SAM CLI must be installed.
+  </div>
+
+  <div class="card">
+    <form action="/deploy" method="post">
+      <label>Stack name</label>
+      <input name="stack_name" placeholder="marvain-demo" required />
+
+      <label>Agent ID (AGENT_ID)</label>
+      <input name="agent_id" value="marvain-agent" />
+
+      <label>Bedrock MODEL_ID</label>
+      <input name="model_id" value="meta.llama3-1-8b-instruct-v1:0" />
+
+      <label>Polly voice id</label>
+      <input name="polly_voice" value="Matthew" />
+
+      <label>Audio S3 bucket (optional)</label>
+      <input name="audio_bucket" placeholder="(blank for inline base64 audio)" />
+
+      <div style="margin-top:14px;">
+        <button class="btn" type="submit">Deploy</button>
+        <a class="btn" href="/">Cancel</a>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <strong>Notes</strong>
+    <ul>
+      <li>Region/profile come from Settings (or your shell env).</li>
+      <li>Bedrock model availability is region-dependent.</li>
+      <li>If you set an audio bucket, you must also grant S3 PutObject permissions (see template.yaml comments).</li>
+    </ul>
+  </div>
+</body>
+</html>

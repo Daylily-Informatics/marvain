@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>marvain — Agent Manager</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Arial, sans-serif; margin: 24px; line-height: 1.35; }
+    h1 { font-size: 1.6em; margin-bottom: 0.2em; }
+    .sub { color: #444; margin-bottom: 16px; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 14px; margin: 12px 0; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .btn { padding: 7px 10px; border: 1px solid #bbb; border-radius: 8px; background: #fff; cursor: pointer; }
+    .btn:hover { border-color: #888; }
+    .muted { color: #666; font-size: 0.92em; }
+    input[type="text"] { padding: 7px; border-radius: 8px; border: 1px solid #bbb; width: 420px; max-width: 100%; }
+    a { color: inherit; }
+  </style>
+</head>
+<body>
+  <h1>marvain — Agent Manager</h1>
+  <div class="sub">
+    AWS profile: <strong>{{ state.aws_profile or "(default)" }}</strong> |
+    region: <strong>{{ state.aws_region or "(default)" }}</strong> |
+    selected: <strong>{{ state.selected_stack or (state.selected_endpoint and "Custom endpoint") or "(none)" }}</strong>
+    — <a href="/settings">Settings</a>
+  </div>
+
+  {% if deploying %}
+    <div class="card">
+      <strong>Deployment started.</strong>
+      <div class="muted">Refresh in a minute or check CloudFormation for status.</div>
+    </div>
+  {% endif %}
+
+  <div class="card">
+    <h2 style="margin-top:0">Connect</h2>
+    <form action="/use_endpoint" method="post" class="row">
+      <input type="text" name="endpoint_url" placeholder="https://.../Prod/agent" />
+      <button class="btn" type="submit">Use custom endpoint</button>
+    </form>
+    <div class="muted">Tip: if you deployed via SAM, pick a stack below instead of pasting.</div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">Deployed agent stacks</h2>
+    {% if stacks %}
+      {% for st in stacks %}
+        <div class="card">
+          <div><strong>{{ st.name }}</strong></div>
+          <div class="muted">endpoint: {{ st.endpoint }}</div>
+          <div class="muted">table: {{ st.table }} | api: {{ st.api_id }}</div>
+          <div class="row" style="margin-top:10px;">
+            <form action="/select_stack" method="get">
+              <input type="hidden" name="name" value="{{ st.name }}" />
+              <button class="btn" type="submit">Use</button>
+            </form>
+            <form action="/delete_stack" method="get" onsubmit="return confirm('Delete stack {{ st.name }}?');">
+              <input type="hidden" name="name" value="{{ st.name }}" />
+              <button class="btn" type="submit">Delete</button>
+            </form>
+          </div>
+        </div>
+      {% endfor %}
+    {% else %}
+      <div class="muted">No stacks found with a BrokerEndpointURL output.</div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">Deploy a new stack</h2>
+    <a class="btn" href="/deploy">Open deploy form</a>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">Chat</h2>
+    {% if state.selected_endpoint %}
+      <a class="btn" href="/chat">Open chat</a>
+    {% else %}
+      <div class="muted">Select a stack or provide a custom endpoint first.</div>
+    {% endif %}
+  </div>
+</body>
+</html>

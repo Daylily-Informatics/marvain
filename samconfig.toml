@@ -1,0 +1,9 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "marvain-agent-stack"
+region = "us-east-1"
+s3_bucket = "<YOUR_SAM_S3_BUCKET_FOR_ARTIFACTS>"
+s3_prefix = "marvain-agent"
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
