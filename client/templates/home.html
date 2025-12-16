@@ -43,6 +43,30 @@
 
   <div class="card">
     <h2 style="margin-top:0">Deployed agent stacks</h2>
+
+    <h3 style="margin-bottom:4px">Building stacks</h3>
+    {% if building_stacks %}
+      {% for st in building_stacks %}
+        <div class="card">
+          <div><strong>{{ st.name }}</strong></div>
+          <div class="muted">{{ st.status }}</div>
+          {% if st.reason %}
+            <div class="muted">{{ st.reason }}</div>
+          {% endif %}
+          <div class="row" style="margin-top:10px;">
+            <form action="/delete_stack" method="get" onsubmit="return confirm('Delete stack {{ st.name }}?');">
+              <input type="hidden" name="name" value="{{ st.name }}" />
+              <button class="btn" type="submit">Delete</button>
+            </form>
+            <a class="btn" href="{{ st.console_url }}" target="_blank" rel="noopener noreferrer">Open in CloudFormation</a>
+          </div>
+        </div>
+      {% endfor %}
+    {% else %}
+      <div class="muted">No in-progress stacks.</div>
+    {% endif %}
+
+    <h3 style="margin-bottom:4px; margin-top:14px;">Available</h3>
     {% if stacks %}
       {% for st in stacks %}
         <div class="card">
@@ -58,11 +82,34 @@
               <input type="hidden" name="name" value="{{ st.name }}" />
               <button class="btn" type="submit">Delete</button>
             </form>
+            <a class="btn" href="{{ st.console_url }}" target="_blank" rel="noopener noreferrer">Open in CloudFormation</a>
           </div>
         </div>
       {% endfor %}
     {% else %}
       <div class="muted">No stacks found with a BrokerEndpointURL output.</div>
+    {% endif %}
+
+    <h3 style="margin-bottom:4px; margin-top:14px;">Failed</h3>
+    {% if failed_stacks %}
+      {% for st in failed_stacks %}
+        <div class="card">
+          <div><strong>{{ st.name }}</strong></div>
+          <div class="muted">{{ st.status }}</div>
+          {% if st.reason %}
+            <div class="muted">{{ st.reason }}</div>
+          {% endif %}
+          <div class="row" style="margin-top:10px;">
+            <form action="/delete_stack" method="get" onsubmit="return confirm('Delete stack {{ st.name }}?');">
+              <input type="hidden" name="name" value="{{ st.name }}" />
+              <button class="btn" type="submit">Delete</button>
+            </form>
+            <a class="btn" href="{{ st.console_url }}" target="_blank" rel="noopener noreferrer">Open in CloudFormation</a>
+          </div>
+        </div>
+      {% endfor %}
+    {% else %}
+      <div class="muted">No failed stacks.</div>
     {% endif %}
   </div>
 
