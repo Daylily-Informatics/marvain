@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import shlex
 import subprocess
 import threading
 import tomllib
@@ -14,14 +15,28 @@ from typing import Any, Dict, Optional
 from uuid import uuid4
 
 import boto3
+import re
 from botocore.exceptions import ClientError
 import requests
-from fastapi import FastAPI, Form, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 # Optional dependency: server-side streaming ASR via AWS Transcribe Streaming.
 # Install with: pip install amazon-transcribe
+
+def _secure_log_filename(name: str) -> str:
+    """
+    Sanitize stack name for log file usage. Allows only alphanum, dash, and underscore.
+    """
+    # Remove any directory traversal or weird chars
+    name = str(name)
+    # Remove path separators and restrict to safe chars
+    name = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+    # Defensive: collapse repeated underscores/dots/dashes
+    name = re.sub(r"[_\.\-]+", "_", name)
+    # Prevent issues with empty names
+    return name or "stack"
 try:
     from amazon_transcribe.client import TranscribeStreamingClient
     from amazon_transcribe.handlers import TranscriptResultStreamHandler
@@ -77,6 +92,75 @@ class UiState:
 
 
 STATE = UiState()
+
+
+@dataclass
+class DebugTool:
+    id: str
+    label: str
+    description: str
+    param_key: Optional[str] = None
+    param_label: Optional[str] = None
+    default_param: Optional[str] = None
+
+
+DEBUG_TOOLS: list[DebugTool] = [
+    DebugTool(
+        id="dump_memories",
+        label="Dump memories",
+        description="Run bin/dump_memory.py (short/long tables). Optional target: both, short, long.",
+        param_key="target",
+        param_label="target (both|short|long)",
+        default_param="both",
+    ),
+    DebugTool(
+        id="dump_transcript",
+        label="Dump recent transcript",
+        description="Shortcut for bin/dump_memory.py --target short to view short-term conversation items.",
+        default_param="short",
+        param_key="target",
+        param_label="target",
+    ),
+    DebugTool(
+        id="dump_voice_profiles",
+        label="Dump voice registry",
+        description="List voice profiles using bin/dump_voice_profiles.py --json.",
+    ),
+    DebugTool(
+        id="dump_face_profiles",
+        label="Dump face registry",
+        description="List face profiles using bin/dump_face_profiles.py --json.",
+    ),
+    DebugTool(
+        id="delete_voice",
+        label="Delete voice profile",
+        description="Remove a voice profile via bin/remove_voice_from_registry.py --name.",
+        param_key="name",
+        param_label="voice name",
+    ),
+    DebugTool(
+        id="delete_face",
+        label="Delete face profile",
+        description="Remove a face profile via bin/remove_face_from_registry.py --name.",
+        param_key="name",
+        param_label="face name",
+    ),
+    DebugTool(
+        id="purge_registry",
+        label="Delete all registry entries",
+        description="Reset the local identity registry using bin/unenroll_profiles.py --name '*' --type both.",
+        default_param="*",
+        param_key="name",
+        param_label="name (use '*' for all)",
+    ),
+    DebugTool(
+        id="tail_cloud_logs",
+        label="Tail cloud logs",
+        description="Run bin/tail_cloud_logs.sh for the selected stack (up to 20 seconds).",
+        param_key="stack",
+        param_label="stack name (optional)",
+    ),
+]
 
 
 def boto_sess() -> boto3.Session:
@@ -148,14 +232,18 @@ def _verbose_log(msg: str, stack_name: Optional[str] = None) -> None:
     if not STATE.verbose:
         return
 
-    safe_stack = (stack_name or STATE.selected_stack or "stack").replace("/", "-")
+    safe_stack = _secure_log_filename(stack_name or STATE.selected_stack or "stack")
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{timestamp}] {msg}"
     logging.info(line)
 
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
-    log_path = log_dir / f"{safe_stack}-local.log"
+    log_path = (log_dir / f"{safe_stack}-local.log").resolve()
+    # Check that log_path is within log_dir
+    if not str(log_path).startswith(str(log_dir.resolve())):
+        logging.error("Attempted to write log outside of logs directory: %s", log_path)
+        return
     with log_path.open("a", encoding="utf-8") as fh:
         fh.write(line + "\n")
 
@@ -173,6 +261,76 @@ def _current_session_id() -> str:
         timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
         STATE.generated_session = f"session-{timestamp}-{uuid4().hex[:8]}"
     return STATE.generated_session
+
+def X_current_verbose_log_path() -> Optional[Path]:
+    safe_stack = _secure_log_filename(STATE.selected_stack or "stack")
+    log_dir = Path("logs").resolve()
+    log_path = (log_dir / f"{safe_stack}-local.log").resolve()
+    # Check that log_path is within log_dir (prevents path traversal)
+    if not str(log_path).startswith(str(log_dir)):
+        logging.error("Attempted to access log outside of logs directory: %s", log_path)
+        return None
+    return log_path if log_path.exists() else None
+
+
+def X_debug_env() -> Dict[str, str]:
+    env = os.environ.copy()
+    if STATE.aws_profile:
+        env["AWS_PROFILE"] = STATE.aws_profile
+    if STATE.aws_region:
+        env["AWS_REGION"] = STATE.aws_region
+        env["AWS_DEFAULT_REGION"] = STATE.aws_region
+    return env
+
+
+def X_build_debug_command(tool_id: str, params: Dict[str, Any]) -> list[str]:
+    if tool_id == "dump_memories":
+        target = (params.get("target") or "both").strip()
+        cmd = ["python3", "bin/dump_memory.py", "--target", target]
+        if params.get("conversation_table"):
+            cmd += ["--conversation-table", str(params["conversation_table"])]
+        if params.get("ais_table"):
+            cmd += ["--ais-table", str(params["ais_table"])]
+        return cmd
+
+    if tool_id == "dump_transcript":
+        return ["python3", "bin/dump_memory.py", "--target", (params.get("target") or "short").strip()]
+
+    if tool_id == "dump_voice_profiles":
+        return ["python3", "bin/dump_voice_profiles.py", "--json"]
+
+    if tool_id == "dump_face_profiles":
+        return ["python3", "bin/dump_face_profiles.py", "--json"]
+
+    if tool_id == "delete_voice":
+        name = (params.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Voice name is required")
+        return ["python3", "bin/remove_voice_from_registry.py", "--name", name]
+
+    if tool_id == "delete_face":
+        name = (params.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Face name is required")
+        return ["python3", "bin/remove_face_from_registry.py", "--name", name]
+
+    if tool_id == "purge_registry":
+        name = (params.get("name") or "*").strip() or "*"
+        return ["python3", "bin/unenroll_profiles.py", "--name", name, "--type", "both"]
+
+    if tool_id == "tail_cloud_logs":
+        stack = (params.get("stack") or STATE.selected_stack or "").strip()
+        if not stack:
+            raise HTTPException(status_code=400, detail="Provide a stack name or select one on the home page")
+        region_flag = f" --region {shlex.quote(STATE.aws_region)}" if STATE.aws_region else ""
+        cmd_str = f"timeout 20 bin/tail_cloud_logs.sh {shlex.quote(stack)}{region_flag}"
+        return ["bash", "-lc", cmd_str]
+
+    raise HTTPException(status_code=400, detail=f"Unsupported debug tool: {tool_id}")
+
+
+def X_debug_tool_metadata() -> list[dict[str, Any]]:
+    return [tool.__dict__ for tool in DEBUG_TOOLS]
 
 
 @app.get("/")
@@ -696,6 +854,51 @@ async def send_message(request: Request):
         result["verbose_logs"] = verbose_logs
 
     return JSONResponse(content=result)
+
+
+@app.get("/api/debug/tools")
+def list_debug_tools():
+    logs: list[str] = []
+    log_path = _current_verbose_log_path()
+    if log_path:
+        logs = log_path.read_text(encoding="utf-8").splitlines()[-100:]
+    return {"tools": _debug_tool_metadata(), "logs": logs}
+
+
+@app.get("/api/debug/logs")
+def debug_logs():
+    path = _current_verbose_log_path()
+    if not path:
+        return {"lines": []}
+    return {"lines": path.read_text(encoding="utf-8").splitlines()[-200:]}
+
+
+@app.post("/api/debug/run_tool")
+async def run_debug_tool(request: Request):
+    data = await request.json()
+    tool_id = (data.get("tool") or "").strip()
+    params = data.get("params") or {}
+    cmd = _build_debug_command(tool_id, params)
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            env=_debug_env(),
+            timeout=120,
+        )
+    except FileNotFoundError:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Script not found", "output": ""})
+    except subprocess.TimeoutExpired as e:
+        output = (e.stdout or "") + (e.stderr or "")
+        return JSONResponse(
+            status_code=504,
+            content={"ok": False, "error": "Debug tool timed out", "output": output},
+        )
+
+    combined_output = (proc.stdout or "") + (proc.stderr or "")
+    return {"ok": proc.returncode == 0, "output": combined_output, "returncode": proc.returncode}
 
 
 def _effective_region() -> str:

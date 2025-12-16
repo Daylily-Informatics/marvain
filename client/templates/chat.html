@@ -17,6 +17,12 @@
     .row { display:flex; gap: 10px; flex-wrap: wrap; align-items: center; }
     select { padding: 6px; border-radius: 8px; border: 1px solid #bbb; max-width: 360px; }
     .pill { border: 1px solid #ddd; border-radius: 999px; padding: 4px 9px; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; margin-top: 14px; }
+    .debug-log { max-height: 180px; overflow-y: auto; background: #f7f7f7; border: 1px solid #eee; padding: 8px; border-radius: 8px; }
+    .debug-tools { display: grid; gap: 10px; margin-top: 10px; }
+    .debug-tool { border: 1px dashed #ccc; padding: 8px; border-radius: 8px; }
+    .debug-tool-title { font-weight: 600; }
+    .debug-output { background: #0b1021; color: #e3e3e3; padding: 10px; border-radius: 8px; white-space: pre-wrap; max-height: 260px; overflow-y: auto; }
   </style>
 </head>
 <body>
@@ -90,6 +96,15 @@
     <input type="text" id="speaker_name_input" placeholder="e.g. Major" style="min-width: 260px;" />
   </div>
 
+  <div class="card" id="debugCard">
+    <h2 style="margin-top:0">Debug</h2>
+    <div class="meta">Verbose logging is {{ 'enabled' if state.verbose else 'disabled' }} (toggle in <a href="/settings">Settings</a>).</div>
+    <div class="meta">Use the tools below to run debug helpers and view their output directly in the GUI.</div>
+    <div id="verboseLogs" class="debug-log"></div>
+    <div class="debug-tools" id="debugTools"></div>
+    <pre id="debugOutput" class="debug-output"></pre>
+  </div>
+
   <p style="margin-top: 12px;"><a href="/">← Back</a></p>
 
 <script>
@@ -107,6 +122,9 @@
   const audioInSel = document.getElementById('audioIn');
   const audioOutSel = document.getElementById('audioOut');
   const videoInSel = document.getElementById('videoIn');
+  const debugLogBox = document.getElementById('verboseLogs');
+  const debugOutput = document.getElementById('debugOutput');
+  const debugToolsContainer = document.getElementById('debugTools');
 
   let selectedOutputDeviceId = null;
   let selectedMicDeviceId = null;
@@ -125,6 +143,19 @@
     div.textContent = text;
     convo.appendChild(div);
     convo.scrollTop = convo.scrollHeight;
+  }
+
+  function appendDebugLog(text) {
+    if (!debugLogBox) return;
+    const div = document.createElement('div');
+    div.textContent = text;
+    debugLogBox.appendChild(div);
+    debugLogBox.scrollTop = debugLogBox.scrollHeight;
+  }
+
+  function setDebugOutput(text) {
+    if (!debugOutput) return;
+    debugOutput.textContent = text || '';
   }
 
   function setAsrStatus(t) {
@@ -200,7 +231,7 @@
       }
       if (data.reply_text) appendMsg('agent', data.reply_text);
       if (data.actions && data.actions.length) appendMeta('actions: ' + JSON.stringify(data.actions));
-      if (verboseEnabled && data.verbose_logs) data.verbose_logs.forEach((log) => appendMeta('[verbose] ' + log));
+      if (data.verbose_logs) data.verbose_logs.forEach((log) => { appendDebugLog(log); if (verboseEnabled) appendMeta('[verbose] ' + log); });
       if (data.audio) await playAgentAudio(data.audio);
     } catch (e) {
       appendMsg('agent', '[Error] Agent not reachable');
@@ -552,6 +583,90 @@
     }
   }
 
+  async function loadDebugTools() {
+    if (!debugToolsContainer) return;
+    try {
+      const resp = await fetch('/api/debug/tools');
+      const data = await resp.json();
+      renderDebugTools(data.tools || []);
+      (data.logs || []).forEach((l) => appendDebugLog(l));
+    } catch (e) {
+      appendDebugLog('Failed to load debug tools: ' + e);
+    }
+  }
+
+  function renderDebugTools(tools) {
+    debugToolsContainer.innerHTML = '';
+    tools.forEach((tool) => {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'debug-tool';
+
+      const title = document.createElement('div');
+      title.className = 'debug-tool-title';
+      title.textContent = tool.label || tool.id;
+      wrapper.appendChild(title);
+
+      if (tool.description) {
+        const desc = document.createElement('div');
+        desc.className = 'meta';
+        desc.textContent = tool.description;
+        wrapper.appendChild(desc);
+      }
+
+      let inputEl = null;
+      if (tool.param_label) {
+        inputEl = document.createElement('input');
+        inputEl.type = 'text';
+        inputEl.placeholder = tool.param_label;
+        if (tool.default_param) inputEl.value = tool.default_param;
+        inputEl.style.marginTop = '6px';
+        inputEl.style.marginRight = '6px';
+        wrapper.appendChild(inputEl);
+      }
+
+      const runBtn = document.createElement('button');
+      runBtn.textContent = 'Run';
+      runBtn.onclick = () => {
+        const payload = inputEl ? { [tool.param_key || 'input']: (inputEl.value || '') } : {};
+        runDebugTool(tool.id, payload);
+      };
+      wrapper.appendChild(runBtn);
+
+      debugToolsContainer.appendChild(wrapper);
+    });
+  }
+
+  async function runDebugTool(toolId, params) {
+    setDebugOutput('Running ' + toolId + '...');
+    try {
+      const resp = await fetch('/api/debug/run_tool', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool: toolId, params: params || {} })
+      });
+      const data = await resp.json();
+      const prefix = data.ok ? '[ok]' : '[error]';
+      setDebugOutput(prefix + '\n' + (data.output || ''));
+      if (data.logs) {
+        (data.logs || []).forEach((l) => appendDebugLog(l));
+      }
+    } catch (e) {
+      setDebugOutput('Failed to run tool: ' + e);
+    }
+  }
+
+  async function refreshVerboseLogs() {
+    if (!verboseEnabled || !debugLogBox) return;
+    try {
+      const resp = await fetch('/api/debug/logs');
+      const data = await resp.json();
+      debugLogBox.innerHTML = '';
+      (data.lines || []).forEach((l) => appendDebugLog(l));
+    } catch (e) {
+      // best-effort only
+    }
+  }
+
   // PTT button: hold to talk
   pttBtn.addEventListener('mousedown', startPtt);
   pttBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startPtt(); }, {passive:false});
@@ -591,6 +706,15 @@
       await refreshDevices();
     } catch (e) {
       appendMeta('device enumeration blocked (click “Enable audio”): ' + e);
+    }
+    try {
+      await loadDebugTools();
+      await refreshVerboseLogs();
+      if (verboseEnabled) {
+        setInterval(refreshVerboseLogs, 10000);
+      }
+    } catch (e) {
+      appendDebugLog('debug init failed: ' + e);
     }
   })();
 </script>
