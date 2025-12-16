@@ -321,6 +321,27 @@ def handler(event, context):
     if audio_obj:
         resp_body["audio"] = audio_obj
 
+    # Include speaker info for UI display
+    resp_body["speaker_info"] = {
+        "speaker_name": resolved_name,
+        "voice_id": str(voice_id) if voice_id else None,
+        "is_new_speaker": is_new_voice,
+    }
+
+    # Include tool execution info if available
+    if tool_executor:
+        queued = tool_executor.get_queued_actions()
+        # Note: queued was already consumed above, but we track the count
+        resp_body["tool_info"] = {
+            "enabled": True,
+            "iterations": 1,  # Basic tracking - could be enhanced
+            "tool_calls": [
+                {"name": a.get("action"), "input": a.get("args", {})}
+                for a in action_list
+                if a.get("queued_at")  # Only include tool-queued actions
+            ],
+        }
+
     return {
         "statusCode": 200,
         "headers": {"Content-Type": "application/json"},
