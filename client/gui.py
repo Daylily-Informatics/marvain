@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import subprocess
+import threading
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,7 +13,7 @@ from typing import Any, Dict, Optional
 
 import boto3
 import requests
-from fastapi import BackgroundTasks, FastAPI, Form, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Form, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -297,7 +298,6 @@ def deploy_form(request: Request):
 
 @app.post("/deploy")
 def deploy_agent(
-    background_tasks: BackgroundTasks,
     stack_name: str = Form(...),
     agent_id: str = Form("marvain-agent"),
     model_id: str = Form("meta.llama3-1-8b-instruct-v1:0"),
@@ -357,7 +357,8 @@ def deploy_agent(
         except Exception as e:
             logging.error("SAM deploy failed: %s", e)
 
-    background_tasks.add_task(do_deploy)
+    thread = threading.Thread(target=do_deploy, daemon=True)
+    thread.start()
     return RedirectResponse(url="/?deploying=1", status_code=303)
 
 

@@ -31,6 +31,11 @@
       <strong>Deployment started.</strong>
       <div class="muted">Refresh in a minute or check CloudFormation for status.</div>
     </div>
+    <script>
+      setTimeout(function() {
+        window.location.reload();
+      }, 60000);
+    </script>
   {% endif %}
 
   <div class="card">
