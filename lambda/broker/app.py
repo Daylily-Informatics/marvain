@@ -196,7 +196,11 @@ def handler(event, context):
         speaker_id=effective_speaker_id,
     )
     memory_store.put_event(agent_event)
-    logging.info("Event persisted (session=%s channel=%s speaker=%s)", session_id, channel, effective_speaker_id)
+    # Sanitize user input before logging to prevent log injection
+    safe_session_id = str(session_id).replace('\n','').replace('\r','')
+    safe_channel = str(channel).replace('\n','').replace('\r','')
+    safe_effective_speaker_id = str(effective_speaker_id).replace('\n','').replace('\r','')
+    logging.info("Event persisted (session=%s channel=%s speaker=%s)", safe_session_id, safe_channel, safe_effective_speaker_id)
 
     # Extract implicit memories from transcript
     implicit_memories = planner.extract_implicit_memories(
