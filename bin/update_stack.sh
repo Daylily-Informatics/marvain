@@ -65,9 +65,12 @@ if [[ -z "$STACKNAME" ]]; then
   exit 1
 fi
 
-sam build
+BUILD_DIR=".aws-${STACKNAME}"
+
+sam build --build-dir "$BUILD_DIR"
 
 sam deploy \
+  --template-file "$BUILD_DIR/build/template.yaml" \
   --stack-name "$STACKNAME" \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides LLMSecretArn=arn:aws:secretsmanager:...:secret:ai-companion \
