@@ -53,6 +53,10 @@ Resources:
           AttributeType: S
         - AttributeName: gsi1sk
           AttributeType: S
+        - AttributeName: gsi2pk
+          AttributeType: S
+        - AttributeName: gsi2sk
+          AttributeType: S
       KeySchema:
         - AttributeName: pk
           KeyType: HASH
@@ -64,6 +68,15 @@ Resources:
             - AttributeName: gsi1pk
               KeyType: HASH
             - AttributeName: gsi1sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        # GSI2 for speaker-specific queries
+        - IndexName: gsi2
+          KeySchema:
+            - AttributeName: gsi2pk
+              KeyType: HASH
+            - AttributeName: gsi2sk
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
@@ -122,9 +135,21 @@ Resources:
               Effect: Allow
               Action: polly:SynthesizeSpeech
               Resource: "*"
-        # To enable S3 audio output persistence, add:
-        # - S3WritePolicy:
-        #     BucketName: !Ref AudioBucketName
+        - !If
+          - AudioBucketProvided
+          - Statement:
+              - Sid: S3AudioAccess
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                  - s3:HeadObject
+                Resource:
+                  - !Sub "arn:aws:s3:::${AudioBucketName}"
+                  - !Sub "arn:aws:s3:::${AudioBucketName}/*"
+          - !Ref AWS::NoValue
       Events:
         ApiRequest:
           Type: Api
