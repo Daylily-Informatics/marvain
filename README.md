@@ -44,8 +44,9 @@ source initwyw <AWS_PROFILE> <AWS_REGION>
 
 ### 3) Deploy the SAM stack
 ```bash
-sam build
-sam deploy --guided
+STACK_NAME=<your stack name>
+sam build --build-dir ".aws-${STACK_NAME}"
+sam deploy --guided --stack-name "$STACK_NAME" --template-file ".aws-${STACK_NAME}/build/template.yaml"
 ```
 
 Notes:
