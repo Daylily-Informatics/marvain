@@ -54,6 +54,10 @@
       <label>Audio S3 bucket (optional)</label>
       <input name="audio_bucket" placeholder="(blank for inline base64 audio)" />
 
+      <label style="margin-top: 12px;">
+        <input type="checkbox" name="verbose" value="1" /> Verbose logging (UI + ./logfs/&lt;stack&gt;-deploy-&lt;timestamp&gt;.log)
+      </label>
+
       <div style="margin-top:14px;">
         <button class="btn" type="submit">Deploy</button>
         <a class="btn" href="/">Cancel</a>
