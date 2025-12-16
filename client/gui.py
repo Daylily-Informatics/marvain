@@ -90,6 +90,33 @@ def _stack_console_url(stack_id: str) -> str:
     return f"https://{region}.console.aws.amazon.com/cloudformation/home?region={region}#/stacks/stackinfo?stackId={stack_id}"
 
 
+def _list_polly_voices() -> list[dict[str, Any]]:
+    voices: list[dict[str, Any]] = []
+    try:
+        polly = boto_sess().client("polly")
+        next_token: Optional[str] = None
+        while True:
+            kwargs: Dict[str, Any] = {}
+            if next_token:
+                kwargs["NextToken"] = next_token
+            resp = polly.describe_voices(**kwargs)
+            for v in resp.get("Voices", []):
+                voices.append(
+                    {
+                        "id": v.get("Id"),
+                        "name": v.get("Name") or v.get("Id"),
+                        "language": v.get("LanguageName"),
+                        "engines": v.get("SupportedEngines", []) or [],
+                    }
+                )
+            next_token = resp.get("NextToken")
+            if not next_token:
+                break
+    except Exception as e:
+        logging.warning("Unable to fetch Polly voices: %s", e)
+    return voices
+
+
 def _normalized_stack_prefix() -> str:
     prefix = (STATE.stack_prefix or DEFAULT_STACK_PREFIX).strip()
     if prefix and not prefix.endswith("-"):
@@ -307,7 +334,10 @@ def delete_stack(name: str):
 
 @app.get("/deploy")
 def deploy_form(request: Request):
-    return templates.TemplateResponse("deploy.html", {"request": request, "state": STATE})
+    voices = _list_polly_voices()
+    return templates.TemplateResponse(
+        "deploy.html", {"request": request, "state": STATE, "polly_voices": voices}
+    )
 
 
 @app.post("/deploy")
@@ -316,13 +346,25 @@ def deploy_agent(
     agent_id: str = Form("marvain-agent"),
     model_id: str = Form("meta.llama3-1-8b-instruct-v1:0"),
     polly_voice: str = Form("Matthew"),
+    polly_voice_engine: str = Form(""),
     audio_bucket: str = Form(""),
 ):
     stack_name = _prefixed_stack_name(stack_name)
     agent_id = agent_id.strip() or "marvain-agent"
     model_id = model_id.strip() or "meta.llama3-1-8b-instruct-v1:0"
     polly_voice = polly_voice.strip() or "Matthew"
+    polly_voice_engine = polly_voice_engine.strip()
     audio_bucket = audio_bucket.strip()
+
+    if audio_bucket:
+        try:
+            boto_sess().client("s3").head_bucket(Bucket=audio_bucket)
+        except Exception:
+            logging.error("Audio bucket does not exist: %s", audio_bucket)
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Audio bucket '{audio_bucket}' does not exist."},
+            )
 
     # Build and deploy via SAM CLI
     cmd_build = ["sam", "build"]
@@ -352,6 +394,7 @@ def deploy_agent(
         f"AgentIdParam={agent_id}",
         f"ModelIdParam={model_id}",
         f"AgentVoiceIdParam={polly_voice}",
+        f"AgentVoiceEngineParam={polly_voice_engine}",
         f"AudioBucketName={audio_bucket}",
     ]
     cmd_deploy += ["--parameter-overrides", " ".join(overrides)]
