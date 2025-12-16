@@ -26,6 +26,10 @@
       <label>AWS region</label>
       <input name="aws_region" value="{{ state.aws_region or '' }}" placeholder="us-east-1" />
 
+      <label>Stack prefix</label>
+      <input name="stack_prefix" value="{{ state.stack_prefix or '' }}" placeholder="agent-resource-stack-prefix" />
+      <div class="muted">Used for new stacks and filtering in the UI.</div>
+
       <div style="margin-top:14px;">
         <button class="btn" type="submit">Save</button>
         <a class="btn" href="/">Back</a>
