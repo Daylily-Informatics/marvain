@@ -21,7 +21,8 @@
   <div class="sub">
     AWS profile: <strong>{{ state.aws_profile or "(default)" }}</strong> |
     region: <strong>{{ state.aws_region or "(default)" }}</strong> |
-    selected: <strong>{{ state.selected_stack or (state.selected_endpoint and "Custom endpoint") or "(none)" }}</strong>
+    selected: <strong>{{ state.selected_stack or (state.selected_endpoint and "Custom endpoint") or "(none)" }}</strong> |
+    stack prefix: <strong>{{ stack_prefix }}</strong>
     — <a href="/settings">Settings</a>
   </div>
 

@@ -37,6 +37,8 @@ templates = Jinja2Templates(directory="client/templates")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 SAMCONFIG_PATH = Path("samconfig.toml")
+STACK_PREFIX_ENV_VAR = "AGENT_RESOURCE_STACK_PREFIX"
+DEFAULT_STACK_PREFIX = os.environ.get(STACK_PREFIX_ENV_VAR, "agent-resource-stack-prefix")
 
 
 def _samconfig_has_s3_bucket() -> bool:
@@ -63,6 +65,7 @@ class UiState:
     aws_region: Optional[str] = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
     selected_stack: Optional[str] = None
     selected_endpoint: Optional[str] = None
+    stack_prefix: str = DEFAULT_STACK_PREFIX
 
 
 STATE = UiState()
@@ -86,11 +89,27 @@ def _stack_console_url(stack_id: str) -> str:
     return f"https://{region}.console.aws.amazon.com/cloudformation/home?region={region}#/stacks/stackinfo?stackId={stack_id}"
 
 
+def _normalized_stack_prefix() -> str:
+    prefix = (STATE.stack_prefix or DEFAULT_STACK_PREFIX).strip()
+    if prefix and not prefix.endswith("-"):
+        prefix += "-"
+    return prefix
+
+
+def _prefixed_stack_name(name: str) -> str:
+    base = name.strip()
+    prefix = _normalized_stack_prefix()
+    if base.startswith(prefix):
+        return base
+    return f"{prefix}{base}"
+
+
 @app.get("/")
 def home(request: Request):
     stacks_available = []
     stacks_building = []
     stacks_failed = []
+    prefix = _normalized_stack_prefix()
     try:
         cf = cf_client()
         summaries = []
@@ -130,7 +149,7 @@ def home(request: Request):
 
     for s in summaries:
         stack_name = s.get("StackName")
-        if not stack_name:
+        if not stack_name or (prefix and not stack_name.startswith(prefix)):
             continue
         status = s.get("StackStatus") or ""
         stack_id = s.get("StackId") or stack_name
@@ -187,6 +206,7 @@ def home(request: Request):
             "building_stacks": stacks_building,
             "failed_stacks": stacks_failed,
             "state": STATE,
+            "stack_prefix": prefix,
             "deploying": request.query_params.get("deploying"),
         },
     )
@@ -198,9 +218,12 @@ def settings_page(request: Request):
 
 
 @app.post("/settings")
-def update_settings(aws_profile: str = Form(""), aws_region: str = Form("")):
+def update_settings(
+    aws_profile: str = Form(""), aws_region: str = Form(""), stack_prefix: str = Form("")
+):
     STATE.aws_profile = aws_profile.strip() or None
     STATE.aws_region = aws_region.strip() or None
+    STATE.stack_prefix = stack_prefix.strip() or DEFAULT_STACK_PREFIX
     # also set env so subprocess tools (sam/aws) inherit by default
     if STATE.aws_profile:
         os.environ["AWS_PROFILE"] = STATE.aws_profile
@@ -213,6 +236,11 @@ def update_settings(aws_profile: str = Form(""), aws_region: str = Form("")):
     else:
         os.environ.pop("AWS_REGION", None)
         os.environ.pop("AWS_DEFAULT_REGION", None)
+
+    if STATE.stack_prefix:
+        os.environ[STACK_PREFIX_ENV_VAR] = STATE.stack_prefix
+    else:
+        os.environ.pop(STACK_PREFIX_ENV_VAR, None)
 
     return RedirectResponse(url="/", status_code=303)
 
@@ -227,6 +255,7 @@ def use_endpoint(endpoint_url: str = Form(...)):
 
 @app.get("/select_stack")
 def select_stack(name: str):
+    name = _prefixed_stack_name(name)
     try:
         cf = cf_client()
         stack = cf.describe_stacks(StackName=name)["Stacks"][0]
@@ -246,6 +275,7 @@ def select_stack(name: str):
 
 @app.get("/delete_stack")
 def delete_stack(name: str):
+    name = _prefixed_stack_name(name)
     try:
         cf = cf_client()
         cf.delete_stack(StackName=name)
@@ -274,7 +304,7 @@ def deploy_agent(
     polly_voice: str = Form("Matthew"),
     audio_bucket: str = Form(""),
 ):
-    stack_name = stack_name.strip()
+    stack_name = _prefixed_stack_name(stack_name)
     agent_id = agent_id.strip() or "marvain-agent"
     model_id = model_id.strip() or "meta.llama3-1-8b-instruct-v1:0"
     polly_voice = polly_voice.strip() or "Matthew"
