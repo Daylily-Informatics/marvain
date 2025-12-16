@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import boto3
 import re
+from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 import requests
 from fastapi import FastAPI, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -58,6 +59,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 SAMCONFIG_PATH = Path("samconfig.toml")
 STACK_PREFIX_ENV_VAR = "AGENT_RESOURCE_STACK_PREFIX"
 DEFAULT_STACK_PREFIX = os.environ.get(STACK_PREFIX_ENV_VAR, "marai")
+DEFAULT_AGENT_ID = os.environ.get("AGENT_ID", "marvain-agent")
 
 
 def _samconfig_has_s3_bucket() -> bool:
@@ -84,6 +86,8 @@ class UiState:
     aws_region: Optional[str] = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
     selected_stack: Optional[str] = None
     selected_endpoint: Optional[str] = None
+    selected_table: Optional[str] = None
+    selected_agent_id: str = DEFAULT_AGENT_ID
     stack_prefix: str = DEFAULT_STACK_PREFIX
     verbose: bool = False
     selected_session: Optional[str] = None
@@ -182,6 +186,86 @@ def boto_sess() -> boto3.Session:
 
 def cf_client():
     return boto_sess().client("cloudformation")
+
+
+def _agent_state_table():
+    if not STATE.selected_table:
+        return None
+    try:
+        dynamodb = boto_sess().resource("dynamodb")
+        return dynamodb.Table(STATE.selected_table)
+    except Exception as e:
+        logging.error("Unable to load agent state table %s: %s", STATE.selected_table, e)
+        return None
+
+
+def _load_sessions_from_db() -> list[dict[str, str]]:
+    table = _agent_state_table()
+    if not table or not STATE.selected_agent_id:
+        return []
+
+    pk = f"AGENT#{STATE.selected_agent_id}"
+    try:
+        resp = table.query(
+            KeyConditionExpression=Key("pk").eq(pk) & Key("sk").begins_with("SESSION#"),
+            Limit=200,
+        )
+    except Exception as e:
+        logging.error("Failed to list sessions from DynamoDB: %s", e)
+        return []
+
+    sessions: list[dict[str, str]] = []
+    for item in resp.get("Items", []) or []:
+        name = item.get("name") or (item.get("sk", "").split("SESSION#", 1)[-1])
+        if not name:
+            continue
+        sessions.append(
+            {
+                "name": name,
+                "description": item.get("description", ""),
+                "created": item.get("created") or item.get("ts") or "",
+            }
+        )
+
+    sessions.sort(key=lambda s: s.get("created") or "", reverse=True)
+    return sessions
+
+
+def _persist_session_to_db(name: str, description: str) -> None:
+    table = _agent_state_table()
+    if not table or not STATE.selected_agent_id:
+        logging.warning("Cannot persist session; missing table or agent id.")
+        return
+
+    pk = f"AGENT#{STATE.selected_agent_id}"
+    sk = f"SESSION#{name}"
+
+    created = datetime.utcnow().isoformat()
+    try:
+        existing = table.get_item(Key={"pk": pk, "sk": sk}).get("Item")
+        if existing and existing.get("created"):
+            created = existing["created"]
+    except Exception as e:
+        logging.warning("Failed to read existing session (soft): %s", e)
+
+    item = {
+        "pk": pk,
+        "sk": sk,
+        "name": name,
+        "description": description,
+        "created": created,
+        "gsi1pk": f"SESSIONMETA#{STATE.selected_agent_id}",
+        "gsi1sk": created,
+    }
+
+    try:
+        table.put_item(Item=item)
+    except Exception as e:
+        logging.error("Failed to persist session %s: %s", name, e)
+
+
+def _refresh_sessions_from_db() -> None:
+    STATE.sessions = _load_sessions_from_db()
 
 
 def _reset_generated_session() -> None:
@@ -426,8 +510,11 @@ def _list_stacks_by_status(prefix: str):
             try:
                 detail = cf.describe_stacks(StackName=stack_name)["Stacks"][0] if cf else {}
                 outputs = {o["OutputKey"]: o["OutputValue"] for o in detail.get("Outputs", [])}
+                params = {p.get("ParameterKey"): p.get("ParameterValue") for p in detail.get("Parameters", [])}
+                agent_id = params.get("AgentIdParam") or DEFAULT_AGENT_ID
             except Exception:
                 outputs = {}
+                agent_id = DEFAULT_AGENT_ID
 
             endpoint = outputs.get("BrokerEndpointURL")
             if endpoint:
@@ -437,6 +524,7 @@ def _list_stacks_by_status(prefix: str):
                         "endpoint": endpoint,
                         "table": outputs.get("AgentStateTableName", ""),
                         "api_id": outputs.get("ApiGatewayId", ""),
+                        "agent_id": agent_id,
                         "console_url": _stack_console_url(stack_id),
                     }
                 )
@@ -479,6 +567,17 @@ def _list_stacks_by_status(prefix: str):
 def home(request: Request):
     prefix = _normalized_stack_prefix()
     stacks_available, stacks_building, stacks_deleting, stacks_failed = _list_stacks_by_status(prefix)
+
+    if STATE.selected_stack:
+        match = next((s for s in stacks_available if s["name"] == STATE.selected_stack), None)
+        if match:
+            STATE.selected_table = match.get("table") or STATE.selected_table
+            STATE.selected_agent_id = match.get("agent_id") or STATE.selected_agent_id
+
+    if STATE.selected_table:
+        _refresh_sessions_from_db()
+    else:
+        STATE.sessions = []
 
     return templates.TemplateResponse(
         "home.html",
@@ -545,17 +644,21 @@ def create_session(
     if not name:
         return _redirect_back(request)
 
-    existing = next((s for s in STATE.sessions if s.get("name", "").lower() == name.lower()), None)
-    if existing:
-        existing["description"] = description
+    if STATE.selected_table:
+        _persist_session_to_db(name, description)
+        _refresh_sessions_from_db()
     else:
-        STATE.sessions.append(
-            {
-                "name": name,
-                "description": description,
-                "created": datetime.utcnow().isoformat(),
-            }
-        )
+        existing = next((s for s in STATE.sessions if s.get("name", "").lower() == name.lower()), None)
+        if existing:
+            existing["description"] = description
+        else:
+            STATE.sessions.append(
+                {
+                    "name": name,
+                    "description": description,
+                    "created": datetime.utcnow().isoformat(),
+                }
+            )
 
     STATE.selected_session = name
     _reset_generated_session()
@@ -573,6 +676,9 @@ def select_session(request: Request, session_name: str = Form("")):
 def use_endpoint(endpoint_url: str = Form(...)):
     STATE.selected_stack = None
     STATE.selected_endpoint = endpoint_url.strip()
+    STATE.selected_table = None
+    STATE.selected_agent_id = DEFAULT_AGENT_ID
+    STATE.sessions = []
     _reset_generated_session()
     logging.info("Using custom endpoint: %s", STATE.selected_endpoint)
     return RedirectResponse(url="/chat", status_code=302)
@@ -585,17 +691,23 @@ def select_stack(name: str):
         cf = cf_client()
         stack = cf.describe_stacks(StackName=name)["Stacks"][0]
         outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
+        params = {p.get("ParameterKey"): p.get("ParameterValue") for p in stack.get("Parameters", [])}
         endpoint = outputs.get("BrokerEndpointURL")
     except Exception as e:
         logging.error("Error selecting stack %s: %s", name, e)
         endpoint = None
+        params = {}
+        outputs = {}
 
     if not endpoint:
         return RedirectResponse(url="/", status_code=302)
 
     STATE.selected_stack = name
     STATE.selected_endpoint = endpoint
+    STATE.selected_table = outputs.get("AgentStateTableName") or None
+    STATE.selected_agent_id = params.get("AgentIdParam") or DEFAULT_AGENT_ID
     _reset_generated_session()
+    _refresh_sessions_from_db()
     return RedirectResponse(url="/chat", status_code=302)
 
 
@@ -671,12 +783,20 @@ def delete_stack(name: str):
     if STATE.selected_stack == name:
         STATE.selected_stack = None
         STATE.selected_endpoint = None
+        STATE.selected_table = None
+        STATE.selected_agent_id = DEFAULT_AGENT_ID
+        STATE.sessions = []
 
     return RedirectResponse(url="/", status_code=302)
 
 
 @app.get("/deploy")
 def deploy_form(request: Request):
+    if STATE.selected_table:
+        _refresh_sessions_from_db()
+    else:
+        STATE.sessions = []
+
     voices = _list_polly_voices()
     return templates.TemplateResponse(
         "deploy.html",
