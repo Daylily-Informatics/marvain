@@ -109,6 +109,7 @@ def _prefixed_stack_name(name: str) -> str:
 def home(request: Request):
     stacks_available = []
     stacks_building = []
+    stacks_deleting = []
     stacks_failed = []
     prefix = _normalized_stack_prefix()
     try:
@@ -131,7 +132,6 @@ def home(request: Request):
     building_statuses = {
         "CREATE_IN_PROGRESS",
         "ROLLBACK_IN_PROGRESS",
-        "DELETE_IN_PROGRESS",
         "UPDATE_IN_PROGRESS",
         "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS",
         "UPDATE_ROLLBACK_IN_PROGRESS",
@@ -139,6 +139,9 @@ def home(request: Request):
         "REVIEW_IN_PROGRESS",
         "IMPORT_IN_PROGRESS",
         "IMPORT_ROLLBACK_IN_PROGRESS",
+    }
+    deleting_statuses = {
+        "DELETE_IN_PROGRESS",
     }
     failed_statuses = {
         "CREATE_FAILED",
@@ -185,6 +188,15 @@ def home(request: Request):
                     "console_url": _stack_console_url(stack_id),
                 }
             )
+        elif status in deleting_statuses:
+            stacks_deleting.append(
+                {
+                    "name": stack_name,
+                    "status": status.replace("_", " ").title(),
+                    "reason": s.get("StackStatusReason", ""),
+                    "console_url": _stack_console_url(stack_id),
+                }
+            )
         elif status in failed_statuses:
             stacks_failed.append(
                 {
@@ -197,6 +209,7 @@ def home(request: Request):
 
     stacks_available.sort(key=lambda x: x["name"])
     stacks_building.sort(key=lambda x: x["name"])
+    stacks_deleting.sort(key=lambda x: x["name"])
     stacks_failed.sort(key=lambda x: x["name"])
 
     return templates.TemplateResponse(
@@ -205,6 +218,7 @@ def home(request: Request):
             "request": request,
             "stacks": stacks_available,
             "building_stacks": stacks_building,
+            "deleting_stacks": stacks_deleting,
             "failed_stacks": stacks_failed,
             "state": STATE,
             "stack_prefix": prefix,

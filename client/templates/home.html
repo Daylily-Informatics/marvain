@@ -72,6 +72,24 @@
       <div class="muted">No in-progress stacks.</div>
     {% endif %}
 
+    <h3 style="margin-bottom:4px; margin-top:14px;">Deleting stacks</h3>
+    {% if deleting_stacks %}
+      {% for st in deleting_stacks %}
+        <div class="card">
+          <div><strong>{{ st.name }}</strong></div>
+          <div class="muted">{{ st.status }}</div>
+          {% if st.reason %}
+            <div class="muted">{{ st.reason }}</div>
+          {% endif %}
+          <div class="row" style="margin-top:10px;">
+            <a class="btn" href="{{ st.console_url }}" target="_blank" rel="noopener noreferrer">Open in CloudFormation</a>
+          </div>
+        </div>
+      {% endfor %}
+    {% else %}
+      <div class="muted">No stacks currently deleting.</div>
+    {% endif %}
+
     <h3 style="margin-bottom:4px; margin-top:14px;">Available</h3>
     {% if stacks %}
       {% for st in stacks %}
