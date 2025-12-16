@@ -8,10 +8,11 @@ import shlex
 import subprocess
 import threading
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
+from uuid import uuid4
 
 import boto3
 import re
@@ -85,6 +86,9 @@ class UiState:
     selected_endpoint: Optional[str] = None
     stack_prefix: str = DEFAULT_STACK_PREFIX
     verbose: bool = False
+    selected_session: Optional[str] = None
+    sessions: list[dict[str, str]] = field(default_factory=list)
+    generated_session: Optional[str] = None
 
 
 STATE = UiState()
@@ -172,6 +176,10 @@ def cf_client():
     return boto_sess().client("cloudformation")
 
 
+def _reset_generated_session() -> None:
+    STATE.generated_session = None
+
+
 def _stack_console_url(stack_id: str) -> str:
     region = _effective_region()
     return f"https://{region}.console.aws.amazon.com/cloudformation/home?region={region}#/stacks/stackinfo?stackId={stack_id}"
@@ -180,7 +188,7 @@ def _stack_console_url(stack_id: str) -> str:
 def _list_polly_voices() -> list[dict[str, Any]]:
     voices: list[dict[str, Any]] = []
     try:
-        polly = boto_sess().client("polly")
+        polly = boto_sess().client("polly", region_name=_effective_region())
         next_token: Optional[str] = None
         while True:
             kwargs: Dict[str, Any] = {}
@@ -199,6 +207,7 @@ def _list_polly_voices() -> list[dict[str, Any]]:
             next_token = resp.get("NextToken")
             if not next_token:
                 break
+        voices.sort(key=lambda v: (v.get("name") or v.get("id") or "").lower())
     except Exception as e:
         logging.warning("Unable to fetch Polly voices: %s", e)
     return voices
@@ -239,7 +248,21 @@ def _verbose_log(msg: str, stack_name: Optional[str] = None) -> None:
         fh.write(line + "\n")
 
 
-def _current_verbose_log_path() -> Optional[Path]:
+def _redirect_back(request: Request, fallback: str = "/"):
+    referer = request.headers.get("referer") or fallback
+    return RedirectResponse(url=referer, status_code=303)
+
+
+def _current_session_id() -> str:
+    if STATE.selected_session:
+        return STATE.selected_session
+
+    if not STATE.generated_session:
+        timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        STATE.generated_session = f"session-{timestamp}-{uuid4().hex[:8]}"
+    return STATE.generated_session
+
+def X_current_verbose_log_path() -> Optional[Path]:
     safe_stack = _secure_log_filename(STATE.selected_stack or "stack")
     log_dir = Path("logs").resolve()
     log_path = (log_dir / f"{safe_stack}-local.log").resolve()
@@ -250,7 +273,7 @@ def _current_verbose_log_path() -> Optional[Path]:
     return log_path if log_path.exists() else None
 
 
-def _debug_env() -> Dict[str, str]:
+def X_debug_env() -> Dict[str, str]:
     env = os.environ.copy()
     if STATE.aws_profile:
         env["AWS_PROFILE"] = STATE.aws_profile
@@ -260,7 +283,7 @@ def _debug_env() -> Dict[str, str]:
     return env
 
 
-def _build_debug_command(tool_id: str, params: Dict[str, Any]) -> list[str]:
+def X_build_debug_command(tool_id: str, params: Dict[str, Any]) -> list[str]:
     if tool_id == "dump_memories":
         target = (params.get("target") or "both").strip()
         cmd = ["python3", "bin/dump_memory.py", "--target", target]
@@ -306,7 +329,7 @@ def _build_debug_command(tool_id: str, params: Dict[str, Any]) -> list[str]:
     raise HTTPException(status_code=400, detail=f"Unsupported debug tool: {tool_id}")
 
 
-def _debug_tool_metadata() -> list[dict[str, Any]]:
+def X_debug_tool_metadata() -> list[dict[str, Any]]:
     return [tool.__dict__ for tool in DEBUG_TOOLS]
 
 
@@ -428,6 +451,7 @@ def home(request: Request):
             "state": STATE,
             "stack_prefix": prefix,
             "deploying": request.query_params.get("deploying"),
+            "sessions": STATE.sessions,
         },
     )
 
@@ -469,10 +493,47 @@ def update_settings(
     return RedirectResponse(url="/", status_code=303)
 
 
+@app.post("/session/create")
+def create_session(
+    request: Request,
+    session_name: str = Form(...),
+    session_description: str = Form(""),
+):
+    name = session_name.strip()
+    description = session_description.strip()
+
+    if not name:
+        return _redirect_back(request)
+
+    existing = next((s for s in STATE.sessions if s.get("name", "").lower() == name.lower()), None)
+    if existing:
+        existing["description"] = description
+    else:
+        STATE.sessions.append(
+            {
+                "name": name,
+                "description": description,
+                "created": datetime.utcnow().isoformat(),
+            }
+        )
+
+    STATE.selected_session = name
+    _reset_generated_session()
+    return _redirect_back(request)
+
+
+@app.post("/session/select")
+def select_session(request: Request, session_name: str = Form("")):
+    STATE.selected_session = session_name.strip() or None
+    _reset_generated_session()
+    return _redirect_back(request)
+
+
 @app.post("/use_endpoint")
 def use_endpoint(endpoint_url: str = Form(...)):
     STATE.selected_stack = None
     STATE.selected_endpoint = endpoint_url.strip()
+    _reset_generated_session()
     logging.info("Using custom endpoint: %s", STATE.selected_endpoint)
     return RedirectResponse(url="/chat", status_code=302)
 
@@ -494,6 +555,7 @@ def select_stack(name: str):
 
     STATE.selected_stack = name
     STATE.selected_endpoint = endpoint
+    _reset_generated_session()
     return RedirectResponse(url="/chat", status_code=302)
 
 
@@ -511,6 +573,49 @@ def _stack_exists(name: str, already_prefixed: bool = False) -> bool:
     except Exception as e:  # pragma: no cover - network dependency
         logging.error("Unexpected error checking stack existence for %s: %s", stack_name, e)
         return False
+
+
+def _bucket_exists(bucket: str) -> bool:
+    if not bucket:
+        return False
+
+    try:
+        boto_sess().client("s3").head_bucket(Bucket=bucket)
+        return True
+    except ClientError as e:  # pragma: no cover - network dependency
+        code = e.response.get("Error", {}).get("Code")
+        if code in {"403", "404", "NoSuchBucket", "NotFound"}:
+            return False
+        logging.warning("Unexpected S3 error for bucket %s: %s", bucket, e)
+        return False
+    except Exception as e:  # pragma: no cover - network dependency
+        logging.warning("Error checking bucket %s: %s", bucket, e)
+        return False
+
+
+def _model_available_in_region(model_id: str) -> tuple[bool, Optional[str]]:
+    if not model_id:
+        return False, None
+
+    region = _effective_region()
+    try:
+        bedrock = boto_sess().client("bedrock", region_name=region)
+        next_token: Optional[str] = None
+        while True:
+            kwargs: Dict[str, Any] = {}
+            if next_token:
+                kwargs["nextToken"] = next_token
+            resp = bedrock.list_foundation_models(**kwargs)
+            for model in resp.get("modelSummaries", []):
+                if (model.get("modelId") or "").lower() == model_id.lower():
+                    return True, None
+            next_token = resp.get("nextToken")
+            if not next_token:
+                break
+        return False, None
+    except Exception as e:  # pragma: no cover - network dependency
+        logging.warning("Unable to validate model %s in %s: %s", model_id, region, e)
+        return False, str(e)
 
 
 @app.get("/delete_stack")
@@ -534,7 +639,14 @@ def delete_stack(name: str):
 def deploy_form(request: Request):
     voices = _list_polly_voices()
     return templates.TemplateResponse(
-        "deploy.html", {"request": request, "state": STATE, "polly_voices": voices}
+        "deploy.html",
+        {
+            "request": request,
+            "state": STATE,
+            "polly_voices": voices,
+            "region": _effective_region(),
+            "sessions": STATE.sessions,
+        },
     )
 
 
@@ -543,6 +655,17 @@ def stack_exists_api(stack_name: str):
     prefixed = _prefixed_stack_name(stack_name)
     exists = _stack_exists(prefixed, already_prefixed=True)
     return {"exists": exists, "stack_name": prefixed}
+
+
+@app.get("/api/bucket_exists")
+def bucket_exists_api(bucket_name: str):
+    return {"exists": _bucket_exists(bucket_name)}
+
+
+@app.get("/api/model_available")
+def model_available_api(model_id: str):
+    available, error = _model_available_in_region(model_id)
+    return {"available": available, "region": _effective_region(), "error": error}
 
 
 @app.post("/deploy")
@@ -570,15 +693,24 @@ def deploy_agent(
             content={"error": f"Stack '{stack_name}' already exists."},
         )
 
-    if audio_bucket:
-        try:
-            boto_sess().client("s3").head_bucket(Bucket=audio_bucket)
-        except Exception:
-            logging.error("Audio bucket does not exist: %s", audio_bucket)
-            return JSONResponse(
-                status_code=400,
-                content={"error": f"Audio bucket '{audio_bucket}' does not exist."},
-            )
+    if audio_bucket and not _bucket_exists(audio_bucket):
+        logging.error("Audio bucket does not exist: %s", audio_bucket)
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Audio bucket '{audio_bucket}' does not exist."},
+        )
+
+    model_available, model_error = _model_available_in_region(model_id)
+    if not model_available:
+        region = _effective_region()
+        detail = f" ({model_error})" if model_error else ""
+        logging.error("Model %s is unavailable in %s%s", model_id, region, detail)
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": f"Model '{model_id}' is not available in region {region}.{detail}",
+            },
+        )
 
     # Build and deploy via SAM CLI
     cmd_build = ["sam", "build"]
@@ -692,7 +824,10 @@ async def send_message(request: Request):
         _verbose_log(verbose_logs[-1])
 
     try:
-        headers = {"Content-Type": "application/json", "X-Session-Id": "ui-session"}
+        headers = {
+            "Content-Type": "application/json",
+            "X-Session-Id": _current_session_id(),
+        }
         payload: Dict[str, Any] = {"text": text, "channel": "gui"}
         if personality:
             payload["personality_prompt"] = personality
@@ -778,7 +913,7 @@ def _effective_region() -> str:
 async def _call_agent_broker(
     *,
     transcript: str,
-    session_id: str = "ui-session",
+    session_id: Optional[str] = None,
     voice_id: Optional[str] = None,
     speaker_name: Optional[str] = None,
     personality_prompt: Optional[str] = None,
@@ -802,7 +937,10 @@ async def _call_agent_broker(
     if personality_prompt:
         payload["personality_prompt"] = personality_prompt
 
-    headers = {"Content-Type": "application/json", "X-Session-Id": session_id}
+    headers = {
+        "Content-Type": "application/json",
+        "X-Session-Id": session_id or _current_session_id(),
+    }
     if STATE.verbose:
         _verbose_log(
             f"Calling broker at {STATE.selected_endpoint or 'custom endpoint'} with channel={channel}"
@@ -884,7 +1022,7 @@ async def ws_asr(websocket: WebSocket):
 
     language_code = (cfg.get("language_code") or "en-US").strip()
     sample_rate_hz = int(cfg.get("sample_rate_hz") or 16000)
-    session_id = (cfg.get("session_id") or "ui-session").strip()
+    session_id = (cfg.get("session_id") or STATE.selected_session or _current_session_id()).strip()
     voice_id = (cfg.get("voice_id") or "").strip() or None
     speaker_name = (cfg.get("speaker_name") or "").strip() or None
     personality_prompt = (cfg.get("personality_prompt") or "").strip() or None
