@@ -18,6 +18,7 @@ logging_utils.configure_logging(os.environ.get("VERBOSE", "0"))
 
 AGENT_ID = os.environ.get("AGENT_ID", "agent1")
 AGENT_VOICE_ID = os.environ.get("AGENT_VOICE_ID", "Matthew")
+AGENT_VOICE_ENGINE = os.environ.get("AGENT_VOICE_ENGINE")
 AUDIO_BUCKET = os.environ.get("AUDIO_BUCKET") or ""
 REGION = os.environ.get("AWS_REGION") or os.environ.get("REGION") or None
 
@@ -245,6 +246,7 @@ def handler(event, context):
                 voice_id=AGENT_VOICE_ID or "Matthew",
                 region=REGION,
                 bucket=AUDIO_BUCKET or None,
+                engine=AGENT_VOICE_ENGINE or None,
             )
             audio_obj = synth.synthesize(reply_text, key_prefix=f"{AGENT_ID}/{session_id}")
             if audio_obj:
