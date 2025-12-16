@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import boto3
+import re
 import requests
 from fastapi import FastAPI, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -21,6 +22,19 @@ from fastapi.templating import Jinja2Templates
 
 # Optional dependency: server-side streaming ASR via AWS Transcribe Streaming.
 # Install with: pip install amazon-transcribe
+
+def _secure_log_filename(name: str) -> str:
+    """
+    Sanitize stack name for log file usage. Allows only alphanum, dash, and underscore.
+    """
+    # Remove any directory traversal or weird chars
+    name = str(name)
+    # Remove path separators and restrict to safe chars
+    name = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+    # Defensive: collapse repeated underscores/dots/dashes
+    name = re.sub(r"[_\.\-]+", "_", name)
+    # Prevent issues with empty names
+    return name or "stack"
 try:
     from amazon_transcribe.client import TranscribeStreamingClient
     from amazon_transcribe.handlers import TranscriptResultStreamHandler
@@ -208,21 +222,30 @@ def _verbose_log(msg: str, stack_name: Optional[str] = None) -> None:
     if not STATE.verbose:
         return
 
-    safe_stack = (stack_name or STATE.selected_stack or "stack").replace("/", "-")
+    safe_stack = _secure_log_filename(stack_name or STATE.selected_stack or "stack")
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{timestamp}] {msg}"
     logging.info(line)
 
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
-    log_path = log_dir / f"{safe_stack}-local.log"
+    log_path = (log_dir / f"{safe_stack}-local.log").resolve()
+    # Check that log_path is within log_dir
+    if not str(log_path).startswith(str(log_dir.resolve())):
+        logging.error("Attempted to write log outside of logs directory: %s", log_path)
+        return
     with log_path.open("a", encoding="utf-8") as fh:
         fh.write(line + "\n")
 
 
 def _current_verbose_log_path() -> Optional[Path]:
-    safe_stack = (STATE.selected_stack or "stack").replace("/", "-")
-    log_path = Path("logs") / f"{safe_stack}-local.log"
+    safe_stack = _secure_log_filename(STATE.selected_stack or "stack")
+    log_dir = Path("logs").resolve()
+    log_path = (log_dir / f"{safe_stack}-local.log").resolve()
+    # Check that log_path is within log_dir (prevents path traversal)
+    if not str(log_path).startswith(str(log_dir)):
+        logging.error("Attempted to access log outside of logs directory: %s", log_path)
+        return None
     return log_path if log_path.exists() else None
 
 
