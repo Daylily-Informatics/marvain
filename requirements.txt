@@ -6,6 +6,7 @@ jinja2
 requests
 python-multipart
 websockets
+awscli
 
 # Server-side streaming ASR (AWS Transcribe Streaming)
 amazon-transcribe
