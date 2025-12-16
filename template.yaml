@@ -1,0 +1,196 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: whaddya-want - Rank-4 agent skeleton (Broker + Heartbeat) with unified DynamoDB memory store.
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 30
+    MemorySize: 512
+    Tracing: Active
+    Environment:
+      Variables:
+        VERBOSE: "0"
+
+Parameters:
+  AgentId:
+    Type: String
+    Default: "agent-default"
+    Description: Logical agent identifier (partition prefix).
+  ModelId:
+    Type: String
+    Default: "meta.llama3-1-8b-instruct-v1:0"
+    Description: Bedrock model ID (e.g., meta.llama3-1-8b-instruct-v1:0 or anthropic.claude-3-5-sonnet-20240620-v1:0)
+  AgentVoiceId:
+    Type: String
+    Default: "Matthew"
+    Description: Default Polly voice id for speech synthesis (Broker).
+
+Resources:
+  AgentStateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: gsi1pk
+          AttributeType: S
+        - AttributeName: gsi1sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: gsi1
+          KeySchema:
+            - AttributeName: gsi1pk
+              KeyType: HASH
+            - AttributeName: gsi1sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  SharedDependenciesLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: whaddya-want-shared
+      Description: Shared dependencies + agent_core.
+      ContentUri: layers/shared
+      CompatibleRuntimes:
+        - python3.11
+      RetentionPolicy: Retain
+    Metadata:
+      BuildMethod: makefile
+
+  AgentConfigLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: whaddya-want-config
+      Description: Agent configuration (prompts, etc).
+      ContentUri: layers/config
+      CompatibleRuntimes:
+        - python3.11
+      RetentionPolicy: Retain
+    Metadata:
+      BuildMethod: python3.11
+
+  AgentApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: whaddya-want-api
+      StageName: Prod
+      EndpointConfiguration: REGIONAL
+
+  BrokerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: whaddya-want-broker
+      CodeUri: lambda/broker/
+      Handler: app.handler
+      Layers:
+        - !Ref SharedDependenciesLayer
+        - !Ref AgentConfigLayer
+      Environment:
+        Variables:
+          MODEL_ID: !Ref ModelId
+          AGENT_STATE_TABLE: !Ref AgentStateTable
+          AGENT_ID: !Ref AgentId
+          AGENT_VOICE_ID: !Ref AgentVoiceId
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AgentStateTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+                - bedrock:Converse
+                - bedrock:ConverseStream
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - polly:SynthesizeSpeech
+              Resource: "*"
+            # Optional: allow writing synthesized audio to S3 (wire AUDIO_BUCKET env var)
+            # - Effect: Allow
+            #   Action:
+            #     - s3:PutObject
+            #   Resource: "arn:aws:s3:::YOUR_BUCKET_NAME/*"
+      Events:
+        AgentEndpoint:
+          Type: Api
+          Properties:
+            RestApiId: !Ref AgentApi
+            Path: /agent
+            Method: post
+
+  HeartbeatFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: whaddya-want-heartbeat
+      CodeUri: lambda/agent_heartbeat/
+      Handler: handler.handler
+      Layers:
+        - !Ref SharedDependenciesLayer
+        - !Ref AgentConfigLayer
+      Environment:
+        Variables:
+          MODEL_ID: !Ref ModelId
+          AGENT_STATE_TABLE: !Ref AgentStateTable
+          AGENT_ID: !Ref AgentId
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref AgentStateTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+                - bedrock:Converse
+                - bedrock:ConverseStream
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - polly:SynthesizeSpeech
+              Resource: "*"
+
+  HeartbeatScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: whaddya-want-heartbeat-schedule
+      Description: Triggers the agent heartbeat every 5 minutes.
+      ScheduleExpression: rate(5 minutes)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt HeartbeatFunction.Arn
+          Id: HeartbeatFunctionTarget
+
+  HeartbeatInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref HeartbeatFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt HeartbeatScheduleRule.Arn
+
+Outputs:
+  BrokerEndpointUrl:
+    Description: Broker endpoint URL
+    Value: !Sub "https://${AgentApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/agent"
+  ApiGatewayRestApiId:
+    Description: API Gateway REST API ID
+    Value: !Ref AgentApi
+  AgentStateTableName:
+    Description: DynamoDB table name
+    Value: !Ref AgentStateTable
+  BrokerLambdaArn:
+    Description: Broker Lambda ARN
+    Value: !GetAtt BrokerFunction.Arn
+  HeartbeatLambdaArn:
+    Description: Heartbeat Lambda ARN
+    Value: !GetAtt HeartbeatFunction.Arn
