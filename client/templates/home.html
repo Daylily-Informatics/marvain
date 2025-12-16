@@ -181,5 +181,84 @@
       <div class="muted">Select a stack or provide a custom endpoint first.</div>
     {% endif %}
   </div>
+
+  {% if state.selected_endpoint %}
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px;">
+    <div class="card">
+      <h2 style="margin-top:0">Speakers <span class="muted" id="speakerCount"></span></h2>
+      <div id="speakerQuickList" style="max-height: 150px; overflow-y: auto;">
+        <div class="muted">Loading...</div>
+      </div>
+      <div style="margin-top: 10px;">
+        <a class="btn" href="/speakers">Manage Speakers</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Recent Memories <span class="muted" id="memoryCount"></span></h2>
+      <div id="memoryQuickList" style="max-height: 150px; overflow-y: auto;">
+        <div class="muted">Loading...</div>
+      </div>
+      <div style="margin-top: 10px;">
+        <a class="btn" href="/memories">View All Memories</a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Quick load speakers
+    fetch('/api/speakers')
+      .then(r => r.json())
+      .then(data => {
+        const list = document.getElementById('speakerQuickList');
+        const count = document.getElementById('speakerCount');
+        const speakers = data.speakers || [];
+        count.textContent = `(${speakers.length})`;
+        if (speakers.length === 0) {
+          list.innerHTML = '<div class="muted">No speakers enrolled yet</div>';
+          return;
+        }
+        list.innerHTML = speakers.slice(0, 5).map(s => `
+          <div style="padding: 4px 0; border-bottom: 1px solid #eee;">
+            <strong>${s.speaker_name || 'Unknown'}</strong>
+            <span class="muted">${s.interaction_count || 0} chats</span>
+          </div>
+        `).join('');
+        if (speakers.length > 5) {
+          list.innerHTML += `<div class="muted" style="padding: 4px 0;">+${speakers.length - 5} more...</div>`;
+        }
+      })
+      .catch(() => {
+        document.getElementById('speakerQuickList').innerHTML = '<div class="muted">Failed to load</div>';
+      });
+
+    // Quick load memories
+    fetch('/api/memories?limit=10')
+      .then(r => r.json())
+      .then(data => {
+        const list = document.getElementById('memoryQuickList');
+        const count = document.getElementById('memoryCount');
+        const memories = data.memories || [];
+        count.textContent = `(${data.total || memories.length})`;
+        if (memories.length === 0) {
+          list.innerHTML = '<div class="muted">No memories yet</div>';
+          return;
+        }
+        const kindColors = {
+          'FACT': '#e3f2fd', 'PREFERENCE': '#fff3e0', 'AI_INSIGHT': '#f3e5f5',
+          'RELATIONSHIP': '#e8f5e9', 'ACTION': '#fce4ec', 'META': '#f5f5f5'
+        };
+        list.innerHTML = memories.slice(0, 5).map(m => `
+          <div style="padding: 4px 0; border-bottom: 1px solid #eee;">
+            <span style="background: ${kindColors[m.kind] || '#fafafa'}; padding: 1px 6px; border-radius: 8px; font-size: 0.75em;">${m.kind || '?'}</span>
+            <span style="font-size: 0.9em;">${(m.text || '').substring(0, 40)}${(m.text || '').length > 40 ? '...' : ''}</span>
+          </div>
+        `).join('');
+      })
+      .catch(() => {
+        document.getElementById('memoryQuickList').innerHTML = '<div class="muted">Failed to load</div>';
+      });
+  </script>
+  {% endif %}
 </body>
 </html>
