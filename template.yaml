@@ -24,6 +24,13 @@ Parameters:
     Type: String
     Default: ""
     Description: (Optional) S3 bucket name to save synthesized audio
+  VerboseLogging:
+    Type: String
+    Default: "0"
+    AllowedValues:
+      - "0"
+      - "1"
+    Description: Set to 1 to enable verbose logging in deployed Lambdas
 
 Conditions:
   AudioBucketProvided: !Not [!Equals [!Ref AudioBucketName, ""]]
@@ -93,7 +100,7 @@ Resources:
           AGENT_ID: !Ref AgentIdParam
           AGENT_VOICE_ID: !Ref AgentVoiceIdParam
           AUDIO_BUCKET: !Ref AudioBucketName
-          VERBOSE: "1"
+          VERBOSE: !Ref VerboseLogging
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref AgentStateTable
@@ -134,7 +141,7 @@ Resources:
           MODEL_ID: !Ref ModelIdParam
           AGENT_STATE_TABLE: !Ref AgentStateTable
           AGENT_ID: !Ref AgentIdParam
-          VERBOSE: "1"
+          VERBOSE: !Ref VerboseLogging
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref AgentStateTable

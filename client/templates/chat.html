@@ -92,6 +92,7 @@
   <p style="margin-top: 12px;"><a href="/">← Back</a></p>
 
 <script>
+  const verboseEnabled = {{ 'true' if state.verbose else 'false' }};
   const convo = document.getElementById('conversation');
 
   const asrModeSel = document.getElementById('asrMode');
@@ -198,6 +199,7 @@
       }
       if (data.reply_text) appendMsg('agent', data.reply_text);
       if (data.actions && data.actions.length) appendMeta('actions: ' + JSON.stringify(data.actions));
+      if (verboseEnabled && data.verbose_logs) data.verbose_logs.forEach((log) => appendMeta('[verbose] ' + log));
       if (data.audio) await playAgentAudio(data.audio);
     } catch (e) {
       appendMsg('agent', '[Error] Agent not reachable');
