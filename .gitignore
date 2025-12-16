@@ -2,6 +2,7 @@
 __pycache__/
 *.py[codz]
 *$py.class
+.aws-sam
 
 # C extensions
 *.so
