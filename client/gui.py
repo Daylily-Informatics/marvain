@@ -98,6 +98,7 @@ class DebugTool:
     param_key: Optional[str] = None
     param_label: Optional[str] = None
     default_param: Optional[str] = None
+    options: Optional[list[str]] = None
 
 
 DEBUG_TOOLS: list[DebugTool] = [
@@ -153,6 +154,13 @@ DEBUG_TOOLS: list[DebugTool] = [
         id="tail_cloud_logs",
         label="Tail cloud logs",
         description="Run bin/tail_cloud_logs.sh for the selected stack (up to 20 seconds).",
+        param_key="stack",
+        param_label="stack name (optional)",
+    ),
+    DebugTool(
+        id="print_stack_outputs",
+        label="Print stack outputs",
+        description="Show CloudFormation Output Key, Description, and Value entries for a stack.",
         param_key="stack",
         param_label="stack name (optional)",
     ),
@@ -303,23 +311,43 @@ def _build_debug_command(tool_id: str, params: Dict[str, Any]) -> list[str]:
         cmd_str = f"timeout 20 bin/tail_cloud_logs.sh {shlex.quote(stack)}{region_flag}"
         return ["bash", "-lc", cmd_str]
 
+    if tool_id == "print_stack_outputs":
+        stack = (params.get("stack") or STATE.selected_stack or "").strip()
+        if not stack:
+            raise HTTPException(status_code=400, detail="Provide a stack name or select one on the home page")
+        cmd = ["python3", "bin/print_stack_outputs.py", stack]
+        if STATE.aws_region:
+            cmd += ["--region", STATE.aws_region]
+        return cmd
+
     raise HTTPException(status_code=400, detail=f"Unsupported debug tool: {tool_id}")
 
 
 def _debug_tool_metadata() -> list[dict[str, Any]]:
-    return [tool.__dict__ for tool in DEBUG_TOOLS]
-
-
-@app.get("/")
-def home(request: Request):
-    stacks_available = []
-    stacks_building = []
-    stacks_deleting = []
-    stacks_failed = []
     prefix = _normalized_stack_prefix()
+    stacks_available, _, _, _ = _list_stacks_by_status(prefix)
+    stack_options = [s["name"] for s in stacks_available]
+
+    tools: list[dict[str, Any]] = []
+    for tool in DEBUG_TOOLS:
+        meta = tool.__dict__.copy()
+        if tool.id in {"tail_cloud_logs", "print_stack_outputs"}:
+            meta["options"] = stack_options
+            if not meta.get("default_param"):
+                meta["default_param"] = STATE.selected_stack or None
+            meta["selected_stack"] = STATE.selected_stack
+        tools.append(meta)
+    return tools
+
+
+def _list_stacks_by_status(prefix: str):
+    stacks_available: list[dict[str, Any]] = []
+    stacks_building: list[dict[str, Any]] = []
+    stacks_deleting: list[dict[str, Any]] = []
+    stacks_failed: list[dict[str, Any]] = []
     try:
         cf = cf_client()
-        summaries = []
+        summaries: list[dict[str, Any]] = []
         paginator = cf.get_paginator("list_stacks")
         for page in paginator.paginate():
             summaries.extend(page.get("StackSummaries", []))
@@ -356,6 +384,11 @@ def home(request: Request):
         "IMPORT_ROLLBACK_FAILED",
     }
 
+    try:
+        cf = cf_client()
+    except Exception:
+        cf = None
+
     for s in summaries:
         stack_name = s.get("StackName")
         if not stack_name or (prefix and not stack_name.startswith(prefix)):
@@ -368,7 +401,7 @@ def home(request: Request):
 
         if status in available_statuses:
             try:
-                detail = cf.describe_stacks(StackName=stack_name)["Stacks"][0]
+                detail = cf.describe_stacks(StackName=stack_name)["Stacks"][0] if cf else {}
                 outputs = {o["OutputKey"]: o["OutputValue"] for o in detail.get("Outputs", [])}
             except Exception:
                 outputs = {}
@@ -416,6 +449,13 @@ def home(request: Request):
     stacks_building.sort(key=lambda x: x["name"])
     stacks_deleting.sort(key=lambda x: x["name"])
     stacks_failed.sort(key=lambda x: x["name"])
+    return stacks_available, stacks_building, stacks_deleting, stacks_failed
+
+
+@app.get("/")
+def home(request: Request):
+    prefix = _normalized_stack_prefix()
+    stacks_available, stacks_building, stacks_deleting, stacks_failed = _list_stacks_by_status(prefix)
 
     return templates.TemplateResponse(
         "home.html",

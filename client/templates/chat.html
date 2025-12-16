@@ -613,7 +613,24 @@
       }
 
       let inputEl = null;
-      if (tool.param_label) {
+      if (tool.options && tool.options.length) {
+        inputEl = document.createElement('select');
+        inputEl.style.marginTop = '6px';
+        inputEl.style.marginRight = '6px';
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = tool.param_label || 'Select option';
+        inputEl.appendChild(placeholder);
+        tool.options.forEach((opt) => {
+          const optEl = document.createElement('option');
+          optEl.value = opt;
+          optEl.textContent = opt;
+          inputEl.appendChild(optEl);
+        });
+        const preferred = tool.selected_stack || tool.default_param;
+        if (preferred) inputEl.value = preferred;
+        wrapper.appendChild(inputEl);
+      } else if (tool.param_label) {
         inputEl = document.createElement('input');
         inputEl.type = 'text';
         inputEl.placeholder = tool.param_label;
@@ -626,7 +643,7 @@
       const runBtn = document.createElement('button');
       runBtn.textContent = 'Run';
       runBtn.onclick = () => {
-        const payload = inputEl ? { [tool.param_key || 'input']: (inputEl.value || '') } : {};
+        const payload = inputEl ? { [tool.param_key || 'input']: (inputEl.value || tool.default_param || '') } : {};
         runDebugTool(tool.id, payload);
       };
       wrapper.appendChild(runBtn);
