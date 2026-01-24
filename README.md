@@ -30,39 +30,65 @@ Realtime media plane:
 - `sql/` — DB schema
 - `scripts/` — helper scripts (DB init, backup/export)
 
+## Environment (Conda; primary)
+
+This repo uses a **Conda** env named `marvain` (Python **3.11**, matching the Lambda runtime in `template.yaml`).
+
+```bash
+conda env create -f config/marvain_conda.yaml
+. ./marvain_activate
+marvain doctor
+```
+
+Escape hatch (not recommended): set `MARVAIN_ALLOW_VENV=1` to bypass Conda checks.
+
 ## Deploy (AWS)
 
 Prereqs:
 
-- AWS CLI configured
+- Conda (Miniconda/Mambaforge)
+- AWS credentials configured (profile/region)
 - SAM CLI
 - Docker
 
 ### 1) Build
 
 ```bash
-sam build
+./bin/marvain build
+./bin/marvain build --dry-run
 ```
 
 ### 2) Deploy (guided)
 
 ```bash
-sam deploy --guided
+./bin/marvain config init --profile <aws-profile> --region <aws-region> --env dev
+./bin/marvain deploy
+./bin/marvain deploy --dry-run
 ```
+
+Notes:
+
+- `marvain config init` writes to `${XDG_CONFIG_HOME:-~/.config}/marvain/marvain.yaml` by default.
+- Treat that config as **secret** once you run `marvain bootstrap` (it will store a device token).
+- If you choose to write a repo-local config (e.g. `--write marvain.yaml`), it is gitignored.
 
 ### 3) Initialize the database schema (pgvector + tables)
 
 ```bash
-./scripts/db_init.sh --stack <stack-name> --region <region>
+./bin/marvain init db
 ```
 
 ### 4) Bootstrap your first agent/space/device
 
 ```bash
-curl -sS -X POST "<API_BASE>/v1/admin/bootstrap" \
-  -H "X-Admin-Key: <admin-key>" \
-  -H "Content-Type: application/json" \
-  -d '{"agent_name":"Forge","default_space_name":"home"}'
+./bin/marvain bootstrap --agent-name Forge --space-name home
+./bin/marvain bootstrap --dry-run --agent-name Forge --space-name home
+```
+
+### 5) Run the local GUI (legacy)
+
+```bash
+./bin/marvain gui --host 127.0.0.1 --port 8000 --reload
 ```
 
 ## Run the realtime agent worker (local)

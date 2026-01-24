@@ -5,6 +5,9 @@ __pycache__/
 .aws-sam
 samconfig.toml
 
+# Local marvain CLI config (may contain device tokens)
+marvain.yaml
+
 # C extensions
 *.so
 
