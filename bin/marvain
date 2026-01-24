@@ -1,0 +1,16 @@
+#!/bin/sh
+# shellcheck shell=sh
+
+set -eu
+
+# marvain CLI wrapper.
+#
+# This repo does not currently ship as an installed Python package.
+# We run the in-repo module with an explicit PYTHONPATH so it works
+# from anywhere once ./bin is on PATH.
+
+SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
+REPO_ROOT=$(CDPATH= cd "$SCRIPT_DIR/.." && pwd)
+
+export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m marvain_cli "$@"

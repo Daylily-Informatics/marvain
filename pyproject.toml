@@ -1,0 +1,6 @@
+[tool.marvain]
+# This repo is orchestrated via a Conda env (primary) rather than an in-repo venv.
+env_manager = "conda"
+conda_env = "marvain"
+conda_file = "config/marvain_conda.yaml"
+python = "3.11"
