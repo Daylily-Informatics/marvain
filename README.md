@@ -42,6 +42,117 @@ marvain doctor
 
 Escape hatch (not recommended): set `MARVAIN_ALLOW_VENV=1` to bypass Conda checks.
 
+## Delete everything (reset) before reinstall/redeploy
+
+If you want a true “start over”, follow `QUICKSTART.md` (full workflow). The commands below are the same idea, but inlined here for convenience.
+
+> Safety: the commands below can delete AWS resources and local state.
+
+### A) AWS: delete the CloudFormation stack
+
+1) (Recommended) capture the bucket names **before** teardown:
+
+```sh
+. ./marvain_activate
+./bin/marvain --profile <aws-profile> --region <aws-region> monitor outputs
+# optional: write outputs into your config for later reference
+./bin/marvain --profile <aws-profile> --region <aws-region> monitor outputs --write-config
+```
+
+2) Tear down the stack:
+
+```sh
+./bin/marvain --profile <aws-profile> --region <aws-region> teardown --yes --wait
+```
+
+### B) AWS: best-effort delete retained S3 buckets
+
+In `template.yaml`, both buckets are configured with `DeletionPolicy: Retain`:
+
+- `ArtifactBucket` (Retain)
+- `AuditBucket` (Retain + **S3 Object Lock**, default 10-year governance retention)
+
+That means stack deletion will **not** delete them.
+
+If you captured `ArtifactBucketName` / `AuditBucketName`, try:
+
+```sh
+# Replace these with values printed by: ./bin/marvain ... monitor outputs
+ARTIFACT_BUCKET="..."
+AUDIT_BUCKET="..."
+
+# Artifact bucket: usually deletable once emptied
+aws s3 rb "s3://${ARTIFACT_BUCKET}" --force
+
+# Audit bucket: may fail if it contains Object-Lock-protected objects
+aws s3 rb "s3://${AUDIT_BUCKET}" --force
+```
+
+#### If you forgot to run `monitor outputs`
+
+If the stack still exists, you can often recover the bucket names from CloudFormation outputs:
+
+```sh
+STACK_NAME="marvain-<user>-<env>"  # e.g. marvain-major-dev (from your config)
+aws cloudformation describe-stacks \
+  --stack-name "${STACK_NAME}" \
+  --query 'Stacks[0].Outputs[?OutputKey==`ArtifactBucketName` || OutputKey==`AuditBucketName`].[OutputKey,OutputValue]' \
+  --output table
+```
+
+If the stack is already deleted, you have to fall back to heuristics (less reliable). A common one is that CloudFormation-generated bucket names include the stack name, so you can list buckets and filter by substring:
+
+```sh
+STACK_NAME="marvain-<user>-<env>"  # must match the stack name you deployed
+aws s3api list-buckets --query 'Buckets[].Name' --output text \
+  | tr '\t' '\n' \
+  | grep "${STACK_NAME}" || true
+```
+
+If you get multiple candidates, you can identify the **audit** bucket by checking whether Object Lock is enabled (it will typically succeed for the audit bucket and fail for the artifact bucket):
+
+```sh
+for b in $(aws s3api list-buckets --query 'Buckets[].Name' --output text | tr '\t' '\n' | grep "${STACK_NAME}" || true); do
+  if aws s3api get-bucket-object-lock-configuration --bucket "$b" >/dev/null 2>&1; then
+    echo "${b}  (ObjectLock: enabled)"
+  else
+    echo "${b}  (ObjectLock: not enabled / unknown)"
+  fi
+done
+```
+
+If `AuditBucket` deletion fails due to Object Lock retention, the practical “reset” approach is:
+
+- leave the audit bucket alone, and/or
+- deploy a new stack name (fresh resources) instead of trying to hard-delete locked audit history.
+
+### C) Local: delete config, build artifacts, and the Conda env
+
+1) Remove local config (this deletes your saved device token):
+
+```sh
+# OPTIONAL: backup first
+cp -v "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain.yaml" \
+  "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain.yaml.bak" 2>/dev/null || true
+
+# Delete config (XDG + legacy fallbacks)
+rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain.yaml" \
+      "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/config.yaml" \
+      "$HOME/.marvain/config.yaml"
+```
+
+2) Remove repo build artifacts:
+
+```sh
+rm -rf .aws-sam
+```
+
+3) Remove the Conda environment:
+
+```sh
+conda env remove -n marvain
+```
+
 ## Deploy (AWS)
 
 Prereqs:
