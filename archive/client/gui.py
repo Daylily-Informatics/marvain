@@ -53,17 +53,23 @@ except Exception:
 
 from fastapi.staticfiles import StaticFiles
 
+# Resolve paths from this file so the GUI can run from any CWD.
+CLIENT_DIR = Path(__file__).resolve().parent
+ARCHIVE_DIR = CLIENT_DIR.parent
+REPO_ROOT = ARCHIVE_DIR.parent
+ARCHIVE_BIN_DIR = ARCHIVE_DIR / "bin"
+
 app = FastAPI(title="marvain — Agent Manager")
-templates = Jinja2Templates(directory="client/templates")
+templates = Jinja2Templates(directory=str(CLIENT_DIR / "templates"))
 
 # Mount static files directory
-app.mount("/static", StaticFiles(directory="client/static"), name="static")
+app.mount("/static", StaticFiles(directory=str(CLIENT_DIR / "static")), name="static")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-SAMCONFIG_PATH = Path("samconfig.toml")
+SAMCONFIG_PATH = REPO_ROOT / "samconfig.toml"
 STACK_PREFIX_ENV_VAR = "AGENT_RESOURCE_STACK_PREFIX"
-DEFAULT_STACK_PREFIX = os.environ.get(STACK_PREFIX_ENV_VAR, "marai")
+DEFAULT_STACK_PREFIX = os.environ.get(STACK_PREFIX_ENV_VAR, "marvain")
 DEFAULT_AGENT_ID = os.environ.get("AGENT_ID", "marvain-agent")
 
 
@@ -389,7 +395,7 @@ def _debug_env() -> Dict[str, str]:
 def _build_debug_command(tool_id: str, params: Dict[str, Any]) -> list[str]:
     if tool_id == "dump_memories":
         target = (params.get("target") or "both").strip()
-        cmd = ["python3", "bin/dump_memory.py", "--target", target]
+        cmd = ["python3", str(ARCHIVE_BIN_DIR / "dump_memory.py"), "--target", target]
         if params.get("conversation_table"):
             cmd += ["--conversation-table", str(params["conversation_table"])]
         if params.get("ais_table"):
@@ -397,43 +403,56 @@ def _build_debug_command(tool_id: str, params: Dict[str, Any]) -> list[str]:
         return cmd
 
     if tool_id == "dump_transcript":
-        return ["python3", "bin/dump_memory.py", "--target", (params.get("target") or "short").strip()]
+        return [
+            "python3",
+            str(ARCHIVE_BIN_DIR / "dump_memory.py"),
+            "--target",
+            (params.get("target") or "short").strip(),
+        ]
 
     if tool_id == "dump_voice_profiles":
-        return ["python3", "bin/dump_voice_profiles.py", "--json"]
+        return ["python3", str(ARCHIVE_BIN_DIR / "dump_voice_profiles.py"), "--json"]
 
     if tool_id == "dump_face_profiles":
-        return ["python3", "bin/dump_face_profiles.py", "--json"]
+        return ["python3", str(ARCHIVE_BIN_DIR / "dump_face_profiles.py"), "--json"]
 
     if tool_id == "delete_voice":
         name = (params.get("name") or "").strip()
         if not name:
             raise HTTPException(status_code=400, detail="Voice name is required")
-        return ["python3", "bin/remove_voice_from_registry.py", "--name", name]
+        return ["python3", str(ARCHIVE_BIN_DIR / "remove_voice_from_registry.py"), "--name", name]
 
     if tool_id == "delete_face":
         name = (params.get("name") or "").strip()
         if not name:
             raise HTTPException(status_code=400, detail="Face name is required")
-        return ["python3", "bin/remove_face_from_registry.py", "--name", name]
+        return ["python3", str(ARCHIVE_BIN_DIR / "remove_face_from_registry.py"), "--name", name]
 
     if tool_id == "purge_registry":
         name = (params.get("name") or "*").strip() or "*"
-        return ["python3", "bin/unenroll_profiles.py", "--name", name, "--type", "both"]
+        return [
+            "python3",
+            str(ARCHIVE_BIN_DIR / "unenroll_profiles.py"),
+            "--name",
+            name,
+            "--type",
+            "both",
+        ]
 
     if tool_id == "tail_cloud_logs":
         stack = (params.get("stack") or STATE.selected_stack or "").strip()
         if not stack:
             raise HTTPException(status_code=400, detail="Provide a stack name or select one on the home page")
-        region_flag = f" --region {shlex.quote(STATE.aws_region)}" if STATE.aws_region else ""
-        cmd_str = f"timeout 20 bin/tail_cloud_logs.sh {shlex.quote(stack)}{region_flag}"
-        return ["bash", "-lc", cmd_str]
+        cmd = ["bash", str(ARCHIVE_BIN_DIR / "tail_cloud_logs.sh"), stack]
+        if STATE.aws_region:
+            cmd += ["--region", STATE.aws_region]
+        return cmd
 
     if tool_id == "print_stack_outputs":
         stack = (params.get("stack") or STATE.selected_stack or "").strip()
         if not stack:
             raise HTTPException(status_code=400, detail="Provide a stack name or select one on the home page")
-        cmd = ["python3", "bin/print_stack_outputs.py", stack]
+        cmd = ["python3", str(ARCHIVE_BIN_DIR / "print_stack_outputs.py"), stack]
         if STATE.aws_region:
             cmd += ["--region", STATE.aws_region]
         return cmd
@@ -527,12 +546,15 @@ def _list_stacks_by_status(prefix: str):
                 outputs = {}
                 agent_id = DEFAULT_AGENT_ID
 
-            endpoint = outputs.get("BrokerEndpointURL")
+            # New stacks output HubRestApiBase/HubWebSocketUrl; legacy stacks used BrokerEndpointURL.
+            endpoint = outputs.get("HubRestApiBase") or outputs.get("BrokerEndpointURL")
+            ws_url = outputs.get("HubWebSocketUrl")
             if endpoint:
                 stacks_available.append(
                     {
                         "name": stack_name,
                         "endpoint": endpoint,
+                        "ws_url": ws_url or "",
                         "table": outputs.get("AgentStateTableName", ""),
                         "api_id": outputs.get("ApiGatewayId", ""),
                         "agent_id": agent_id,
@@ -703,7 +725,7 @@ def select_stack(name: str):
         stack = cf.describe_stacks(StackName=name)["Stacks"][0]
         outputs = {o["OutputKey"]: o["OutputValue"] for o in stack.get("Outputs", [])}
         params = {p.get("ParameterKey"): p.get("ParameterValue") for p in stack.get("Parameters", [])}
-        endpoint = outputs.get("BrokerEndpointURL")
+        endpoint = outputs.get("HubRestApiBase") or outputs.get("BrokerEndpointURL")
     except Exception as e:
         logging.error("Error selecting stack %s: %s", name, e)
         endpoint = None
@@ -883,8 +905,8 @@ def deploy_agent(
             },
         )
 
-    # Build and deploy via SAM CLI
-    cmd_build = ["sam", "build"]
+    # Build and deploy via SAM CLI (run from repo root so template.yaml resolves)
+    cmd_build = ["sam", "build", "-t", "template.yaml"]
 
     cmd_deploy = [
         "sam",
@@ -934,7 +956,7 @@ def deploy_agent(
 
     def _stream_and_log(cmd):
         if not log_path:
-            subprocess.run(cmd, check=True, env=env)
+            subprocess.run(cmd, check=True, env=env, cwd=str(REPO_ROOT))
             return
 
         with log_path.open("a", encoding="utf-8") as fh:
@@ -946,6 +968,7 @@ def deploy_agent(
                 stderr=subprocess.STDOUT,
                 text=True,
                 env=env,
+                cwd=str(REPO_ROOT),
             )
             assert process.stdout is not None
             for line in process.stdout:
@@ -1088,13 +1111,18 @@ async def run_debug_tool(request: Request):
     params = data.get("params") or {}
     cmd = _build_debug_command(tool_id, params)
 
+    timeout_s = 120
+    if tool_id == "tail_cloud_logs":
+        # Keep the UI responsive and avoid relying on a system `timeout` binary.
+        timeout_s = 20
+
     try:
         proc = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             env=_debug_env(),
-            timeout=120,
+            timeout=timeout_s,
         )
     except FileNotFoundError:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Script not found", "output": ""})

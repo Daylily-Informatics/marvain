@@ -82,5 +82,27 @@ class TestOps(unittest.TestCase):
         self.assertNotIn("--since", joined)
 
 
+    def test_sam_logs_default_dry_run_does_not_use_name_flag(self) -> None:
+        emitted: list[str] = []
+
+        def cap(msg: str) -> None:
+            emitted.append(msg)
+
+        ctx = Ctx(
+            config_path=Path("/tmp/marvain.yaml"),
+            cfg={"envs": {"dev": {}}},
+            env=ResolvedEnv(env="dev", aws_profile="p", aws_region="r", stack_name="s", raw={}),
+        )
+
+        with mock.patch("marvain_cli.ops._conda_preflight", return_value=0), mock.patch(
+            "marvain_cli.ops._eprint", side_effect=cap
+        ):
+            rc = sam_logs(ctx, dry_run=True, functions=None, tail=False, since=None)
+        self.assertEqual(rc, 0)
+        joined = "\n".join(emitted)
+        self.assertIn(" sam logs ", joined)
+        self.assertNotIn("--name", joined)
+
+
 if __name__ == "__main__":
     unittest.main()

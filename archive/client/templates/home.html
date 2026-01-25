@@ -150,8 +150,10 @@
       {% for st in stacks %}
         <div class="card">
           <div><strong>{{ st.name }}</strong></div>
-          <div class="muted">endpoint: {{ st.endpoint }}</div>
-          <div class="muted">table: {{ st.table }} | api: {{ st.api_id }}</div>
+	        <div class="muted">hub rest: {{ st.endpoint }}</div>
+	        {% if st.ws_url %}
+	          <div class="muted">hub ws: {{ st.ws_url }}</div>
+	        {% endif %}
           <div class="row" style="margin-top:10px;">
             <form action="/select_stack" method="get">
               <input type="hidden" name="name" value="{{ st.name }}" />
@@ -166,7 +168,7 @@
         </div>
       {% endfor %}
     {% else %}
-      <div class="muted">No stacks found with a BrokerEndpointURL output.</div>
+	    <div class="muted">No stacks found with a HubRestApiBase (or legacy BrokerEndpointURL) output.</div>
     {% endif %}
 
     <h3 style="margin-bottom:4px; margin-top:14px;">Failed</h3>
