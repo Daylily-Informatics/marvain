@@ -193,12 +193,12 @@ Resources:
         - email
         - profile
       CallbackURLs:
-        - !Sub https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/auth/callback
+        - https://localhost/auth/callback
         - http://localhost:8000/auth/callback
       LogoutURLs:
-        - !Sub https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/logout
+        - https://localhost/logout
         - http://localhost:8000/logout
-        - !Sub https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/logged-out
+        - https://localhost/logged-out
         - http://localhost:8000/logged-out
 
   CognitoUserPoolDomain:
