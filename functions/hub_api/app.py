@@ -712,7 +712,7 @@ def _cognito_hosted_ui_base_url() -> str:
         return dom.rstrip("/")
 
     # Support passing the full hostname (without scheme) or just the domain prefix.
-    if ".auth." in dom and "amazoncognito.com" in dom:
+    if ".auth." in dom and dom.endswith(".amazoncognito.com"):
         return f"https://{dom}".rstrip("/")
 
     region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-west-2"
@@ -1092,6 +1092,7 @@ def gui_livekit_test(request: Request, space_id: str | None = None) -> Response:
         clear = bool(str(request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or "").strip())
         return _gui_redirect_to_login(request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear)
 
+    sid = str(space_id or "").strip()
     home_href = html.escape(_gui_path(request, "/"))
     logout_href = html.escape(_gui_path(request, "/logout"))
     token_url = _gui_path(request, "/livekit/token")
