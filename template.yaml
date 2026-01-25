@@ -311,13 +311,12 @@ Resources:
   # REST API (Hub)
   # -----------------------------
   HubApi:
-    Type: AWS::Serverless::Api
+    Type: AWS::ApiGateway::RestApi
     Properties:
-      StageName: !Ref StageName
-      Cors:
-        AllowMethods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
-        AllowHeaders: "'Content-Type,Authorization,X-Admin-Key'"
-        AllowOrigin: "'*'"
+      Name: !Sub ${AWS::StackName}-hub-api
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
 
   HubApiFunction:
     Type: AWS::Serverless::Function
@@ -407,6 +406,45 @@ Resources:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
         Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${HubApiFunction.Arn}/invocations
+
+  HubApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - HubApiMethod
+    Properties:
+      RestApiId: !Ref HubApi
+
+  HubApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref HubApi
+      DeploymentId: !Ref HubApiDeployment
+      StageName: !Ref StageName
+
+  # Add CORS support at the stage level
+  HubApiCorsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref HubApi
+      ResourceId: !Ref HubApiResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization,X-Admin-Key'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
 
   # -----------------------------
   # Planner (deliberative loop)

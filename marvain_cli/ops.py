@@ -533,8 +533,6 @@ def cognito_list_users(ctx: Ctx, *, dry_run: bool, limit: int = 60) -> dict[str,
         *aws_cli_args(ctx.env),
         "--user-pool-id",
         user_pool_id,
-        "--max-results",
-        str(int(limit)),
         "--output",
         "json",
     ]
