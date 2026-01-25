@@ -1,199 +1,224 @@
-# marvain — Whaddya-Want Rank‑4 Agent Skeleton
+# Agent Hub (AWS SAM) — Multimodal Personal Agent Hub + Satellites
 
-This repository is a **reference implementation** of a Rank‑4 agent skeleton:
-- **Broker Lambda** (`POST /agent`) for conversations
-- **Heartbeat Lambda** (EventBridge `rate(5 minutes)`) for background work
-- **Unified DynamoDB state + memory store**
-- **Shared Lambda layer** (`agent_core` + deps) + **Config layer** (prompts)
-- **FastAPI + Jinja2 GUI** for deploying/managing stacks and chatting with the agent
+This repository is a **concrete starter** for a "rank‑4+" multimodal personal agent hub:
 
-> This is intentionally a skeleton: you’re expected to adapt the toolset, prompts, planner, and action dispatch.
+- **Authoritative Hub** (single source of truth): identity graph, memory tiers, consent/policy, presence, sessions
+- **Satellites** (devices / awareness bubbles): authenticate as unique devices, send events, receive commands
+- **Autonomy**: scheduled ticks + background planner
+- **Tool execution**: permission-scoped, auditable
+- **Tamper-evident audit**: append-only objects in S3 Object Lock (WORM)
 
----
+AI components (not AWS-specific):
 
-## Prereqs
+- **OpenAI Realtime API**: low-latency speech-to-speech + multimodal I/O
+- **OpenAI Responses API**: deliberative planner + tool calling
+- Optional: **OpenAI Agents SDK** tracing
 
-### Local
-- Python **3.12**
-- `pip`
-- AWS CLI v2
-- AWS SAM CLI (`sam`)
-- An AWS account with access to:
-  - CloudFormation/Lambda/DynamoDB/EventBridge/IAM
-  - **Amazon Bedrock** (and the chosen `MODEL_ID`)
-  - (Optional) Amazon Polly
+Realtime media plane:
 
-### AWS credentials
-You need a configured AWS profile in `~/.aws/credentials` (or equivalent).
-
----
-
-## Quickstart (macOS / Ubuntu)
-
-### 1) Create venv + install deps
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 2) Initialize AWS env
-```bash
-source initwyw <AWS_PROFILE> <AWS_REGION>
-```
-
-### 3) Deploy the SAM stack
-```bash
-STACK_NAME=<your stack name>
-sam build --build-dir ".aws-${STACK_NAME}"
-sam deploy --guided --stack-name "$STACK_NAME" --template-file ".aws-${STACK_NAME}/build/template.yaml"
-```
-
-Notes:
-- `MODEL_ID` is configured via the SAM parameter `ModelIdParam`.
-- Default model ID is `meta.llama3-1-8b-instruct-v1:0`.
-- (Optional) set `AudioBucketName` to store Polly MP3s to S3 (requires S3 permissions).
-
-After deployment, CloudFormation outputs `BrokerEndpointURL` like:
-`https://<api-id>.execute-api.<region>.amazonaws.com/Prod/agent`
-
-### 4) Run the GUI (optional)
-```bash
-uvicorn client.gui:app --reload --port 8000
-```
-
-Open:
-- http://localhost:8000
-
-From the home page you can:
-- list agent stacks
-- select one to chat
-- delete a stack
-- deploy a stack (runs `sam build` + `sam deploy`)
-
----
-
-## Direct API usage
-
-Once deployed, you can call the Broker:
-
-```bash
-curl -sS -X POST "$BROKER_URL" \
-  -H "Content-Type: application/json" \
-  -H "X-Session-Id: demo-session" \
-  -d '{"text":"Hello. My name is Major.","channel":"text"}' | jq
-```
-
-Response schema:
-```json
-{
-  "reply_text": "...",
-  "actions": [],
-  "audio": { "url": "..."}   // optional
-}
-```
-
----
-
-## GUI usage (manual interface + chat)
-
-The FastAPI/Jinja2 GUI exposes two major workflows:
-
-1. **Manual interface (stack/deployment management)** — browse, create, and delete stacks, or jump to AWS consoles.
-2. **Chat GUI** — talk to a deployed broker (text or voice), switch ASR modes, and inspect request/response metadata.
-
-### 1) Manual interface
-
-From the home page (`/`):
-
-- **List stacks**: Fetches CloudFormation stacks matching the optional `AGENT_RESOURCE_STACK_PREFIX` (defaults to `marai-`). Stacks are grouped by status (available / creating / deleting / failed) to make it clear what you can select.
-- **Select a stack**: Choosing a stack reveals the API endpoint used for chat and a direct **AWS console link** for the stack so you can debug events/outputs.
-- **Delete**: Removes a selected stack (uses `cf.delete_stack` under the hood). A confirmation prompt appears in the browser before issuing the request.
-- **Deploy new stack** (`/deploy`):
-  1. Enter the stack name and optional `AGENT_RESOURCE_STACK_PREFIX` override.
-  2. The GUI runs `sam build` + `sam deploy --guided` with the generated build directory (`.aws-<STACK_NAME>`). Output streams to the page so you can watch progress.
-  3. When deployment finishes, the resulting broker endpoint is shown and the new stack is selectable on the home page.
-- **Settings** (`/settings`):
-  - Set `AWS_PROFILE` / `AWS_REGION` for subsequent requests.
-  - Toggle “Use s3_bucket in samconfig.toml” to force/skip the `samconfig.toml` S3 bucket (handy when bootstrapping a new environment).
-  - Adjust the stack prefix. The prefix is applied automatically when creating or selecting stacks.
-
-### 2) Chat GUI
-
-After selecting a stack, open `/chat` to talk to the broker:
-
-- **Text chat**: Enter text and send; responses appear in the thread. If the broker returns actions, they are rendered inline for debugging.
-- **Voice input**: Choose an ASR mode:
-  - **Server (AWS Transcribe Streaming)**: Requires locally configured AWS credentials with `transcribe:StartStreamTranscription*` permissions. The browser streams audio to the FastAPI server, which forwards to AWS Transcribe; final transcripts are sent to the broker.
-  - **Browser (Web Speech API)**: Uses the browser’s built-in recognizer; no AWS creds needed. Device selection is browser-dependent.
-- **Audio output**: If the broker returns `audio.url`, the GUI provides a play button so you can listen without leaving the page.
-- **Session management**: Each chat uses the `X-Session-Id` header with the current stack name by default. You can override the session ID in the UI to simulate multiple conversations.
-- **Endpoint override**: Advanced users can paste a broker URL directly to test alternate deployments without switching stacks.
-- **Debug panel**: Expand the request/response JSON to verify payloads, headers, and timing information when troubleshooting.
-
----
-
-## Local-only development notes
-
-- This skeleton is built for **AWS deployment**. The GUI can talk to a deployed stack.
-- The chat UI supports **two ASR modes**:
-  - **Server (AWS Transcribe Streaming)**: true mic selection, optional speaker routing for playback,
-    push-to-talk, and continuous ambient listening. Audio is captured in the browser and streamed to the
-    local FastAPI server over a websocket; the server streams to AWS Transcribe and (on final) forwards
-    the transcript to the deployed Broker.
-  - **Browser (Web Speech API fallback)**: uses the built-in browser recognizer (Chrome/Edge);
-    device selection is not guaranteed.
-
-### AWS permissions for server-side ASR
-If you use **Server (AWS Transcribe)** mode, the AWS credentials/profile used to run the GUI must be
-allowed to start a streaming transcription.
-
-In practice that means granting (at minimum) a Transcribe streaming action to the profile/role,
-e.g. `transcribe:StartStreamTranscriptionWebSocket` (some environments use `transcribe:StartStreamTranscription`).
-
-This does **not** change the SAM-deployed stack permissions; it's purely for the local GUI.
-
-A minimal identity policy looks like:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "transcribe:StartStreamTranscriptionWebSocket",
-        "transcribe:StartStreamTranscription"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-```
-
----
+- Designed to pair with **LiveKit** (Cloud first or self-host later). The Hub provides the sideband control channel and persistent state.
 
 ## Repo layout
 
-```text
-template.yaml                # SAM template (DDB + Lambdas + layers + API + schedule)
-lambda/broker/app.py         # Broker Lambda
-lambda/agent_heartbeat/handler.py
-layers/shared/               # Shared deps + agent_core (SAM layer with Makefile build)
-layers/config/prompts/       # Prompt templates (SAM config layer)
-client/                      # FastAPI + Jinja2 GUI
-```
+- `template.yaml` — SAM/CloudFormation stack (Hub REST API, WebSocket API, Aurora Postgres Serverless v2 + Data API, SQS, S3, IAM)
+- `layers/shared` — shared python library (RDS Data API, auth, policy, audit)
+- `functions/hub_api` — FastAPI on Lambda (REST)
+- `functions/ws_*` — WebSocket handlers (connect/disconnect/message)
+- `functions/planner` — consumes transcript events, calls OpenAI Responses, writes memories + proposed actions
+- `functions/tool_runner` — executes approved actions (stub)
+- `apps/agent_worker` — container skeleton for LiveKit Agent + OpenAI Realtime
+- `sql/` — DB schema
+- `scripts/` — helper scripts (DB init, backup/export)
 
----
+## Environment (Conda; primary)
 
-## Cleanup
+This repo uses a **Conda** env named `marvain` (Python **3.11**, matching the Lambda runtime in `template.yaml`).
 
-Delete the stack (GUI “Delete” button) or via CLI:
 ```bash
-aws cloudformation delete-stack --stack-name <STACK_NAME>
+conda env create -f config/marvain_conda.yaml
+. ./marvain_activate
+marvain doctor
 ```
 
----
+Escape hatch (not recommended): set `MARVAIN_ALLOW_VENV=1` to bypass Conda checks.
 
-## License
-MIT (see LICENSE).
+## Delete everything (reset) before reinstall/redeploy
+
+If you want a true “start over”, follow `QUICKSTART.md` (full workflow). The commands below are the same idea, but inlined here for convenience.
+
+> Safety: the commands below can delete AWS resources and local state.
+
+### A) AWS: delete the CloudFormation stack
+
+1) (Recommended) capture the bucket names **before** teardown:
+
+```sh
+. ./marvain_activate
+./bin/marvain --profile <aws-profile> --region <aws-region> monitor outputs
+# optional: write outputs into your config for later reference
+./bin/marvain --profile <aws-profile> --region <aws-region> monitor outputs --write-config
+```
+
+2) Tear down the stack:
+
+```sh
+./bin/marvain --profile <aws-profile> --region <aws-region> teardown --yes --wait
+```
+
+### B) AWS: best-effort delete retained S3 buckets
+
+In `template.yaml`, both buckets are configured with `DeletionPolicy: Retain`:
+
+- `ArtifactBucket` (Retain)
+- `AuditBucket` (Retain + **S3 Object Lock**, default 10-year governance retention)
+
+That means stack deletion will **not** delete them.
+
+If you captured `ArtifactBucketName` / `AuditBucketName`, try:
+
+```sh
+# Replace these with values printed by: ./bin/marvain ... monitor outputs
+ARTIFACT_BUCKET="..."
+AUDIT_BUCKET="..."
+
+# Artifact bucket: usually deletable once emptied
+aws s3 rb "s3://${ARTIFACT_BUCKET}" --force
+
+# Audit bucket: may fail if it contains Object-Lock-protected objects
+aws s3 rb "s3://${AUDIT_BUCKET}" --force
+```
+
+#### If you forgot to run `monitor outputs`
+
+If the stack still exists, you can often recover the bucket names from CloudFormation outputs:
+
+```sh
+STACK_NAME="marvain-<user>-<env>"  # e.g. marvain-major-dev (from your config)
+aws cloudformation describe-stacks \
+  --stack-name "${STACK_NAME}" \
+  --query 'Stacks[0].Outputs[?OutputKey==`ArtifactBucketName` || OutputKey==`AuditBucketName`].[OutputKey,OutputValue]' \
+  --output table
+```
+
+If the stack is already deleted, you have to fall back to heuristics (less reliable). A common one is that CloudFormation-generated bucket names include the stack name, so you can list buckets and filter by substring:
+
+```sh
+STACK_NAME="marvain-<user>-<env>"  # must match the stack name you deployed
+aws s3api list-buckets --query 'Buckets[].Name' --output text \
+  | tr '\t' '\n' \
+  | grep "${STACK_NAME}" || true
+```
+
+If you get multiple candidates, you can identify the **audit** bucket by checking whether Object Lock is enabled (it will typically succeed for the audit bucket and fail for the artifact bucket):
+
+```sh
+for b in $(aws s3api list-buckets --query 'Buckets[].Name' --output text | tr '\t' '\n' | grep "${STACK_NAME}" || true); do
+  if aws s3api get-bucket-object-lock-configuration --bucket "$b" >/dev/null 2>&1; then
+    echo "${b}  (ObjectLock: enabled)"
+  else
+    echo "${b}  (ObjectLock: not enabled / unknown)"
+  fi
+done
+```
+
+If `AuditBucket` deletion fails due to Object Lock retention, the practical “reset” approach is:
+
+- leave the audit bucket alone, and/or
+- deploy a new stack name (fresh resources) instead of trying to hard-delete locked audit history.
+
+### C) Local: delete config, build artifacts, and the Conda env
+
+1) Remove local config (this deletes your saved device token):
+
+```sh
+# OPTIONAL: backup first
+cp -v "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain.yaml" \
+  "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain.yaml.bak" 2>/dev/null || true
+
+# Delete config (XDG + legacy fallbacks)
+rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain.yaml" \
+      "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/config.yaml" \
+      "$HOME/.marvain/config.yaml"
+```
+
+2) Remove repo build artifacts:
+
+```sh
+rm -rf .aws-sam
+```
+
+3) Remove the Conda environment:
+
+```sh
+conda env remove -n marvain
+```
+
+## Deploy (AWS)
+
+Prereqs:
+
+- Conda (Miniconda/Mambaforge)
+- AWS credentials configured (profile/region)
+- SAM CLI
+- Docker
+
+### 1) Build
+
+```bash
+./bin/marvain build
+./bin/marvain build --dry-run
+```
+
+### 2) Deploy (guided)
+
+```bash
+./bin/marvain config init --profile <aws-profile> --region <aws-region> --env dev
+./bin/marvain deploy
+./bin/marvain deploy --dry-run
+```
+
+Notes:
+
+- `marvain config init` writes to `${XDG_CONFIG_HOME:-~/.config}/marvain/marvain.yaml` by default.
+- Treat that config as **secret** once you run `marvain bootstrap` (it will store a device token).
+- If you choose to write a repo-local config (e.g. `--write marvain.yaml`), it is gitignored.
+
+### 3) Initialize the database schema (pgvector + tables)
+
+```bash
+./bin/marvain init db
+```
+
+### 4) Bootstrap your first agent/space/device
+
+```bash
+./bin/marvain bootstrap --agent-name Forge --space-name home
+./bin/marvain bootstrap --dry-run --agent-name Forge --space-name home
+```
+
+### 5) Open the deployed GUI
+
+```bash
+# Print the deployed GUI URL (HubRestApiBase) and open it in your browser.
+./bin/marvain gui
+```
+
+## Run the realtime agent worker (local)
+
+This repo does not ship a full satellite app yet; it ships a worker skeleton.
+
+```bash
+cd apps/agent_worker
+export LIVEKIT_URL=...
+export LIVEKIT_API_KEY=...
+export LIVEKIT_API_SECRET=...
+export OPENAI_API_KEY=...
+export HUB_API_BASE=...
+python -m worker
+```
+
+## Notes
+
+- **Privacy mode** is enforced at the Hub: when ON, events are accepted but not persisted or queued.
+- Device auth uses opaque device tokens (hash stored server-side). Swap to Cognito/IoT later if desired.
+- Audit is written to an S3 Object Lock bucket with a hash chain (verify offline).

@@ -1,0 +1,32 @@
+version: 1
+default_env: dev
+
+envs:
+  dev:
+    aws_profile: "REPLACE_ME"
+    aws_region: "us-west-2"
+
+    # Suggested convention: marvain-<git-user-name>-<env>
+    stack_name: "marvain-REPLACE_ME-dev"
+
+    sam:
+      template: "template.yaml"
+      capabilities:
+        - "CAPABILITY_IAM"
+      parameter_overrides:
+        StageName: "dev"
+        DbName: "agenthub"
+        AuroraMinACU: "0.5"
+        AuroraMaxACU: "2"
+        PlannerModel: "gpt-4.1-mini"
+
+    # Populated by `marvain bootstrap` / `marvain monitor outputs`
+    resources: {}
+
+    # Populated by `marvain bootstrap`
+    bootstrap:
+      agent_id: null
+      space_id: null
+      device_id: null
+      device_name: null
+      device_token: null
