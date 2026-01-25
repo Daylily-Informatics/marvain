@@ -56,7 +56,8 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
         try:
             msg = json.loads(body)
         except Exception:
-            logger.warning("Bad message body: %s", body)
+            safe_body = str(body).replace("\r", "").replace("\n", "")
+            logger.warning("Bad message body: %s", safe_body)
             continue
 
         action_id = msg.get("action_id")
