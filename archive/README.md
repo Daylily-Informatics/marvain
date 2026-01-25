@@ -5,7 +5,7 @@
 This `archive/` tree is **legacy** and kept mainly for reference.
 
 - **Supported workflow**: use the root CLI: `./bin/marvain` (Conda env, YAML config under `~/.config/marvain/`).
-- **Legacy GUI**: still runnable via `./bin/marvain gui` (best-effort). It’s useful for stack discovery and viewing CloudFormation outputs.
+- **Legacy GUI**: removed. Use the Hub-embedded GUI via the deployed `HubRestApiBase` URL.
 - Parts of this README (especially the “Broker”/chat semantics) may not match the current Hub architecture.
 
 This repository is a **reference implementation** of a Rank‑4 agent skeleton:
@@ -13,7 +13,7 @@ This repository is a **reference implementation** of a Rank‑4 agent skeleton:
 - **Heartbeat Lambda** (EventBridge `rate(5 minutes)`) for background work
 - **Unified DynamoDB state + memory store**
 - **Shared Lambda layer** (`agent_core` + deps) + **Config layer** (prompts)
-- **FastAPI + Jinja2 GUI** for deploying/managing stacks and chatting with the agent
+- **Hub-embedded GUI** (served by the Hub API; legacy Jinja2 GUI removed)
 
 > This is intentionally a skeleton: you’re expected to adapt the toolset, prompts, planner, and action dispatch.
 
@@ -69,18 +69,15 @@ After deployment, the **current** CloudFormation template outputs:
 
 Legacy stacks may have `BrokerEndpointURL`.
 
-### 4) Run the GUI (optional)
+### 4) Open the GUI (current)
+
+The current GUI is served by the Hub API and is accessed via the deployed API
+Gateway base URL.
+
 ```bash
-# Preferred (uses the repo's CLI wrapper):
+# Print the deployed GUI URL (HubRestApiBase)
 ./bin/marvain gui
-
-# Or run directly (from the archive dir so `client.gui` imports):
-cd archive
-python3 -m uvicorn client.gui:app --reload --port 8000
 ```
-
-Open:
-- http://localhost:8000
 
 From the home page you can:
 - list agent stacks
@@ -198,7 +195,7 @@ lambda/broker/app.py         # Broker Lambda
 lambda/agent_heartbeat/handler.py
 layers/shared/               # Shared deps + agent_core (SAM layer with Makefile build)
 layers/config/prompts/       # Prompt templates (SAM config layer)
-client/                      # FastAPI + Jinja2 GUI
+client/                      # (legacy GUI removed)
 ```
 
 ---

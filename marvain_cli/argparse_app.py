@@ -117,7 +117,7 @@ def run(argv: list[str]) -> int:
     bs.add_argument("--force", action="store_true")
     bs.add_argument("--dry-run", action="store_true")
 
-    gui = sub.add_parser("gui", help="Run the local GUI (archive/client/gui.py)")
+    gui = sub.add_parser("gui", help="Show the deployed Hub GUI URL (legacy local GUI removed)")
     gui.add_argument("--host", default="127.0.0.1")
     gui.add_argument("--port", type=int, default=8000)
     gui.add_argument("--reload", action="store_true")

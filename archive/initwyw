@@ -310,7 +310,7 @@ _main() {
     echo "  MARVAIN_ROOT=$MARVAIN_ROOT"
     echo "  MARVAIN_OS=$MARVAIN_OS"
     echo ""
-    _log_info "Run 'python -m uvicorn client.gui:app --reload' to start the GUI"
+    _log_info "Legacy local GUI removed. From repo root: './bin/marvain gui' prints the deployed GUI URL."
     echo ""
 
     return 0

@@ -344,8 +344,8 @@ main() {
     echo "  1. Source the initialization script:"
     echo "     source initwyw <AWS_PROFILE> <AWS_REGION>"
     echo ""
-    echo "  2. Start the GUI server:"
-    echo "     python -m uvicorn client.gui:app --reload"
+    echo "  2. Open the Hub GUI (legacy local GUI removed):"
+    echo "     ./bin/marvain gui"
     echo ""
 }
 
