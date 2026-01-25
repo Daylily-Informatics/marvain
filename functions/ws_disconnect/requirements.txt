@@ -1,0 +1,1 @@
+# No third-party deps; uses stdlib + boto3 (available in Lambda) + shared layer.

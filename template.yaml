@@ -1,221 +1,696 @@
+AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: marvain - Whaddya-Want Rank-4 agent skeleton (Broker + Heartbeat + unified memory)
+Description: Agent Hub (Forge) - authoritative personal agent hub with satellites (SAM)
+
+Parameters:
+  StageName:
+    Type: String
+    Default: dev
+  DbName:
+    Type: String
+    Default: agenthub
+  AuroraMinACU:
+    Type: Number
+    Default: 0.5
+  AuroraMaxACU:
+    Type: Number
+    Default: 2
+  PlannerModel:
+    Type: String
+    Default: gpt-4.1-mini
+
+  CognitoDomainPrefix:
+    Type: String
+    Description: Cognito hosted UI domain prefix (must be globally-unique within the AWS region).
+    Default: marvain-dev
+
+  LiveKitUrl:
+    Type: String
+    Description: LiveKit server URL (e.g. wss://your.livekit.host or https://...). Leave empty to disable LiveKit token minting.
+    Default: ""
 
 Globals:
   Function:
-    Runtime: python3.12
+    Runtime: python3.11
     Timeout: 30
     MemorySize: 512
-
-Parameters:
-  AgentIdParam:
-    Type: String
-    Default: "marvain-agent"
-    Description: Logical agent id (partition key prefix)
-  ModelIdParam:
-    Type: String
-    Default: "meta.llama3-1-8b-instruct-v1:0"
-    Description: Bedrock model ID (e.g., meta.llama3-1-8b-instruct-v1:0)
-  AgentVoiceIdParam:
-    Type: String
-    Default: "Matthew"
-    Description: Default Polly voice id (optional)
-  AgentVoiceEngineParam:
-    Type: String
-    Default: ""
-    Description: Default Polly voice engine (standard/neural/generative)
-  AudioBucketName:
-    Type: String
-    Default: ""
-    Description: (Optional) S3 bucket name to save synthesized audio
-  VerboseLogging:
-    Type: String
-    Default: "0"
-    AllowedValues:
-      - "0"
-      - "1"
-    Description: Set to 1 to enable verbose logging in deployed Lambdas
-
-Conditions:
-  AudioBucketProvided: !Not [!Equals [!Ref AudioBucketName, ""]]
+    Tracing: Active
+    Environment:
+      Variables:
+        STAGE: !Ref StageName
 
 Resources:
-  AgentStateTable:
+  # -----------------------------
+  # Networking (minimal VPC for Aurora)
+  # -----------------------------
+  HubVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.20.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-vpc
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref HubVpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.20.0.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-priv-a
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref HubVpc
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.20.1.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-priv-b
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref HubVpc
+
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTable
+
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${AWS::StackName} Aurora SG
+      VpcId: !Ref HubVpc
+
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for AgentHub Aurora
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+
+  # -----------------------------
+  # Secrets
+  # -----------------------------
+  DbCredentialsSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${AWS::StackName}/db-credentials
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"agenthub"}'
+        GenerateStringKey: password
+        ExcludePunctuation: true
+        PasswordLength: 32
+
+  AdminApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${AWS::StackName}/admin-api-key
+      GenerateSecretString:
+        SecretStringTemplate: '{"admin_api_key":""}'
+        GenerateStringKey: admin_api_key
+        PasswordLength: 40
+        ExcludePunctuation: true
+
+  OpenAISecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${AWS::StackName}/openai
+      Description: Store your OpenAI API key as {"api_key":"..."}
+      SecretString: '{"api_key":"REPLACE_ME"}'
+
+  LiveKitSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${AWS::StackName}/livekit
+      Description: Store your LiveKit credentials as {"api_key":"...","api_secret":"..."}
+      SecretString: '{"api_key":"REPLACE_ME","api_secret":"REPLACE_ME"}'
+
+  # -----------------------------
+  # Cognito (human auth)
+  # -----------------------------
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub ${AWS::StackName}-users
+      UsernameAttributes:
+        - email
+      UsernameConfiguration:
+        CaseSensitive: false
+      AutoVerifiedAttributes:
+        - email
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub ${AWS::StackName}-public
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      SupportedIdentityProviders:
+        - COGNITO
+      ExplicitAuthFlows:
+        - ALLOW_ADMIN_USER_PASSWORD_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      CallbackURLs:
+        - !Sub https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/auth/callback
+        - http://localhost:8000/auth/callback
+      LogoutURLs:
+        - !Sub https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/logout
+        - http://localhost:8000/logout
+        - !Sub https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/logged-out
+        - http://localhost:8000/logged-out
+
+  CognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref CognitoDomainPrefix
+      UserPoolId: !Ref CognitoUserPool
+
+  # -----------------------------
+  # Aurora PostgreSQL Serverless v2 + Data API
+  # -----------------------------
+  AuroraCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora-postgresql
+      DatabaseName: !Ref DbName
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref DbSecurityGroup
+      StorageEncrypted: true
+      MasterUsername: !Sub '{{resolve:secretsmanager:${DbCredentialsSecret}:SecretString:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DbCredentialsSecret}:SecretString:password}}'
+      EnableHttpEndpoint: true
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: !Ref AuroraMinACU
+        MaxCapacity: !Ref AuroraMaxACU
+
+  AuroraInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: aurora-postgresql
+      DBClusterIdentifier: !Ref AuroraCluster
+      DBInstanceClass: db.serverless
+
+  # -----------------------------
+  # S3 buckets
+  # -----------------------------
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  AuditBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      ObjectLockEnabled: true
+      VersioningConfiguration:
+        Status: Enabled
+      ObjectLockConfiguration:
+        ObjectLockEnabled: Enabled
+        Rule:
+          DefaultRetention:
+            Mode: GOVERNANCE
+            Days: 3650
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # -----------------------------
+  # Queues
+  # -----------------------------
+  TranscriptQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 60
+
+  ActionQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 60
+
+  # -----------------------------
+  # WebSocket connection registry
+  # -----------------------------
+  WsConnectionsTable:
     Type: AWS::DynamoDB::Table
     Properties:
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
-        - AttributeName: pk
-          AttributeType: S
-        - AttributeName: sk
-          AttributeType: S
-        - AttributeName: gsi1pk
-          AttributeType: S
-        - AttributeName: gsi1sk
-          AttributeType: S
-        - AttributeName: gsi2pk
-          AttributeType: S
-        - AttributeName: gsi2sk
+        - AttributeName: connection_id
           AttributeType: S
       KeySchema:
-        - AttributeName: pk
+        - AttributeName: connection_id
           KeyType: HASH
-        - AttributeName: sk
-          KeyType: RANGE
-      GlobalSecondaryIndexes:
-        - IndexName: gsi1
-          KeySchema:
-            - AttributeName: gsi1pk
-              KeyType: HASH
-            - AttributeName: gsi1sk
-              KeyType: RANGE
-          Projection:
-            ProjectionType: ALL
-        # GSI2 for speaker-specific queries
-        - IndexName: gsi2
-          KeySchema:
-            - AttributeName: gsi2pk
-              KeyType: HASH
-            - AttributeName: gsi2sk
-              KeyType: RANGE
-          Projection:
-            ProjectionType: ALL
 
-  SharedDependenciesLayer:
+  # -----------------------------
+  # Lambda layer
+  # -----------------------------
+  SharedLayer:
     Type: AWS::Serverless::LayerVersion
     Properties:
-      LayerName: !Sub "${AWS::StackName}-shared-deps"
-      Description: "Shared dependencies and core logic for marvain agent"
-      ContentUri: layers/shared
-      CompatibleRuntimes: [python3.12]
-      RetentionPolicy: Delete
-    Metadata:
-      BuildMethod: makefile
+      LayerName: !Sub ${AWS::StackName}-shared
+      ContentUri: layers/shared/
+      CompatibleRuntimes:
+        - python3.11
 
-  AgentConfigLayer:
-    Type: AWS::Serverless::LayerVersion
+  # -----------------------------
+  # REST API (Hub)
+  # -----------------------------
+  HubApi:
+    Type: AWS::Serverless::Api
     Properties:
-      LayerName: !Sub "${AWS::StackName}-config"
-      Description: "Agent configuration (prompts, etc.)"
-      ContentUri: layers/config
-      CompatibleRuntimes: [python3.12]
-      RetentionPolicy: Delete
+      StageName: !Ref StageName
+      Cors:
+        AllowMethods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization,X-Admin-Key'"
+        AllowOrigin: "'*'"
 
-  BrokerFunction:
+  HubApiFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "${AWS::StackName}-broker"
-      CodeUri: lambda/broker/
-      Handler: app.handler
+      CodeUri: functions/hub_api/
+      Handler: lambda_handler.handler
       Layers:
-        - !Ref SharedDependenciesLayer
-        - !Ref AgentConfigLayer
+        - !Ref SharedLayer
       Environment:
         Variables:
-          MODEL_ID: !Ref ModelIdParam
-          AGENT_STATE_TABLE: !Ref AgentStateTable
-          AGENT_ID: !Ref AgentIdParam
-          AGENT_VOICE_ID: !Ref AgentVoiceIdParam
-          AGENT_VOICE_ENGINE: !Ref AgentVoiceEngineParam
-          AUDIO_BUCKET: !Ref AudioBucketName
-          VERBOSE: !Ref VerboseLogging
+          DB_RESOURCE_ARN: !GetAtt AuroraCluster.DBClusterArn
+          DB_SECRET_ARN: !Ref DbCredentialsSecret
+          DB_NAME: !Ref DbName
+          TRANSCRIPT_QUEUE_URL: !Ref TranscriptQueue
+          ACTION_QUEUE_URL: !Ref ActionQueue
+          AUDIT_BUCKET: !Ref AuditBucket
+          ARTIFACT_BUCKET: !Ref ArtifactBucket
+          ADMIN_SECRET_ARN: !Ref AdminApiKeySecret
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+          COGNITO_APP_CLIENT_ID: !Ref CognitoUserPoolClient
+          COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
+          COGNITO_DOMAIN: !Ref CognitoDomainPrefix
+          LIVEKIT_URL: !Ref LiveKitUrl
+          LIVEKIT_SECRET_ARN: !Ref LiveKitSecret
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AgentStateTable
+        - AWSLambdaBasicExecutionRole
         - Statement:
-            - Sid: BedrockAccess
-              Effect: Allow
+            - Effect: Allow
               Action:
-                - bedrock:InvokeModel
-                - bedrock:InvokeModelWithResponseStream
-                - bedrock:Converse
-                - bedrock:ConverseStream
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+                - rds-data:BeginTransaction
+                - rds-data:CommitTransaction
+                - rds-data:RollbackTransaction
               Resource: "*"
-            - Sid: PollyAccess
-              Effect: Allow
-              Action: polly:SynthesizeSpeech
-              Resource: "*"
-        - !If
-          - AudioBucketProvided
-          - Statement:
-              - Sid: S3AudioAccess
-                Effect: Allow
-                Action:
-                  - s3:PutObject
-                  - s3:GetObject
-                  - s3:DeleteObject
-                  - s3:ListBucket
-                  - s3:HeadObject
-                Resource:
-                  - !Sub "arn:aws:s3:::${AudioBucketName}"
-                  - !Sub "arn:aws:s3:::${AudioBucketName}/*"
-          - !Ref AWS::NoValue
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DbCredentialsSecret
+                - !Ref AdminApiKeySecret
+                - !Ref OpenAISecret
+                - !Ref LiveKitSecret
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource:
+                - !GetAtt TranscriptQueue.Arn
+                - !GetAtt ActionQueue.Arn
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+                - s3:GetObject
+              Resource:
+                - !Sub ${AuditBucket.Arn}/*
+                - !Sub ${ArtifactBucket.Arn}/*
+            - Effect: Allow
+              Action:
+                - cognito-idp:GetUser
+                - cognito-idp:ListUsers
+              Resource: !GetAtt CognitoUserPool.Arn
       Events:
-        ApiRequest:
+        ProxyApi:
           Type: Api
           Properties:
-            Path: /agent
-            Method: post
+            RestApiId: !Ref HubApi
+            Path: /{proxy+}
+            Method: ANY
 
-  HeartbeatFunction:
+  # -----------------------------
+  # Planner (deliberative loop)
+  # -----------------------------
+  PlannerFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "${AWS::StackName}-heartbeat"
-      CodeUri: lambda/agent_heartbeat/
+      CodeUri: functions/planner/
       Handler: handler.handler
+      Timeout: 60
+      MemorySize: 1024
       Layers:
-        - !Ref SharedDependenciesLayer
-        - !Ref AgentConfigLayer
+        - !Ref SharedLayer
       Environment:
         Variables:
-          MODEL_ID: !Ref ModelIdParam
-          AGENT_STATE_TABLE: !Ref AgentStateTable
-          AGENT_ID: !Ref AgentIdParam
-          VERBOSE: !Ref VerboseLogging
+          DB_RESOURCE_ARN: !GetAtt AuroraCluster.DBClusterArn
+          DB_SECRET_ARN: !Ref DbCredentialsSecret
+          DB_NAME: !Ref DbName
+          ACTION_QUEUE_URL: !Ref ActionQueue
+          AUDIT_BUCKET: !Ref AuditBucket
+          OPENAI_SECRET_ARN: !Ref OpenAISecret
+          PLANNER_MODEL: !Ref PlannerModel
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref AgentStateTable
+        - AWSLambdaBasicExecutionRole
         - Statement:
-            - Sid: BedrockAccessHB
-              Effect: Allow
+            - Effect: Allow
               Action:
-                - bedrock:InvokeModel
-                - bedrock:InvokeModelWithResponseStream
-                - bedrock:Converse
-                - bedrock:ConverseStream
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+                - rds-data:BeginTransaction
+                - rds-data:CommitTransaction
+                - rds-data:RollbackTransaction
               Resource: "*"
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DbCredentialsSecret
+                - !Ref OpenAISecret
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource:
+                - !GetAtt ActionQueue.Arn
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource:
+                - !Sub ${AuditBucket.Arn}/*
+      Events:
+        TranscriptQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt TranscriptQueue.Arn
+            BatchSize: 5
 
-  HeartbeatRule:
-    Type: AWS::Events::Rule
+  # -----------------------------
+  # Tool Runner (execution plane)
+  # -----------------------------
+  ToolRunnerFunction:
+    Type: AWS::Serverless::Function
     Properties:
-      Name: !Sub "${AWS::StackName}-heartbeat-rule"
-      ScheduleExpression: rate(5 minutes)
-      State: ENABLED
-      Targets:
-        - Arn: !GetAtt HeartbeatFunction.Arn
-          Id: HeartbeatTarget
+      CodeUri: functions/tool_runner/
+      Handler: handler.handler
+      Timeout: 60
+      MemorySize: 512
+      Layers:
+        - !Ref SharedLayer
+      Environment:
+        Variables:
+          DB_RESOURCE_ARN: !GetAtt AuroraCluster.DBClusterArn
+          DB_SECRET_ARN: !Ref DbCredentialsSecret
+          DB_NAME: !Ref DbName
+          AUDIT_BUCKET: !Ref AuditBucket
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+                - rds-data:BeginTransaction
+                - rds-data:CommitTransaction
+                - rds-data:RollbackTransaction
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DbCredentialsSecret
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource:
+                - !Sub ${AuditBucket.Arn}/*
+      Events:
+        ActionQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ActionQueue.Arn
+            BatchSize: 5
 
-  HeartbeatLambdaInvokePermission:
+  # -----------------------------
+  # WebSocket API (sideband control channel)
+  # -----------------------------
+  WsApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub ${AWS::StackName}-ws
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: "$request.body.action"
+
+  WsConnectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/ws_connect/
+      Handler: handler.handler
+      Layers:
+        - !Ref SharedLayer
+      Environment:
+        Variables:
+          WS_TABLE: !Ref WsConnectionsTable
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WsConnectionsTable
+
+  WsDisconnectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/ws_disconnect/
+      Handler: handler.handler
+      Layers:
+        - !Ref SharedLayer
+      Environment:
+        Variables:
+          WS_TABLE: !Ref WsConnectionsTable
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WsConnectionsTable
+
+  WsMessageFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/ws_message/
+      Handler: handler.handler
+      Layers:
+        - !Ref SharedLayer
+      Environment:
+        Variables:
+          WS_TABLE: !Ref WsConnectionsTable
+          DB_RESOURCE_ARN: !GetAtt AuroraCluster.DBClusterArn
+          DB_SECRET_ARN: !Ref DbCredentialsSecret
+          DB_NAME: !Ref DbName
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+          COGNITO_APP_CLIENT_ID: !Ref CognitoUserPoolClient
+          COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
+          COGNITO_DOMAIN: !Ref CognitoDomainPrefix
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WsConnectionsTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DbCredentialsSecret
+            - Effect: Allow
+              Action:
+                - execute-api:ManageConnections
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - cognito-idp:GetUser
+              Resource: !GetAtt CognitoUserPool.Arn
+
+  WsConnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WsApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WsConnectFunction.Arn}/invocations
+
+  WsDisconnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WsApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WsDisconnectFunction.Arn}/invocations
+
+  WsMessageIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WsApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WsMessageFunction.Arn}/invocations
+
+  WsConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WsApi
+      RouteKey: $connect
+      AuthorizationType: NONE
+      Target: !Join [ '/', [ 'integrations', !Ref WsConnectIntegration ] ]
+
+  WsDisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WsApi
+      RouteKey: $disconnect
+      AuthorizationType: NONE
+      Target: !Join [ '/', [ 'integrations', !Ref WsDisconnectIntegration ] ]
+
+  WsDefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WsApi
+      RouteKey: $default
+      AuthorizationType: NONE
+      Target: !Join [ '/', [ 'integrations', !Ref WsMessageIntegration ] ]
+
+  WsDeployment:
+    Type: AWS::ApiGatewayV2::Deployment
+    DependsOn:
+      - WsConnectRoute
+      - WsDisconnectRoute
+      - WsDefaultRoute
+    Properties:
+      ApiId: !Ref WsApi
+
+  WsStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref WsApi
+      StageName: !Ref StageName
+      DeploymentId: !Ref WsDeployment
+
+  WsConnectPermission:
     Type: AWS::Lambda::Permission
     Properties:
-      FunctionName: !GetAtt HeartbeatFunction.Arn
       Action: lambda:InvokeFunction
-      Principal: events.amazonaws.com
-      SourceArn: !GetAtt HeartbeatRule.Arn
+      FunctionName: !Ref WsConnectFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WsApi}/*/$connect
+
+  WsDisconnectPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref WsDisconnectFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WsApi}/*/$disconnect
+
+  WsDefaultPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref WsMessageFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WsApi}/*/$default
 
 Outputs:
-  BrokerEndpointURL:
-    Description: "API Gateway endpoint for the agent broker"
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/agent"
-  ApiGatewayId:
-    Description: "API Gateway REST API ID"
-    Value: !Ref ServerlessRestApi
-  AgentStateTableName:
-    Description: "DynamoDB Agent State Table name"
-    Value: !Ref AgentStateTable
-  BrokerFunctionArn:
-    Description: "Broker Lambda ARN"
-    Value: !GetAtt BrokerFunction.Arn
-  HeartbeatFunctionArn:
-    Description: "Heartbeat Lambda ARN"
-    Value: !GetAtt HeartbeatFunction.Arn
+  HubRestApiBase:
+    Description: Base URL for Hub REST API
+    Value: !Sub https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
+  HubWebSocketUrl:
+    Description: WebSocket URL for sideband control channel
+    Value: !Sub wss://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
+  AdminApiKeySecretArn:
+    Description: Secrets Manager ARN containing admin API key
+    Value: !Ref AdminApiKeySecret
+  OpenAISecretArn:
+    Description: Secrets Manager ARN containing OpenAI API key placeholder
+    Value: !Ref OpenAISecret
+  LiveKitSecretArn:
+    Description: Secrets Manager ARN containing LiveKit API key/secret placeholder
+    Value: !Ref LiveKitSecret
+  DbClusterArn:
+    Description: Aurora cluster ARN (Data API resourceArn)
+    Value: !GetAtt AuroraCluster.DBClusterArn
+  DbSecretArn:
+    Description: Aurora credentials secret ARN (Data API secretArn)
+    Value: !Ref DbCredentialsSecret
+  DbName:
+    Description: Database name
+    Value: !Ref DbName
+  ArtifactBucketName:
+    Description: Bucket for artifacts
+    Value: !Ref ArtifactBucket
+  AuditBucketName:
+    Description: Bucket for tamper-evident audit log (Object Lock)
+    Value: !Ref AuditBucket
+
+  CognitoUserPoolId:
+    Description: Cognito User Pool ID for human authentication
+    Value: !Ref CognitoUserPool
+  CognitoUserPoolClientId:
+    Description: Cognito User Pool Client ID for public GUI/API
+    Value: !Ref CognitoUserPoolClient
+  CognitoHostedUiUrl:
+    Description: Cognito Hosted UI base URL
+    Value: !Sub https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com

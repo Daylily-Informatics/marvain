@@ -1,0 +1,106 @@
+#!/bin/sh
+# shellcheck shell=sh
+
+# Source this file from the repo root to add marvain's ./bin to PATH and enable completion.
+#
+# Usage (from repo root):
+#   . ./marvain_activate
+
+_marvain_log() {
+  level="$1"; shift
+  # minimal color (works on most terminals; safe to ignore)
+  case "$level" in
+    INFO)  printf '\033[1m[marvain]\033[0m %s\n' "$*";;
+    WARN)  printf '\033[1m[marvain]\033[0m \033[33mWARN\033[0m %s\n' "$*";;
+    ERROR) printf '\033[1m[marvain]\033[0m \033[31mERROR\033[0m %s\n' "$*";;
+    *)     printf '[marvain] %s\n' "$*";;
+  esac
+}
+
+_MARVAIN_ROOT=$(pwd -P)
+
+if [ ! -x "$_MARVAIN_ROOT/bin/marvain" ]; then
+  _marvain_log ERROR "Could not find executable: $_MARVAIN_ROOT/bin/marvain"
+  _marvain_log ERROR "Please cd to the marvain repo root and source again: . ./marvain_activate"
+  return 1 2>/dev/null || exit 1
+fi
+
+case ":${PATH:-}:" in
+  *":$_MARVAIN_ROOT/bin:"*) :;;
+  *) PATH="$_MARVAIN_ROOT/bin${PATH:+:$PATH}";;
+esac
+export PATH
+
+# --- Conda activation (primary env manager) ---
+# Escape hatch for exceptional cases (CI/venv debugging).
+if [ "${MARVAIN_ALLOW_VENV:-}" = "1" ]; then
+  _marvain_log WARN "MARVAIN_ALLOW_VENV=1 set; skipping conda activation"
+else
+  _MARVAIN_CONDA_ENV="marvain"
+  _MARVAIN_CONDA_FILE="$_MARVAIN_ROOT/config/marvain_conda.yaml"
+
+  if [ ! -f "$_MARVAIN_CONDA_FILE" ]; then
+    _marvain_log ERROR "Missing conda env spec: $_MARVAIN_CONDA_FILE"
+    return 1 2>/dev/null || exit 1
+  fi
+
+  if ! command -v conda >/dev/null 2>&1; then
+    _marvain_log ERROR "Conda not found on PATH. Install Miniconda/Mambaforge, then create env: conda env create -f $_MARVAIN_CONDA_FILE"
+    return 1 2>/dev/null || exit 1
+  fi
+
+  # Initialize conda for POSIX shells (required for `conda activate`).
+  # shellcheck disable=SC1090
+  if ! eval "$(conda shell.posix hook 2>/dev/null)"; then
+    _marvain_log ERROR "Failed to initialize conda shell hook. Try running: conda init (for your shell), then re-source: . ./marvain_activate"
+    return 1 2>/dev/null || exit 1
+  fi
+
+  if ! conda info --envs 2>/dev/null | awk 'NF{print $1}' | sed 's/*//' | grep -Fxq "$_MARVAIN_CONDA_ENV"; then
+    _marvain_log ERROR "Conda env '$_MARVAIN_CONDA_ENV' not found. Create it with: conda env create -f $_MARVAIN_CONDA_FILE"
+    return 1 2>/dev/null || exit 1
+  fi
+
+  if [ "${CONDA_DEFAULT_ENV:-}" != "$_MARVAIN_CONDA_ENV" ]; then
+    _marvain_log INFO "Activating conda env: $_MARVAIN_CONDA_ENV"
+    if ! conda activate "$_MARVAIN_CONDA_ENV" >/dev/null 2>&1; then
+      _marvain_log ERROR "Failed to activate conda env '$_MARVAIN_CONDA_ENV'. Try: conda activate $_MARVAIN_CONDA_ENV"
+      return 1 2>/dev/null || exit 1
+    fi
+  else
+    _marvain_log INFO "Conda env already active: $_MARVAIN_CONDA_ENV"
+  fi
+fi
+
+_MARVAIN_REPO_CFG="$_MARVAIN_ROOT/marvain.yaml"
+_MARVAIN_XDG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+_MARVAIN_USER_CFG="$_MARVAIN_XDG_HOME/marvain/marvain.yaml"
+_MARVAIN_USER_CFG_LEGACY="$HOME/.marvain/config.yaml"
+
+if [ -f "$_MARVAIN_REPO_CFG" ]; then
+  _marvain_log INFO "Found repo config: $_MARVAIN_REPO_CFG"
+elif [ -f "$_MARVAIN_USER_CFG" ]; then
+  _marvain_log INFO "Found user config: $_MARVAIN_USER_CFG"
+elif [ -f "$_MARVAIN_USER_CFG_LEGACY" ]; then
+  _marvain_log INFO "Found user config (legacy): $_MARVAIN_USER_CFG_LEGACY"
+else
+  _marvain_log INFO "No config found. Create one via: marvain config init"
+fi
+
+# Enable Typer/Click completion when available.
+if command -v marvain >/dev/null 2>&1; then
+  if [ -n "${ZSH_VERSION:-}" ]; then
+    # click/typer zsh completion
+    eval "$( _MARVAIN_COMPLETE=source_zsh marvain 2>/dev/null || true )"
+  elif [ -n "${BASH_VERSION:-}" ]; then
+    eval "$( _MARVAIN_COMPLETE=source_bash marvain 2>/dev/null || true )"
+  fi
+fi
+
+unset _MARVAIN_ROOT
+unset _MARVAIN_CONDA_ENV
+unset _MARVAIN_CONDA_FILE
+unset _MARVAIN_REPO_CFG
+unset _MARVAIN_XDG_HOME
+unset _MARVAIN_USER_CFG
+unset _MARVAIN_USER_CFG_LEGACY
