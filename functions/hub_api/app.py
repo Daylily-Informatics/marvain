@@ -1092,7 +1092,6 @@ def gui_livekit_test(request: Request, space_id: str | None = None) -> Response:
         clear = bool(str(request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or "").strip())
         return _gui_redirect_to_login(request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear)
 
-    sid = str(space_id or "").strip()
     home_href = html.escape(_gui_path(request, "/"))
     logout_href = html.escape(_gui_path(request, "/logout"))
     token_url = _gui_path(request, "/livekit/token")
