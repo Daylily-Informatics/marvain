@@ -39,6 +39,27 @@ def _fmt_cmd(cmd: list[str]) -> str:
     return " ".join(shlex.quote(c) for c in cmd)
 
 
+def _fmt_cmd_redacted(cmd: list[str]) -> str:
+    """
+    Format a command for logging, redacting known sensitive arguments.
+
+    Currently redacts values passed to flags like ``--secret-arn``.
+    """
+    # Work on a shallow copy so we don't mutate the original command.
+    redacted_cmd = list(cmd)
+    # Flags whose following argument should be treated as sensitive.
+    sensitive_flags = {"--secret-arn"}
+    i = 0
+    while i < len(redacted_cmd) - 1:
+        if redacted_cmd[i] in sensitive_flags:
+            # Replace the following argument with a redacted marker.
+            redacted_cmd[i + 1] = "***REDACTED***"
+            i += 2
+        else:
+            i += 1
+    return _fmt_cmd(redacted_cmd)
+
+
 def load_ctx(
     *,
     config_override: str | None,
@@ -87,7 +108,7 @@ def run_cmd(
     check: bool = True,
     cwd: str | None = None,
 ) -> int:
-    _eprint(f"$ {_fmt_cmd(cmd)}")
+    _eprint(f"$ {_fmt_cmd_redacted(cmd)}")
     if dry_run:
         return 0
     merged = os.environ.copy()
@@ -106,7 +127,7 @@ def run_json(
     dry_run: bool,
     cwd: str | None = None,
 ) -> Any:
-    _eprint(f"$ {_fmt_cmd(cmd)}")
+    _eprint(f"$ {_fmt_cmd_redacted(cmd)}")
     if dry_run:
         return {}
     merged = os.environ.copy()
