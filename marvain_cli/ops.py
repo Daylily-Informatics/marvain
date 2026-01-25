@@ -9,6 +9,8 @@ import socket
 import subprocess
 import sys
 import threading
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
@@ -228,6 +230,309 @@ def aws_stack_outputs(ctx: Ctx, *, dry_run: bool) -> dict[str, str]:
         if isinstance(k, str) and isinstance(v, str):
             outs[k] = v
     return outs
+
+
+def _env_resources_from_config(ctx: Ctx) -> dict[str, Any]:
+    envs = ctx.cfg.get("envs")
+    if not isinstance(envs, dict):
+        return {}
+    env_cfg = envs.get(ctx.env.env)
+    if not isinstance(env_cfg, dict):
+        return {}
+    res = env_cfg.get("resources")
+    return res if isinstance(res, dict) else {}
+
+
+def resolve_stack_output(ctx: Ctx, *, key: str, dry_run: bool) -> str:
+    """Resolve a CloudFormation output by key.
+
+    Prefers config.envs[env].resources (populated by `marvain monitor outputs --write-config`).
+    Falls back to live `describe-stacks` only when not dry-run.
+    """
+
+    res = _env_resources_from_config(ctx)
+    v = res.get(key)
+    if isinstance(v, str) and v:
+        return v
+    if dry_run:
+        raise ConfigError(
+            f"Missing stack output '{key}' in config. Run: marvain monitor outputs --write-config"
+        )
+    outs = aws_stack_outputs(ctx, dry_run=False)
+    v2 = outs.get(key)
+    if isinstance(v2, str) and v2:
+        return v2
+    raise ConfigError(f"Missing stack output '{key}' (not in config and not in live stack outputs)")
+
+
+def _redact_secret(s: str, *, keep: int = 6) -> str:
+    s = str(s or "")
+    if len(s) <= keep:
+        return "***"
+    return s[:keep] + "..."
+
+
+def resolve_access_token(access_token: str | None) -> str:
+    tok = (access_token or os.getenv("MARVAIN_ACCESS_TOKEN") or "").strip()
+    if not tok:
+        raise ConfigError("Missing access token (pass --access-token or set MARVAIN_ACCESS_TOKEN)")
+    return tok
+
+
+def resolve_hub_rest_api_base(ctx: Ctx, *, hub_rest_api_base: str | None, dry_run: bool) -> str:
+    base = (hub_rest_api_base or os.getenv("MARVAIN_HUB_REST_API_BASE") or "").strip()
+    if base:
+        return base.rstrip("/")
+    return resolve_stack_output(ctx, key="HubRestApiBase", dry_run=dry_run).rstrip("/")
+
+
+def _hub_url(base: str, path: str) -> str:
+    p = "/" + str(path or "").lstrip("/")
+    return base.rstrip("/") + p
+
+
+def hub_api_json(
+    ctx: Ctx,
+    *,
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None,
+    access_token: str,
+    hub_rest_api_base: str | None,
+    dry_run: bool,
+    timeout_s: int = 30,
+) -> dict[str, Any]:
+    """Call Hub REST API with Bearer access token.
+
+    Uses stdlib urllib; intended for CLI automation and is dry-run testable.
+    """
+
+    base = resolve_hub_rest_api_base(ctx, hub_rest_api_base=hub_rest_api_base, dry_run=dry_run)
+    url = _hub_url(base, path)
+    method_u = str(method).upper()
+
+    # Avoid printing secrets; but log enough to reproduce.
+    _eprint(f"$ HTTP {method_u} {url} (Authorization: Bearer {_redact_secret(access_token)})")
+    if payload is not None:
+        _eprint(f"$   json={json.dumps(payload, sort_keys=True)}")
+
+    if dry_run:
+        return {}
+
+    body = None if payload is None else json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method=method_u)
+    req.add_header("Authorization", f"Bearer {access_token}")
+    if payload is not None:
+        req.add_header("Content-Type", "application/json")
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as e:
+        raw = e.read() if hasattr(e, "read") else b""
+        msg = raw.decode("utf-8", errors="replace")
+        raise RuntimeError(f"Hub API HTTP {getattr(e, 'code', '?')}: {msg}")
+
+    txt = raw.decode("utf-8") if raw else "{}"
+    return json.loads(txt)
+
+
+def hub_claim_first_owner(
+    ctx: Ctx,
+    *,
+    agent_id: str,
+    access_token: str | None,
+    hub_rest_api_base: str | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    tok = resolve_access_token(access_token)
+    return hub_api_json(
+        ctx,
+        method="POST",
+        path=f"/v1/agents/{agent_id}/claim_owner",
+        payload=None,
+        access_token=tok,
+        hub_rest_api_base=hub_rest_api_base,
+        dry_run=dry_run,
+    )
+
+
+def hub_list_memberships(
+    ctx: Ctx,
+    *,
+    agent_id: str,
+    access_token: str | None,
+    hub_rest_api_base: str | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    tok = resolve_access_token(access_token)
+    return hub_api_json(
+        ctx,
+        method="GET",
+        path=f"/v1/agents/{agent_id}/memberships",
+        payload=None,
+        access_token=tok,
+        hub_rest_api_base=hub_rest_api_base,
+        dry_run=dry_run,
+    )
+
+
+def hub_grant_membership(
+    ctx: Ctx,
+    *,
+    agent_id: str,
+    email: str,
+    role: str,
+    relationship_label: str | None,
+    access_token: str | None,
+    hub_rest_api_base: str | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    tok = resolve_access_token(access_token)
+    payload: dict[str, Any] = {"email": email, "role": role}
+    if relationship_label is not None:
+        payload["relationship_label"] = relationship_label
+    return hub_api_json(
+        ctx,
+        method="POST",
+        path=f"/v1/agents/{agent_id}/memberships",
+        payload=payload,
+        access_token=tok,
+        hub_rest_api_base=hub_rest_api_base,
+        dry_run=dry_run,
+    )
+
+
+def hub_update_membership(
+    ctx: Ctx,
+    *,
+    agent_id: str,
+    user_id: str,
+    role: str,
+    relationship_label: str | None,
+    access_token: str | None,
+    hub_rest_api_base: str | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    tok = resolve_access_token(access_token)
+    payload: dict[str, Any] = {"role": role}
+    if relationship_label is not None:
+        payload["relationship_label"] = relationship_label
+    return hub_api_json(
+        ctx,
+        method="PATCH",
+        path=f"/v1/agents/{agent_id}/memberships/{user_id}",
+        payload=payload,
+        access_token=tok,
+        hub_rest_api_base=hub_rest_api_base,
+        dry_run=dry_run,
+    )
+
+
+def hub_revoke_membership(
+    ctx: Ctx,
+    *,
+    agent_id: str,
+    user_id: str,
+    access_token: str | None,
+    hub_rest_api_base: str | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    tok = resolve_access_token(access_token)
+    return hub_api_json(
+        ctx,
+        method="DELETE",
+        path=f"/v1/agents/{agent_id}/memberships/{user_id}",
+        payload=None,
+        access_token=tok,
+        hub_rest_api_base=hub_rest_api_base,
+        dry_run=dry_run,
+    )
+
+
+def hub_register_device(
+    ctx: Ctx,
+    *,
+    agent_id: str,
+    name: str | None,
+    scopes: list[str] | None,
+    access_token: str | None,
+    hub_rest_api_base: str | None,
+    dry_run: bool,
+) -> dict[str, Any]:
+    tok = resolve_access_token(access_token)
+    payload: dict[str, Any] = {"agent_id": agent_id}
+    if name is not None:
+        payload["name"] = name
+    if scopes is not None:
+        payload["scopes"] = scopes
+    return hub_api_json(
+        ctx,
+        method="POST",
+        path="/v1/devices/register",
+        payload=payload,
+        access_token=tok,
+        hub_rest_api_base=hub_rest_api_base,
+        dry_run=dry_run,
+    )
+
+
+def cognito_admin_create_user(
+    ctx: Ctx,
+    *,
+    email: str,
+    dry_run: bool,
+) -> dict[str, Any]:
+    user_pool_id = resolve_stack_output(ctx, key="CognitoUserPoolId", dry_run=dry_run)
+    cmd = [
+        "aws",
+        "cognito-idp",
+        "admin-create-user",
+        *aws_cli_args(ctx.env),
+        "--user-pool-id",
+        user_pool_id,
+        "--username",
+        email,
+        "--user-attributes",
+        f"Name=email,Value={email}",
+        "--desired-delivery-mediums",
+        "EMAIL",
+        "--output",
+        "json",
+    ]
+    return run_json(cmd, env=cmd_env(ctx.env), dry_run=dry_run)
+
+
+def cognito_list_users(ctx: Ctx, *, dry_run: bool, limit: int = 60) -> dict[str, Any]:
+    user_pool_id = resolve_stack_output(ctx, key="CognitoUserPoolId", dry_run=dry_run)
+    cmd = [
+        "aws",
+        "cognito-idp",
+        "list-users",
+        *aws_cli_args(ctx.env),
+        "--user-pool-id",
+        user_pool_id,
+        "--max-results",
+        str(int(limit)),
+        "--output",
+        "json",
+    ]
+    return run_json(cmd, env=cmd_env(ctx.env), dry_run=dry_run)
+
+
+def cognito_admin_delete_user(ctx: Ctx, *, dry_run: bool, email: str) -> int:
+    user_pool_id = resolve_stack_output(ctx, key="CognitoUserPoolId", dry_run=dry_run)
+    cmd = [
+        "aws",
+        "cognito-idp",
+        "admin-delete-user",
+        *aws_cli_args(ctx.env),
+        "--user-pool-id",
+        user_pool_id,
+        "--username",
+        email,
+    ]
+    return run_cmd(cmd, env=cmd_env(ctx.env), dry_run=dry_run)
 
 
 def sam_build_simple(*, dry_run: bool, template: str = "template.yaml") -> int:
@@ -612,36 +917,51 @@ def init_db(ctx: Ctx, *, dry_run: bool, sql_file: str | None) -> int:
     rc = _conda_preflight(enforce=not dry_run)
     if rc != 0:
         return rc
-    path = Path(sql_file or "sql/001_init.sql")
-    sql_text = path.read_text(encoding="utf-8")
-    stmts = _split_sql(sql_text)
+
+    def _list_sql_migrations() -> list[Path]:
+        # Apply all migrations in lexical order (001_..., 002_..., ...).
+        # Keep simple: all *.sql files in sql/.
+        paths = [p for p in Path("sql").glob("*.sql") if p.is_file()]
+        paths.sort(key=lambda p: p.name)
+        return paths
+
+    paths = [Path(sql_file)] if sql_file else _list_sql_migrations()
+    if not paths:
+        raise ConfigError("No SQL migrations found under sql/")
+
+    stmt_sets: list[tuple[Path, list[str]]] = []
+    for path in paths:
+        sql_text = path.read_text(encoding="utf-8")
+        stmt_sets.append((path, _split_sql(sql_text)))
 
     if dry_run:
         _eprint(f"[dry-run] Would resolve DbClusterArn/DbSecretArn/DbName from stack outputs for {ctx.env.stack_name}")
-        _eprint(f"[dry-run] Would apply {len(stmts)} SQL statements from {path}")
+        for path, stmts in stmt_sets:
+            _eprint(f"[dry-run] Would apply {len(stmts)} SQL statements from {path}")
         return 0
 
     resource_arn, secret_arn, db_name = _db_outputs(ctx, dry_run=dry_run)
 
-    _eprint(f"Applying {len(stmts)} SQL statements from {path}")
-    for s in stmts:
-        cmd = [
-            "aws",
-            "rds-data",
-            "execute-statement",
-            *aws_cli_args(ctx.env),
-            "--resource-arn",
-            resource_arn,
-            "--secret-arn",
-            secret_arn,
-            "--database",
-            db_name,
-            "--sql",
-            s,
-            "--output",
-            "json",
-        ]
-        run_cmd(cmd, env=cmd_env(ctx.env), dry_run=dry_run)
+    for path, stmts in stmt_sets:
+        _eprint(f"Applying {len(stmts)} SQL statements from {path}")
+        for s in stmts:
+            cmd = [
+                "aws",
+                "rds-data",
+                "execute-statement",
+                *aws_cli_args(ctx.env),
+                "--resource-arn",
+                resource_arn,
+                "--secret-arn",
+                secret_arn,
+                "--database",
+                db_name,
+                "--sql",
+                s,
+                "--output",
+                "json",
+            ]
+            run_cmd(cmd, env=cmd_env(ctx.env), dry_run=dry_run)
     return 0
 
 

@@ -11,8 +11,17 @@ from marvain_cli import __version__
 from marvain_cli.config import ConfigError, render_config_yaml, sanitize_name_for_stack
 from marvain_cli.ops import (
     bootstrap,
+	cognito_admin_create_user,
+	cognito_admin_delete_user,
+	cognito_list_users,
     doctor,
     gui_run,
+	hub_claim_first_owner,
+	hub_grant_membership,
+	hub_list_memberships,
+	hub_register_device,
+	hub_revoke_membership,
+	hub_update_membership,
     init_db,
     load_ctx,
     monitor_outputs,
@@ -119,6 +128,63 @@ def run(argv: list[str]) -> int:
     tst = sub.add_parser("test", help="Run tests")
     tst.add_argument("kind", nargs="?", default="unit", choices=["unit", "all"])
     tst.add_argument("--dry-run", action="store_true")
+
+    users = sub.add_parser("users", help="Cognito user administration")
+    users_sub = users.add_subparsers(dest="users_cmd")
+    u_create = users_sub.add_parser("create", help="Invite/create a Cognito user")
+    u_create.add_argument("--email", required=True)
+    u_create.add_argument("--dry-run", action="store_true")
+    u_list = users_sub.add_parser("list", help="List Cognito users")
+    u_list.add_argument("--limit", type=int, default=60)
+    u_list.add_argument("--dry-run", action="store_true")
+    u_delete = users_sub.add_parser("delete", help="Delete a Cognito user")
+    u_delete.add_argument("--email", required=True)
+    u_delete.add_argument("--dry-run", action="store_true")
+
+    members = sub.add_parser("members", help="Agent membership management (Hub API)")
+    members_sub = members.add_subparsers(dest="members_cmd")
+    m_claim = members_sub.add_parser("claim-owner", help="Claim first owner for an agent")
+    m_claim.add_argument("--agent-id", required=True)
+    m_claim.add_argument("--access-token", default=None)
+    m_claim.add_argument("--hub-rest-api-base", default=None)
+    m_claim.add_argument("--dry-run", action="store_true")
+    m_list = members_sub.add_parser("list", help="List members for an agent")
+    m_list.add_argument("--agent-id", required=True)
+    m_list.add_argument("--access-token", default=None)
+    m_list.add_argument("--hub-rest-api-base", default=None)
+    m_list.add_argument("--dry-run", action="store_true")
+    m_grant = members_sub.add_parser("grant", help="Grant membership by email")
+    m_grant.add_argument("--agent-id", required=True)
+    m_grant.add_argument("--email", required=True)
+    m_grant.add_argument("--role", required=True)
+    m_grant.add_argument("--relationship-label", default=None)
+    m_grant.add_argument("--access-token", default=None)
+    m_grant.add_argument("--hub-rest-api-base", default=None)
+    m_grant.add_argument("--dry-run", action="store_true")
+    m_update = members_sub.add_parser("update", help="Update membership role/relationship")
+    m_update.add_argument("--agent-id", required=True)
+    m_update.add_argument("--user-id", required=True)
+    m_update.add_argument("--role", required=True)
+    m_update.add_argument("--relationship-label", default=None)
+    m_update.add_argument("--access-token", default=None)
+    m_update.add_argument("--hub-rest-api-base", default=None)
+    m_update.add_argument("--dry-run", action="store_true")
+    m_revoke = members_sub.add_parser("revoke", help="Revoke membership")
+    m_revoke.add_argument("--agent-id", required=True)
+    m_revoke.add_argument("--user-id", required=True)
+    m_revoke.add_argument("--access-token", default=None)
+    m_revoke.add_argument("--hub-rest-api-base", default=None)
+    m_revoke.add_argument("--dry-run", action="store_true")
+
+    devices = sub.add_parser("devices", help="Device token management (Hub API)")
+    devices_sub = devices.add_subparsers(dest="devices_cmd")
+    d_register = devices_sub.add_parser("register", help="Register a new device (mint device token)")
+    d_register.add_argument("--agent-id", required=True)
+    d_register.add_argument("--name", default=None)
+    d_register.add_argument("--scope", action="append", default=[])
+    d_register.add_argument("--access-token", default=None)
+    d_register.add_argument("--hub-rest-api-base", default=None)
+    d_register.add_argument("--dry-run", action="store_true")
 
     args = ap.parse_args(argv)
 
@@ -296,6 +362,105 @@ def run(argv: list[str]) -> int:
                 stack_prefix=args.stack_prefix,
             )
 
+        if args.cmd == "users":
+            if args.users_cmd == "create":
+                data = cognito_admin_create_user(ctx, email=str(args.email), dry_run=bool(args.dry_run))
+                if not bool(args.dry_run):
+                    print(json.dumps(data, indent=2, sort_keys=True))
+                return 0
+            if args.users_cmd == "list":
+                data = cognito_list_users(ctx, dry_run=bool(args.dry_run), limit=int(args.limit))
+                if not bool(args.dry_run):
+                    print(json.dumps(data, indent=2, sort_keys=True))
+                return 0
+            if args.users_cmd == "delete":
+                return int(cognito_admin_delete_user(ctx, dry_run=bool(args.dry_run), email=str(args.email)))
+            users.print_help()
+            return 2
+
+        if args.cmd == "members":
+            if args.members_cmd == "claim-owner":
+                data = hub_claim_first_owner(
+                    ctx,
+                    agent_id=str(args.agent_id),
+                    access_token=args.access_token,
+                    hub_rest_api_base=args.hub_rest_api_base,
+                    dry_run=bool(args.dry_run),
+                )
+                if not bool(args.dry_run):
+                    print(json.dumps(data, indent=2, sort_keys=True))
+                return 0
+            if args.members_cmd == "list":
+                data = hub_list_memberships(
+                    ctx,
+                    agent_id=str(args.agent_id),
+                    access_token=args.access_token,
+                    hub_rest_api_base=args.hub_rest_api_base,
+                    dry_run=bool(args.dry_run),
+                )
+                if not bool(args.dry_run):
+                    print(json.dumps(data, indent=2, sort_keys=True))
+                return 0
+            if args.members_cmd == "grant":
+                data = hub_grant_membership(
+                    ctx,
+                    agent_id=str(args.agent_id),
+                    email=str(args.email),
+                    role=str(args.role),
+                    relationship_label=args.relationship_label,
+                    access_token=args.access_token,
+                    hub_rest_api_base=args.hub_rest_api_base,
+                    dry_run=bool(args.dry_run),
+                )
+                if not bool(args.dry_run):
+                    print(json.dumps(data, indent=2, sort_keys=True))
+                return 0
+            if args.members_cmd == "update":
+                data = hub_update_membership(
+                    ctx,
+                    agent_id=str(args.agent_id),
+                    user_id=str(args.user_id),
+                    role=str(args.role),
+                    relationship_label=args.relationship_label,
+                    access_token=args.access_token,
+                    hub_rest_api_base=args.hub_rest_api_base,
+                    dry_run=bool(args.dry_run),
+                )
+                if not bool(args.dry_run):
+                    print(json.dumps(data, indent=2, sort_keys=True))
+                return 0
+            if args.members_cmd == "revoke":
+                data = hub_revoke_membership(
+                    ctx,
+                    agent_id=str(args.agent_id),
+                    user_id=str(args.user_id),
+                    access_token=args.access_token,
+                    hub_rest_api_base=args.hub_rest_api_base,
+                    dry_run=bool(args.dry_run),
+                )
+                if not bool(args.dry_run):
+                    print(json.dumps(data, indent=2, sort_keys=True))
+                return 0
+            members.print_help()
+            return 2
+
+        if args.cmd == "devices":
+            if args.devices_cmd == "register":
+                data = hub_register_device(
+                    ctx,
+                    agent_id=str(args.agent_id),
+                    name=args.name,
+                    scopes=(list(args.scope) if args.scope else None),
+                    access_token=args.access_token,
+                    hub_rest_api_base=args.hub_rest_api_base,
+                    dry_run=bool(args.dry_run),
+                )
+                if not bool(args.dry_run):
+                    print(json.dumps(data, indent=2, sort_keys=True))
+                return 0
+            devices.print_help()
+            return 2
+
         ap.print_help()
         return 2
     except subprocess.CalledProcessError as e:
@@ -305,8 +470,19 @@ def run(argv: list[str]) -> int:
 
 
 def run_tests(*, dry_run: bool) -> int:
+    from pathlib import Path
+
     cmd = ["python3", "-m", "unittest", "discover", "-s", "tests", "-q"]
+    repo_root = Path(__file__).resolve().parents[1]
+    shared = repo_root / "layers" / "shared" / "python"
+    pythonpath_parts = [str(repo_root), str(shared)]
+    old_pp = os.environ.get("PYTHONPATH")
+    if old_pp:
+        pythonpath_parts.append(old_pp)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
+
     if dry_run:
-        print("$ " + " ".join(cmd), file=os.sys.stderr)
+        print(f"$ PYTHONPATH={env['PYTHONPATH']} " + " ".join(cmd), file=os.sys.stderr)
         return 0
-    return subprocess.call(cmd)
+    return subprocess.call(cmd, env=env)

@@ -7,7 +7,16 @@ from pathlib import Path
 from unittest import mock
 
 from marvain_cli.config import ResolvedEnv
-from marvain_cli.ops import Ctx, _split_sql, bootstrap, sam_logs
+from marvain_cli.ops import (
+    Ctx,
+    _split_sql,
+    bootstrap,
+    cognito_admin_create_user,
+    cognito_admin_delete_user,
+    hub_claim_first_owner,
+    init_db,
+    sam_logs,
+)
 
 
 class TestOps(unittest.TestCase):
@@ -102,6 +111,103 @@ class TestOps(unittest.TestCase):
         joined = "\n".join(emitted)
         self.assertIn(" sam logs ", joined)
         self.assertNotIn("--name", joined)
+
+    def test_init_db_dry_run_applies_all_migrations_in_order_when_no_sql_file(self) -> None:
+        emitted: list[str] = []
+
+        def cap(msg: str) -> None:
+            emitted.append(msg)
+
+        ctx = Ctx(
+            config_path=Path("/tmp/marvain.yaml"),
+            cfg={"envs": {"dev": {}}},
+            env=ResolvedEnv(env="dev", aws_profile="p", aws_region="r", stack_name="s", raw={}),
+        )
+
+        with mock.patch("marvain_cli.ops._conda_preflight", return_value=0), mock.patch(
+            "marvain_cli.ops._eprint", side_effect=cap
+        ):
+            rc = init_db(ctx, dry_run=True, sql_file=None)
+
+        self.assertEqual(rc, 0)
+        joined = "\n".join(emitted)
+        self.assertIn("sql/001_init.sql", joined)
+        self.assertIn("sql/002_users_and_memberships.sql", joined)
+        self.assertIn("sql/003_owner_unique_index.sql", joined)
+        self.assertLess(joined.find("sql/001_init.sql"), joined.find("sql/002_users_and_memberships.sql"))
+        self.assertLess(joined.find("sql/002_users_and_memberships.sql"), joined.find("sql/003_owner_unique_index.sql"))
+
+
+    def test_hub_claim_first_owner_dry_run_emits_http_request_without_leaking_token(self) -> None:
+        emitted: list[str] = []
+
+        def cap(msg: str) -> None:
+            emitted.append(msg)
+
+        ctx = Ctx(
+            config_path=Path("/tmp/marvain.yaml"),
+            cfg={"envs": {"dev": {"resources": {"HubRestApiBase": "https://example.com/dev"}}}},
+            env=ResolvedEnv(env="dev", aws_profile="p", aws_region="r", stack_name="s", raw={}),
+        )
+
+        with mock.patch("marvain_cli.ops._eprint", side_effect=cap):
+            out = hub_claim_first_owner(
+                ctx,
+                agent_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                access_token="abcdef1234567890",
+                hub_rest_api_base=None,
+                dry_run=True,
+            )
+
+        self.assertEqual(out, {})
+        joined = "\n".join(emitted)
+        self.assertIn("HTTP POST https://example.com/dev/v1/agents/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/claim_owner", joined)
+        self.assertIn("Authorization: Bearer abcdef...", joined)
+        self.assertNotIn("abcdef1234567890", joined)
+
+
+    def test_cognito_admin_create_user_dry_run_uses_admin_create_user(self) -> None:
+        emitted: list[str] = []
+
+        def cap(msg: str) -> None:
+            emitted.append(msg)
+
+        ctx = Ctx(
+            config_path=Path("/tmp/marvain.yaml"),
+            cfg={"envs": {"dev": {"resources": {"CognitoUserPoolId": "pool-123"}}}},
+            env=ResolvedEnv(env="dev", aws_profile="p", aws_region="r", stack_name="s", raw={}),
+        )
+
+        with mock.patch("marvain_cli.ops._eprint", side_effect=cap):
+            data = cognito_admin_create_user(ctx, email="x@example.com", dry_run=True)
+
+        self.assertEqual(data, {})
+        joined = "\n".join(emitted)
+        self.assertIn("aws cognito-idp admin-create-user", joined)
+        self.assertIn("--user-pool-id pool-123", joined)
+        self.assertIn("--username x@example.com", joined)
+
+
+    def test_cognito_admin_delete_user_dry_run_uses_admin_delete_user(self) -> None:
+        emitted: list[str] = []
+
+        def cap(msg: str) -> None:
+            emitted.append(msg)
+
+        ctx = Ctx(
+            config_path=Path("/tmp/marvain.yaml"),
+            cfg={"envs": {"dev": {"resources": {"CognitoUserPoolId": "pool-123"}}}},
+            env=ResolvedEnv(env="dev", aws_profile="p", aws_region="r", stack_name="s", raw={}),
+        )
+
+        with mock.patch("marvain_cli.ops._eprint", side_effect=cap):
+            rc = cognito_admin_delete_user(ctx, dry_run=True, email="x@example.com")
+
+        self.assertEqual(rc, 0)
+        joined = "\n".join(emitted)
+        self.assertIn("aws cognito-idp admin-delete-user", joined)
+        self.assertIn("--user-pool-id pool-123", joined)
+        self.assertIn("--username x@example.com", joined)
 
 
 if __name__ == "__main__":

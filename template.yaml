@@ -19,6 +19,16 @@ Parameters:
     Type: String
     Default: gpt-4.1-mini
 
+  CognitoDomainPrefix:
+    Type: String
+    Description: Cognito hosted UI domain prefix (must be globally-unique within the AWS region).
+    Default: marvain-dev
+
+  LiveKitUrl:
+    Type: String
+    Description: LiveKit server URL (e.g. wss://your.livekit.host or https://...). Leave empty to disable LiveKit token minting.
+    Default: ""
+
 Globals:
   Function:
     Runtime: python3.11
@@ -125,6 +135,77 @@ Resources:
       Name: !Sub ${AWS::StackName}/openai
       Description: Store your OpenAI API key as {"api_key":"..."}
       SecretString: '{"api_key":"REPLACE_ME"}'
+
+  LiveKitSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${AWS::StackName}/livekit
+      Description: Store your LiveKit credentials as {"api_key":"...","api_secret":"..."}
+      SecretString: '{"api_key":"REPLACE_ME","api_secret":"REPLACE_ME"}'
+
+  # -----------------------------
+  # Cognito (human auth)
+  # -----------------------------
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub ${AWS::StackName}-users
+      UsernameAttributes:
+        - email
+      UsernameConfiguration:
+        CaseSensitive: false
+      AutoVerifiedAttributes:
+        - email
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub ${AWS::StackName}-public
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      SupportedIdentityProviders:
+        - COGNITO
+      ExplicitAuthFlows:
+        - ALLOW_ADMIN_USER_PASSWORD_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      CallbackURLs:
+        - !Sub https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/auth/callback
+        - http://localhost:8000/auth/callback
+      LogoutURLs:
+        - !Sub https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/logout
+        - http://localhost:8000/logout
+        - !Sub https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/logged-out
+        - http://localhost:8000/logged-out
+
+  CognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref CognitoDomainPrefix
+      UserPoolId: !Ref CognitoUserPool
 
   # -----------------------------
   # Aurora PostgreSQL Serverless v2 + Data API
@@ -255,6 +336,12 @@ Resources:
           AUDIT_BUCKET: !Ref AuditBucket
           ARTIFACT_BUCKET: !Ref ArtifactBucket
           ADMIN_SECRET_ARN: !Ref AdminApiKeySecret
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+          COGNITO_APP_CLIENT_ID: !Ref CognitoUserPoolClient
+          COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
+          COGNITO_DOMAIN: !Ref CognitoDomainPrefix
+          LIVEKIT_URL: !Ref LiveKitUrl
+          LIVEKIT_SECRET_ARN: !Ref LiveKitSecret
       Policies:
         - AWSLambdaBasicExecutionRole
         - Statement:
@@ -273,6 +360,7 @@ Resources:
                 - !Ref DbCredentialsSecret
                 - !Ref AdminApiKeySecret
                 - !Ref OpenAISecret
+                - !Ref LiveKitSecret
             - Effect: Allow
               Action:
                 - sqs:SendMessage
@@ -286,6 +374,11 @@ Resources:
               Resource:
                 - !Sub ${AuditBucket.Arn}/*
                 - !Sub ${ArtifactBucket.Arn}/*
+            - Effect: Allow
+              Action:
+                - cognito-idp:GetUser
+                - cognito-idp:ListUsers
+              Resource: !GetAtt CognitoUserPool.Arn
       Events:
         ProxyApi:
           Type: Api
@@ -448,6 +541,10 @@ Resources:
           DB_RESOURCE_ARN: !GetAtt AuroraCluster.DBClusterArn
           DB_SECRET_ARN: !Ref DbCredentialsSecret
           DB_NAME: !Ref DbName
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+          COGNITO_APP_CLIENT_ID: !Ref CognitoUserPoolClient
+          COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
+          COGNITO_DOMAIN: !Ref CognitoDomainPrefix
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
@@ -466,6 +563,10 @@ Resources:
               Action:
                 - execute-api:ManageConnections
               Resource: "*"
+            - Effect: Allow
+              Action:
+                - cognito-idp:GetUser
+              Resource: !GetAtt CognitoUserPool.Arn
 
   WsConnectIntegration:
     Type: AWS::ApiGatewayV2::Integration
@@ -565,6 +666,9 @@ Outputs:
   OpenAISecretArn:
     Description: Secrets Manager ARN containing OpenAI API key placeholder
     Value: !Ref OpenAISecret
+  LiveKitSecretArn:
+    Description: Secrets Manager ARN containing LiveKit API key/secret placeholder
+    Value: !Ref LiveKitSecret
   DbClusterArn:
     Description: Aurora cluster ARN (Data API resourceArn)
     Value: !GetAtt AuroraCluster.DBClusterArn
@@ -580,3 +684,13 @@ Outputs:
   AuditBucketName:
     Description: Bucket for tamper-evident audit log (Object Lock)
     Value: !Ref AuditBucket
+
+  CognitoUserPoolId:
+    Description: Cognito User Pool ID for human authentication
+    Value: !Ref CognitoUserPool
+  CognitoUserPoolClientId:
+    Description: Cognito User Pool Client ID for public GUI/API
+    Value: !Ref CognitoUserPoolClient
+  CognitoHostedUiUrl:
+    Description: Cognito Hosted UI base URL
+    Value: !Sub https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com

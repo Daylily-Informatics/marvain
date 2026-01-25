@@ -10,8 +10,17 @@ def run(argv: list[str]) -> int:
     from marvain_cli.config import ConfigError, find_config_path, render_config_yaml, sanitize_name_for_stack
     from marvain_cli.ops import (
         bootstrap,
+		cognito_admin_create_user,
+		cognito_admin_delete_user,
+		cognito_list_users,
         doctor,
         gui_run,
+		hub_claim_first_owner,
+		hub_grant_membership,
+		hub_list_memberships,
+		hub_register_device,
+		hub_revoke_membership,
+		hub_update_membership,
         init_db,
         load_ctx,
         monitor_outputs,
@@ -290,6 +299,7 @@ def run(argv: list[str]) -> int:
     ) -> None:
         c = _load(ctx)
         dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+
         raise typer.Exit(
             code=bootstrap(
                 c,
@@ -301,20 +311,241 @@ def run(argv: list[str]) -> int:
             )
         )
 
+
+    # ---- users (Cognito) ----
+    users_app = typer.Typer(help="Cognito user administration")
+    app.add_typer(users_app, name="users")
+
+    @users_app.command("create")
+    def users_create(
+        ctx: typer.Context,
+        email: str = typer.Option(..., "--email"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        import json
+
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        data = cognito_admin_create_user(c, email=email, dry_run=dr)
+        if not dr:
+            typer.echo(json.dumps(data, indent=2, sort_keys=True))
+        raise typer.Exit(code=0)
+
+    @users_app.command("list")
+    def users_list(
+        ctx: typer.Context,
+        limit: int = typer.Option(60, "--limit"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        import json
+
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        data = cognito_list_users(c, dry_run=dr, limit=limit)
+        if not dr:
+            typer.echo(json.dumps(data, indent=2, sort_keys=True))
+        raise typer.Exit(code=0)
+
+    @users_app.command("delete")
+    def users_delete(
+        ctx: typer.Context,
+        email: str = typer.Option(..., "--email"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        rc = cognito_admin_delete_user(c, dry_run=dr, email=email)
+        raise typer.Exit(code=int(rc))
+
+    # ---- members (Hub API) ----
+    members_app = typer.Typer(help="Agent membership management (Hub API)")
+    app.add_typer(members_app, name="members")
+
+    @members_app.command("claim-owner")
+    def members_claim_owner(
+        ctx: typer.Context,
+        agent_id: str = typer.Option(..., "--agent-id"),
+        access_token: str | None = typer.Option(None, "--access-token", help="Cognito access token"),
+        hub_rest_api_base: str | None = typer.Option(None, "--hub-rest-api-base"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        import json
+
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        data = hub_claim_first_owner(
+            c,
+            agent_id=agent_id,
+            access_token=access_token,
+            hub_rest_api_base=hub_rest_api_base,
+            dry_run=dr,
+        )
+        if not dr:
+            typer.echo(json.dumps(data, indent=2, sort_keys=True))
+        raise typer.Exit(code=0)
+
+    @members_app.command("list")
+    def members_list(
+        ctx: typer.Context,
+        agent_id: str = typer.Option(..., "--agent-id"),
+        access_token: str | None = typer.Option(None, "--access-token", help="Cognito access token"),
+        hub_rest_api_base: str | None = typer.Option(None, "--hub-rest-api-base"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        import json
+
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        data = hub_list_memberships(
+            c,
+            agent_id=agent_id,
+            access_token=access_token,
+            hub_rest_api_base=hub_rest_api_base,
+            dry_run=dr,
+        )
+        if not dr:
+            typer.echo(json.dumps(data, indent=2, sort_keys=True))
+        raise typer.Exit(code=0)
+
+    @members_app.command("grant")
+    def members_grant(
+        ctx: typer.Context,
+        agent_id: str = typer.Option(..., "--agent-id"),
+        email: str = typer.Option(..., "--email"),
+        role: str = typer.Option(..., "--role"),
+        relationship_label: str | None = typer.Option(None, "--relationship-label"),
+        access_token: str | None = typer.Option(None, "--access-token", help="Cognito access token"),
+        hub_rest_api_base: str | None = typer.Option(None, "--hub-rest-api-base"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        import json
+
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        data = hub_grant_membership(
+            c,
+            agent_id=agent_id,
+            email=email,
+            role=role,
+            relationship_label=relationship_label,
+            access_token=access_token,
+            hub_rest_api_base=hub_rest_api_base,
+            dry_run=dr,
+        )
+        if not dr:
+            typer.echo(json.dumps(data, indent=2, sort_keys=True))
+        raise typer.Exit(code=0)
+
+    @members_app.command("update")
+    def members_update(
+        ctx: typer.Context,
+        agent_id: str = typer.Option(..., "--agent-id"),
+        user_id: str = typer.Option(..., "--user-id"),
+        role: str = typer.Option(..., "--role"),
+        relationship_label: str | None = typer.Option(None, "--relationship-label"),
+        access_token: str | None = typer.Option(None, "--access-token", help="Cognito access token"),
+        hub_rest_api_base: str | None = typer.Option(None, "--hub-rest-api-base"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        import json
+
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        data = hub_update_membership(
+            c,
+            agent_id=agent_id,
+            user_id=user_id,
+            role=role,
+            relationship_label=relationship_label,
+            access_token=access_token,
+            hub_rest_api_base=hub_rest_api_base,
+            dry_run=dr,
+        )
+        if not dr:
+            typer.echo(json.dumps(data, indent=2, sort_keys=True))
+        raise typer.Exit(code=0)
+
+    @members_app.command("revoke")
+    def members_revoke(
+        ctx: typer.Context,
+        agent_id: str = typer.Option(..., "--agent-id"),
+        user_id: str = typer.Option(..., "--user-id"),
+        access_token: str | None = typer.Option(None, "--access-token", help="Cognito access token"),
+        hub_rest_api_base: str | None = typer.Option(None, "--hub-rest-api-base"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        import json
+
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        data = hub_revoke_membership(
+            c,
+            agent_id=agent_id,
+            user_id=user_id,
+            access_token=access_token,
+            hub_rest_api_base=hub_rest_api_base,
+            dry_run=dr,
+        )
+        if not dr:
+            typer.echo(json.dumps(data, indent=2, sort_keys=True))
+        raise typer.Exit(code=0)
+
+    # ---- devices (Hub API) ----
+    devices_app = typer.Typer(help="Device token management (Hub API)")
+    app.add_typer(devices_app, name="devices")
+
+    @devices_app.command("register")
+    def devices_register(
+        ctx: typer.Context,
+        agent_id: str = typer.Option(..., "--agent-id"),
+        name: str | None = typer.Option(None, "--name"),
+        scopes: list[str] = typer.Option([], "--scope", help="Repeatable"),
+        access_token: str | None = typer.Option(None, "--access-token", help="Cognito access token"),
+        hub_rest_api_base: str | None = typer.Option(None, "--hub-rest-api-base"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        import json
+
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        data = hub_register_device(
+            c,
+            agent_id=agent_id,
+            name=name,
+            scopes=(scopes if scopes else None),
+            access_token=access_token,
+            hub_rest_api_base=hub_rest_api_base,
+            dry_run=dr,
+        )
+        if not dr:
+            typer.echo(json.dumps(data, indent=2, sort_keys=True))
+        raise typer.Exit(code=0)
+
     @app.command("test")
     def _test(
         ctx: typer.Context,
         dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
     ) -> None:
         # Keep tests stdlib-first.
+        import os
         import subprocess
+        from pathlib import Path
 
         cmd = ["python3", "-m", "unittest", "discover", "-s", "tests", "-q"]
+        repo_root = Path(__file__).resolve().parents[1]
+        shared = repo_root / "layers" / "shared" / "python"
+        pythonpath_parts = [str(repo_root), str(shared)]
+        old_pp = os.environ.get("PYTHONPATH")
+        if old_pp:
+            pythonpath_parts.append(old_pp)
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
+
         dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
         if dr:
-            typer.echo("$ " + " ".join(cmd), err=True)
+            typer.echo(f"$ PYTHONPATH={env['PYTHONPATH']} " + " ".join(cmd), err=True)
             raise typer.Exit(code=0)
-        raise typer.Exit(code=int(subprocess.call(cmd)))
+        raise typer.Exit(code=int(subprocess.call(cmd, env=env)))
 
     # Execute without letting Click `sys.exit()`.
     command = typer.main.get_command(app)
