@@ -180,6 +180,12 @@ def run(argv: list[str]) -> int:
         function: list[str] = typer.Option([], "--function", "-f", help="Function logical id (repeatable)"),
         tail: bool = typer.Option(True, "--tail/--no-tail", help="Tail logs"),
         since: str | None = typer.Option(None, "--since", help="Since (e.g. 10m, 1h)"),
+        output_file: str | None = typer.Option(None, "--output-file", help="Write a copy of logs to this file (append)"),
+        suppress_sam_warnings: bool = typer.Option(
+            False,
+            "--suppress-sam-warnings",
+            help="Suppress known, non-actionable SAM CLI Python warnings (does not hide errors)",
+        ),
         dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
     ) -> None:
         c = _load(ctx)
@@ -191,6 +197,8 @@ def run(argv: list[str]) -> int:
                 functions=function or None,
                 tail=tail,
                 since=since,
+                output_file=output_file,
+                suppress_sam_warnings=bool(suppress_sam_warnings),
             )
         )
 

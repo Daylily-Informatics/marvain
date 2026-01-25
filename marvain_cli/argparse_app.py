@@ -70,6 +70,12 @@ def run(argv: list[str]) -> int:
     logs.add_argument("--tail", action="store_true")
     logs.add_argument("--no-tail", action="store_true")
     logs.add_argument("--since", default=None)
+    logs.add_argument("--output-file", default=None, help="Write a copy of logs to this file (append)")
+    logs.add_argument(
+        "--suppress-sam-warnings",
+        action="store_true",
+        help="Suppress known, non-actionable SAM CLI Python warnings (does not hide errors)",
+    )
     logs.add_argument("--dry-run", action="store_true")
 
     mon = sub.add_parser("monitor", help="Monitoring helpers")
@@ -241,7 +247,15 @@ def run(argv: list[str]) -> int:
                 tail = False
             if args.tail:
                 tail = True
-            return sam_logs(ctx, dry_run=bool(args.dry_run), functions=args.function, tail=tail, since=args.since)
+            return sam_logs(
+                ctx,
+                dry_run=bool(args.dry_run),
+                functions=args.function,
+                tail=tail,
+                since=args.since,
+                output_file=args.output_file,
+                suppress_sam_warnings=bool(args.suppress_sam_warnings),
+            )
         if args.cmd == "monitor":
             if args.mon_cmd == "outputs":
                 return monitor_outputs(ctx, dry_run=bool(args.dry_run), write_config=bool(args.write_config))

@@ -11,6 +11,7 @@ import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 from typing import Any, Iterable
 
 from marvain_cli.config import ConfigError, ResolvedEnv, find_config_path, load_config_dict, resolve_env, save_config_dict
@@ -289,19 +290,51 @@ def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool) -> int:
     return run_cmd(cmd, env=cmd_env(ctx.env), dry_run=dry_run)
 
 
-def _tail_one(function_name: str, cmd: list[str], env: dict[str, str]) -> None:
-    # Prefix every line so multiple streams are usable.
+def _stream_process(
+    *,
+    prefix: str | None,
+    cmd: list[str],
+    env: dict[str, str],
+    log_fh: TextIO | None,
+    log_lock: threading.Lock | None,
+) -> int:
+    """Run a command and stream combined stdout/stderr to stdout (and optionally a file)."""
+
     p = subprocess.Popen(cmd, env={**os.environ, **env}, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     assert p.stdout is not None
     try:
         for line in p.stdout:
-            sys.stdout.write(f"[{function_name}] {line}")
+            out_line = f"[{prefix}] {line}" if prefix else line
+            sys.stdout.write(out_line)
             sys.stdout.flush()
+            if log_fh is not None:
+                if log_lock is not None:
+                    with log_lock:
+                        log_fh.write(out_line)
+                        log_fh.flush()
+                else:
+                    log_fh.write(out_line)
+                    log_fh.flush()
+    except KeyboardInterrupt:
+        # Ctrl-C will generally be handled in the main thread; this keeps streaming helpers quiet.
+        pass
     finally:
         try:
             p.terminate()
         except Exception:
             pass
+    return p.wait()
+
+
+def _tail_one(
+    function_name: str,
+    cmd: list[str],
+    env: dict[str, str],
+    *,
+    log_fh: TextIO | None,
+    log_lock: threading.Lock | None,
+) -> None:
+    _stream_process(prefix=function_name, cmd=cmd, env=env, log_fh=log_fh, log_lock=log_lock)
 
 
 def _since_to_sam_start_time(since: str) -> str:
@@ -329,19 +362,19 @@ def _since_to_sam_start_time(since: str) -> str:
     return s
 
 
-def sam_logs(ctx: Ctx, *, dry_run: bool, functions: list[str] | None, tail: bool, since: str | None) -> int:
+def sam_logs(
+    ctx: Ctx,
+    *,
+    dry_run: bool,
+    functions: list[str] | None,
+    tail: bool,
+    since: str | None,
+    output_file: str | None = None,
+    suppress_sam_warnings: bool = False,
+) -> int:
     rc = _conda_preflight(enforce=not dry_run)
     if rc != 0:
         return rc
-    fnames = functions or [
-        # "more than less" default, per Major
-        "HubApiFunction",
-        "PlannerFunction",
-        "ToolRunnerFunction",
-        "WsConnectFunction",
-        "WsDisconnectFunction",
-        "WsMessageFunction",
-    ]
     base = ["sam", "logs", *sam_cli_args(ctx.env), "--stack-name", ctx.env.stack_name]
     if since:
         # SAM CLI uses -s/--start-time (not --since).
@@ -350,20 +383,56 @@ def sam_logs(ctx: Ctx, *, dry_run: bool, functions: list[str] | None, tail: bool
         base.append("--tail")
 
     if dry_run:
-        for f in fnames:
-            _eprint(f"$ {_fmt_cmd([*base, '--name', f])}")
+        if functions:
+            for f in functions:
+                _eprint(f"$ {_fmt_cmd([*base, '--name', f])}")
+        else:
+            _eprint(f"$ {_fmt_cmd(base)}")
         return 0
 
-    threads: list[threading.Thread] = []
     env = cmd_env(ctx.env)
-    for f in fnames:
-        cmd = [*base, "--name", f]
-        t = threading.Thread(target=_tail_one, args=(f, cmd, env), daemon=True)
-        threads.append(t)
-        t.start()
-    for t in threads:
-        t.join()
-    return 0
+    if suppress_sam_warnings:
+        # SAM CLI is a Python program; this suppresses a known, non-actionable warning
+        # emitted by SAM's dependencies on some Python versions.
+        env["PYTHONWARNINGS"] = (
+            "ignore:Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater.*:UserWarning"
+        )
+
+    log_fh: TextIO | None = None
+    log_lock: threading.Lock | None = None
+    if output_file:
+        p = Path(output_file)
+        if p.parent and str(p.parent) != ".":
+            p.parent.mkdir(parents=True, exist_ok=True)
+        log_fh = p.open("a", encoding="utf-8")
+        log_lock = threading.Lock()
+
+    try:
+        # Preferred UX: one `sam logs` call for all stack resources (no per-function `--name`).
+        if not functions:
+            return _stream_process(prefix=None, cmd=base, env=env, log_fh=log_fh, log_lock=log_lock)
+
+        # If functions were specified, tail each explicitly (repeatable --function).
+        threads: list[threading.Thread] = []
+        for f in functions:
+            cmd = [*base, "--name", f]
+            t = threading.Thread(
+                target=_tail_one,
+                args=(f, cmd, env),
+                kwargs={"log_fh": log_fh, "log_lock": log_lock},
+                daemon=True,
+            )
+            threads.append(t)
+            t.start()
+        for t in threads:
+            t.join()
+        return 0
+    finally:
+        if log_fh is not None:
+            try:
+                log_fh.close()
+            except Exception:
+                pass
 
 
 def monitor_outputs(ctx: Ctx, *, dry_run: bool, write_config: bool) -> int:

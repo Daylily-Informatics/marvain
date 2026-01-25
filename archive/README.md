@@ -1,5 +1,13 @@
 # marvain — Whaddya-Want Rank‑4 Agent Skeleton
 
+## Status (legacy / archived)
+
+This `archive/` tree is **legacy** and kept mainly for reference.
+
+- **Supported workflow**: use the root CLI: `./bin/marvain` (Conda env, YAML config under `~/.config/marvain/`).
+- **Legacy GUI**: still runnable via `./bin/marvain gui` (best-effort). It’s useful for stack discovery and viewing CloudFormation outputs.
+- Parts of this README (especially the “Broker”/chat semantics) may not match the current Hub architecture.
+
 This repository is a **reference implementation** of a Rank‑4 agent skeleton:
 - **Broker Lambda** (`POST /agent`) for conversations
 - **Heartbeat Lambda** (EventBridge `rate(5 minutes)`) for background work
@@ -54,12 +62,21 @@ Notes:
 - Default model ID is `meta.llama3-1-8b-instruct-v1:0`.
 - (Optional) set `AudioBucketName` to store Polly MP3s to S3 (requires S3 permissions).
 
-After deployment, CloudFormation outputs `BrokerEndpointURL` like:
-`https://<api-id>.execute-api.<region>.amazonaws.com/Prod/agent`
+After deployment, the **current** CloudFormation template outputs:
+
+- `HubRestApiBase`: `https://<api-id>.execute-api.<region>.amazonaws.com/<stage>`
+- `HubWebSocketUrl`: `wss://<api-id>.execute-api.<region>.amazonaws.com/<stage>`
+
+Legacy stacks may have `BrokerEndpointURL`.
 
 ### 4) Run the GUI (optional)
 ```bash
-uvicorn client.gui:app --reload --port 8000
+# Preferred (uses the repo's CLI wrapper):
+./bin/marvain gui
+
+# Or run directly (from the archive dir so `client.gui` imports):
+cd archive
+python3 -m uvicorn client.gui:app --reload --port 8000
 ```
 
 Open:

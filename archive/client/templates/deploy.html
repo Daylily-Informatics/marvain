@@ -54,7 +54,7 @@
     <form action="/deploy" method="post">
       <label>Stack name</label>
       <input id="stack_name" name="stack_name" placeholder="marvain-demo" required />
-      <div class="muted">Will be prefixed with {{ state.stack_prefix or 'marai' }}.</div>
+	      <div class="muted">Will be prefixed with {{ state.stack_prefix or 'marvain' }}.</div>
       <div id="stack-name-error" class="muted" style="color: #c00; display: none;"></div>
 
       <label>Agent ID (AGENT_ID)</label>

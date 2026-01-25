@@ -10,6 +10,7 @@ dependencies:
 
   # Tooling
   - awscli
+	  - pytest
   - typer
   - click
   - pyyaml
