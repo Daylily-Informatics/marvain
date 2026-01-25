@@ -130,7 +130,8 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
         try:
             msg = json.loads(body)
         except Exception:
-            logger.warning("Bad message body: %s", body)
+            safe_body = str(body).replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+            logger.warning("Bad message body: %s", safe_body)
             continue
 
         event_id = msg.get("event_id")
