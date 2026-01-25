@@ -222,3 +222,4 @@ python -m worker
 - **Privacy mode** is enforced at the Hub: when ON, events are accepted but not persisted or queued.
 - Device auth uses opaque device tokens (hash stored server-side). Swap to Cognito/IoT later if desired.
 - Audit is written to an S3 Object Lock bucket with a hash chain (verify offline).
+ 
