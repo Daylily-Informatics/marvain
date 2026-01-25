@@ -28,6 +28,11 @@ class HubConfig:
     admin_secret_arn: str | None
     openai_secret_arn: str | None
     planner_model: str | None
+    cognito_user_pool_id: str | None
+    cognito_user_pool_client_id: str | None
+    cognito_domain: str | None
+    livekit_url: str | None
+    livekit_secret_arn: str | None
 
 
 def load_config() -> HubConfig:
@@ -43,4 +48,12 @@ def load_config() -> HubConfig:
         admin_secret_arn=os.getenv("ADMIN_SECRET_ARN"),
         openai_secret_arn=os.getenv("OPENAI_SECRET_ARN"),
         planner_model=os.getenv("PLANNER_MODEL"),
+        cognito_user_pool_id=os.getenv("COGNITO_USER_POOL_ID"),
+        # Prefer Daylily-Ursa naming, but keep backward-compat.
+        cognito_user_pool_client_id=(
+            os.getenv("COGNITO_APP_CLIENT_ID") or os.getenv("COGNITO_USER_POOL_CLIENT_ID")
+        ),
+        cognito_domain=os.getenv("COGNITO_DOMAIN"),
+        livekit_url=os.getenv("LIVEKIT_URL"),
+        livekit_secret_arn=os.getenv("LIVEKIT_SECRET_ARN"),
     )

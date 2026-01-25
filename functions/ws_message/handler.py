@@ -5,7 +5,8 @@ import os
 
 import boto3
 
-from agent_hub.auth import authenticate_device
+from agent_hub.auth import authenticate_device, authenticate_user_access_token
+from agent_hub.memberships import list_agents_for_user
 from agent_hub.rds_data import RdsData, RdsDataEnv
 
 _TABLE = os.getenv("WS_TABLE")
@@ -55,23 +56,100 @@ def handler(event, context):
     action = msg.get("action") or ""
     table = _dynamo.Table(_TABLE)
 
+
     if action == "hello":
-        token = str(msg.get("device_token") or "").strip()
-        if not token:
-            _send(event, connection_id, {"type": "hello", "ok": False, "error": "missing_device_token"})
+        access_token = str(msg.get("access_token") or "").strip()
+        device_token = str(msg.get("device_token") or "").strip()
+
+        # v1: accept Cognito access_token (preferred) for human users.
+        if access_token:
+            try:
+                user = authenticate_user_access_token(_get_db(), access_token)
+            except PermissionError:
+                _send(event, connection_id, {"type": "hello", "ok": False, "error": "invalid_access_token"})
+                return {"statusCode": 200, "body": "ok"}
+
+            agents = list_agents_for_user(_get_db(), user_id=user.user_id)
+            agents_out = [
+                {
+                    "agent_id": a.agent_id,
+                    "name": a.name,
+                    "role": a.role,
+                    "relationship_label": a.relationship_label,
+                    "disabled": bool(a.disabled),
+                }
+                for a in agents
+            ]
+
+            expr_names = {"#s": "status"}
+            expr_values = {
+                ":s": "authenticated",
+                ":pt": "user",
+                ":uid": user.user_id,
+                ":cs": user.cognito_sub,
+                ":ag": agents_out,
+            }
+            set_parts = [
+                "#s=:s",
+                "principal_type=:pt",
+                "user_id=:uid",
+                "cognito_sub=:cs",
+                "agents=:ag",
+            ]
+            remove_parts = ["agent_id", "device_id", "scopes"]
+            if user.email:
+                expr_values[":em"] = user.email
+                set_parts.append("email=:em")
+            else:
+                remove_parts.append("email")
+
+            update_expr = "SET " + ", ".join(set_parts) + " REMOVE " + ", ".join(remove_parts)
+            table.update_item(
+                Key={"connection_id": connection_id},
+                UpdateExpression=update_expr,
+                ExpressionAttributeNames=expr_names,
+                ExpressionAttributeValues=expr_values,
+            )
+
+            _send(
+                event,
+                connection_id,
+                {
+                    "type": "hello",
+                    "ok": True,
+                    "principal_type": "user",
+                    "user_id": user.user_id,
+                    "cognito_sub": user.cognito_sub,
+                    "email": user.email,
+                    "agents": agents_out,
+                },
+            )
             return {"statusCode": 200, "body": "ok"}
 
-        dev = authenticate_device(_get_db(), token)
+        # Back-compat: device_token for satellites/devices.
+        if not device_token:
+            _send(
+                event,
+                connection_id,
+                {"type": "hello", "ok": False, "error": "missing_access_token_or_device_token"},
+            )
+            return {"statusCode": 200, "body": "ok"}
+
+        dev = authenticate_device(_get_db(), device_token)
         if not dev:
             _send(event, connection_id, {"type": "hello", "ok": False, "error": "invalid_device_token"})
             return {"statusCode": 200, "body": "ok"}
 
         table.update_item(
             Key={"connection_id": connection_id},
-            UpdateExpression="SET #s=:s, agent_id=:a, device_id=:d, scopes=:sc",
+            UpdateExpression=(
+                "SET #s=:s, principal_type=:pt, agent_id=:a, device_id=:d, scopes=:sc "
+                "REMOVE user_id, cognito_sub, email, agents"
+            ),
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={
                 ":s": "authenticated",
+                ":pt": "device",
                 ":a": dev.agent_id,
                 ":d": dev.device_id,
                 ":sc": dev.scopes,
@@ -81,7 +159,14 @@ def handler(event, context):
         _send(
             event,
             connection_id,
-            {"type": "hello", "ok": True, "agent_id": dev.agent_id, "device_id": dev.device_id, "scopes": dev.scopes},
+            {
+                "type": "hello",
+                "ok": True,
+                "principal_type": "device",
+                "agent_id": dev.agent_id,
+                "device_id": dev.device_id,
+                "scopes": dev.scopes,
+            },
         )
         return {"statusCode": 200, "body": "ok"}
 
