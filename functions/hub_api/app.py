@@ -812,6 +812,26 @@ def _safe_next_app_path(request: Request, next_path: str | None) -> str:
     return nxt
 
 
+def _encode_next_cookie(path: str) -> str:
+    """Encode a normalized next-path for safe storage in a cookie."""
+    # Path is already normalized by _safe_next_app_path; we further make it opaque.
+    data = path.encode("utf-8")
+    return base64.urlsafe_b64encode(data).decode("ascii")
+
+
+def _decode_next_cookie(value: Optional[str]) -> str:
+    """Decode a next-path from cookie storage, falling back to root on error."""
+    if not value:
+        return "/"
+    try:
+        raw = base64.urlsafe_b64decode(value.encode("ascii"), validate=True)
+        path = raw.decode("utf-8", errors="strict")
+    except Exception:
+        return "/"
+    # Re-apply safety normalization to be defensive.
+    return _safe_next_path(path)
+
+
 def _gui_get_user(request: Request) -> AuthenticatedUser | None:
     tok = request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or ""
     tok = str(tok).strip()
@@ -886,6 +906,7 @@ def gui_login(request: Request, next: str | None = None) -> RedirectResponse:
     resp = RedirectResponse(url=url, status_code=302)
     secure = _cookie_secure(request)
     safe_next = _safe_next_app_path(request, next)
+    encoded_next = _encode_next_cookie(safe_next)
     resp.set_cookie(
         _GUI_OAUTH_STATE_COOKIE,
         state,
@@ -906,7 +927,7 @@ def gui_login(request: Request, next: str | None = None) -> RedirectResponse:
     )
     resp.set_cookie(
         _GUI_OAUTH_NEXT_COOKIE,
-        safe_next,
+        encoded_next,
         httponly=True,
         secure=secure,
         samesite="lax",
