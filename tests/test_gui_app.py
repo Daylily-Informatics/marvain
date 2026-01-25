@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import html
 import importlib.util
 import os
 import sys
@@ -167,6 +168,22 @@ class TestGuiApp(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn("LiveKit test", r.text)
         self.assertIn("livekit-client.umd.min.js", r.text)
+
+    def test_livekit_test_escapes_space_id_in_html(self) -> None:
+        # Regression test for reflected XSS: user-controlled `space_id` must not be
+        # injected into <script> blocks.
+        self.mod.authenticate_user_access_token = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
+        )
+        self.client.cookies.set("marvain_access_token", "atok")
+
+        space_id = "</script><img src=x onerror=alert(1)>"
+        r = self.client.get("/livekit-test", params={"space_id": space_id})
+        self.assertEqual(r.status_code, 200)
+
+        escaped = html.escape(space_id, quote=True)
+        self.assertIn(f'value="{escaped}"', r.text)
+        self.assertNotIn(space_id, r.text)
 
     def test_gui_livekit_token_mints_token(self) -> None:
         # Configure LiveKit in module config.

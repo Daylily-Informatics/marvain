@@ -1093,16 +1093,19 @@ def gui_livekit_test(request: Request, space_id: str | None = None) -> Response:
         return _gui_redirect_to_login(request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear)
 
     sid = str(space_id or "").strip()
+    sid_attr = html.escape(sid, quote=True)
     home_href = html.escape(_gui_path(request, "/"))
     logout_href = html.escape(_gui_path(request, "/logout"))
     token_url = _gui_path(request, "/livekit/token")
+    token_url_attr = html.escape(token_url, quote=True)
     body = (
         "<div style='display:flex; justify-content:space-between; align-items:center;'>"
         "<h1>LiveKit test</h1>"
         f"<div><a href='{home_href}'>Home</a> | <a href='{logout_href}'>Logout</a></div>"
         "</div>"
         "<p>Join a LiveKit room mapped from a Marvain <code>space_id</code>.</p>"
-        "<p><label>space_id: <input id='space_id' size='40' /></label> "
+        f"<div id='lkcfg' data-token-url=\"{token_url_attr}\" style='display:none'></div>"
+        f"<p><label>space_id: <input id='space_id' size='40' value=\"{sid_attr}\" /></label> "
         "<button id='join'>Join</button> <button id='leave'>Leave</button></p>"
         "<pre id='status' style='background:#111; color:#eee; padding:12px; border-radius:8px;'>idle</pre>"
         "<script src='https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js'></script>"
@@ -1111,8 +1114,7 @@ def gui_livekit_test(request: Request, space_id: str | None = None) -> Response:
         "  var room = null;\n"
         "  var statusEl = document.getElementById('status');\n"
         "  var inputEl = document.getElementById('space_id');\n"
-        f"  inputEl.value = {json.dumps(sid)};\n"
-        f"  var tokenUrl = {json.dumps(token_url)};\n"
+        "  var tokenUrl = document.getElementById('lkcfg').getAttribute('data-token-url');\n"
         "  function setStatus(s){ statusEl.textContent = s; }\n"
         "  async function join(){\n"
         "    var spaceId = (inputEl.value||'').trim();\n"
