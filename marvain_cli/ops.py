@@ -845,42 +845,45 @@ def gui_run(
     reload: bool,
     stack_prefix: str | None,
 ) -> int:
-    """Run the local FastAPI/Jinja2 GUI (in archive/).
+    """Show the deployed Hub GUI URL.
 
-    The legacy GUI lives in `archive/client/gui.py` and expects to be run with
-    CWD=archive so its relative template/static paths resolve.
+    The legacy local GUI in `archive/client/gui.py` has been removed. The GUI is
+    now served as routes in the Hub FastAPI app and is accessed via the deployed
+    API Gateway URL (stack output `HubRestApiBase`).
+
+    Notes:
+    - `--host/--port/--reload/--stack-prefix` are kept for backward CLI
+      compatibility but are no longer used.
     """
 
     rc = _conda_preflight(enforce=not dry_run)
     if rc != 0:
         return rc
 
-    archive_dir = Path("archive")
-    if not archive_dir.exists():
-        _eprint("archive/ directory not found (GUI is not present in this checkout)")
+    # Back-compat: these flags used to control a local uvicorn server.
+    _ = (host, port, reload, stack_prefix)
+
+    outs = aws_stack_outputs(ctx, dry_run=dry_run)
+    hub_base = (outs.get("HubRestApiBase") or "").strip()
+    if not hub_base:
+        _eprint("Legacy local GUI has been removed.")
+        _eprint(f"Stack outputs for {ctx.env.stack_name} do not include HubRestApiBase.")
+        _eprint("Try: ./bin/marvain monitor outputs")
         return 2
 
-    # Default stack prefix from stack name like `marvain-foo-dev` -> `marvain`.
-    prefix = stack_prefix
-    if not prefix:
-        prefix = (ctx.env.stack_name.split("-", 1)[0] if "-" in ctx.env.stack_name else ctx.env.stack_name)
+    hub_base = hub_base.rstrip("/")
+    gui_url = hub_base + "/"
+    livekit_test_url = hub_base + "/livekit-test"
+    hosted_ui = (outs.get("CognitoHostedUiUrl") or "").strip()
 
-    cmd: list[str] = [
-        "python3",
-        "-m",
-        "uvicorn",
-        "client.gui:app",
-        "--host",
-        host,
-        "--port",
-        str(port),
-    ]
-    if reload:
-        cmd.append("--reload")
-
-    extra_env = cmd_env(ctx.env)
-    extra_env["AGENT_RESOURCE_STACK_PREFIX"] = prefix
-    return run_cmd(cmd, env=extra_env, dry_run=dry_run, cwd=str(archive_dir))
+    _eprint("Legacy local GUI has been removed.")
+    _eprint("Open the deployed GUI:")
+    print(gui_url)
+    _eprint(f"GUI: {gui_url}")
+    _eprint(f"LiveKit test: {livekit_test_url}")
+    if hosted_ui:
+        _eprint(f"Cognito Hosted UI: {hosted_ui}")
+    return 0
 
 
 def _split_sql(sql_text: str) -> list[str]:

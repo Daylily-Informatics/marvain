@@ -137,9 +137,11 @@ conda env create -f config/marvain_conda.yaml
 ./bin/marvain init db
 ./bin/marvain bootstrap --agent-name Forge --space-name home
 
-# Tailing logs + start GUI
+# Tailing logs + open GUI
 ./bin/marvain logs --since 10m
-./bin/marvain gui --host 127.0.0.1 --port 8000 --reload
+
+# Print the deployed GUI URL (HubRestApiBase)
+./bin/marvain gui
 ````
 </augment_code_snippet>
 

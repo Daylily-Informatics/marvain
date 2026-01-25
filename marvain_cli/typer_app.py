@@ -253,7 +253,7 @@ def run(argv: list[str]) -> int:
         dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
         raise typer.Exit(code=doctor(c, dry_run=dr))
 
-    @app.command("gui")
+    @app.command("gui", help="Show the deployed Hub GUI URL (legacy local GUI removed)")
     def gui_run_cmd(
         ctx: typer.Context,
         host: str = typer.Option("127.0.0.1", "--host"),

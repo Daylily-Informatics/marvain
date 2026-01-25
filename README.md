@@ -196,10 +196,11 @@ Notes:
 ./bin/marvain bootstrap --dry-run --agent-name Forge --space-name home
 ```
 
-### 5) Run the local GUI (legacy)
+### 5) Open the deployed GUI
 
 ```bash
-./bin/marvain gui --host 127.0.0.1 --port 8000 --reload
+# Print the deployed GUI URL (HubRestApiBase) and open it in your browser.
+./bin/marvain gui
 ```
 
 ## Run the realtime agent worker (local)
