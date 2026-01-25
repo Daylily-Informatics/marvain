@@ -379,13 +379,34 @@ Resources:
                 - cognito-idp:GetUser
                 - cognito-idp:ListUsers
               Resource: !GetAtt CognitoUserPool.Arn
-      Events:
-        ProxyApi:
-          Type: Api
-          Properties:
-            RestApiId: !Ref HubApi
-            Path: /{proxy+}
-            Method: ANY
+
+  # Explicit API Gateway integration (replaces Events section to avoid circular dependency)
+  HubApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref HubApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HubApi}/*/*
+
+  HubApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref HubApi
+      ParentId: !GetAtt HubApi.RootResourceId
+      PathPart: "{proxy+}"
+
+  HubApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref HubApi
+      ResourceId: !Ref HubApiResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${HubApiFunction.Arn}/invocations
 
   # -----------------------------
   # Planner (deliberative loop)
