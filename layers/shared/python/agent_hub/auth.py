@@ -26,9 +26,54 @@ class AuthenticatedDevice:
 
 @dataclass(frozen=True)
 class AuthenticatedUser:
+    """Represents an authenticated user.
+
+    NOTE: The cognito_sub field is being retained for database compatibility
+    during the authentication rebuild. It will be populated from the new
+    session-based auth implementation.
+    """
+
     user_id: str
-    cognito_sub: str
+    cognito_sub: str  # Keep for DB schema compatibility
     email: str | None
+
+
+def authenticate_user_access_token(db: RdsData, access_token: str) -> AuthenticatedUser:
+    """Authenticate a human user via a Cognito access token.
+
+    This calls Cognito `GetUser` to retrieve `sub` and `email`, ensures a users
+    row exists, then returns the AuthenticatedUser.
+
+    Kept as a thin, testable boundary for API routes that accept
+    `Authorization: Bearer <access_token>`.
+    """
+
+    if not access_token:
+        raise PermissionError("Missing access token")
+
+    try:
+        client = _boto3_client("cognito-idp")
+        resp = client.get_user(AccessToken=access_token)
+    except Exception as e:  # boto3 raises various ClientError subclasses
+        raise PermissionError(f"Invalid access token: {e}")
+
+    sub: str | None = None
+    email: str | None = None
+    for attr in resp.get("UserAttributes", []) or []:
+        name = attr.get("Name")
+        val = attr.get("Value")
+        if name == "sub" and val:
+            sub = str(val)
+        elif name == "email" and val:
+            email = str(val)
+
+    if not sub:
+        sub = str(resp.get("Username") or "").strip() or None
+    if not sub:
+        raise PermissionError("Cognito response missing sub")
+
+    user_id = ensure_user_row(db, cognito_sub=sub, email=email)
+    return AuthenticatedUser(user_id=user_id, cognito_sub=sub, email=email)
 
 
 def _boto3_client(service_name: str):
@@ -36,6 +81,41 @@ def _boto3_client(service_name: str):
     import boto3  # type: ignore
 
     return boto3.client(service_name)
+
+
+def lookup_cognito_user_by_email(*, user_pool_id: str, email: str) -> tuple[str, str | None]:
+    """Resolve (sub, email) for a Cognito User Pool user by email.
+
+    Uses cognito-idp:ListUsers with an email filter.
+    """
+
+    email = str(email).strip()
+    if not email:
+        raise LookupError("email is required")
+    user_pool_id = str(user_pool_id).strip()
+    if not user_pool_id:
+        raise LookupError("user_pool_id is required")
+
+    # Escape double-quotes for the Cognito filter string.
+    safe_email = email.replace('"', "\\\"")
+    client = _boto3_client("cognito-idp")
+    resp: Any = client.list_users(
+        UserPoolId=user_pool_id,
+        Filter=f'email = "{safe_email}"',
+        Limit=2,
+    )
+    users = resp.get("Users") or []
+    if not users:
+        raise LookupError("user not found")
+    if len(users) > 1:
+        raise LookupError("multiple users matched")
+
+    attrs = {a.get("Name"): a.get("Value") for a in (users[0].get("Attributes") or []) if isinstance(a, dict)}
+    sub = attrs.get("sub") or users[0].get("Username")
+    if not sub:
+        raise LookupError("missing sub attribute")
+    em = attrs.get("email")
+    return str(sub), (str(em).strip() if em else None)
 
 
 def authenticate_device(db: RdsData, bearer_token: str) -> AuthenticatedDevice | None:
@@ -72,25 +152,12 @@ def require_scopes(device: AuthenticatedDevice, required: list[str]) -> None:
         raise PermissionError(f"Missing required scopes: {missing}")
 
 
-def _cognito_sub_and_email_from_access_token(access_token: str) -> tuple[str, str | None]:
-    """Resolve Cognito user identity from an access token.
-
-    V1 strategy (per plan): call cognito-idp:GetUser server-side.
-    """
-
-    client = _boto3_client("cognito-idp")
-    resp: Any = client.get_user(AccessToken=access_token)
-    attrs = {a.get("Name"): a.get("Value") for a in (resp.get("UserAttributes") or []) if isinstance(a, dict)}
-
-    cognito_sub = str(attrs.get("sub") or resp.get("Username") or "").strip()
-    if not cognito_sub:
-        raise PermissionError("Missing cognito sub")
-
-    email = attrs.get("email")
-    return cognito_sub, (str(email).strip() if email else None)
-
-
 def _ensure_user_row(db: RdsData, *, cognito_sub: str, email: str | None) -> str:
+    """Insert or update a user row in the database.
+
+    NOTE: cognito_sub is used as the unique identifier for now.
+    This will be refactored once the new auth system is in place.
+    """
     rows = db.query(
         """
         INSERT INTO users (cognito_sub, email)
@@ -107,45 +174,9 @@ def _ensure_user_row(db: RdsData, *, cognito_sub: str, email: str | None) -> str
 
 
 def ensure_user_row(db: RdsData, *, cognito_sub: str, email: str | None) -> str:
-    """Public wrapper used by other modules to upsert a Cognito-backed user."""
-    return _ensure_user_row(db, cognito_sub=cognito_sub, email=email)
+    """Public wrapper used by other modules to upsert a user.
 
-
-def lookup_cognito_user_by_email(*, user_pool_id: str, email: str) -> tuple[str, str | None]:
-    """Resolve (sub, email) for a Cognito User Pool user by email.
-
-    Uses cognito-idp:ListUsers with an email filter.
+    NOTE: cognito_sub parameter name retained for compatibility.
+    Will be refactored with new auth implementation.
     """
-
-    email = str(email).strip()
-    if not email:
-        raise LookupError("email is required")
-
-    # Escape double-quotes for the Cognito filter string.
-    safe_email = email.replace('"', "\\\"")
-    client = _boto3_client("cognito-idp")
-    resp = client.list_users(
-        UserPoolId=user_pool_id,
-        Filter=f'email = "{safe_email}"',
-        Limit=2,
-    )
-    users = resp.get("Users") or []
-    if not users:
-        raise LookupError("user not found")
-    if len(users) > 1:
-        raise LookupError("multiple users matched")
-
-    attrs = {a.get("Name"): a.get("Value") for a in (users[0].get("Attributes") or [])}
-    sub = attrs.get("sub")
-    if not sub:
-        raise LookupError("missing sub attribute")
-    em = attrs.get("email")
-    return str(sub), (str(em).strip() if em else None)
-
-
-def authenticate_user_access_token(db: RdsData, access_token: str) -> AuthenticatedUser:
-    cognito_sub, email = _cognito_sub_and_email_from_access_token(access_token)
-    user_id = _ensure_user_row(db, cognito_sub=cognito_sub, email=email)
-    if not user_id:
-        raise RuntimeError("Failed to resolve user_id")
-    return AuthenticatedUser(user_id=user_id, cognito_sub=cognito_sub, email=email)
+    return _ensure_user_row(db, cognito_sub=cognito_sub, email=email)
