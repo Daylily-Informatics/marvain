@@ -417,6 +417,267 @@ def gui_profile(request: Request) -> Response:
     return _gui_html_page(title="Profile", body_html=body)
 
 
+def _livekit_test_page_script() -> str:
+    """Return the JavaScript for the LiveKit test page (separated for readability)."""
+    return """
+(function(){
+  var room = null;
+  var localVideoTrack = null;
+  var localAudioTrack = null;
+  var statusEl = document.getElementById('status');
+  var selectEl = document.getElementById('space_id');
+  var tokenUrl = document.getElementById('lkcfg').getAttribute('data-token-url');
+  var participantsEl = document.getElementById('participants');
+  var localVideoEl = document.getElementById('local-video');
+  var remoteMediaEl = document.getElementById('remote-media');
+  var chatMessagesEl = document.getElementById('chat-messages');
+  var chatInputEl = document.getElementById('chat-input');
+  var myIdentity = '';
+
+  function log(msg) {
+    var ts = new Date().toLocaleTimeString();
+    statusEl.textContent = '[' + ts + '] ' + msg + '\\n' + statusEl.textContent;
+    if (statusEl.textContent.length > 5000) {
+      statusEl.textContent = statusEl.textContent.substring(0, 4000);
+    }
+  }
+
+  function updateParticipantsList() {
+    if (!room) { participantsEl.innerHTML = '<em>Not connected</em>'; return; }
+    var items = [];
+    // Local participant
+    var lp = room.localParticipant;
+    var lpAudio = lp.isMicrophoneEnabled ? '🎤' : '🔇';
+    var lpVideo = lp.isCameraEnabled ? '📹' : '📷';
+    items.push('<li><strong>' + escapeHtml(lp.identity) + '</strong> (you) ' + lpAudio + ' ' + lpVideo + '</li>');
+    // Remote participants
+    room.remoteParticipants.forEach(function(p) {
+      var pAudio = '🔇', pVideo = '📷';
+      p.trackPublications.forEach(function(pub) {
+        if (pub.kind === 'audio' && pub.isSubscribed) pAudio = '🔊';
+        if (pub.kind === 'video' && pub.isSubscribed) pVideo = '📹';
+      });
+      var state = p.connectionQuality || 'unknown';
+      var isAgent = p.identity.startsWith('agent:') || p.identity.startsWith('device:');
+      var label = isAgent ? '🤖 ' + escapeHtml(p.identity) : escapeHtml(p.identity);
+      items.push('<li>' + label + ' ' + pAudio + ' ' + pVideo + ' <small>(' + state + ')</small></li>');
+    });
+    participantsEl.innerHTML = items.length ? '<ul style="margin:0;padding-left:20px;">' + items.join('') + '</ul>' : '<em>No participants</em>';
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function attachRemoteTrack(track, participant) {
+    var el;
+    if (track.kind === 'video') {
+      el = document.createElement('video');
+      el.autoplay = true;
+      el.playsInline = true;
+      el.style.maxWidth = '320px';
+      el.style.maxHeight = '240px';
+      el.style.margin = '4px';
+      el.style.borderRadius = '8px';
+      el.style.background = '#222';
+    } else if (track.kind === 'audio') {
+      el = document.createElement('audio');
+      el.autoplay = true;
+    }
+    if (el) {
+      el.id = 'track-' + track.sid;
+      el.setAttribute('data-participant', participant.identity);
+      track.attach(el);
+      remoteMediaEl.appendChild(el);
+      log('Attached ' + track.kind + ' from ' + participant.identity);
+    }
+  }
+
+  function detachRemoteTrack(track) {
+    var el = document.getElementById('track-' + track.sid);
+    if (el) {
+      track.detach(el);
+      el.remove();
+    }
+  }
+
+  function setupRoomEvents() {
+    room.on('participantConnected', function(p) {
+      log('Participant joined: ' + p.identity);
+      updateParticipantsList();
+    });
+    room.on('participantDisconnected', function(p) {
+      log('Participant left: ' + p.identity);
+      // Remove their media elements
+      remoteMediaEl.querySelectorAll('[data-participant="' + p.identity + '"]').forEach(function(el) { el.remove(); });
+      updateParticipantsList();
+    });
+    room.on('trackSubscribed', function(track, pub, participant) {
+      log('Track subscribed: ' + track.kind + ' from ' + participant.identity);
+      attachRemoteTrack(track, participant);
+      updateParticipantsList();
+    });
+    room.on('trackUnsubscribed', function(track, pub, participant) {
+      log('Track unsubscribed: ' + track.kind + ' from ' + participant.identity);
+      detachRemoteTrack(track);
+      updateParticipantsList();
+    });
+    room.on('trackMuted', function(pub, participant) {
+      log('Track muted: ' + pub.kind + ' from ' + participant.identity);
+      updateParticipantsList();
+    });
+    room.on('trackUnmuted', function(pub, participant) {
+      log('Track unmuted: ' + pub.kind + ' from ' + participant.identity);
+      updateParticipantsList();
+    });
+    room.on('disconnected', function() {
+      log('Disconnected from room');
+      updateParticipantsList();
+      updateMediaButtons();
+    });
+    room.on('dataReceived', function(payload, participant) {
+      try {
+        var msg = JSON.parse(new TextDecoder().decode(payload));
+        if (msg.type === 'chat') {
+          addChatMessage(participant ? participant.identity : 'unknown', msg.text, msg.ts);
+        }
+      } catch(e) { /* ignore non-chat data */ }
+    });
+  }
+
+  function addChatMessage(sender, text, ts) {
+    var time = ts ? new Date(ts).toLocaleTimeString() : new Date().toLocaleTimeString();
+    var isMe = sender === myIdentity;
+    var div = document.createElement('div');
+    div.style.marginBottom = '8px';
+    div.style.padding = '6px 10px';
+    div.style.borderRadius = '8px';
+    div.style.background = isMe ? '#1a472a' : '#2a2a3a';
+    div.style.color = '#eee';
+    div.innerHTML = '<small style="color:#aaa;">[' + escapeHtml(time) + '] <strong style="color:#fff;">' + escapeHtml(sender) + '</strong></small><br>' + escapeHtml(text);
+    chatMessagesEl.appendChild(div);
+    chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+  }
+
+  function sendChatMessage() {
+    var text = (chatInputEl.value || '').trim();
+    if (!text || !room) return;
+    var msg = { type: 'chat', text: text, ts: Date.now() };
+    var data = new TextEncoder().encode(JSON.stringify(msg));
+    room.localParticipant.publishData(data, { reliable: true });
+    addChatMessage(myIdentity, text, msg.ts);
+    chatInputEl.value = '';
+  }
+
+  async function join() {
+    var spaceId = (selectEl.value || '').trim();
+    if (!spaceId) { log('Please select a space'); return; }
+    log('Requesting token...');
+    var resp = await fetch(tokenUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ space_id: spaceId }) });
+    if (!resp.ok) { log('Token request failed: ' + resp.status); return; }
+    var data = await resp.json();
+    log('Connecting to ' + data.url + '...');
+    var lk = window.LivekitClient || window.livekit || window.LiveKit;
+    if (!lk || !lk.Room) { log('LiveKit client not loaded'); return; }
+    room = new lk.Room();
+    setupRoomEvents();
+    await room.connect(data.url, data.token);
+    myIdentity = data.identity;
+    log('Connected! room=' + data.room + ' identity=' + data.identity);
+    updateParticipantsList();
+    updateMediaButtons();
+    // Subscribe to existing remote tracks
+    room.remoteParticipants.forEach(function(p) {
+      p.trackPublications.forEach(function(pub) {
+        if (pub.isSubscribed && pub.track) {
+          attachRemoteTrack(pub.track, p);
+        }
+      });
+    });
+  }
+
+  async function leave() {
+    if (localVideoTrack) { localVideoTrack.stop(); localVideoTrack = null; }
+    if (localAudioTrack) { localAudioTrack.stop(); localAudioTrack = null; }
+    localVideoEl.innerHTML = '';
+    remoteMediaEl.innerHTML = '';
+    if (room) { try { await room.disconnect(); } catch(e) {} room = null; }
+    log('Left room');
+    updateParticipantsList();
+    updateMediaButtons();
+  }
+
+  function updateMediaButtons() {
+    var connected = room && room.state === 'connected';
+    document.getElementById('btn-mic').disabled = !connected;
+    document.getElementById('btn-cam').disabled = !connected;
+    document.getElementById('btn-send-chat').disabled = !connected;
+    if (connected) {
+      document.getElementById('btn-mic').textContent = room.localParticipant.isMicrophoneEnabled ? '🎤 Mic On' : '🔇 Mic Off';
+      document.getElementById('btn-cam').textContent = room.localParticipant.isCameraEnabled ? '📹 Cam On' : '📷 Cam Off';
+    } else {
+      document.getElementById('btn-mic').textContent = '🔇 Mic Off';
+      document.getElementById('btn-cam').textContent = '📷 Cam Off';
+    }
+  }
+
+  async function toggleMic() {
+    if (!room) return;
+    try {
+      await room.localParticipant.setMicrophoneEnabled(!room.localParticipant.isMicrophoneEnabled);
+      log('Microphone ' + (room.localParticipant.isMicrophoneEnabled ? 'enabled' : 'disabled'));
+      updateMediaButtons();
+      updateParticipantsList();
+    } catch(e) {
+      log('Mic error: ' + e.message);
+    }
+  }
+
+  async function toggleCam() {
+    if (!room) return;
+    try {
+      var wasEnabled = room.localParticipant.isCameraEnabled;
+      await room.localParticipant.setCameraEnabled(!wasEnabled);
+      log('Camera ' + (room.localParticipant.isCameraEnabled ? 'enabled' : 'disabled'));
+      updateMediaButtons();
+      updateParticipantsList();
+      // Attach/detach local video preview
+      if (room.localParticipant.isCameraEnabled) {
+        var camPub = room.localParticipant.getTrackPublication('camera');
+        if (camPub && camPub.track) {
+          var vid = document.createElement('video');
+          vid.autoplay = true;
+          vid.playsInline = true;
+          vid.muted = true;
+          vid.style.maxWidth = '240px';
+          vid.style.borderRadius = '8px';
+          camPub.track.attach(vid);
+          localVideoEl.innerHTML = '';
+          localVideoEl.appendChild(vid);
+        }
+      } else {
+        localVideoEl.innerHTML = '';
+      }
+    } catch(e) {
+      log('Camera error: ' + e.message);
+    }
+  }
+
+  // Event listeners
+  document.getElementById('join').addEventListener('click', function() { join().catch(function(e) { log('Join error: ' + e); }); });
+  document.getElementById('leave').addEventListener('click', function() { leave().catch(function(e) { log('Leave error: ' + e); }); });
+  document.getElementById('btn-mic').addEventListener('click', function() { toggleMic().catch(function(e) { log('Mic error: ' + e); }); });
+  document.getElementById('btn-cam').addEventListener('click', function() { toggleCam().catch(function(e) { log('Cam error: ' + e); }); });
+  document.getElementById('btn-send-chat').addEventListener('click', sendChatMessage);
+  chatInputEl.addEventListener('keypress', function(e) { if (e.key === 'Enter') sendChatMessage(); });
+
+  // Initial state
+  updateMediaButtons();
+  updateParticipantsList();
+})();
+"""
+
+
 @app.get("/livekit-test", name="livekit_test")
 def gui_livekit_test(request: Request, space_id: str | None = None) -> Response:
     user = _gui_get_user(request)
@@ -443,49 +704,121 @@ def gui_livekit_test(request: Request, space_id: str | None = None) -> Response:
         options.append(f'<option value="{sp_id}"{selected}>{sp_name} ({agent_name}) - {sp_id}</option>')
     options_html = "\n".join(options)
 
-    body = (
-        "<div style='display:flex; justify-content:space-between; align-items:center;'>"
-        "<h1>LiveKit test</h1>"
-        f"<div><a href='{home_href}'>Home</a> | <a href='{logout_href}'>Logout</a></div>"
-        "</div>"
-        "<p>Join a LiveKit room mapped from a Marvain <code>space_id</code>.</p>"
-        f"<div id='lkcfg' data-token-url=\"{token_url_attr}\" style='display:none'></div>"
-        f"<p><label>Space: <select id='space_id' style='min-width:400px;'>{options_html}</select></label> "
-        "<button id='join'>Join</button> <button id='leave'>Leave</button></p>"
-        "<pre id='status' style='background:#111; color:#eee; padding:12px; border-radius:8px;'>idle</pre>"
-        "<script src='https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js'></script>"
-        "<script>\n"
-        "(function(){\n"
-        "  var room = null;\n"
-        "  var statusEl = document.getElementById('status');\n"
-        "  var selectEl = document.getElementById('space_id');\n"
-        "  var tokenUrl = document.getElementById('lkcfg').getAttribute('data-token-url');\n"
-        "  function setStatus(s){ statusEl.textContent = s; }\n"
-        "  async function join(){\n"
-        "    var spaceId = (selectEl.value||'').trim();\n"
-        "    if(!spaceId){ setStatus('please select a space'); return; }\n"
-        "    setStatus('requesting token...');\n"
-        "    var resp = await fetch(tokenUrl, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({space_id: spaceId})});\n"
-        "    if(!resp.ok){ setStatus('token request failed: '+resp.status); return; }\n"
-        "    var data = await resp.json();\n"
-        "    setStatus('connecting to '+data.url+' ...');\n"
-        "    var lk = window.livekit || window.LiveKit || window.LivekitClient;\n"
-        "    if(!lk || !lk.Room){ setStatus('livekit client not loaded'); return; }\n"
-        "    room = new lk.Room();\n"
-        "    room.on('disconnected', function(){ setStatus('disconnected'); });\n"
-        "    await room.connect(data.url, data.token);\n"
-        "    setStatus('connected room='+data.room+' identity='+data.identity);\n"
-        "  }\n"
-        "  async function leave(){\n"
-        "    if(room){ try{ await room.disconnect(); }catch(e){} room = null; }\n"
-        "    setStatus('left');\n"
-        "  }\n"
-        "  document.getElementById('join').addEventListener('click', function(){ join().catch(function(e){ setStatus('join error: '+e); }); });\n"
-        "  document.getElementById('leave').addEventListener('click', function(){ leave().catch(function(e){ setStatus('leave error: '+e); }); });\n"
-        "})();\n"
-        "</script>"
-    )
-    return _gui_html_page(title="LiveKit test", body_html=body)
+    body = f"""
+<div style='display:flex; justify-content:space-between; align-items:center;'>
+  <h1>LiveKit Test</h1>
+  <div><a href='{home_href}'>Home</a> | <a href='{logout_href}'>Logout</a></div>
+</div>
+
+<p>Join a LiveKit room mapped from a Marvain <code>space_id</code>.</p>
+<div id='lkcfg' data-token-url="{token_url_attr}" style='display:none'></div>
+
+<!-- Connection Controls -->
+<div style='margin-bottom:16px; padding:12px; background:#1a1a2e; border-radius:8px;'>
+  <label><strong>Space:</strong> <select id='space_id' style='min-width:400px;'>{options_html}</select></label>
+  <button id='join' style='margin-left:8px;'>🔗 Join</button>
+  <button id='leave'>🚪 Leave</button>
+</div>
+
+<!-- Media Controls -->
+<div style='margin-bottom:16px; padding:12px; background:#1a1a2e; border-radius:8px;'>
+  <strong>Media:</strong>
+  <button id='btn-mic' disabled>🔇 Mic Off</button>
+  <button id='btn-cam' disabled>📷 Cam Off</button>
+  <span style='margin-left:16px; color:#888;'>Click to enable after joining</span>
+</div>
+
+<!-- Main Content Grid -->
+<div style='display:grid; grid-template-columns:1fr 1fr; gap:16px;'>
+  <!-- Left Column: Video & Participants -->
+  <div>
+    <!-- Local Video Preview -->
+    <div style='margin-bottom:16px;'>
+      <h3 style='margin:0 0 8px 0;'>📹 Local Preview</h3>
+      <div id='local-video' style='min-height:180px; background:#111; border-radius:8px; display:flex; align-items:center; justify-content:center; color:#666;'>
+        Camera off
+      </div>
+    </div>
+
+    <!-- Remote Media -->
+    <div style='margin-bottom:16px;'>
+      <h3 style='margin:0 0 8px 0;'>🔊 Remote Media</h3>
+      <div id='remote-media' style='min-height:120px; background:#111; border-radius:8px; padding:8px; display:flex; flex-wrap:wrap; gap:8px;'>
+      </div>
+    </div>
+
+    <!-- Participants List -->
+    <div>
+      <h3 style='margin:0 0 8px 0;'>👥 Participants</h3>
+      <div id='participants' style='background:#111; border-radius:8px; padding:12px; min-height:60px; color:#eee;'>
+        <em>Not connected</em>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right Column: Chat & Status -->
+  <div>
+    <!-- Chat Interface -->
+    <div style='margin-bottom:16px;'>
+      <h3 style='margin:0 0 8px 0;'>💬 Chat</h3>
+      <div id='chat-messages' style='background:#111; border-radius:8px; padding:12px; height:200px; overflow-y:auto; margin-bottom:8px; color:#eee;'>
+        <em style='color:#888;'>Messages will appear here...</em>
+      </div>
+      <div style='display:flex; gap:8px;'>
+        <input id='chat-input' type='text' placeholder='Type a message...' style='flex:1; padding:8px; border-radius:4px; border:1px solid #333; background:#222; color:#eee;' />
+        <button id='btn-send-chat' disabled>Send</button>
+      </div>
+    </div>
+
+    <!-- Status Log -->
+    <div>
+      <h3 style='margin:0 0 8px 0;'>📋 Status Log</h3>
+      <pre id='status' style='background:#111; color:#0f0; padding:12px; border-radius:8px; height:180px; overflow-y:auto; font-size:12px; margin:0;'>idle</pre>
+    </div>
+  </div>
+</div>
+
+<!-- Agent Worker Instructions -->
+<details style='margin-top:24px; padding:12px; background:#1a1a2e; border-radius:8px; color:#eee;'>
+  <summary style='cursor:pointer; font-weight:bold;'>🤖 Running an Agent Worker (Satellite)</summary>
+  <div style='margin-top:12px; font-size:14px; line-height:1.6;'>
+    <p>To test agent voice interaction, run the agent worker locally:</p>
+    <pre style='background:#111; padding:12px; border-radius:4px; overflow-x:auto;'>
+# 1. Navigate to the agent worker directory
+cd apps/agent_worker
+
+# 2. Create .env file with your credentials
+cat &gt; .env &lt;&lt;EOF
+LIVEKIT_URL=wss://marvain-dev-fo5ki513.livekit.cloud
+LIVEKIT_API_KEY=your-api-key
+LIVEKIT_API_SECRET=your-api-secret
+OPENAI_API_KEY=your-openai-key
+HUB_API_BASE=https://your-hub-api.execute-api.us-east-1.amazonaws.com/dev
+HUB_DEVICE_TOKEN=your-device-token
+SPACE_ID=your-space-id
+EOF
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Run the worker (it will auto-join rooms when users connect)
+python worker.py start
+    </pre>
+    <p><strong>Identity format:</strong></p>
+    <ul>
+      <li>Users join as <code>user:&lt;user_id&gt;</code></li>
+      <li>Devices/agents join as <code>device:&lt;device_id&gt;</code> or <code>agent:&lt;agent_id&gt;</code></li>
+    </ul>
+    <p>The agent worker uses LiveKit's agent framework to automatically join rooms and respond with voice.</p>
+  </div>
+</details>
+
+<script src='https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js'></script>
+<script>
+{_livekit_test_page_script()}
+</script>
+"""
+    return _gui_html_page(title="LiveKit Test", body_html=body)
 
 
 @app.post("/livekit/token", response_model=LiveKitTokenOut)
