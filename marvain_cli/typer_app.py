@@ -250,20 +250,22 @@ def run(argv: list[str]) -> int:
     @app.command("status", help="Show deployment status (stack existence, status, outputs)")
     def _status(
         ctx: typer.Context,
+        output_json: bool = typer.Option(False, "--json", help="Output raw JSON instead of pretty print"),
         dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
     ) -> None:
         c = _load(ctx)
         dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
-        raise typer.Exit(code=status(c, dry_run=dr))
+        raise typer.Exit(code=status(c, dry_run=dr, output_json=output_json))
 
     @app.command("info", help="Show deployment info (stack name, region, profile, resources)")
     def _info(
         ctx: typer.Context,
+        output_json: bool = typer.Option(False, "--json", help="Output raw JSON instead of pretty print"),
         dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
     ) -> None:
         c = _load(ctx)
         dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
-        raise typer.Exit(code=info(c, dry_run=dr))
+        raise typer.Exit(code=info(c, dry_run=dr, output_json=output_json))
 
     @app.command("teardown")
     def _teardown(

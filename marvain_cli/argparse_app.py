@@ -29,6 +29,7 @@ from marvain_cli.ops import (
     hub_register_device,
     hub_revoke_membership,
     hub_update_membership,
+    info,
     init_db,
     load_ctx,
     monitor_outputs,
@@ -37,6 +38,7 @@ from marvain_cli.ops import (
     sam_build_simple,
     sam_deploy,
     sam_logs,
+    status,
     teardown,
 )
 
@@ -111,6 +113,14 @@ def run(argv: list[str]) -> int:
 
     doc = sub.add_parser("doctor", help="Check local toolchain + AWS credentials")
     doc.add_argument("--dry-run", action="store_true")
+
+    st = sub.add_parser("status", help="Show deployment status (stack existence, status, outputs)")
+    st.add_argument("--json", action="store_true", help="Output raw JSON instead of pretty print")
+    st.add_argument("--dry-run", action="store_true")
+
+    inf = sub.add_parser("info", help="Show deployment info (stack name, region, profile, resources)")
+    inf.add_argument("--json", action="store_true", help="Output raw JSON instead of pretty print")
+    inf.add_argument("--dry-run", action="store_true")
 
     init = sub.add_parser("init", help="Initialization helpers")
     init_sub = init.add_subparsers(dest="init_cmd")
@@ -367,6 +377,10 @@ def run(argv: list[str]) -> int:
             return teardown(ctx, dry_run=bool(args.dry_run), yes=bool(args.yes), wait=not bool(args.no_wait))
         if args.cmd == "doctor":
             return doctor(ctx, dry_run=bool(args.dry_run))
+        if args.cmd == "status":
+            return status(ctx, dry_run=bool(args.dry_run), output_json=bool(getattr(args, "json", False)))
+        if args.cmd == "info":
+            return info(ctx, dry_run=bool(args.dry_run), output_json=bool(getattr(args, "json", False)))
         if args.cmd == "init":
             if args.init_cmd == "db":
                 return init_db(ctx, dry_run=bool(args.dry_run), sql_file=args.sql_file)

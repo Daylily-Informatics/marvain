@@ -219,6 +219,47 @@ def revoke_membership(db: RdsData, *, agent_id: str, user_id: str, transaction_i
     )
 
 
+@dataclass(frozen=True)
+class SpaceInfo:
+    """A space a user has access to via agent membership."""
+
+    space_id: str
+    name: str
+    agent_id: str
+    agent_name: str
+
+
+def list_spaces_for_user(db: RdsData, *, user_id: str) -> list[SpaceInfo]:
+    """List all spaces the user has access to through their agent memberships."""
+    rows = db.query(
+        """
+        SELECT s.space_id::TEXT as space_id,
+               s.name as space_name,
+               a.agent_id::TEXT as agent_id,
+               a.name as agent_name
+        FROM spaces s
+        JOIN agents a ON a.agent_id = s.agent_id
+        JOIN agent_memberships m ON m.agent_id = a.agent_id
+        WHERE m.user_id = :user_id::uuid
+          AND m.revoked_at IS NULL
+          AND a.disabled = false
+        ORDER BY a.name ASC, s.name ASC
+        """,
+        {"user_id": user_id},
+    )
+    out: list[SpaceInfo] = []
+    for r in rows:
+        out.append(
+            SpaceInfo(
+                space_id=str(r.get("space_id") or ""),
+                name=str(r.get("space_name") or ""),
+                agent_id=str(r.get("agent_id") or ""),
+                agent_name=str(r.get("agent_name") or ""),
+            )
+        )
+    return out
+
+
 def claim_first_owner(db: RdsData, *, agent_id: str, user_id: str, relationship_label: str | None = None) -> None:
     """Claim the first owner membership for an agent.
 

@@ -774,7 +774,42 @@ def monitor_status(ctx: Ctx, *, dry_run: bool) -> int:
     return 0
 
 
-def status(ctx: Ctx, *, dry_run: bool) -> int:
+def _pretty_print_status(result: dict[str, Any]) -> None:
+    """Pretty print status result."""
+    stack = result.get("stack", "unknown")
+    exists = result.get("exists", False)
+    status_val = result.get("status", "UNKNOWN")
+    outputs = result.get("outputs", {})
+
+    # Status color indicators
+    if not exists:
+        status_indicator = "⚪"  # Not deployed
+        status_color = ""
+    elif "COMPLETE" in status_val and "ROLLBACK" not in status_val:
+        status_indicator = "🟢"  # Healthy
+        status_color = ""
+    elif "IN_PROGRESS" in status_val:
+        status_indicator = "🟡"  # In progress
+        status_color = ""
+    else:
+        status_indicator = "🔴"  # Error/rollback
+        status_color = ""
+
+    print(f"\n{status_indicator} Stack: {stack}")
+    print(f"   Status: {status_val if exists else 'NOT DEPLOYED'}")
+
+    if exists and outputs:
+        print(f"\n   Resources ({len(outputs)}):")
+        # Group outputs by type for better readability
+        for key in sorted(outputs.keys()):
+            value = outputs[key]
+            # Truncate long values
+            display_val = value if len(value) <= 60 else value[:57] + "..."
+            print(f"     {key}: {display_val}")
+    print()
+
+
+def status(ctx: Ctx, *, dry_run: bool, output_json: bool = False) -> int:
     """Show deployment status: stack existence, status, and key resources."""
     rc = _conda_preflight(enforce=not dry_run)
     if rc != 0:
@@ -796,7 +831,11 @@ def status(ctx: Ctx, *, dry_run: bool) -> int:
 
     stacks = (data or {}).get("Stacks") or []
     if not stacks:
-        print(json.dumps({"stack": ctx.env.stack_name, "exists": False}, indent=2, sort_keys=True))
+        result = {"stack": ctx.env.stack_name, "exists": False}
+        if output_json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            _pretty_print_status(result)
         return 0
 
     s0 = stacks[0]
@@ -816,11 +855,39 @@ def status(ctx: Ctx, *, dry_run: bool) -> int:
         "status": stack_status,
         "outputs": outputs,
     }
-    print(json.dumps(result, indent=2, sort_keys=True))
+    if output_json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        _pretty_print_status(result)
     return 0
 
 
-def info(ctx: Ctx, *, dry_run: bool) -> int:
+def _pretty_print_info(result: dict[str, Any]) -> None:
+    """Pretty print info result."""
+    env = result.get("environment", "unknown")
+    stack = result.get("stack_name", "unknown")
+    profile = result.get("aws_profile", "default")
+    region = result.get("aws_region", "unknown")
+    resources = result.get("resources") or {}
+
+    print(f"\n📦 Environment: {env}")
+    print(f"   Stack:       {stack}")
+    print(f"   Profile:     {profile}")
+    print(f"   Region:      {region}")
+
+    if resources:
+        print(f"\n   Resources ({len(resources)}):")
+        for key in sorted(resources.keys()):
+            value = resources[key]
+            # Truncate long values
+            display_val = value if len(value) <= 60 else value[:57] + "..."
+            print(f"     {key}: {display_val}")
+    else:
+        print("\n   Resources: (stack not deployed or no outputs)")
+    print()
+
+
+def info(ctx: Ctx, *, dry_run: bool, output_json: bool = False) -> int:
     """Show deployment info: stack name, region, profile, and resource details."""
     rc = _conda_preflight(enforce=not dry_run)
     if rc != 0:
@@ -855,7 +922,10 @@ def info(ctx: Ctx, *, dry_run: bool) -> int:
         "aws_region": ctx.env.aws_region,
         "resources": outputs if outputs else None,
     }
-    print(json.dumps(result, indent=2, sort_keys=True))
+    if output_json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        _pretty_print_info(result)
     return 0
 
 
