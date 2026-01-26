@@ -498,69 +498,14 @@ def hub_register_device(
     )
 
 
-def cognito_admin_create_user(
-    ctx: Ctx,
-    *,
-    email: str,
-    dry_run: bool,
-) -> dict[str, Any]:
-    user_pool_id = resolve_stack_output(ctx, key="CognitoUserPoolId", dry_run=dry_run)
-    cmd = [
-        "aws",
-        "cognito-idp",
-        "admin-create-user",
-        *aws_cli_args(ctx.env),
-        "--user-pool-id",
-        user_pool_id,
-        "--username",
-        email,
-        "--user-attributes",
-        f"Name=email,Value={email}",
-        "--desired-delivery-mediums",
-        "EMAIL",
-        "--output",
-        "json",
-    ]
-    return run_json(cmd, env=cmd_env(ctx.env), dry_run=dry_run)
-
-
-def cognito_list_users(ctx: Ctx, *, dry_run: bool, limit: int = 60) -> dict[str, Any]:
-    user_pool_id = resolve_stack_output(ctx, key="CognitoUserPoolId", dry_run=dry_run)
-    cmd = [
-        "aws",
-        "cognito-idp",
-        "list-users",
-        *aws_cli_args(ctx.env),
-        "--user-pool-id",
-        user_pool_id,
-        "--output",
-        "json",
-    ]
-    return run_json(cmd, env=cmd_env(ctx.env), dry_run=dry_run)
-
-
-def cognito_admin_delete_user(ctx: Ctx, *, dry_run: bool, email: str) -> int:
-    user_pool_id = resolve_stack_output(ctx, key="CognitoUserPoolId", dry_run=dry_run)
-    cmd = [
-        "aws",
-        "cognito-idp",
-        "admin-delete-user",
-        *aws_cli_args(ctx.env),
-        "--user-pool-id",
-        user_pool_id,
-        "--username",
-        email,
-    ]
-    return run_cmd(cmd, env=cmd_env(ctx.env), dry_run=dry_run)
-
-
 def sam_build_simple(*, dry_run: bool, template: str = "template.yaml") -> int:
     """Run `sam build` without requiring a config file."""
 
     rc = _conda_preflight(enforce=not dry_run)
     if rc != 0:
         return rc
-    return run_cmd(["sam", "build", "-t", template], env=None, dry_run=dry_run)
+    # `--clean` avoids stale dependency artifacts (important for Lambda vendored deps).
+    return run_cmd(["sam", "build", "--clean", "-t", template], env=None, dry_run=dry_run)
 
 
 def sam_build(ctx: Ctx, *, dry_run: bool) -> int:
@@ -572,18 +517,39 @@ def sam_build(ctx: Ctx, *, dry_run: bool) -> int:
     return run_cmd(["sam", "build", "-t", template], env=cmd_env(ctx.env), dry_run=dry_run)
 
 
-def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool) -> int:
+def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool, no_confirm: bool = False) -> int:
     rc = _conda_preflight(enforce=not dry_run)
     if rc != 0:
         return rc
     sam_cfg = (ctx.env.raw.get("sam") or {}) if isinstance(ctx.env.raw.get("sam"), dict) else {}
-    template = str(sam_cfg.get("template") or "template.yaml")
+    source_template = str(sam_cfg.get("template") or "template.yaml")
     caps = sam_cfg.get("capabilities") or ["CAPABILITY_IAM"]
     if not isinstance(caps, list):
         caps = ["CAPABILITY_IAM"]
     param_overrides = sam_cfg.get("parameter_overrides") or {}
     if not isinstance(param_overrides, dict):
         param_overrides = {}
+
+    # Check for LIVEKIT_URL environment variable and add to parameter overrides
+    livekit_url = os.environ.get("LIVEKIT_URL", "").strip()
+    if livekit_url:
+        param_overrides["LiveKitUrl"] = livekit_url
+        _eprint(f"Using LIVEKIT_URL from environment: {livekit_url}")
+    elif "LiveKitUrl" not in param_overrides:
+        _eprint("ERROR: LIVEKIT_URL environment variable is not set and LiveKitUrl is not in parameter_overrides.")
+        _eprint("Please set LIVEKIT_URL or add LiveKitUrl to your marvain config.")
+        _eprint("Hint: source .env before running deploy")
+        return 1
+
+    # Always build before deploy so Lambda functions include vendored dependencies.
+    # This prevents the common failure mode where deployed Lambdas are missing
+    # runtime deps (e.g., mangum) if `sam deploy` is run against the source template.
+    build_rc = run_cmd(["sam", "build", "-t", source_template], env=cmd_env(ctx.env), dry_run=dry_run)
+    if build_rc != 0:
+        return build_rc
+
+    # Deploy the built template.
+    template = ".aws-sam/build/template.yaml"
 
     cmd = [
         "sam",
@@ -599,8 +565,10 @@ def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool) -> int:
     if guided:
         cmd.append("--guided")
     else:
-        # non-interactive default; still shows a changeset prompt unless user adds --no-confirm-changeset.
-        cmd.append("--confirm-changeset")
+        # Non-guided deploys must be fully non-interactive by default.
+        # Keep `--no-confirm` as a legacy flag, but `--no-guided` should never
+        # require stdin input.
+        cmd.append("--no-confirm-changeset")
 
     if caps:
         cmd.append("--capabilities")
@@ -806,6 +774,91 @@ def monitor_status(ctx: Ctx, *, dry_run: bool) -> int:
     return 0
 
 
+def status(ctx: Ctx, *, dry_run: bool) -> int:
+    """Show deployment status: stack existence, status, and key resources."""
+    rc = _conda_preflight(enforce=not dry_run)
+    if rc != 0:
+        return rc
+
+    cmd = [
+        "aws",
+        "cloudformation",
+        "describe-stacks",
+        *aws_cli_args(ctx.env),
+        "--stack-name",
+        ctx.env.stack_name,
+        "--output",
+        "json",
+    ]
+    data = run_json(cmd, env=cmd_env(ctx.env), dry_run=dry_run)
+    if dry_run:
+        return 0
+
+    stacks = (data or {}).get("Stacks") or []
+    if not stacks:
+        print(json.dumps({"stack": ctx.env.stack_name, "exists": False}, indent=2, sort_keys=True))
+        return 0
+
+    s0 = stacks[0]
+    stack_status = s0.get("StackStatus", "UNKNOWN")
+
+    # Extract key outputs
+    outputs = {}
+    for o in s0.get("Outputs") or []:
+        k = o.get("OutputKey")
+        v = o.get("OutputValue")
+        if isinstance(k, str) and isinstance(v, str):
+            outputs[k] = v
+
+    result = {
+        "stack": ctx.env.stack_name,
+        "exists": True,
+        "status": stack_status,
+        "outputs": outputs,
+    }
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def info(ctx: Ctx, *, dry_run: bool) -> int:
+    """Show deployment info: stack name, region, profile, and resource details."""
+    rc = _conda_preflight(enforce=not dry_run)
+    if rc != 0:
+        return rc
+
+    # Get stack outputs if stack exists
+    outputs = {}
+    cmd = [
+        "aws",
+        "cloudformation",
+        "describe-stacks",
+        *aws_cli_args(ctx.env),
+        "--stack-name",
+        ctx.env.stack_name,
+        "--output",
+        "json",
+    ]
+    data = run_json(cmd, env=cmd_env(ctx.env), dry_run=dry_run)
+    if not dry_run and data:
+        stacks = (data or {}).get("Stacks") or []
+        if stacks:
+            for o in stacks[0].get("Outputs") or []:
+                k = o.get("OutputKey")
+                v = o.get("OutputValue")
+                if isinstance(k, str) and isinstance(v, str):
+                    outputs[k] = v
+
+    result = {
+        "environment": ctx.env.env,
+        "stack_name": ctx.env.stack_name,
+        "aws_profile": ctx.env.aws_profile,
+        "aws_region": ctx.env.aws_region,
+        "resources": outputs if outputs else None,
+    }
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
 def teardown(ctx: Ctx, *, dry_run: bool, yes: bool, wait: bool) -> int:
     rc = _conda_preflight(enforce=not dry_run)
     if rc != 0:
@@ -864,45 +917,519 @@ def gui_run(
     reload: bool,
     stack_prefix: str | None,
 ) -> int:
-    """Show the deployed Hub GUI URL.
+    """Start the local GUI server.
 
-    The legacy local GUI in `archive/client/gui.py` has been removed. The GUI is
-    now served as routes in the Hub FastAPI app and is accessed via the deployed
-    API Gateway URL (stack output `HubRestApiBase`).
+    The GUI runs locally (developer laptop or EC2) and connects to deployed
+    AWS resources (Aurora Data API, Cognito, S3, SQS) via environment variables.
 
-    Notes:
-    - `--host/--port/--reload/--stack-prefix` are kept for backward CLI
-      compatibility but are no longer used.
+    Args:
+        host: Host to bind to (default: 127.0.0.1)
+        port: Port to bind to (default: 8084)
+        reload: Enable auto-reload on code changes
+        stack_prefix: Unused (kept for backward CLI compatibility)
     """
+    import subprocess
 
     rc = _conda_preflight(enforce=not dry_run)
     if rc != 0:
         return rc
 
-    # Back-compat: these flags used to control a local uvicorn server.
-    _ = (host, port, reload, stack_prefix)
+    _ = stack_prefix  # Unused but kept for backward CLI compatibility
 
-    outs = aws_stack_outputs(ctx, dry_run=dry_run)
-    hub_base = (outs.get("HubRestApiBase") or "").strip()
-    if not hub_base:
-        _eprint("Legacy local GUI has been removed.")
-        _eprint(f"Stack outputs for {ctx.env.stack_name} do not include HubRestApiBase.")
-        _eprint("Try: ./bin/marvain monitor outputs")
+    repo_root = Path(__file__).parent.parent
+    hub_api_dir = repo_root / "functions" / "hub_api"
+    shared_layer = repo_root / "layers" / "shared" / "python"
+
+    # Ensure .env.local exists with stack outputs
+    env_local = hub_api_dir / ".env.local"
+    if not env_local.exists():
+        _eprint(f"ERROR: {env_local} not found")
+        _eprint("Create it with stack outputs:")
+        _eprint("  ./bin/marvain monitor outputs --write-config")
         return 2
 
-    hub_base = hub_base.rstrip("/")
-    gui_url = hub_base + "/"
-    livekit_test_url = hub_base + "/livekit-test"
-    hosted_ui = (outs.get("CognitoHostedUiUrl") or "").strip()
+    cmd = ["uvicorn", "app:app", "--host", host, "--port", str(port)]
+    if reload:
+        cmd.append("--reload")
 
-    _eprint("Legacy local GUI has been removed.")
-    _eprint("Open the deployed GUI:")
-    print(gui_url)
-    _eprint(f"GUI: {gui_url}")
-    _eprint(f"LiveKit test: {livekit_test_url}")
-    if hosted_ui:
-        _eprint(f"Cognito Hosted UI: {hosted_ui}")
+    _eprint(f"Starting local GUI server at http://{host}:{port}")
+    _eprint(f"Using environment from: {env_local}")
+    _eprint(f"$ cd {hub_api_dir} && {' '.join(cmd)}")
+
+    if dry_run:
+        return 0
+
+    # Build environment: start with current env, add .env.local, set PYTHONPATH
+    env = os.environ.copy()
+
+    # Load .env.local variables into environment
+    with open(env_local) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                env[key.strip()] = value.strip()
+
+    # Ensure AWS_DEFAULT_REGION is set (boto3 sometimes prefers this)
+    if "AWS_REGION" in env and "AWS_DEFAULT_REGION" not in env:
+        env["AWS_DEFAULT_REGION"] = env["AWS_REGION"]
+
+    # Set PYTHONPATH to include shared layer for agent_hub imports
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    if existing_pythonpath:
+        env["PYTHONPATH"] = f"{shared_layer}:{existing_pythonpath}"
+    else:
+        env["PYTHONPATH"] = str(shared_layer)
+
+    return subprocess.call(cmd, cwd=str(hub_api_dir), env=env)
+
+
+# -----------------------------------------------------------------------------
+# GUI Lifecycle Management
+# -----------------------------------------------------------------------------
+
+GUI_DEFAULT_HOST = "127.0.0.1"
+GUI_DEFAULT_PORT = 8084
+GUI_PID_FILENAME = ".marvain-gui.pid"
+GUI_LOG_FILENAME = ".marvain-gui.log"
+
+
+def _get_gui_pid_file() -> Path:
+    """Return the path to the GUI PID file in the repo root."""
+    repo_root = Path(__file__).parent.parent
+    return repo_root / GUI_PID_FILENAME
+
+
+def _get_gui_log_file() -> Path:
+    """Return the path to the GUI log file in the repo root."""
+    repo_root = Path(__file__).parent.parent
+    return repo_root / GUI_LOG_FILENAME
+
+
+def _is_port_in_use(port: int, host: str = "127.0.0.1") -> bool:
+    """Check if a port is in use."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        try:
+            s.connect((host, port))
+            return True
+        except (ConnectionRefusedError, OSError):
+            return False
+
+
+def _get_pid_on_port(port: int) -> int | None:
+    """Get the PID of the process listening on a port (POSIX-portable)."""
+    # Try lsof first (macOS and most Linux)
+    try:
+        result = subprocess.run(
+            ["lsof", "-ti", f":{port}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # lsof may return multiple PIDs; take the first one
+            pids = result.stdout.strip().split("\n")
+            return int(pids[0])
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        pass
+
+    # Fallback: try ss (Linux)
+    try:
+        result = subprocess.run(
+            ["ss", "-tlnp", f"sport = :{port}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            # Parse ss output for PID
+            for line in result.stdout.split("\n"):
+                if f":{port}" in line and "pid=" in line:
+                    import re
+                    match = re.search(r"pid=(\d+)", line)
+                    if match:
+                        return int(match.group(1))
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        pass
+
+    return None
+
+
+def _is_process_running(pid: int) -> bool:
+    """Check if a process with the given PID is running."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def _kill_process(pid: int, force: bool = False) -> bool:
+    """Kill a process by PID. Returns True if successful."""
+    import signal
+    sig = signal.SIGKILL if force else signal.SIGTERM
+    try:
+        os.kill(pid, sig)
+        # Wait a bit for the process to terminate
+        import time
+        for _ in range(10):
+            time.sleep(0.1)
+            if not _is_process_running(pid):
+                return True
+        # If still running after SIGTERM, try SIGKILL
+        if not force:
+            os.kill(pid, signal.SIGKILL)
+            time.sleep(0.5)
+            return not _is_process_running(pid)
+        return False
+    except (OSError, ProcessLookupError):
+        return True  # Process already gone
+
+
+def _read_pid_file() -> int | None:
+    """Read PID from the PID file if it exists."""
+    pid_file = _get_gui_pid_file()
+    if not pid_file.exists():
+        return None
+    try:
+        content = pid_file.read_text().strip()
+        return int(content) if content else None
+    except (ValueError, OSError):
+        return None
+
+
+def _write_pid_file(pid: int) -> None:
+    """Write PID to the PID file."""
+    pid_file = _get_gui_pid_file()
+    pid_file.write_text(str(pid))
+
+
+def _remove_pid_file() -> None:
+    """Remove the PID file if it exists."""
+    pid_file = _get_gui_pid_file()
+    if pid_file.exists():
+        pid_file.unlink()
+
+
+def _get_process_start_time(pid: int) -> str | None:
+    """Get the start time of a process (POSIX-portable)."""
+    try:
+        # Works on macOS and Linux
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return None
+
+
+def gui_status(
+    ctx: Ctx,
+    *,
+    dry_run: bool,
+    port: int = GUI_DEFAULT_PORT,
+) -> int:
+    """Check the status of the GUI server.
+
+    Returns:
+        0 if running, 1 if not running
+    """
+    _ = ctx  # Unused but kept for consistency
+
+    if dry_run:
+        _eprint(f"[dry-run] Would check GUI status on port {port}")
+        return 0
+
+    pid_from_file = _read_pid_file()
+    pid_on_port = _get_pid_on_port(port)
+    port_in_use = _is_port_in_use(port)
+
+    # Determine actual status
+    if pid_from_file and _is_process_running(pid_from_file):
+        start_time = _get_process_start_time(pid_from_file)
+        _eprint(f"GUI server is RUNNING")
+        _eprint(f"  PID: {pid_from_file}")
+        _eprint(f"  Port: {port}")
+        if start_time:
+            _eprint(f"  Started: {start_time}")
+        _eprint(f"  PID file: {_get_gui_pid_file()}")
+        return 0
+    elif port_in_use and pid_on_port:
+        # Port is in use but not by our tracked process
+        start_time = _get_process_start_time(pid_on_port)
+        _eprint(f"GUI server is RUNNING (untracked)")
+        _eprint(f"  PID: {pid_on_port}")
+        _eprint(f"  Port: {port}")
+        if start_time:
+            _eprint(f"  Started: {start_time}")
+        _eprint(f"  Note: Process not started via 'marvain gui start'")
+        # Clean up stale PID file if it exists
+        if pid_from_file:
+            _remove_pid_file()
+        return 0
+    elif port_in_use:
+        _eprint(f"Port {port} is in use by an unknown process")
+        _eprint(f"  Run: lsof -ti:{port} | xargs kill -9")
+        return 1
+    else:
+        _eprint(f"GUI server is STOPPED")
+        _eprint(f"  Port: {port}")
+        # Clean up stale PID file
+        if pid_from_file:
+            _remove_pid_file()
+        return 1
+
+
+def gui_stop(
+    ctx: Ctx,
+    *,
+    dry_run: bool,
+    port: int = GUI_DEFAULT_PORT,
+    force: bool = False,
+) -> int:
+    """Stop the GUI server.
+
+    Args:
+        port: Port the GUI is running on
+        force: Use SIGKILL instead of SIGTERM
+    """
+    _ = ctx  # Unused but kept for consistency
+
+    if dry_run:
+        _eprint(f"[dry-run] Would stop GUI server on port {port}")
+        return 0
+
+    # First try PID from file
+    pid_from_file = _read_pid_file()
+    if pid_from_file and _is_process_running(pid_from_file):
+        _eprint(f"Stopping GUI server (PID {pid_from_file})...")
+        if _kill_process(pid_from_file, force=force):
+            _remove_pid_file()
+            _eprint("GUI server stopped.")
+            return 0
+        else:
+            _eprint(f"ERROR: Failed to stop process {pid_from_file}")
+            return 1
+
+    # Fallback: find process on port
+    pid_on_port = _get_pid_on_port(port)
+    if pid_on_port:
+        _eprint(f"Stopping process on port {port} (PID {pid_on_port})...")
+        if _kill_process(pid_on_port, force=force):
+            _remove_pid_file()
+            _eprint("GUI server stopped.")
+            return 0
+        else:
+            _eprint(f"ERROR: Failed to stop process {pid_on_port}")
+            return 1
+
+    # Check if port is in use but we can't find the PID
+    if _is_port_in_use(port):
+        _eprint(f"Port {port} is in use but cannot determine PID.")
+        _eprint(f"Try: lsof -ti:{port} | xargs kill -9")
+        return 1
+
+    _eprint("GUI server is not running.")
+    _remove_pid_file()
     return 0
+
+
+def gui_start(
+    ctx: Ctx,
+    *,
+    dry_run: bool,
+    host: str = GUI_DEFAULT_HOST,
+    port: int = GUI_DEFAULT_PORT,
+    reload: bool = True,
+    foreground: bool = False,
+) -> int:
+    """Start the GUI server.
+
+    The GUI runs locally (developer laptop or EC2) and connects to deployed
+    AWS resources (Aurora Data API, Cognito, S3, SQS) via environment variables.
+
+    Args:
+        host: Host to bind to (default: 127.0.0.1)
+        port: Port to bind to (default: 8084)
+        reload: Enable auto-reload on code changes
+        foreground: Run in foreground (blocking) instead of background
+    """
+    rc = _conda_preflight(enforce=not dry_run)
+    if rc != 0:
+        return rc
+
+    repo_root = Path(__file__).parent.parent
+    hub_api_dir = repo_root / "functions" / "hub_api"
+    shared_layer = repo_root / "layers" / "shared" / "python"
+
+    # Ensure .env.local exists with stack outputs
+    env_local = hub_api_dir / ".env.local"
+    if not env_local.exists():
+        _eprint(f"ERROR: {env_local} not found")
+        _eprint("Create it with stack outputs:")
+        _eprint("  ./bin/marvain monitor outputs --write-config")
+        return 2
+
+    # Check if port is already in use
+    if _is_port_in_use(port, host):
+        pid_on_port = _get_pid_on_port(port)
+        if pid_on_port:
+            _eprint(f"ERROR: Port {port} is already in use by PID {pid_on_port}")
+        else:
+            _eprint(f"ERROR: Port {port} is already in use")
+        _eprint("")
+        _eprint("Options:")
+        _eprint(f"  1. Stop the existing server: marvain gui stop --port {port}")
+        _eprint(f"  2. Restart the server: marvain gui restart --port {port}")
+        _eprint(f"  3. Use a different port: marvain gui start --port {port + 1}")
+        return 1
+
+    cmd = ["uvicorn", "app:app", "--host", host, "--port", str(port)]
+    if reload:
+        cmd.append("--reload")
+
+    _eprint(f"Starting local GUI server at http://{host}:{port}")
+    _eprint(f"Using environment from: {env_local}")
+
+    if dry_run:
+        _eprint(f"[dry-run] $ cd {hub_api_dir} && {' '.join(cmd)}")
+        return 0
+
+    # Build environment: start with current env, add .env.local, set PYTHONPATH
+    env = os.environ.copy()
+
+    # Load .env.local variables into environment
+    with open(env_local) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                env[key.strip()] = value.strip()
+
+    # Ensure AWS_DEFAULT_REGION is set (boto3 sometimes prefers this)
+    if "AWS_REGION" in env and "AWS_DEFAULT_REGION" not in env:
+        env["AWS_DEFAULT_REGION"] = env["AWS_REGION"]
+
+    # Set PYTHONPATH to include shared layer for agent_hub imports
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    if existing_pythonpath:
+        env["PYTHONPATH"] = f"{shared_layer}:{existing_pythonpath}"
+    else:
+        env["PYTHONPATH"] = str(shared_layer)
+
+    if foreground:
+        # Run in foreground (blocking)
+        _eprint(f"$ cd {hub_api_dir} && {' '.join(cmd)}")
+        _eprint("Press Ctrl+C to stop.")
+        return subprocess.call(cmd, cwd=str(hub_api_dir), env=env)
+    else:
+        # Run in background with output to log file
+        log_file = _get_gui_log_file()
+        _eprint(f"Logs: {log_file}")
+        _eprint(f"$ cd {hub_api_dir} && {' '.join(cmd)} > {log_file} 2>&1 &")
+
+        with open(log_file, "w") as lf:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(hub_api_dir),
+                env=env,
+                stdout=lf,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,  # Detach from terminal
+            )
+
+        # Write PID file
+        _write_pid_file(proc.pid)
+        _eprint(f"GUI server started (PID {proc.pid})")
+        _eprint(f"  URL: http://{host}:{port}")
+        _eprint(f"  Logs: tail -f {log_file}")
+        _eprint(f"  Stop: marvain gui stop")
+        return 0
+
+
+def gui_restart(
+    ctx: Ctx,
+    *,
+    dry_run: bool,
+    host: str = GUI_DEFAULT_HOST,
+    port: int = GUI_DEFAULT_PORT,
+    reload: bool = True,
+    foreground: bool = False,
+) -> int:
+    """Restart the GUI server (stop then start)."""
+    if dry_run:
+        _eprint(f"[dry-run] Would restart GUI server on port {port}")
+        return 0
+
+    # Stop first (ignore errors if not running)
+    _eprint("Stopping existing GUI server...")
+    gui_stop(ctx, dry_run=False, port=port, force=False)
+
+    # Wait a moment for port to be released
+    import time
+    for _ in range(10):
+        if not _is_port_in_use(port, host):
+            break
+        time.sleep(0.2)
+
+    # Start
+    _eprint("")
+    return gui_start(
+        ctx,
+        dry_run=False,
+        host=host,
+        port=port,
+        reload=reload,
+        foreground=foreground,
+    )
+
+
+def gui_logs(
+    ctx: Ctx,
+    *,
+    dry_run: bool,
+    follow: bool = False,
+    lines: int = 50,
+) -> int:
+    """Show GUI server logs.
+
+    Args:
+        follow: Follow log output (like tail -f)
+        lines: Number of lines to show (default: 50)
+    """
+    _ = ctx  # Unused but kept for consistency
+
+    log_file = _get_gui_log_file()
+
+    if dry_run:
+        if follow:
+            _eprint(f"[dry-run] Would run: tail -f {log_file}")
+        else:
+            _eprint(f"[dry-run] Would run: tail -n {lines} {log_file}")
+        return 0
+
+    if not log_file.exists():
+        _eprint(f"No log file found at {log_file}")
+        _eprint("The GUI server may not have been started with 'marvain gui start'.")
+        return 1
+
+    if follow:
+        _eprint(f"Following logs from {log_file} (Ctrl+C to stop)...")
+        cmd = ["tail", "-f", str(log_file)]
+    else:
+        cmd = ["tail", "-n", str(lines), str(log_file)]
+
+    return subprocess.call(cmd)
 
 
 def _split_sql(sql_text: str) -> list[str]:
@@ -1125,3 +1652,201 @@ def bootstrap(
         _eprint(f"Updated config bootstrap block: {ctx.config_path}")
 
     return 0
+
+
+# ------------------------------------------------------------------------------
+# Cognito Admin User Management
+# ------------------------------------------------------------------------------
+
+
+def _get_cognito_client(ctx: Ctx):
+    """Get a boto3 cognito-idp client."""
+    import boto3
+
+    session = boto3.Session(
+        profile_name=ctx.env.aws_profile,
+        region_name=ctx.env.aws_region,
+    )
+    return session.client("cognito-idp")
+
+
+def _get_user_pool_id(ctx: Ctx) -> str:
+    """Get the Cognito User Pool ID from stack resources/outputs.
+
+    First checks config.envs[env].resources (populated by `marvain monitor outputs --write-config`).
+    Falls back to live describe-stacks if not in config.
+    """
+    resources = ctx.cfg.get("envs", {}).get(ctx.env.env, {}).get("resources", {})
+    pool_id = resources.get("CognitoUserPoolId")
+    if pool_id:
+        return pool_id
+
+    # Fallback: fetch from live stack
+    outs = aws_stack_outputs(ctx, dry_run=False)
+    pool_id = outs.get("CognitoUserPoolId")
+    if not pool_id:
+        raise ConfigError(
+            f"CognitoUserPoolId not found in outputs for env '{ctx.env.env}'. "
+            "Run 'marvain monitor outputs --write-config' to update config."
+        )
+    return pool_id
+
+
+# Backwards-compatible wrappers used by unit tests / older CLI naming.
+def cognito_admin_create_user(ctx: Ctx, *, email: str, dry_run: bool = False) -> dict[str, Any]:
+    """Create a Cognito user (admin-create-user).
+
+    This wrapper retains the older function name expected by tests.
+    """
+
+    pool_id = _get_user_pool_id(ctx)
+    _eprint(
+        "aws cognito-idp admin-create-user "
+        f"--user-pool-id {pool_id} "
+        f"--username {email}"
+    )
+    if dry_run:
+        return {}
+
+    # Default: suppress invite; user can be confirmed via set-password.
+    cognito_create_user(ctx, email=email, temporary_password=None, suppress_invite=True, dry_run=False)
+    return {}
+
+
+def cognito_admin_delete_user(ctx: Ctx, *, email: str, dry_run: bool = False) -> int:
+    """Delete a Cognito user (admin-delete-user).
+
+    This wrapper retains the older function name expected by tests.
+    """
+
+    pool_id = _get_user_pool_id(ctx)
+    _eprint(
+        "aws cognito-idp admin-delete-user "
+        f"--user-pool-id {pool_id} "
+        f"--username {email}"
+    )
+    if dry_run:
+        return 0
+
+    cognito_delete_user(ctx, email=email, dry_run=False)
+    return 0
+
+
+def cognito_create_user(
+    ctx: Ctx,
+    *,
+    email: str,
+    temporary_password: str | None = None,
+    suppress_invite: bool = True,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Create a new Cognito user with the given email."""
+    pool_id = _get_user_pool_id(ctx)
+
+    params: dict[str, Any] = {
+        "UserPoolId": pool_id,
+        "Username": email,
+        "UserAttributes": [
+            {"Name": "email", "Value": email},
+            {"Name": "email_verified", "Value": "true"},
+        ],
+    }
+    if suppress_invite:
+        params["MessageAction"] = "SUPPRESS"
+    if temporary_password:
+        params["TemporaryPassword"] = temporary_password
+
+    _eprint(f"Creating Cognito user: {email} in pool {pool_id}")
+    if dry_run:
+        _eprint(f"[DRY RUN] cognito-idp.admin_create_user({params})")
+        return {"Username": email, "dry_run": True}
+
+    client = _get_cognito_client(ctx)
+    response = client.admin_create_user(**params)
+    return response.get("User", {})
+
+
+def cognito_set_password(
+    ctx: Ctx,
+    *,
+    email: str,
+    password: str,
+    permanent: bool = True,
+    dry_run: bool = False,
+) -> None:
+    """Set a user's password (make it permanent by default)."""
+    pool_id = _get_user_pool_id(ctx)
+
+    _eprint(f"Setting password for user: {email}")
+    if dry_run:
+        _eprint(f"[DRY RUN] cognito-idp.admin_set_user_password(UserPoolId={pool_id}, Username={email}, Permanent={permanent})")
+        return
+
+    client = _get_cognito_client(ctx)
+    client.admin_set_user_password(
+        UserPoolId=pool_id,
+        Username=email,
+        Password=password,
+        Permanent=permanent,
+    )
+    _eprint("Password set successfully")
+
+
+def cognito_list_users(
+    ctx: Ctx,
+    *,
+    dry_run: bool = False,
+) -> list[dict[str, Any]]:
+    """List all users in the Cognito User Pool."""
+    pool_id = _get_user_pool_id(ctx)
+
+    _eprint(f"Listing users in pool: {pool_id}")
+    if dry_run:
+        _eprint(f"[DRY RUN] cognito-idp.list_users(UserPoolId={pool_id})")
+        return []
+
+    client = _get_cognito_client(ctx)
+    users = []
+    paginator = client.get_paginator("list_users")
+    for page in paginator.paginate(UserPoolId=pool_id):
+        users.extend(page.get("Users", []))
+    return users
+
+
+def cognito_delete_user(
+    ctx: Ctx,
+    *,
+    email: str,
+    dry_run: bool = False,
+) -> None:
+    """Delete a user from the Cognito User Pool."""
+    pool_id = _get_user_pool_id(ctx)
+
+    _eprint(f"Deleting user: {email}")
+    if dry_run:
+        _eprint(f"[DRY RUN] cognito-idp.admin_delete_user(UserPoolId={pool_id}, Username={email})")
+        return
+
+    client = _get_cognito_client(ctx)
+    client.admin_delete_user(UserPoolId=pool_id, Username=email)
+    _eprint(f"User {email} deleted")
+
+
+def cognito_get_user(
+    ctx: Ctx,
+    *,
+    email: str,
+    dry_run: bool = False,
+) -> dict[str, Any] | None:
+    """Get a user's details from the Cognito User Pool."""
+    pool_id = _get_user_pool_id(ctx)
+
+    if dry_run:
+        _eprint(f"[DRY RUN] cognito-idp.admin_get_user(UserPoolId={pool_id}, Username={email})")
+        return None
+
+    client = _get_cognito_client(ctx)
+    try:
+        return client.admin_get_user(UserPoolId=pool_id, Username=email)
+    except client.exceptions.UserNotFoundException:
+        return None

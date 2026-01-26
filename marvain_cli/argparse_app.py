@@ -10,18 +10,25 @@ from pathlib import Path
 from marvain_cli import __version__
 from marvain_cli.config import ConfigError, render_config_yaml, sanitize_name_for_stack
 from marvain_cli.ops import (
+    GUI_DEFAULT_HOST,
+    GUI_DEFAULT_PORT,
     bootstrap,
-	cognito_admin_create_user,
-	cognito_admin_delete_user,
-	cognito_list_users,
+    cognito_create_user,
+    cognito_delete_user,
+    cognito_list_users,
     doctor,
+    gui_logs,
+    gui_restart,
     gui_run,
-	hub_claim_first_owner,
-	hub_grant_membership,
-	hub_list_memberships,
-	hub_register_device,
-	hub_revoke_membership,
-	hub_update_membership,
+    gui_start,
+    gui_status,
+    gui_stop,
+    hub_claim_first_owner,
+    hub_grant_membership,
+    hub_list_memberships,
+    hub_register_device,
+    hub_revoke_membership,
+    hub_update_membership,
     init_db,
     load_ctx,
     monitor_outputs,
@@ -72,6 +79,7 @@ def run(argv: list[str]) -> int:
     dep = sub.add_parser("deploy", help="Deploy SAM stack")
     dep.add_argument("--guided", action="store_true")
     dep.add_argument("--no-guided", action="store_true")
+    dep.add_argument("--no-confirm", action="store_true", help="Skip changeset confirmation (non-interactive)")
     dep.add_argument("--dry-run", action="store_true")
 
     logs = sub.add_parser("logs", help="Tail SAM logs")
@@ -117,13 +125,38 @@ def run(argv: list[str]) -> int:
     bs.add_argument("--force", action="store_true")
     bs.add_argument("--dry-run", action="store_true")
 
-    gui = sub.add_parser("gui", help="Show the deployed Hub GUI URL (legacy local GUI removed)")
-    gui.add_argument("--host", default="127.0.0.1")
-    gui.add_argument("--port", type=int, default=8000)
-    gui.add_argument("--reload", action="store_true")
-    gui.add_argument("--no-reload", action="store_true")
-    gui.add_argument("--stack-prefix", default=None)
-    gui.add_argument("--dry-run", action="store_true")
+    gui = sub.add_parser("gui", help="Local GUI server management")
+    gui_sub = gui.add_subparsers(dest="gui_cmd")
+
+    gui_start = gui_sub.add_parser("start", help="Start the local GUI server")
+    gui_start.add_argument("--host", default=GUI_DEFAULT_HOST)
+    gui_start.add_argument("--port", type=int, default=GUI_DEFAULT_PORT)
+    gui_start.add_argument("--reload", action="store_true")
+    gui_start.add_argument("--no-reload", action="store_true")
+    gui_start.add_argument("--foreground", "-f", action="store_true", help="Run in foreground (blocking)")
+    gui_start.add_argument("--dry-run", action="store_true")
+
+    gui_stop = gui_sub.add_parser("stop", help="Stop the running GUI server")
+    gui_stop.add_argument("--port", type=int, default=GUI_DEFAULT_PORT)
+    gui_stop.add_argument("--force", action="store_true", help="Force kill (SIGKILL)")
+    gui_stop.add_argument("--dry-run", action="store_true")
+
+    gui_restart = gui_sub.add_parser("restart", help="Restart the GUI server")
+    gui_restart.add_argument("--host", default=GUI_DEFAULT_HOST)
+    gui_restart.add_argument("--port", type=int, default=GUI_DEFAULT_PORT)
+    gui_restart.add_argument("--reload", action="store_true")
+    gui_restart.add_argument("--no-reload", action="store_true")
+    gui_restart.add_argument("--foreground", "-f", action="store_true", help="Run in foreground (blocking)")
+    gui_restart.add_argument("--dry-run", action="store_true")
+
+    gui_status = gui_sub.add_parser("status", help="Show GUI server status")
+    gui_status.add_argument("--port", type=int, default=GUI_DEFAULT_PORT)
+    gui_status.add_argument("--dry-run", action="store_true")
+
+    gui_logs = gui_sub.add_parser("logs", help="Show GUI server logs")
+    gui_logs.add_argument("--follow", "-f", action="store_true", help="Follow log output")
+    gui_logs.add_argument("--lines", "-n", type=int, default=50, help="Number of lines to show")
+    gui_logs.add_argument("--dry-run", action="store_true")
 
     tst = sub.add_parser("test", help="Run tests")
     tst.add_argument("kind", nargs="?", default="unit", choices=["unit", "all"])
@@ -306,7 +339,8 @@ def run(argv: list[str]) -> int:
                 guided = False
             if bool(args.guided):
                 guided = True
-            return sam_deploy(ctx, dry_run=bool(args.dry_run), guided=guided)
+            no_confirm = bool(getattr(args, "no_confirm", False))
+            return sam_deploy(ctx, dry_run=bool(args.dry_run), guided=guided, no_confirm=no_confirm)
         if args.cmd == "logs":
             tail = True
             if args.no_tail:
@@ -348,33 +382,79 @@ def run(argv: list[str]) -> int:
                 force=bool(args.force),
             )
         if args.cmd == "gui":
-            reload = True
-            if bool(args.no_reload):
-                reload = False
-            if bool(args.reload):
+            # Handle GUI subcommands
+            gui_cmd = getattr(args, "gui_cmd", None)
+
+            # Default to "start" if no subcommand given
+            if gui_cmd is None:
+                gui_cmd = "start"
+
+            if gui_cmd == "start":
                 reload = True
-            return gui_run(
-                ctx,
-                dry_run=bool(args.dry_run),
-                host=str(args.host),
-                port=int(args.port),
-                reload=reload,
-                stack_prefix=args.stack_prefix,
-            )
+                if getattr(args, "no_reload", False):
+                    reload = False
+                if getattr(args, "reload", False):
+                    reload = True
+                return gui_start(
+                    ctx,
+                    dry_run=bool(args.dry_run),
+                    host=str(getattr(args, "host", GUI_DEFAULT_HOST)),
+                    port=int(getattr(args, "port", GUI_DEFAULT_PORT)),
+                    reload=reload,
+                    foreground=bool(getattr(args, "foreground", False)),
+                )
+            elif gui_cmd == "stop":
+                return gui_stop(
+                    ctx,
+                    dry_run=bool(args.dry_run),
+                    port=int(getattr(args, "port", GUI_DEFAULT_PORT)),
+                    force=bool(getattr(args, "force", False)),
+                )
+            elif gui_cmd == "restart":
+                reload = True
+                if getattr(args, "no_reload", False):
+                    reload = False
+                if getattr(args, "reload", False):
+                    reload = True
+                return gui_restart(
+                    ctx,
+                    dry_run=bool(args.dry_run),
+                    host=str(getattr(args, "host", GUI_DEFAULT_HOST)),
+                    port=int(getattr(args, "port", GUI_DEFAULT_PORT)),
+                    reload=reload,
+                    foreground=bool(getattr(args, "foreground", False)),
+                )
+            elif gui_cmd == "status":
+                return gui_status(
+                    ctx,
+                    dry_run=bool(args.dry_run),
+                    port=int(getattr(args, "port", GUI_DEFAULT_PORT)),
+                )
+            elif gui_cmd == "logs":
+                return gui_logs(
+                    ctx,
+                    dry_run=bool(args.dry_run),
+                    follow=bool(getattr(args, "follow", False)),
+                    lines=int(getattr(args, "lines", 50)),
+                )
+            else:
+                print(f"Unknown gui subcommand: {gui_cmd}", file=sys.stderr)
+                return 1
 
         if args.cmd == "users":
             if args.users_cmd == "create":
-                data = cognito_admin_create_user(ctx, email=str(args.email), dry_run=bool(args.dry_run))
+                data = cognito_create_user(ctx, email=str(args.email), dry_run=bool(args.dry_run))
                 if not bool(args.dry_run):
-                    print(json.dumps(data, indent=2, sort_keys=True))
+                    print(json.dumps(data, indent=2, sort_keys=True, default=str))
                 return 0
             if args.users_cmd == "list":
-                data = cognito_list_users(ctx, dry_run=bool(args.dry_run), limit=int(args.limit))
+                data = cognito_list_users(ctx, dry_run=bool(args.dry_run))
                 if not bool(args.dry_run):
-                    print(json.dumps(data, indent=2, sort_keys=True))
+                    print(json.dumps(data, indent=2, sort_keys=True, default=str))
                 return 0
             if args.users_cmd == "delete":
-                return int(cognito_admin_delete_user(ctx, dry_run=bool(args.dry_run), email=str(args.email)))
+                cognito_delete_user(ctx, dry_run=bool(args.dry_run), email=str(args.email))
+                return 0
             users.print_help()
             return 2
 

@@ -19,15 +19,24 @@ Parameters:
     Type: String
     Default: gpt-4.1-mini
 
-  CognitoDomainPrefix:
-    Type: String
-    Description: Cognito hosted UI domain prefix (must be globally-unique within the AWS region).
-    Default: marvain-dev
-
   LiveKitUrl:
     Type: String
     Description: LiveKit server URL (e.g. wss://your.livekit.host or https://...). Leave empty to disable LiveKit token minting.
     Default: ""
+
+  ApiDeploymentVersion:
+    Type: String
+    Description: Version string to force API Gateway deployment updates
+    Default: "1"
+
+  CognitoDomainPrefix:
+    Type: String
+    Description: Prefix for Cognito Hosted UI domain (must be globally unique across all AWS accounts)
+    Default: marvain-dev
+
+Conditions:
+  IsDeploymentV1: !Equals [!Ref ApiDeploymentVersion, "1"]
+  IsDeploymentV2: !Equals [!Ref ApiDeploymentVersion, "2"]
 
 Globals:
   Function:
@@ -142,70 +151,6 @@ Resources:
       Name: !Sub ${AWS::StackName}/livekit
       Description: Store your LiveKit credentials as {"api_key":"...","api_secret":"..."}
       SecretString: '{"api_key":"REPLACE_ME","api_secret":"REPLACE_ME"}'
-
-  # -----------------------------
-  # Cognito (human auth)
-  # -----------------------------
-  CognitoUserPool:
-    Type: AWS::Cognito::UserPool
-    Properties:
-      UserPoolName: !Sub ${AWS::StackName}-users
-      UsernameAttributes:
-        - email
-      UsernameConfiguration:
-        CaseSensitive: false
-      AutoVerifiedAttributes:
-        - email
-      AdminCreateUserConfig:
-        AllowAdminCreateUserOnly: true
-      AccountRecoverySetting:
-        RecoveryMechanisms:
-          - Name: verified_email
-            Priority: 1
-      Policies:
-        PasswordPolicy:
-          MinimumLength: 8
-          RequireUppercase: true
-          RequireLowercase: true
-          RequireNumbers: true
-          RequireSymbols: true
-
-  CognitoUserPoolClient:
-    Type: AWS::Cognito::UserPoolClient
-    Properties:
-      ClientName: !Sub ${AWS::StackName}-public
-      UserPoolId: !Ref CognitoUserPool
-      GenerateSecret: false
-      PreventUserExistenceErrors: ENABLED
-      EnableTokenRevocation: true
-      SupportedIdentityProviders:
-        - COGNITO
-      ExplicitAuthFlows:
-        - ALLOW_ADMIN_USER_PASSWORD_AUTH
-        - ALLOW_USER_SRP_AUTH
-        - ALLOW_USER_PASSWORD_AUTH
-        - ALLOW_REFRESH_TOKEN_AUTH
-      AllowedOAuthFlowsUserPoolClient: true
-      AllowedOAuthFlows:
-        - code
-      AllowedOAuthScopes:
-        - openid
-        - email
-        - profile
-      CallbackURLs:
-        - https://localhost/auth/callback
-        - http://localhost:8000/auth/callback
-      LogoutURLs:
-        - https://localhost/logout
-        - http://localhost:8000/logout
-        - https://localhost/logged-out
-        - http://localhost:8000/logged-out
-
-  CognitoUserPoolDomain:
-    Type: AWS::Cognito::UserPoolDomain
-    Properties:
-      Domain: !Ref CognitoDomainPrefix
-      UserPoolId: !Ref CognitoUserPool
 
   # -----------------------------
   # Aurora PostgreSQL Serverless v2 + Data API
@@ -335,12 +280,15 @@ Resources:
           AUDIT_BUCKET: !Ref AuditBucket
           ARTIFACT_BUCKET: !Ref ArtifactBucket
           ADMIN_SECRET_ARN: !Ref AdminApiKeySecret
-          COGNITO_USER_POOL_ID: !Ref CognitoUserPool
-          COGNITO_APP_CLIENT_ID: !Ref CognitoUserPoolClient
-          COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
-          COGNITO_DOMAIN: !Ref CognitoDomainPrefix
           LIVEKIT_URL: !Ref LiveKitUrl
           LIVEKIT_SECRET_ARN: !Ref LiveKitSecret
+          # Cognito settings
+          COGNITO_REGION: !Ref AWS::Region
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+          COGNITO_APP_CLIENT_ID: !Ref CognitoUserPoolClient
+          COGNITO_DOMAIN: !Sub ${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
+          COGNITO_REDIRECT_URI: !Sub https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/auth/callback
+          SESSION_SECRET_ARN: !Ref SessionSecret
       Policies:
         - AWSLambdaBasicExecutionRole
         - Statement:
@@ -360,6 +308,7 @@ Resources:
                 - !Ref AdminApiKeySecret
                 - !Ref OpenAISecret
                 - !Ref LiveKitSecret
+                - !Ref SessionSecret
             - Effect: Allow
               Action:
                 - sqs:SendMessage
@@ -373,11 +322,6 @@ Resources:
               Resource:
                 - !Sub ${AuditBucket.Arn}/*
                 - !Sub ${ArtifactBucket.Arn}/*
-            - Effect: Allow
-              Action:
-                - cognito-idp:GetUser
-                - cognito-idp:ListUsers
-              Resource: !GetAtt CognitoUserPool.Arn
 
   # Explicit API Gateway integration (replaces Events section to avoid circular dependency)
   HubApiPermission:
@@ -407,21 +351,7 @@ Resources:
         IntegrationHttpMethod: POST
         Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${HubApiFunction.Arn}/invocations
 
-  HubApiDeployment:
-    Type: AWS::ApiGateway::Deployment
-    DependsOn:
-      - HubApiMethod
-    Properties:
-      RestApiId: !Ref HubApi
-
-  HubApiStage:
-    Type: AWS::ApiGateway::Stage
-    Properties:
-      RestApiId: !Ref HubApi
-      DeploymentId: !Ref HubApiDeployment
-      StageName: !Ref StageName
-
-  # Add CORS support at the stage level
+  # Add CORS support at the resource level
   HubApiCorsMethod:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -445,6 +375,75 @@ Resources:
             method.response.header.Access-Control-Allow-Headers: true
             method.response.header.Access-Control-Allow-Methods: true
             method.response.header.Access-Control-Allow-Origin: true
+
+  # Root resource method for /
+  HubApiRootMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref HubApi
+      ResourceId: !GetAtt HubApi.RootResourceId
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${HubApiFunction.Arn}/invocations
+
+  # Root resource CORS method
+  HubApiRootCorsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref HubApi
+      ResourceId: !GetAtt HubApi.RootResourceId
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization,X-Admin-Key'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  HubApiDeploymentV1:
+    Type: AWS::ApiGateway::Deployment
+    Condition: IsDeploymentV1
+    DependsOn:
+      - HubApiMethod
+      - HubApiCorsMethod
+      - HubApiRootMethod
+      - HubApiRootCorsMethod
+    Properties:
+      RestApiId: !Ref HubApi
+      Description: "Deployment v1"
+
+  HubApiDeploymentV2:
+    Type: AWS::ApiGateway::Deployment
+    Condition: IsDeploymentV2
+    DependsOn:
+      - HubApiMethod
+      - HubApiCorsMethod
+      - HubApiRootMethod
+      - HubApiRootCorsMethod
+    Properties:
+      RestApiId: !Ref HubApi
+      Description: "Deployment v2"
+
+  HubApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref HubApi
+      DeploymentId: !If [IsDeploymentV2, !Ref HubApiDeploymentV2, !Ref HubApiDeploymentV1]
+      StageName: !Ref StageName
 
   # -----------------------------
   # Planner (deliberative loop)
@@ -600,10 +599,6 @@ Resources:
           DB_RESOURCE_ARN: !GetAtt AuroraCluster.DBClusterArn
           DB_SECRET_ARN: !Ref DbCredentialsSecret
           DB_NAME: !Ref DbName
-          COGNITO_USER_POOL_ID: !Ref CognitoUserPool
-          COGNITO_APP_CLIENT_ID: !Ref CognitoUserPoolClient
-          COGNITO_USER_POOL_CLIENT_ID: !Ref CognitoUserPoolClient
-          COGNITO_DOMAIN: !Ref CognitoDomainPrefix
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
@@ -622,10 +617,6 @@ Resources:
               Action:
                 - execute-api:ManageConnections
               Resource: "*"
-            - Effect: Allow
-              Action:
-                - cognito-idp:GetUser
-              Resource: !GetAtt CognitoUserPool.Arn
 
   WsConnectIntegration:
     Type: AWS::ApiGatewayV2::Integration
@@ -712,6 +703,79 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WsApi}/*/$default
 
+  # -----------------------------
+  # Cognito User Pool for Authentication
+  # -----------------------------
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub ${AWS::StackName}-users
+      AutoVerifiedAttributes:
+        - email
+      # IMPORTANT: UsernameAttributes is immutable. Must match existing pool exactly.
+      UsernameAttributes:
+        - email
+      UsernameConfiguration:
+        CaseSensitive: false
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+      # NOTE: Do not specify Schema - it's immutable and the existing pool has the default schema
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub ${AWS::StackName}-app
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      CallbackURLs:
+        # GUI runs locally only - no deployed GUI endpoint
+        - http://localhost:8084/auth/callback
+      LogoutURLs:
+        # GUI runs locally only - no deployed GUI endpoint
+        - http://localhost:8084/logged-out
+      SupportedIdentityProviders:
+        - COGNITO
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  CognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref CognitoDomainPrefix
+      UserPoolId: !Ref CognitoUserPool
+
+  # Session secret for SessionMiddleware
+  SessionSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${AWS::StackName}/session-secret
+      Description: Secret key for session middleware
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: session_secret_key
+        PasswordLength: 64
+        ExcludeCharacters: '"@/\'
+
 Outputs:
   HubRestApiBase:
     Description: Base URL for Hub REST API
@@ -743,13 +807,18 @@ Outputs:
   AuditBucketName:
     Description: Bucket for tamper-evident audit log (Object Lock)
     Value: !Ref AuditBucket
-
   CognitoUserPoolId:
-    Description: Cognito User Pool ID for human authentication
+    Description: Cognito User Pool ID
     Value: !Ref CognitoUserPool
-  CognitoUserPoolClientId:
-    Description: Cognito User Pool Client ID for public GUI/API
+  CognitoAppClientId:
+    Description: Cognito App Client ID
     Value: !Ref CognitoUserPoolClient
-  CognitoHostedUiUrl:
-    Description: Cognito Hosted UI base URL
-    Value: !Sub https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
+  CognitoDomain:
+    Description: Cognito Hosted UI domain
+    Value: !Sub ${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
+  CognitoLoginUrl:
+    Description: Cognito Hosted UI login URL (for local GUI at localhost:8084)
+    Value: !Sub https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com/login?client_id=${CognitoUserPoolClient}&response_type=code&scope=openid+email+profile&redirect_uri=http://localhost:8084/auth/callback
+  SessionSecretArn:
+    Description: Secrets Manager ARN containing session secret key
+    Value: !Ref SessionSecret

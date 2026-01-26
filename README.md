@@ -179,6 +179,13 @@ Prereqs:
 
 Notes:
 
+- `./bin/marvain deploy` defaults to **guided** (interactive) SAM deploy.
+- For a fully non-interactive deploy (no stdin prompts), use:
+  - `./bin/marvain deploy --no-guided`
+- `deploy` runs a `sam build --clean` first so Lambda functions include vendored dependencies.
+
+Notes:
+
 - `marvain config init` writes to `${XDG_CONFIG_HOME:-~/.config}/marvain/marvain.yaml` by default.
 - Treat that config as **secret** once you run `marvain bootstrap` (it will store a device token).
 - If you choose to write a repo-local config (e.g. `--write marvain.yaml`), it is gitignored.
@@ -196,12 +203,58 @@ Notes:
 ./bin/marvain bootstrap --dry-run --agent-name Forge --space-name home
 ```
 
-### 5) Open the deployed GUI
+### 5) Start the Local GUI
+
+The GUI runs locally on your machine and connects to deployed AWS resources (Aurora, Cognito, S3).
 
 ```bash
-# Print the deployed GUI URL (HubRestApiBase) and open it in your browser.
+# Write stack outputs to .env.local config
+./bin/marvain monitor outputs --write-config
+
+# Start the local GUI server (background mode, default)
+./bin/marvain gui start
+
+# Or just `marvain gui` (defaults to start)
 ./bin/marvain gui
 ```
+
+Visit `http://localhost:8084/` — you'll be redirected to Cognito for login.
+
+#### GUI Lifecycle Commands
+
+| Command | Description |
+|---------|-------------|
+| `marvain gui start` | Start GUI server (background by default) |
+| `marvain gui stop` | Stop the running GUI server |
+| `marvain gui restart` | Stop then start the GUI server |
+| `marvain gui status` | Show whether GUI is running, PID, port |
+| `marvain gui logs` | Show/tail GUI server logs |
+
+**Options:**
+
+```bash
+# Start in foreground (blocking, Ctrl+C to stop)
+./bin/marvain gui start --foreground
+
+# Use different host/port
+./bin/marvain gui start --host 0.0.0.0 --port 8080
+
+# Disable auto-reload
+./bin/marvain gui start --no-reload
+
+# Force kill (SIGKILL instead of SIGTERM)
+./bin/marvain gui stop --force
+
+# Follow logs in real-time
+./bin/marvain gui logs --follow
+
+# Show last 100 lines of logs
+./bin/marvain gui logs --lines 100
+```
+
+**Files:**
+- PID file: `.marvain-gui.pid` (in repo root)
+- Log file: `.marvain-gui.log` (in repo root)
 
 ## Run the realtime agent worker (local)
 

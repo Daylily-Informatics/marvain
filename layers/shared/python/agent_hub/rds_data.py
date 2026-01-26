@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
@@ -25,7 +26,10 @@ class RdsData:
 
     def __init__(self, env: RdsDataEnv):
         self.env = env
-        self.client = boto3.client("rds-data")
+        # Explicitly pass region to boto3 client for local development
+        # where AWS_REGION may not be picked up by boto3's default chain
+        region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
+        self.client = boto3.client("rds-data", region_name=region)
 
     @staticmethod
     def _param_value(value: Any) -> dict:
