@@ -55,6 +55,7 @@ class TestGuiApp(unittest.TestCase):
         cls._orig_gui_get_user = cls.mod._gui_get_user
         cls._orig_ensure_user_row = cls.mod.ensure_user_row
         cls._orig_list_agents_for_user = cls.mod.list_agents_for_user
+        cls._orig_list_spaces_for_user = cls.mod.list_spaces_for_user
         cls._orig_get_secret_json = cls.mod.get_secret_json
         cls._orig_mint_livekit_join_token = cls.mod.mint_livekit_join_token
         cls._orig_check_agent_permission = cls.mod.check_agent_permission
@@ -67,6 +68,7 @@ class TestGuiApp(unittest.TestCase):
         self.mod._gui_get_user = self.__class__._orig_gui_get_user
         self.mod.ensure_user_row = self.__class__._orig_ensure_user_row
         self.mod.list_agents_for_user = self.__class__._orig_list_agents_for_user
+        self.mod.list_spaces_for_user = self.__class__._orig_list_spaces_for_user
         self.mod.get_secret_json = self.__class__._orig_get_secret_json
         self.mod.mint_livekit_join_token = self.__class__._orig_mint_livekit_join_token
         self.mod.check_agent_permission = self.__class__._orig_check_agent_permission
@@ -194,11 +196,19 @@ class TestGuiApp(unittest.TestCase):
         self.mod._gui_get_user = mock.Mock(
             return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
         )
+        # Mock list_spaces_for_user to return test spaces
+        self.mod.list_spaces_for_user = mock.Mock(return_value=[
+            self.mod.SpaceInfo(space_id="sp-1", name="home", agent_id="ag-1", agent_name="Forge"),
+        ])
 
         r = self.client.get("/livekit-test")
         self.assertEqual(r.status_code, 200)
         self.assertIn("LiveKit test", r.text)
         self.assertIn("livekit-client.umd.min.js", r.text)
+        # Check that dropdown is rendered with the space
+        self.assertIn("<select", r.text)
+        self.assertIn("sp-1", r.text)
+        self.assertIn("home (Forge)", r.text)
 
     def test_livekit_test_escapes_space_id_in_html(self) -> None:
         # Regression test for reflected XSS: user-controlled `space_id` must not be
@@ -206,13 +216,19 @@ class TestGuiApp(unittest.TestCase):
         self.mod._gui_get_user = mock.Mock(
             return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
         )
-
+        # Mock list_spaces_for_user with a malicious space_id
         space_id = "</script><img src=x onerror=alert(1)>"
+        self.mod.list_spaces_for_user = mock.Mock(return_value=[
+            self.mod.SpaceInfo(space_id=space_id, name="evil", agent_id="ag-1", agent_name="Forge"),
+        ])
+
         r = self.client.get("/livekit-test", params={"space_id": space_id})
         self.assertEqual(r.status_code, 200)
 
         escaped = html.escape(space_id, quote=True)
+        # The space_id should be escaped in the option value attribute
         self.assertIn(f'value="{escaped}"', r.text)
+        # Raw malicious script should never appear
         self.assertNotIn(space_id, r.text)
 
     def test_gui_livekit_token_mints_token(self) -> None:

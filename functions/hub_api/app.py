@@ -27,7 +27,7 @@ from agent_hub.cognito import (
     exchange_code_for_tokens,
     get_user_info_from_tokens,
 )
-from agent_hub.memberships import check_agent_permission, list_agents_for_user
+from agent_hub.memberships import check_agent_permission, list_agents_for_user, list_spaces_for_user, SpaceInfo
 from agent_hub.livekit_tokens import mint_livekit_join_token
 from agent_hub.secrets import get_secret_json
 
@@ -424,12 +424,25 @@ def gui_livekit_test(request: Request, space_id: str | None = None) -> Response:
         clear = bool(str(request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or "").strip())
         return _gui_redirect_to_login(request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear)
 
+    # Fetch spaces for dropdown
+    spaces = list_spaces_for_user(_get_db(), user_id=user.user_id)
+
     sid = str(space_id or "").strip()
-    sid_attr = html.escape(sid, quote=True)
     home_href = html.escape(_gui_path(request, "/"))
     logout_href = html.escape(_gui_path(request, "/logout"))
     token_url = _gui_path(request, "/livekit/token")
     token_url_attr = html.escape(token_url, quote=True)
+
+    # Build dropdown options
+    options = ['<option value="">-- Select a space --</option>']
+    for sp in spaces:
+        sp_id = html.escape(sp.space_id, quote=True)
+        sp_name = html.escape(sp.name)
+        agent_name = html.escape(sp.agent_name)
+        selected = " selected" if sp.space_id == sid else ""
+        options.append(f'<option value="{sp_id}"{selected}>{sp_name} ({agent_name}) - {sp_id}</option>')
+    options_html = "\n".join(options)
+
     body = (
         "<div style='display:flex; justify-content:space-between; align-items:center;'>"
         "<h1>LiveKit test</h1>"
@@ -437,7 +450,7 @@ def gui_livekit_test(request: Request, space_id: str | None = None) -> Response:
         "</div>"
         "<p>Join a LiveKit room mapped from a Marvain <code>space_id</code>.</p>"
         f"<div id='lkcfg' data-token-url=\"{token_url_attr}\" style='display:none'></div>"
-        f"<p><label>space_id: <input id='space_id' size='40' value=\"{sid_attr}\" /></label> "
+        f"<p><label>Space: <select id='space_id' style='min-width:400px;'>{options_html}</select></label> "
         "<button id='join'>Join</button> <button id='leave'>Leave</button></p>"
         "<pre id='status' style='background:#111; color:#eee; padding:12px; border-radius:8px;'>idle</pre>"
         "<script src='https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js'></script>"
@@ -445,12 +458,12 @@ def gui_livekit_test(request: Request, space_id: str | None = None) -> Response:
         "(function(){\n"
         "  var room = null;\n"
         "  var statusEl = document.getElementById('status');\n"
-        "  var inputEl = document.getElementById('space_id');\n"
+        "  var selectEl = document.getElementById('space_id');\n"
         "  var tokenUrl = document.getElementById('lkcfg').getAttribute('data-token-url');\n"
         "  function setStatus(s){ statusEl.textContent = s; }\n"
         "  async function join(){\n"
-        "    var spaceId = (inputEl.value||'').trim();\n"
-        "    if(!spaceId){ setStatus('missing space_id'); return; }\n"
+        "    var spaceId = (selectEl.value||'').trim();\n"
+        "    if(!spaceId){ setStatus('please select a space'); return; }\n"
         "    setStatus('requesting token...');\n"
         "    var resp = await fetch(tokenUrl, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({space_id: spaceId})});\n"
         "    if(!resp.ok){ setStatus('token request failed: '+resp.status); return; }\n"
