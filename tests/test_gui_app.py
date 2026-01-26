@@ -203,7 +203,7 @@ class TestGuiApp(unittest.TestCase):
 
         r = self.client.get("/livekit-test")
         self.assertEqual(r.status_code, 200)
-        self.assertIn("LiveKit test", r.text)
+        self.assertIn("LiveKit Test", r.text)
         self.assertIn("livekit-client.umd.min.js", r.text)
         # Check that dropdown is rendered with the space
         self.assertIn("<select", r.text)
