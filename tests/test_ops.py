@@ -9,10 +9,26 @@ from unittest import mock
 from marvain_cli.config import ResolvedEnv
 from marvain_cli.ops import (
     Ctx,
+    GUI_DEFAULT_HOST,
+    GUI_DEFAULT_PORT,
+    GUI_LOG_FILENAME,
+    GUI_PID_FILENAME,
+    _get_gui_log_file,
+    _get_gui_pid_file,
+    _is_port_in_use,
+    _is_process_running,
+    _read_pid_file,
+    _remove_pid_file,
     _split_sql,
+    _write_pid_file,
     bootstrap,
     cognito_admin_create_user,
     cognito_admin_delete_user,
+    gui_logs,
+    gui_restart,
+    gui_start,
+    gui_status,
+    gui_stop,
     hub_claim_first_owner,
     init_db,
     sam_logs,
@@ -208,6 +224,161 @@ class TestOps(unittest.TestCase):
         self.assertIn("aws cognito-idp admin-delete-user", joined)
         self.assertIn("--user-pool-id pool-123", joined)
         self.assertIn("--username x@example.com", joined)
+
+
+class TestGuiLifecycle(unittest.TestCase):
+    """Unit tests for GUI lifecycle management functions."""
+
+    def _make_ctx(self) -> Ctx:
+        """Create a minimal test context."""
+        return Ctx(
+            config_path=Path("/tmp/marvain.yaml"),
+            cfg={"envs": {"dev": {}}},
+            env=ResolvedEnv(env="dev", aws_profile="p", aws_region="r", stack_name="s", raw={}),
+        )
+
+    def test_pid_file_path_is_in_repo_root(self) -> None:
+        """PID file should be in repo root with expected filename."""
+        pid_file = _get_gui_pid_file()
+        self.assertEqual(pid_file.name, GUI_PID_FILENAME)
+        self.assertTrue(pid_file.parent.exists())
+
+    def test_log_file_path_is_in_repo_root(self) -> None:
+        """Log file should be in repo root with expected filename."""
+        log_file = _get_gui_log_file()
+        self.assertEqual(log_file.name, GUI_LOG_FILENAME)
+        self.assertTrue(log_file.parent.exists())
+
+    def test_write_and_read_pid_file(self) -> None:
+        """Test PID file write/read/remove cycle."""
+        test_pid = 99999
+        try:
+            _write_pid_file(test_pid)
+            read_pid = _read_pid_file()
+            self.assertEqual(read_pid, test_pid)
+        finally:
+            _remove_pid_file()
+        # After removal, should return None
+        self.assertIsNone(_read_pid_file())
+
+    def test_read_pid_file_returns_none_when_missing(self) -> None:
+        """Read should return None when PID file doesn't exist."""
+        _remove_pid_file()  # Ensure it's gone
+        self.assertIsNone(_read_pid_file())
+
+    def test_is_process_running_false_for_nonexistent_pid(self) -> None:
+        """Should return False for a PID that doesn't exist."""
+        # Use a very high PID that's unlikely to exist
+        self.assertFalse(_is_process_running(999999999))
+
+    def test_is_port_in_use_false_for_unused_port(self) -> None:
+        """Should return False for a port that's not in use."""
+        # Use a random high port that's unlikely to be in use
+        import random
+        unused_port = random.randint(50000, 60000)
+        self.assertFalse(_is_port_in_use(unused_port))
+
+    def test_gui_status_dry_run_emits_message(self) -> None:
+        """gui_status with dry_run should emit a message and return 0."""
+        emitted: list[str] = []
+        ctx = self._make_ctx()
+
+        with mock.patch("marvain_cli.ops._eprint", side_effect=lambda m: emitted.append(m)):
+            rc = gui_status(ctx, dry_run=True, port=GUI_DEFAULT_PORT)
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(any("[dry-run]" in m for m in emitted))
+
+    def test_gui_stop_dry_run_emits_message(self) -> None:
+        """gui_stop with dry_run should emit a message and return 0."""
+        emitted: list[str] = []
+        ctx = self._make_ctx()
+
+        with mock.patch("marvain_cli.ops._eprint", side_effect=lambda m: emitted.append(m)):
+            rc = gui_stop(ctx, dry_run=True, port=GUI_DEFAULT_PORT)
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(any("[dry-run]" in m for m in emitted))
+
+    def test_gui_start_dry_run_emits_command(self) -> None:
+        """gui_start with dry_run should emit the uvicorn command."""
+        emitted: list[str] = []
+        ctx = self._make_ctx()
+
+        with (
+            mock.patch("marvain_cli.ops._conda_preflight", return_value=0),
+            mock.patch("marvain_cli.ops._is_port_in_use", return_value=False),
+            mock.patch("marvain_cli.ops._eprint", side_effect=lambda m: emitted.append(m)),
+            mock.patch("pathlib.Path.exists", return_value=True),
+        ):
+            rc = gui_start(ctx, dry_run=True, host=GUI_DEFAULT_HOST, port=GUI_DEFAULT_PORT, reload=True)
+
+        self.assertEqual(rc, 0)
+        joined = "\n".join(emitted)
+        self.assertIn("[dry-run]", joined)
+        self.assertIn("uvicorn", joined)
+
+    def test_gui_start_detects_port_conflict(self) -> None:
+        """gui_start should fail when port is already in use."""
+        emitted: list[str] = []
+        ctx = self._make_ctx()
+
+        with (
+            mock.patch("marvain_cli.ops._conda_preflight", return_value=0),
+            mock.patch("marvain_cli.ops._is_port_in_use", return_value=True),
+            mock.patch("marvain_cli.ops._get_pid_on_port", return_value=12345),
+            mock.patch("marvain_cli.ops._eprint", side_effect=lambda m: emitted.append(m)),
+            mock.patch("pathlib.Path.exists", return_value=True),
+        ):
+            rc = gui_start(ctx, dry_run=False, host=GUI_DEFAULT_HOST, port=GUI_DEFAULT_PORT, reload=True)
+
+        self.assertEqual(rc, 1)
+        joined = "\n".join(emitted)
+        self.assertIn("already in use", joined)
+        self.assertIn("12345", joined)
+
+    def test_gui_logs_dry_run_emits_tail_command(self) -> None:
+        """gui_logs with dry_run should emit the tail command."""
+        emitted: list[str] = []
+        ctx = self._make_ctx()
+
+        with mock.patch("marvain_cli.ops._eprint", side_effect=lambda m: emitted.append(m)):
+            rc = gui_logs(ctx, dry_run=True, follow=False, lines=50)
+
+        self.assertEqual(rc, 0)
+        joined = "\n".join(emitted)
+        self.assertIn("[dry-run]", joined)
+        self.assertIn("tail", joined)
+
+    def test_gui_logs_follow_dry_run_emits_tail_f(self) -> None:
+        """gui_logs with follow=True should use tail -f."""
+        emitted: list[str] = []
+        ctx = self._make_ctx()
+
+        with mock.patch("marvain_cli.ops._eprint", side_effect=lambda m: emitted.append(m)):
+            rc = gui_logs(ctx, dry_run=True, follow=True, lines=50)
+
+        self.assertEqual(rc, 0)
+        joined = "\n".join(emitted)
+        self.assertIn("tail -f", joined)
+
+    def test_gui_restart_dry_run_emits_message(self) -> None:
+        """gui_restart with dry_run should emit a message and return 0."""
+        emitted: list[str] = []
+        ctx = self._make_ctx()
+
+        with mock.patch("marvain_cli.ops._eprint", side_effect=lambda m: emitted.append(m)):
+            rc = gui_restart(ctx, dry_run=True, host=GUI_DEFAULT_HOST, port=GUI_DEFAULT_PORT, reload=True)
+
+        self.assertEqual(rc, 0)
+        self.assertTrue(any("[dry-run]" in m for m in emitted))
+
+    def test_default_constants_have_expected_values(self) -> None:
+        """Verify default constants are set correctly."""
+        self.assertEqual(GUI_DEFAULT_HOST, "127.0.0.1")
+        self.assertEqual(GUI_DEFAULT_PORT, 8084)
+        self.assertEqual(GUI_PID_FILENAME, ".marvain-gui.pid")
+        self.assertEqual(GUI_LOG_FILENAME, ".marvain-gui.log")
 
 
 if __name__ == "__main__":

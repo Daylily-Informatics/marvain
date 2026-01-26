@@ -10,13 +10,18 @@ from unittest import mock
 
 
 def _load_hub_api_app_module():
-    """Load functions/hub_api/app.py as a module without requiring it be a package."""
+    """Load functions/hub_api/api_app.py as a module without requiring it be a package."""
 
     # Make the shared Lambda layer importable in local unit tests.
     repo_root = Path(__file__).resolve().parents[1]
     shared = repo_root / "layers" / "shared" / "python"
     if str(shared) not in sys.path:
         sys.path.insert(0, str(shared))
+
+    # Add hub_api directory to path so api_app imports work
+    hub_api_dir = repo_root / "functions" / "hub_api"
+    if str(hub_api_dir) not in sys.path:
+        sys.path.insert(0, str(hub_api_dir))
 
     # Ensure boto3 client creation does not fail due to missing region/creds.
     os.environ.setdefault("AWS_DEFAULT_REGION", "us-west-2")
@@ -25,8 +30,8 @@ def _load_hub_api_app_module():
     os.environ.setdefault("DB_NAME", "dummy")
     os.environ.setdefault("STAGE", "test")
 
-    app_py = repo_root / "functions" / "hub_api" / "app.py"
-    spec = importlib.util.spec_from_file_location("hub_api_app_for_tests", app_py)
+    api_app_py = repo_root / "functions" / "hub_api" / "api_app.py"
+    spec = importlib.util.spec_from_file_location("hub_api_api_app_for_tests", api_app_py)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
     # Register in sys.modules so Pydantic/FastAPI can resolve postponed annotations.
@@ -42,7 +47,7 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         cls.mod = _load_hub_api_app_module()
         from fastapi.testclient import TestClient
 
-        cls.client = TestClient(cls.mod.app)
+        cls.client = TestClient(cls.mod.api_app)
 
     def setUp(self) -> None:
         # HubConfig is a frozen dataclass; replace the module-global config for tests.

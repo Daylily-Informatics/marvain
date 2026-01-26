@@ -1,691 +1,58 @@
+"""Full Hub application with both API and GUI routes.
+
+This module is for LOCAL DEVELOPMENT ONLY. It includes:
+- All API routes from api_app.py
+- GUI routes (login, callback, logout, home, profile, livekit-test, agent detail)
+
+For Lambda deployment, use api_app.py instead (via lambda_handler.py).
+"""
 from __future__ import annotations
 
-import base64
-import hashlib
 import html
-import json
 import logging
 import os
 import secrets
-import time
-import urllib.error
 import urllib.parse
-import urllib.request
-import uuid
-from typing import Any, Optional
 
-import boto3
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
-from pydantic import BaseModel, Field
+from fastapi import HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.responses import Response
 
-from agent_hub.audit import append_audit_entry
-from agent_hub.auth import (
-    AuthenticatedDevice,
-    AuthenticatedUser,
-    authenticate_device,
-    authenticate_user_access_token,
-    ensure_user_row,
-    generate_device_token,
-    hash_token,
-    lookup_cognito_user_by_email,
+from agent_hub.auth import AuthenticatedUser, ensure_user_row
+from agent_hub.cognito import (
+    CognitoAuthError,
+    CognitoUserInfo,
+    build_login_url,
+    build_logout_url,
+    exchange_code_for_tokens,
+    get_user_info_from_tokens,
 )
-from agent_hub.config import load_config
-from agent_hub.memberships import (
-    check_agent_permission,
-    claim_first_owner,
-    grant_membership,
-    list_agents_for_user,
-    list_members_for_agent,
-    revoke_membership,
-    update_membership,
-)
+from agent_hub.memberships import check_agent_permission, list_agents_for_user, list_spaces_for_user, SpaceInfo
 from agent_hub.livekit_tokens import mint_livekit_join_token
-from agent_hub.policy import is_agent_disabled, is_privacy_mode
-from agent_hub.rds_data import RdsData, RdsDataEnv
 from agent_hub.secrets import get_secret_json
+
+# Import the API app and its shared state
+from api_app import (
+    api_app,
+    _get_db,
+    get_config,
+    LiveKitTokenIn,
+    LiveKitTokenOut,
+    _mint_livekit_token_for_user,
+)
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
-app = FastAPI(title="AgentHub")
-
-_cfg = load_config()
-_db = RdsData(RdsDataEnv(resource_arn=_cfg.db_resource_arn, secret_arn=_cfg.db_secret_arn, database=_cfg.db_name))
-_sqs = boto3.client("sqs")
-_s3 = boto3.client("s3")
-
-
-def _admin_key() -> str:
-    if not _cfg.admin_secret_arn:
-        raise RuntimeError("ADMIN_SECRET_ARN not set")
-    data = get_secret_json(_cfg.admin_secret_arn)
-    k = data.get("admin_api_key")
-    if not k:
-        raise RuntimeError("Admin API key not present in secret")
-    return str(k)
-
-
-def require_admin(x_admin_key: str = Header(default="", alias="X-Admin-Key")) -> None:
-    if not x_admin_key or x_admin_key != _admin_key():
-        raise HTTPException(status_code=401, detail="Invalid admin key")
-
-
-def get_device(request: Request) -> AuthenticatedDevice:
-    auth = request.headers.get("authorization") or request.headers.get("Authorization")
-    if not auth or not auth.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Missing bearer token")
-    token = auth.split(" ", 1)[1].strip()
-    dev = authenticate_device(_db, token)
-    if not dev:
-        raise HTTPException(status_code=401, detail="Invalid device token")
-    return dev
-
-
-def get_user(request: Request) -> AuthenticatedUser:
-    auth = request.headers.get("authorization") or request.headers.get("Authorization")
-    if not auth or not auth.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Missing bearer token")
-    token = auth.split(" ", 1)[1].strip()
-    try:
-        return authenticate_user_access_token(_db, token)
-    except PermissionError:
-        raise HTTPException(status_code=401, detail="Invalid access token")
-
-
-class BootstrapIn(BaseModel):
-    agent_name: str = Field(default="Forge")
-    default_space_name: str = Field(default="home")
-
-
-class BootstrapOut(BaseModel):
-    agent_id: str
-    space_id: str
-    device_id: str
-    device_token: str
-
-
-class RegisterDeviceIn(BaseModel):
-    agent_id: str
-    name: Optional[str] = None
-    scopes: list[str] = Field(default_factory=list)
-    capabilities: dict[str, Any] = Field(default_factory=dict)
-
-
-class RegisterDeviceOut(BaseModel):
-    device_id: str
-    device_token: str
-
-
-class SetPrivacyIn(BaseModel):
-    privacy_mode: bool
-
-
-class IngestEventIn(BaseModel):
-    space_id: str
-    type: str
-    payload: dict[str, Any] = Field(default_factory=dict)
-    person_id: Optional[str] = None
-
-
-class IngestEventOut(BaseModel):
-    event_id: str
-    queued: bool
-
-
-class MeOut(BaseModel):
-    user_id: str
-    cognito_sub: str
-    email: str | None = None
-
-
-class AgentOut(BaseModel):
-    agent_id: str
-    name: str
-    role: str
-    relationship_label: str | None = None
-    disabled: bool
-
-
-class AgentMemberOut(BaseModel):
-    user_id: str
-    cognito_sub: str
-    email: str | None = None
-    role: str
-    relationship_label: str | None = None
-
-
-class GrantMemberIn(BaseModel):
-    email: str
-    role: str
-    relationship_label: str | None = None
-
-
-class UpdateMemberIn(BaseModel):
-    role: str
-    relationship_label: str | None = None
-
-
-class LiveKitTokenIn(BaseModel):
-    space_id: str
-
-
-class LiveKitTokenOut(BaseModel):
-    url: str
-    token: str
-    room: str
-    identity: str
-
-
-@app.get("/health")
-def health() -> dict[str, Any]:
-    return {"ok": True, "stage": _cfg.stage}
-
-
-@app.get("/v1/me", response_model=MeOut)
-def me(user: AuthenticatedUser = Depends(get_user)) -> MeOut:
-    return MeOut(user_id=user.user_id, cognito_sub=user.cognito_sub, email=user.email)
-
-
-@app.get("/v1/agents", response_model=dict[str, list[AgentOut]])
-def agents(user: AuthenticatedUser = Depends(get_user)) -> dict[str, list[AgentOut]]:
-    memberships = list_agents_for_user(_db, user_id=user.user_id)
-    return {
-        "agents": [
-            AgentOut(
-                agent_id=m.agent_id,
-                name=m.name,
-                role=m.role,
-                relationship_label=m.relationship_label,
-                disabled=m.disabled,
-            )
-            for m in memberships
-        ]
-    }
-
-
-def _require_agent_role(*, user: AuthenticatedUser, agent_id: str, required_role: str) -> None:
-    if not check_agent_permission(_db, agent_id=agent_id, user_id=user.user_id, required_role=required_role):
-        raise HTTPException(status_code=403, detail="Forbidden")
-
-
-def _require_livekit_config() -> tuple[str, str, str]:
-    url = str(_cfg.livekit_url or "").strip()
-    secret_arn = str(_cfg.livekit_secret_arn or "").strip()
-    if not url:
-        raise HTTPException(status_code=500, detail="LIVEKIT_URL not configured")
-    if not secret_arn:
-        raise HTTPException(status_code=500, detail="LIVEKIT_SECRET_ARN not configured")
-
-    data = get_secret_json(secret_arn)
-    api_key = str(data.get("api_key") or "").strip()
-    api_secret = str(data.get("api_secret") or "").strip()
-    if not api_key or not api_secret:
-        raise HTTPException(status_code=500, detail="LiveKit secret missing api_key/api_secret")
-
-    return url, api_key, api_secret
-
-
-def _space_agent_id(*, space_id: str) -> str | None:
-    try:
-        rows = _db.query(
-            "SELECT agent_id::text AS agent_id FROM spaces WHERE space_id = CAST(:space_id AS uuid)",
-            params={"space_id": str(space_id)},
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to look up space: {e}")
-
-    if not rows:
-        return None
-    v = rows[0].get("agent_id")
-    if not v:
-        return None
-    return str(v)
-
-
-def _mint_livekit_token(*, user: AuthenticatedUser, space_id: str) -> LiveKitTokenOut:
-    agent_id = _space_agent_id(space_id=space_id)
-    if not agent_id:
-        raise HTTPException(status_code=404, detail="Space not found")
-
-    if not check_agent_permission(_db, agent_id=agent_id, user_id=user.user_id, required_role="member"):
-        raise HTTPException(status_code=403, detail="Forbidden")
-
-    url, api_key, api_secret = _require_livekit_config()
-
-    # Prefix to avoid collisions with device identities.
-    identity = f"user:{user.user_id}"
-    room = str(space_id)
-    token = mint_livekit_join_token(
-        api_key=api_key,
-        api_secret=api_secret,
-        identity=identity,
-        room=room,
-        name=(user.email or user.user_id),
-        ttl_seconds=3600,
-    )
-    return LiveKitTokenOut(url=url, token=token, room=room, identity=identity)
-
-
-@app.post("/v1/livekit/token", response_model=LiveKitTokenOut)
-def livekit_token(body: LiveKitTokenIn, user: AuthenticatedUser = Depends(get_user)) -> LiveKitTokenOut:
-    """Mint a short-lived LiveKit token for a user to join the room for a space."""
-    return _mint_livekit_token(user=user, space_id=body.space_id)
-
-
-@app.post("/v1/agents/{agent_id}/claim_owner")
-def claim_owner(agent_id: str, user: AuthenticatedUser = Depends(get_user)) -> dict[str, Any]:
-    try:
-        claim_first_owner(_db, agent_id=agent_id, user_id=user.user_id)
-    except PermissionError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-
-    if _cfg.audit_bucket:
-        append_audit_entry(
-            _db,
-            bucket=_cfg.audit_bucket,
-            agent_id=agent_id,
-            entry_type="owner_claimed",
-            entry={"user_id": user.user_id},
-        )
-    return {"agent_id": agent_id, "user_id": user.user_id, "role": "owner"}
-
-
-@app.get("/v1/agents/{agent_id}/memberships", response_model=dict[str, list[AgentMemberOut]])
-def list_members(agent_id: str, user: AuthenticatedUser = Depends(get_user)) -> dict[str, list[AgentMemberOut]]:
-    _require_agent_role(user=user, agent_id=agent_id, required_role="member")
-    members = list_members_for_agent(_db, agent_id=agent_id, include_revoked=False)
-    return {
-        "memberships": [
-            AgentMemberOut(
-                user_id=m.user_id,
-                cognito_sub=m.cognito_sub,
-                email=m.email,
-                role=m.role,
-                relationship_label=m.relationship_label,
-            )
-            for m in members
-        ]
-    }
-
-
-@app.post("/v1/agents/{agent_id}/memberships", response_model=AgentMemberOut)
-def add_member(agent_id: str, body: GrantMemberIn, user: AuthenticatedUser = Depends(get_user)) -> AgentMemberOut:
-    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
-    if not _cfg.cognito_user_pool_id:
-        raise HTTPException(status_code=500, detail="COGNITO_USER_POOL_ID not configured")
-    try:
-        cognito_sub, email = lookup_cognito_user_by_email(user_pool_id=_cfg.cognito_user_pool_id, email=body.email)
-    except LookupError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-    target_user_id = ensure_user_row(_db, cognito_sub=cognito_sub, email=email)
-    try:
-        grant_membership(
-            _db,
-            agent_id=agent_id,
-            user_id=target_user_id,
-            role=body.role,
-            relationship_label=body.relationship_label,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    if _cfg.audit_bucket:
-        append_audit_entry(
-            _db,
-            bucket=_cfg.audit_bucket,
-            agent_id=agent_id,
-            entry_type="member_granted",
-            entry={"by_user_id": user.user_id, "user_id": target_user_id, "email": email, "role": body.role},
-        )
-
-    return AgentMemberOut(
-        user_id=target_user_id,
-        cognito_sub=cognito_sub,
-        email=email,
-        role=str(body.role),
-        relationship_label=body.relationship_label,
-    )
-
-
-@app.patch("/v1/agents/{agent_id}/memberships/{member_user_id}")
-def patch_member(
-    agent_id: str,
-    member_user_id: str,
-    body: UpdateMemberIn,
-    user: AuthenticatedUser = Depends(get_user),
-) -> dict[str, Any]:
-    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
-    try:
-        update_membership(
-            _db,
-            agent_id=agent_id,
-            user_id=member_user_id,
-            role=body.role,
-            relationship_label=body.relationship_label,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    if _cfg.audit_bucket:
-        append_audit_entry(
-            _db,
-            bucket=_cfg.audit_bucket,
-            agent_id=agent_id,
-            entry_type="member_updated",
-            entry={"by_user_id": user.user_id, "user_id": member_user_id, "role": body.role},
-        )
-    return {"ok": True}
-
-
-@app.delete("/v1/agents/{agent_id}/memberships/{member_user_id}")
-def delete_member(agent_id: str, member_user_id: str, user: AuthenticatedUser = Depends(get_user)) -> dict[str, Any]:
-    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
-    revoke_membership(_db, agent_id=agent_id, user_id=member_user_id)
-    if _cfg.audit_bucket:
-        append_audit_entry(
-            _db,
-            bucket=_cfg.audit_bucket,
-            agent_id=agent_id,
-            entry_type="member_revoked",
-            entry={"by_user_id": user.user_id, "user_id": member_user_id},
-        )
-    return {"ok": True}
-
-
-@app.post("/v1/devices/register", response_model=RegisterDeviceOut)
-def register_device(body: RegisterDeviceIn, user: AuthenticatedUser = Depends(get_user)) -> RegisterDeviceOut:
-    # Only admin/owner can mint new device tokens.
-    _require_agent_role(user=user, agent_id=body.agent_id, required_role="admin")
-
-    # Global kill switch
-    if is_agent_disabled(_db, body.agent_id):
-        raise HTTPException(status_code=403, detail="Agent is disabled")
-
-    device_id = str(uuid.uuid4())
-    token = generate_device_token()
-    token_hash = hash_token(token)
-
-    _db.execute(
-        """
-        INSERT INTO devices(device_id, agent_id, name, scopes, capabilities, token_hash)
-        VALUES (:device_id::uuid, :agent_id::uuid, :name, :scopes::jsonb, :capabilities::jsonb, :token_hash)
-        """,
-        {
-            "device_id": device_id,
-            "agent_id": body.agent_id,
-            "name": body.name or "device",
-            "scopes": json.dumps(body.scopes),
-            "capabilities": json.dumps(body.capabilities),
-            "token_hash": token_hash,
-        },
-    )
-
-    if _cfg.audit_bucket:
-        append_audit_entry(
-            _db,
-            bucket=_cfg.audit_bucket,
-            agent_id=body.agent_id,
-            entry_type="device_registered",
-            entry={"device_id": device_id, "name": body.name, "scopes": body.scopes, "by_user_id": user.user_id},
-        )
-
-    return RegisterDeviceOut(device_id=device_id, device_token=token)
-
-
-@app.post("/v1/admin/bootstrap", response_model=BootstrapOut, dependencies=[Depends(require_admin)])
-def admin_bootstrap(body: BootstrapIn) -> BootstrapOut:
-    agent_id = str(uuid.uuid4())
-    space_id = str(uuid.uuid4())
-    device_id = str(uuid.uuid4())
-
-    token = generate_device_token()
-    token_hash = hash_token(token)
-
-    tx = _db.begin()
-    try:
-        _db.execute(
-            """
-            INSERT INTO agents(agent_id, name, disabled)
-            VALUES (:agent_id::uuid, :name, false)
-            """,
-            {"agent_id": agent_id, "name": body.agent_name},
-            transaction_id=tx,
-        )
-        _db.execute(
-            """
-            INSERT INTO spaces(space_id, agent_id, name, privacy_mode)
-            VALUES (:space_id::uuid, :agent_id::uuid, :name, false)
-            """,
-            {"space_id": space_id, "agent_id": agent_id, "name": body.default_space_name},
-            transaction_id=tx,
-        )
-        _db.execute(
-            """
-            INSERT INTO devices(device_id, agent_id, name, scopes, capabilities, token_hash)
-            VALUES (:device_id::uuid, :agent_id::uuid, :name, :scopes::jsonb, :capabilities::jsonb, :token_hash)
-            """,
-            {
-                "device_id": device_id,
-                "agent_id": agent_id,
-                "name": "primary",
-                "scopes": json.dumps(["events:write", "memory:read", "memory:delete", "spaces:write"]),
-                "capabilities": json.dumps({"kind": "admin"}),
-                "token_hash": token_hash,
-            },
-            transaction_id=tx,
-        )
-        _db.commit(tx)
-    except Exception:
-        _db.rollback(tx)
-        raise
-
-    if _cfg.audit_bucket:
-        append_audit_entry(
-            _db,
-            bucket=_cfg.audit_bucket,
-            agent_id=agent_id,
-            entry_type="bootstrap",
-            entry={"space_id": space_id, "device_id": device_id},
-        )
-
-    return BootstrapOut(agent_id=agent_id, space_id=space_id, device_id=device_id, device_token=token)
-
-
-@app.post("/v1/admin/devices/register", response_model=RegisterDeviceOut, dependencies=[Depends(require_admin)])
-def admin_register_device(body: RegisterDeviceIn) -> RegisterDeviceOut:
-    device_id = str(uuid.uuid4())
-    token = generate_device_token()
-    token_hash = hash_token(token)
-
-    _db.execute(
-        """
-        INSERT INTO devices(device_id, agent_id, name, scopes, capabilities, token_hash)
-        VALUES (:device_id::uuid, :agent_id::uuid, :name, :scopes::jsonb, :capabilities::jsonb, :token_hash)
-        """,
-        {
-            "device_id": device_id,
-            "agent_id": body.agent_id,
-            "name": body.name or "device",
-            "scopes": json.dumps(body.scopes),
-            "capabilities": json.dumps(body.capabilities),
-            "token_hash": token_hash,
-        },
-    )
-
-    if _cfg.audit_bucket:
-        append_audit_entry(
-            _db,
-            bucket=_cfg.audit_bucket,
-            agent_id=body.agent_id,
-            entry_type="device_registered",
-            entry={"device_id": device_id, "name": body.name, "scopes": body.scopes},
-        )
-
-    return RegisterDeviceOut(device_id=device_id, device_token=token)
-
-
-@app.post("/v1/admin/spaces/{space_id}/privacy", dependencies=[Depends(require_admin)])
-def admin_set_privacy(space_id: str, body: SetPrivacyIn) -> dict[str, Any]:
-    rows = _db.query(
-        """
-        SELECT agent_id::TEXT as agent_id
-        FROM spaces
-        WHERE space_id = :space_id::uuid
-        LIMIT 1
-        """,
-        {"space_id": space_id},
-    )
-    if not rows:
-        raise HTTPException(status_code=404, detail="Space not found")
-    agent_id = rows[0]["agent_id"]
-
-    _db.execute(
-        """
-        UPDATE spaces
-        SET privacy_mode = :privacy_mode
-        WHERE space_id = :space_id::uuid
-        """,
-        {"space_id": space_id, "privacy_mode": body.privacy_mode},
-    )
-
-    if _cfg.audit_bucket:
-        append_audit_entry(
-            _db,
-            bucket=_cfg.audit_bucket,
-            agent_id=agent_id,
-            entry_type="privacy_mode_set",
-            entry={"space_id": space_id, "privacy_mode": body.privacy_mode},
-        )
-
-    return {"space_id": space_id, "privacy_mode": body.privacy_mode}
-
-
-@app.post("/v1/events", response_model=IngestEventOut)
-def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_device)) -> IngestEventOut:
-    # Global kill switch
-    if is_agent_disabled(_db, device.agent_id):
-        raise HTTPException(status_code=403, detail="Agent is disabled")
-
-    # Privacy mode gate
-    if is_privacy_mode(_db, body.space_id):
-        return IngestEventOut(event_id="privacy_mode", queued=False)
-
-    event_id = str(uuid.uuid4())
-    _db.execute(
-        """
-        INSERT INTO events(event_id, agent_id, space_id, device_id, person_id, type, payload)
-        VALUES (
-          :event_id::uuid,
-          :agent_id::uuid,
-          :space_id::uuid,
-          :device_id::uuid,
-          CASE WHEN :person_id IS NULL THEN NULL ELSE :person_id::uuid END,
-          :type,
-          :payload::jsonb
-        )
-        """,
-        {
-            "event_id": event_id,
-            "agent_id": device.agent_id,
-            "space_id": body.space_id,
-            "device_id": device.device_id,
-            "person_id": body.person_id,
-            "type": body.type,
-            "payload": json.dumps(body.payload),
-        },
-    )
-
-    queued = False
-    if body.type == "transcript_chunk" and _cfg.transcript_queue_url:
-        _sqs.send_message(
-            QueueUrl=_cfg.transcript_queue_url,
-            MessageBody=json.dumps(
-                {
-                    "event_id": event_id,
-                    "agent_id": device.agent_id,
-                    "space_id": body.space_id,
-                    "device_id": device.device_id,
-                }
-            ),
-        )
-        queued = True
-
-    if _cfg.audit_bucket:
-        append_audit_entry(
-            _db,
-            bucket=_cfg.audit_bucket,
-            agent_id=device.agent_id,
-            entry_type="event_ingested",
-            entry={"event_id": event_id, "type": body.type, "space_id": body.space_id, "queued": queued},
-        )
-
-    return IngestEventOut(event_id=event_id, queued=queued)
-
-
-@app.get("/v1/memories")
-def list_memories(limit: int = 50, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
-    limit = max(1, min(200, limit))
-    rows = _db.query(
-        """
-        SELECT memory_id::TEXT as memory_id,
-               tier,
-               content,
-               created_at::TEXT as created_at,
-               participants::TEXT as participants,
-               provenance::TEXT as provenance
-        FROM memories
-        WHERE agent_id = :agent_id::uuid
-        ORDER BY created_at DESC
-        LIMIT :limit
-        """,
-        {"agent_id": device.agent_id, "limit": limit},
-    )
-    return {"memories": rows}
-
-
-@app.delete("/v1/memories/{memory_id}")
-def delete_memory(memory_id: str, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
-    _db.execute(
-        """
-        DELETE FROM memories
-        WHERE memory_id = :memory_id::uuid AND agent_id = :agent_id::uuid
-        """,
-        {"memory_id": memory_id, "agent_id": device.agent_id},
-    )
-    if _cfg.audit_bucket:
-        append_audit_entry(
-            _db,
-            bucket=_cfg.audit_bucket,
-            agent_id=device.agent_id,
-            entry_type="memory_deleted",
-            entry={"memory_id": memory_id},
-        )
-    return {"deleted": True, "memory_id": memory_id}
-
-
-class PresignIn(BaseModel):
-    filename: str
-    content_type: str = Field(default="application/octet-stream")
-
-
-@app.post("/v1/artifacts/presign")
-def presign_upload(body: PresignIn, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
-    if not _cfg.artifact_bucket:
-        raise HTTPException(status_code=500, detail="Artifact bucket not configured")
-    key = f"artifacts/agent_id={device.agent_id}/{uuid.uuid4()}_{body.filename}"
-    url = _s3.generate_presigned_url(
-        ClientMethod="put_object",
-        Params={"Bucket": _cfg.artifact_bucket, "Key": key, "ContentType": body.content_type},
-        ExpiresIn=900,
-    )
-    return {"upload_url": url, "bucket": _cfg.artifact_bucket, "key": key}
+# Use the API app as the base - all API routes are already defined
+app = api_app
+
+# Get config from api_app
+_cfg = get_config()
 
 
 # -----------------------------
-# Public GUI (server-rendered)
+# GUI Routes (local development only)
 # -----------------------------
 
 _GUI_ACCESS_TOKEN_COOKIE = "marvain_access_token"
@@ -700,68 +67,6 @@ def _cookie_secure(request: Request) -> bool:
         return str(request.url.scheme).lower() == "https"
     except Exception:
         return False
-
-
-def _cognito_hosted_ui_base_url() -> str:
-    """Return https://<domain>.auth.<region>.amazoncognito.com (no trailing slash)."""
-    dom = str(_cfg.cognito_domain or "").strip()
-    if not dom:
-        raise RuntimeError("COGNITO_DOMAIN not configured")
-
-    if dom.startswith("https://") or dom.startswith("http://"):
-        return dom.rstrip("/")
-
-    # Support passing the full hostname (without scheme) or just the domain prefix.
-    if ".auth." in dom and dom.endswith(".amazoncognito.com"):
-        return f"https://{dom}".rstrip("/")
-
-    region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "us-west-2"
-    return f"https://{dom}.auth.{region}.amazoncognito.com".rstrip("/")
-
-
-def _pkce_pair() -> tuple[str, str]:
-    """Return (code_verifier, code_challenge) using S256."""
-    # RFC 7636: verifier should be 43..128 chars. We use 32 random bytes (~43 chars base64url).
-    verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("utf-8").rstrip("=")
-    digest = hashlib.sha256(verifier.encode("utf-8")).digest()
-    challenge = base64.urlsafe_b64encode(digest).decode("utf-8").rstrip("=")
-    return verifier, challenge
-
-
-def _cognito_exchange_code_for_tokens(*, code: str, redirect_uri: str, code_verifier: str) -> dict[str, Any]:
-    base = _cognito_hosted_ui_base_url()
-    url = f"{base}/oauth2/token"
-
-    client_id = str(_cfg.cognito_user_pool_client_id or "").strip()
-    if not client_id:
-        raise RuntimeError("COGNITO_APP_CLIENT_ID/COGNITO_USER_POOL_CLIENT_ID not configured")
-
-    form = {
-        "grant_type": "authorization_code",
-        "client_id": client_id,
-        "code": str(code),
-        "redirect_uri": str(redirect_uri),
-        "code_verifier": str(code_verifier),
-    }
-    data = urllib.parse.urlencode(form).encode("utf-8")
-    req = urllib.request.Request(url, data=data, method="POST")
-    req.add_header("Content-Type", "application/x-www-form-urlencoded")
-
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            payload = resp.read().decode("utf-8")
-    except urllib.error.HTTPError as e:
-        body = ""
-        try:
-            body = e.read().decode("utf-8")
-        except Exception:
-            body = ""
-        raise RuntimeError(f"token exchange failed: HTTP {e.code} {body}")
-
-    try:
-        return json.loads(payload)
-    except Exception as e:
-        raise RuntimeError(f"token exchange returned invalid json: {e}")
 
 
 def _safe_next_path(next_path: str | None) -> str:
@@ -833,14 +138,29 @@ def _decode_next_cookie(value: Optional[str]) -> str:
 
 
 def _gui_get_user(request: Request) -> AuthenticatedUser | None:
-    tok = request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or ""
-    tok = str(tok).strip()
-    if not tok:
+    """Get the authenticated user from the session."""
+    session = request.session
+    user_sub = session.get("user_sub")
+    if not user_sub:
         return None
-    try:
-        return authenticate_user_access_token(_db, tok)
-    except PermissionError:
-        return None
+
+    user_id = session.get("user_id")
+    email = session.get("email")
+
+    if not user_id:
+        # User exists in session but doesn't have a user_id - need to ensure row
+        try:
+            user_id = ensure_user_row(_get_db(), cognito_sub=user_sub, email=email)
+            session["user_id"] = user_id
+        except Exception:
+            logger.exception("Failed to ensure user row")
+            return None
+
+    return AuthenticatedUser(
+        user_id=user_id,
+        cognito_sub=user_sub,
+        email=email,
+    )
 
 
 def _gui_redirect_to_login(*, request: Request, next_path: str | None = None, clear_session: bool = False) -> Response:
@@ -878,143 +198,156 @@ def _gui_error_page(*, request: Request, title: str, message: str, status_code: 
     return resp
 
 
-@app.get("/login", name="login")
-def gui_login(request: Request, next: str | None = None) -> RedirectResponse:
-    # Redirect to Cognito Hosted UI using OAuth2 code flow + PKCE.
-    state = secrets.token_urlsafe(24)
-    verifier, challenge = _pkce_pair()
-    redirect_uri = str(request.url_for("auth_callback"))
+@app.get("/login", name="login", response_model=None)
+def gui_login(request: Request, next: str | None = None) -> Response:
+    """Initiate Cognito login flow."""
+    # Check if Cognito is configured
+    if not _cfg.cognito_user_pool_id or not _cfg.cognito_domain:
+        return _gui_error_page(
+            request=request,
+            title="Authentication Not Configured",
+            message="Cognito authentication is not configured. Please set COGNITO_USER_POOL_ID and COGNITO_DOMAIN.",
+            status_code=503,
+        )
 
-    base = _cognito_hosted_ui_base_url()
-    client_id = str(_cfg.cognito_user_pool_client_id or "").strip()
-    if not client_id:
-        raise HTTPException(status_code=500, detail="COGNITO client id not configured")
+    # Generate state for CSRF protection
+    state = secrets.token_urlsafe(32)
+    request.session["oauth_state"] = state
 
-    qs = urllib.parse.urlencode(
-        {
-            "client_id": client_id,
-            "response_type": "code",
-            "scope": "openid email profile",
-            "redirect_uri": redirect_uri,
-            "state": state,
-            "code_challenge_method": "S256",
-            "code_challenge": challenge,
-        }
-    )
-    url = f"{base}/oauth2/authorize?{qs}"
+    # Store the next URL if provided
+    if next:
+        request.session["oauth_next"] = _safe_next_app_path(request, next)
 
-    resp = RedirectResponse(url=url, status_code=302)
-    secure = _cookie_secure(request)
-    safe_next = _safe_next_app_path(request, next)
-    encoded_next = _encode_next_cookie(safe_next)
-    resp.set_cookie(
-        _GUI_OAUTH_STATE_COOKIE,
-        state,
-        httponly=True,
-        secure=secure,
-        samesite="lax",
-        path="/",
-        max_age=600,
-    )
-    resp.set_cookie(
-        _GUI_OAUTH_VERIFIER_COOKIE,
-        verifier,
-        httponly=True,
-        secure=secure,
-        samesite="lax",
-        path="/",
-        max_age=600,
-    )
-    resp.set_cookie(
-        _GUI_OAUTH_NEXT_COOKIE,
-        encoded_next,
-        httponly=True,
-        secure=secure,
-        samesite="lax",
-        path="/",
-        max_age=600,
-    )
-    return resp
+    try:
+        login_url = build_login_url(_cfg, state=state)
+        return RedirectResponse(url=login_url, status_code=302)
+    except CognitoAuthError as e:
+        logger.error(f"Failed to build login URL: {e}")
+        return _gui_error_page(
+            request=request,
+            title="Authentication Error",
+            message=str(e),
+            status_code=500,
+        )
 
 
 @app.get("/auth/callback", name="auth_callback")
-def gui_auth_callback(request: Request, code: str | None = None, state: str | None = None) -> Response:
-    # Always clear transient oauth cookies on the way out.
-    def _clear_oauth_cookies(r: Response) -> Response:
-        r.delete_cookie(_GUI_OAUTH_STATE_COOKIE, path="/")
-        r.delete_cookie(_GUI_OAUTH_VERIFIER_COOKIE, path="/")
-        r.delete_cookie(_GUI_OAUTH_NEXT_COOKIE, path="/")
-        return r
+async def gui_auth_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
+) -> Response:
+    """Handle OAuth callback from Cognito."""
+    # Check for OAuth errors from Cognito
+    if error:
+        logger.warning(f"OAuth error: {error} - {error_description}")
+        return _gui_error_page(
+            request=request,
+            title="Authentication Error",
+            message=f"{error}: {error_description or 'Unknown error'}",
+            status_code=400,
+        )
 
     if not code:
-        return _clear_oauth_cookies(
-            _gui_error_page(request=request, title="Login error", message="missing code", status_code=400)
-        )
-    if not state:
-        return _clear_oauth_cookies(
-            _gui_error_page(request=request, title="Login error", message="missing state", status_code=400)
-        )
-
-    exp_state = str(request.cookies.get(_GUI_OAUTH_STATE_COOKIE) or "")
-    verifier = str(request.cookies.get(_GUI_OAUTH_VERIFIER_COOKIE) or "")
-    next_path = _safe_next_app_path(request, request.cookies.get(_GUI_OAUTH_NEXT_COOKIE))
-    if not exp_state or not verifier or state != exp_state:
-        return _clear_oauth_cookies(
-            _gui_error_page(request=request, title="Login error", message="invalid state", status_code=400)
+        return _gui_error_page(
+            request=request,
+            title="Missing Authorization Code",
+            message="No authorization code was provided by the identity provider.",
+            status_code=400,
         )
 
-    redirect_uri = str(request.url_for("auth_callback"))
+    # Verify state for CSRF protection
+    expected_state = request.session.get("oauth_state")
+    if not expected_state or state != expected_state:
+        logger.warning(f"Invalid OAuth state. Expected: {expected_state}, Got: {state}")
+        return _gui_error_page(
+            request=request,
+            title="Invalid State",
+            message="OAuth state mismatch. Please try logging in again.",
+            status_code=400,
+        )
+
+    # Clear state from session
+    request.session.pop("oauth_state", None)
+
     try:
-        tok = _cognito_exchange_code_for_tokens(code=code, redirect_uri=redirect_uri, code_verifier=verifier)
+        # Exchange code for tokens
+        tokens = await exchange_code_for_tokens(_cfg, code)
+        id_token = tokens.get("id_token")
+
+        if not id_token:
+            return _gui_error_page(
+                request=request,
+                title="Authentication Error",
+                message="No ID token in response from identity provider.",
+                status_code=400,
+            )
+
+        # Get user info from tokens
+        cognito_user = await get_user_info_from_tokens(_cfg, id_token)
+
+        # Ensure user exists in database
+        user_id = ensure_user_row(
+            _get_db(),
+            cognito_sub=cognito_user.sub,
+            email=cognito_user.email,
+        )
+
+        # Create session
+        request.session.update({
+            "user_sub": cognito_user.sub,
+            "user_id": user_id,
+            "email": cognito_user.email,
+            "name": cognito_user.name,
+            "roles": cognito_user.roles,
+            "cognito_groups": cognito_user.cognito_groups,
+        })
+
+        logger.info(f"User {cognito_user.email} ({cognito_user.sub}) logged in")
+
+        # Redirect to the next URL or home
+        next_url = request.session.pop("oauth_next", None) or "/"
+        return RedirectResponse(url=_gui_path(request, next_url), status_code=302)
+
+    except CognitoAuthError as e:
+        logger.error(f"Cognito auth error: {e}")
+        return _gui_error_page(
+            request=request,
+            title="Authentication Error",
+            message=str(e),
+            status_code=401,
+        )
     except Exception as e:
-        return _clear_oauth_cookies(
-            _gui_error_page(request=request, title="Login error", message=f"token exchange failed: {e}", status_code=400)
+        logger.exception("Unexpected error during OAuth callback")
+        return _gui_error_page(
+            request=request,
+            title="Authentication Error",
+            message="An unexpected error occurred. Please try again.",
+            status_code=500,
         )
-
-    access_token = str(tok.get("access_token") or "").strip()
-    if not access_token:
-        return _clear_oauth_cookies(
-            _gui_error_page(request=request, title="Login error", message="missing access_token", status_code=400)
-        )
-
-    resp: Response = RedirectResponse(url=_gui_path(request, next_path), status_code=302)
-    resp.headers["Cache-Control"] = "no-store"
-    secure = _cookie_secure(request)
-
-    max_age: int | None = None
-    try:
-        exp = int(tok.get("expires_in") or 0)
-        if exp > 0:
-            max_age = exp
-    except Exception:
-        max_age = None
-
-    resp.set_cookie(
-        _GUI_ACCESS_TOKEN_COOKIE,
-        access_token,
-        httponly=True,
-        secure=secure,
-        samesite="lax",
-        path="/",
-        max_age=max_age,
-    )
-    return _clear_oauth_cookies(resp)
 
 
 @app.get("/logout", name="logout")
-def gui_logout(request: Request, cognito: bool = True) -> Response:
-    """Clear local session cookie; optionally also sign out of Cognito Hosted UI."""
-    if cognito:
-        base = _cognito_hosted_ui_base_url()
-        client_id = str(_cfg.cognito_user_pool_client_id or "").strip()
-        logout_uri = str(request.url_for("logged_out"))
-        qs = urllib.parse.urlencode({"client_id": client_id, "logout_uri": logout_uri})
-        url = f"{base}/logout?{qs}"
-        resp: Response = RedirectResponse(url=url, status_code=302)
+def gui_logout(request: Request) -> Response:
+    """Clear session and redirect to Cognito logout or logged-out page."""
+    # Clear session
+    request.session.clear()
+
+    # Also clear old cookies for backward compatibility
+    resp: Response
+    if _cfg.cognito_domain and _cfg.cognito_user_pool_client_id:
+        # Redirect to Cognito logout
+        try:
+            logout_url = build_logout_url(_cfg)
+            resp = RedirectResponse(url=logout_url, status_code=302)
+        except CognitoAuthError:
+            resp = RedirectResponse(url=_gui_path(request, "/logged-out"), status_code=302)
     else:
         resp = RedirectResponse(url=_gui_path(request, "/logged-out"), status_code=302)
 
-    # Always clear local cookies.
+    # Clear old cookies
     resp.delete_cookie(_GUI_ACCESS_TOKEN_COOKIE, path="/")
     resp.delete_cookie(_GUI_OAUTH_STATE_COOKIE, path="/")
     resp.delete_cookie(_GUI_OAUTH_VERIFIER_COOKIE, path="/")
@@ -1036,8 +369,8 @@ def gui_home(request: Request) -> Response:
         clear = bool(str(request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or "").strip())
         return _gui_redirect_to_login(request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear)
 
-    agents = list_agents_for_user(_db, user_id=user.user_id)
     items = []
+    agents = list_agents_for_user(_get_db(), user_id=user.user_id)
     for a in agents:
         name = html.escape(a.name)
         agent_href = html.escape(_gui_path(request, f"/agents/{a.agent_id}"))
@@ -1080,9 +413,269 @@ def gui_profile(request: Request) -> Response:
         "</div>"
         f"<p>User ID: <code>{html.escape(user.user_id)}</code></p>"
         f"<p>Email: <code>{html.escape(user.email or '')}</code></p>"
-        f"<p>Cognito sub: <code>{html.escape(user.cognito_sub)}</code></p>"
     )
     return _gui_html_page(title="Profile", body_html=body)
+
+
+def _livekit_test_page_script() -> str:
+    """Return the JavaScript for the LiveKit test page (separated for readability)."""
+    return """
+(function(){
+  var room = null;
+  var localVideoTrack = null;
+  var localAudioTrack = null;
+  var statusEl = document.getElementById('status');
+  var selectEl = document.getElementById('space_id');
+  var tokenUrl = document.getElementById('lkcfg').getAttribute('data-token-url');
+  var participantsEl = document.getElementById('participants');
+  var localVideoEl = document.getElementById('local-video');
+  var remoteMediaEl = document.getElementById('remote-media');
+  var chatMessagesEl = document.getElementById('chat-messages');
+  var chatInputEl = document.getElementById('chat-input');
+  var myIdentity = '';
+
+  function log(msg) {
+    var ts = new Date().toLocaleTimeString();
+    statusEl.textContent = '[' + ts + '] ' + msg + '\\n' + statusEl.textContent;
+    if (statusEl.textContent.length > 5000) {
+      statusEl.textContent = statusEl.textContent.substring(0, 4000);
+    }
+  }
+
+  function updateParticipantsList() {
+    if (!room) { participantsEl.innerHTML = '<em>Not connected</em>'; return; }
+    var items = [];
+    // Local participant
+    var lp = room.localParticipant;
+    var lpAudio = lp.isMicrophoneEnabled ? '🎤' : '🔇';
+    var lpVideo = lp.isCameraEnabled ? '📹' : '📷';
+    items.push('<li><strong>' + escapeHtml(lp.identity) + '</strong> (you) ' + lpAudio + ' ' + lpVideo + '</li>');
+    // Remote participants
+    room.remoteParticipants.forEach(function(p) {
+      var pAudio = '🔇', pVideo = '📷';
+      p.trackPublications.forEach(function(pub) {
+        if (pub.kind === 'audio' && pub.isSubscribed) pAudio = '🔊';
+        if (pub.kind === 'video' && pub.isSubscribed) pVideo = '📹';
+      });
+      var state = p.connectionQuality || 'unknown';
+      var isAgent = p.identity.startsWith('agent:') || p.identity.startsWith('device:');
+      var label = isAgent ? '🤖 ' + escapeHtml(p.identity) : escapeHtml(p.identity);
+      items.push('<li>' + label + ' ' + pAudio + ' ' + pVideo + ' <small>(' + state + ')</small></li>');
+    });
+    participantsEl.innerHTML = items.length ? '<ul style="margin:0;padding-left:20px;">' + items.join('') + '</ul>' : '<em>No participants</em>';
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function attachRemoteTrack(track, participant) {
+    var el;
+    if (track.kind === 'video') {
+      el = document.createElement('video');
+      el.autoplay = true;
+      el.playsInline = true;
+      el.style.maxWidth = '320px';
+      el.style.maxHeight = '240px';
+      el.style.margin = '4px';
+      el.style.borderRadius = '8px';
+      el.style.background = '#222';
+    } else if (track.kind === 'audio') {
+      el = document.createElement('audio');
+      el.autoplay = true;
+    }
+    if (el) {
+      el.id = 'track-' + track.sid;
+      el.setAttribute('data-participant', participant.identity);
+      track.attach(el);
+      remoteMediaEl.appendChild(el);
+      log('Attached ' + track.kind + ' from ' + participant.identity);
+    }
+  }
+
+  function detachRemoteTrack(track) {
+    var el = document.getElementById('track-' + track.sid);
+    if (el) {
+      track.detach(el);
+      el.remove();
+    }
+  }
+
+  function setupRoomEvents() {
+    room.on('participantConnected', function(p) {
+      log('Participant joined: ' + p.identity);
+      updateParticipantsList();
+    });
+    room.on('participantDisconnected', function(p) {
+      log('Participant left: ' + p.identity);
+      // Remove their media elements
+      remoteMediaEl.querySelectorAll('[data-participant="' + p.identity + '"]').forEach(function(el) { el.remove(); });
+      updateParticipantsList();
+    });
+    room.on('trackSubscribed', function(track, pub, participant) {
+      log('Track subscribed: ' + track.kind + ' from ' + participant.identity);
+      attachRemoteTrack(track, participant);
+      updateParticipantsList();
+    });
+    room.on('trackUnsubscribed', function(track, pub, participant) {
+      log('Track unsubscribed: ' + track.kind + ' from ' + participant.identity);
+      detachRemoteTrack(track);
+      updateParticipantsList();
+    });
+    room.on('trackMuted', function(pub, participant) {
+      log('Track muted: ' + pub.kind + ' from ' + participant.identity);
+      updateParticipantsList();
+    });
+    room.on('trackUnmuted', function(pub, participant) {
+      log('Track unmuted: ' + pub.kind + ' from ' + participant.identity);
+      updateParticipantsList();
+    });
+    room.on('disconnected', function() {
+      log('Disconnected from room');
+      updateParticipantsList();
+      updateMediaButtons();
+    });
+    room.on('dataReceived', function(payload, participant) {
+      try {
+        var msg = JSON.parse(new TextDecoder().decode(payload));
+        if (msg.type === 'chat') {
+          addChatMessage(participant ? participant.identity : 'unknown', msg.text, msg.ts);
+        }
+      } catch(e) { /* ignore non-chat data */ }
+    });
+  }
+
+  function addChatMessage(sender, text, ts) {
+    var time = ts ? new Date(ts).toLocaleTimeString() : new Date().toLocaleTimeString();
+    var isMe = sender === myIdentity;
+    var div = document.createElement('div');
+    div.style.marginBottom = '8px';
+    div.style.padding = '6px 10px';
+    div.style.borderRadius = '8px';
+    div.style.background = isMe ? '#1a472a' : '#2a2a3a';
+    div.style.color = '#eee';
+    div.innerHTML = '<small style="color:#aaa;">[' + escapeHtml(time) + '] <strong style="color:#fff;">' + escapeHtml(sender) + '</strong></small><br>' + escapeHtml(text);
+    chatMessagesEl.appendChild(div);
+    chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+  }
+
+  function sendChatMessage() {
+    var text = (chatInputEl.value || '').trim();
+    if (!text || !room) return;
+    var msg = { type: 'chat', text: text, ts: Date.now() };
+    var data = new TextEncoder().encode(JSON.stringify(msg));
+    room.localParticipant.publishData(data, { reliable: true });
+    addChatMessage(myIdentity, text, msg.ts);
+    chatInputEl.value = '';
+  }
+
+  async function join() {
+    var spaceId = (selectEl.value || '').trim();
+    if (!spaceId) { log('Please select a space'); return; }
+    log('Requesting token...');
+    var resp = await fetch(tokenUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ space_id: spaceId }) });
+    if (!resp.ok) { log('Token request failed: ' + resp.status); return; }
+    var data = await resp.json();
+    log('Connecting to ' + data.url + '...');
+    var lk = window.LivekitClient || window.livekit || window.LiveKit;
+    if (!lk || !lk.Room) { log('LiveKit client not loaded'); return; }
+    room = new lk.Room();
+    setupRoomEvents();
+    await room.connect(data.url, data.token);
+    myIdentity = data.identity;
+    log('Connected! room=' + data.room + ' identity=' + data.identity);
+    updateParticipantsList();
+    updateMediaButtons();
+    // Subscribe to existing remote tracks
+    room.remoteParticipants.forEach(function(p) {
+      p.trackPublications.forEach(function(pub) {
+        if (pub.isSubscribed && pub.track) {
+          attachRemoteTrack(pub.track, p);
+        }
+      });
+    });
+  }
+
+  async function leave() {
+    if (localVideoTrack) { localVideoTrack.stop(); localVideoTrack = null; }
+    if (localAudioTrack) { localAudioTrack.stop(); localAudioTrack = null; }
+    localVideoEl.innerHTML = '';
+    remoteMediaEl.innerHTML = '';
+    if (room) { try { await room.disconnect(); } catch(e) {} room = null; }
+    log('Left room');
+    updateParticipantsList();
+    updateMediaButtons();
+  }
+
+  function updateMediaButtons() {
+    var connected = room && room.state === 'connected';
+    document.getElementById('btn-mic').disabled = !connected;
+    document.getElementById('btn-cam').disabled = !connected;
+    document.getElementById('btn-send-chat').disabled = !connected;
+    if (connected) {
+      document.getElementById('btn-mic').textContent = room.localParticipant.isMicrophoneEnabled ? '🎤 Mic On' : '🔇 Mic Off';
+      document.getElementById('btn-cam').textContent = room.localParticipant.isCameraEnabled ? '📹 Cam On' : '📷 Cam Off';
+    } else {
+      document.getElementById('btn-mic').textContent = '🔇 Mic Off';
+      document.getElementById('btn-cam').textContent = '📷 Cam Off';
+    }
+  }
+
+  async function toggleMic() {
+    if (!room) return;
+    try {
+      await room.localParticipant.setMicrophoneEnabled(!room.localParticipant.isMicrophoneEnabled);
+      log('Microphone ' + (room.localParticipant.isMicrophoneEnabled ? 'enabled' : 'disabled'));
+      updateMediaButtons();
+      updateParticipantsList();
+    } catch(e) {
+      log('Mic error: ' + e.message);
+    }
+  }
+
+  async function toggleCam() {
+    if (!room) return;
+    try {
+      var wasEnabled = room.localParticipant.isCameraEnabled;
+      await room.localParticipant.setCameraEnabled(!wasEnabled);
+      log('Camera ' + (room.localParticipant.isCameraEnabled ? 'enabled' : 'disabled'));
+      updateMediaButtons();
+      updateParticipantsList();
+      // Attach/detach local video preview
+      if (room.localParticipant.isCameraEnabled) {
+        var camPub = room.localParticipant.getTrackPublication('camera');
+        if (camPub && camPub.track) {
+          var vid = document.createElement('video');
+          vid.autoplay = true;
+          vid.playsInline = true;
+          vid.muted = true;
+          vid.style.maxWidth = '240px';
+          vid.style.borderRadius = '8px';
+          camPub.track.attach(vid);
+          localVideoEl.innerHTML = '';
+          localVideoEl.appendChild(vid);
+        }
+      } else {
+        localVideoEl.innerHTML = '';
+      }
+    } catch(e) {
+      log('Camera error: ' + e.message);
+    }
+  }
+
+  // Event listeners
+  document.getElementById('join').addEventListener('click', function() { join().catch(function(e) { log('Join error: ' + e); }); });
+  document.getElementById('leave').addEventListener('click', function() { leave().catch(function(e) { log('Leave error: ' + e); }); });
+  document.getElementById('btn-mic').addEventListener('click', function() { toggleMic().catch(function(e) { log('Mic error: ' + e); }); });
+  document.getElementById('btn-cam').addEventListener('click', function() { toggleCam().catch(function(e) { log('Cam error: ' + e); }); });
+  document.getElementById('btn-send-chat').addEventListener('click', sendChatMessage);
+  chatInputEl.addEventListener('keypress', function(e) { if (e.key === 'Enter') sendChatMessage(); });
+
+  // Initial state
+  updateMediaButtons();
+  updateParticipantsList();
+})();
+"""
 
 
 @app.get("/livekit-test", name="livekit_test")
@@ -1092,55 +685,140 @@ def gui_livekit_test(request: Request, space_id: str | None = None) -> Response:
         clear = bool(str(request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or "").strip())
         return _gui_redirect_to_login(request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear)
 
+    # Fetch spaces for dropdown
+    spaces = list_spaces_for_user(_get_db(), user_id=user.user_id)
+
     sid = str(space_id or "").strip()
-    sid_attr = html.escape(sid, quote=True)
     home_href = html.escape(_gui_path(request, "/"))
     logout_href = html.escape(_gui_path(request, "/logout"))
     token_url = _gui_path(request, "/livekit/token")
     token_url_attr = html.escape(token_url, quote=True)
-    body = (
-        "<div style='display:flex; justify-content:space-between; align-items:center;'>"
-        "<h1>LiveKit test</h1>"
-        f"<div><a href='{home_href}'>Home</a> | <a href='{logout_href}'>Logout</a></div>"
-        "</div>"
-        "<p>Join a LiveKit room mapped from a Marvain <code>space_id</code>.</p>"
-        f"<div id='lkcfg' data-token-url=\"{token_url_attr}\" style='display:none'></div>"
-        f"<p><label>space_id: <input id='space_id' size='40' value=\"{sid_attr}\" /></label> "
-        "<button id='join'>Join</button> <button id='leave'>Leave</button></p>"
-        "<pre id='status' style='background:#111; color:#eee; padding:12px; border-radius:8px;'>idle</pre>"
-        "<script src='https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js'></script>"
-        "<script>\n"
-        "(function(){\n"
-        "  var room = null;\n"
-        "  var statusEl = document.getElementById('status');\n"
-        "  var inputEl = document.getElementById('space_id');\n"
-        "  var tokenUrl = document.getElementById('lkcfg').getAttribute('data-token-url');\n"
-        "  function setStatus(s){ statusEl.textContent = s; }\n"
-        "  async function join(){\n"
-        "    var spaceId = (inputEl.value||'').trim();\n"
-        "    if(!spaceId){ setStatus('missing space_id'); return; }\n"
-        "    setStatus('requesting token...');\n"
-        "    var resp = await fetch(tokenUrl, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({space_id: spaceId})});\n"
-        "    if(!resp.ok){ setStatus('token request failed: '+resp.status); return; }\n"
-        "    var data = await resp.json();\n"
-        "    setStatus('connecting to '+data.url+' ...');\n"
-        "    var lk = window.livekit || window.LiveKit || window.LivekitClient;\n"
-        "    if(!lk || !lk.Room){ setStatus('livekit client not loaded'); return; }\n"
-        "    room = new lk.Room();\n"
-        "    room.on('disconnected', function(){ setStatus('disconnected'); });\n"
-        "    await room.connect(data.url, data.token);\n"
-        "    setStatus('connected room='+data.room+' identity='+data.identity);\n"
-        "  }\n"
-        "  async function leave(){\n"
-        "    if(room){ try{ await room.disconnect(); }catch(e){} room = null; }\n"
-        "    setStatus('left');\n"
-        "  }\n"
-        "  document.getElementById('join').addEventListener('click', function(){ join().catch(function(e){ setStatus('join error: '+e); }); });\n"
-        "  document.getElementById('leave').addEventListener('click', function(){ leave().catch(function(e){ setStatus('leave error: '+e); }); });\n"
-        "})();\n"
-        "</script>"
-    )
-    return _gui_html_page(title="LiveKit test", body_html=body)
+
+    # Build dropdown options
+    options = ['<option value="">-- Select a space --</option>']
+    for sp in spaces:
+        sp_id = html.escape(sp.space_id, quote=True)
+        sp_name = html.escape(sp.name)
+        agent_name = html.escape(sp.agent_name)
+        selected = " selected" if sp.space_id == sid else ""
+        options.append(f'<option value="{sp_id}"{selected}>{sp_name} ({agent_name}) - {sp_id}</option>')
+    options_html = "\n".join(options)
+
+    body = f"""
+<div style='display:flex; justify-content:space-between; align-items:center;'>
+  <h1>LiveKit Test</h1>
+  <div><a href='{home_href}'>Home</a> | <a href='{logout_href}'>Logout</a></div>
+</div>
+
+<p>Join a LiveKit room mapped from a Marvain <code>space_id</code>.</p>
+<div id='lkcfg' data-token-url="{token_url_attr}" style='display:none'></div>
+
+<!-- Connection Controls -->
+<div style='margin-bottom:16px; padding:12px; background:#1a1a2e; border-radius:8px;'>
+  <label><strong>Space:</strong> <select id='space_id' style='min-width:400px;'>{options_html}</select></label>
+  <button id='join' style='margin-left:8px;'>🔗 Join</button>
+  <button id='leave'>🚪 Leave</button>
+</div>
+
+<!-- Media Controls -->
+<div style='margin-bottom:16px; padding:12px; background:#1a1a2e; border-radius:8px;'>
+  <strong>Media:</strong>
+  <button id='btn-mic' disabled>🔇 Mic Off</button>
+  <button id='btn-cam' disabled>📷 Cam Off</button>
+  <span style='margin-left:16px; color:#888;'>Click to enable after joining</span>
+</div>
+
+<!-- Main Content Grid -->
+<div style='display:grid; grid-template-columns:1fr 1fr; gap:16px;'>
+  <!-- Left Column: Video & Participants -->
+  <div>
+    <!-- Local Video Preview -->
+    <div style='margin-bottom:16px;'>
+      <h3 style='margin:0 0 8px 0;'>📹 Local Preview</h3>
+      <div id='local-video' style='min-height:180px; background:#111; border-radius:8px; display:flex; align-items:center; justify-content:center; color:#666;'>
+        Camera off
+      </div>
+    </div>
+
+    <!-- Remote Media -->
+    <div style='margin-bottom:16px;'>
+      <h3 style='margin:0 0 8px 0;'>🔊 Remote Media</h3>
+      <div id='remote-media' style='min-height:120px; background:#111; border-radius:8px; padding:8px; display:flex; flex-wrap:wrap; gap:8px;'>
+      </div>
+    </div>
+
+    <!-- Participants List -->
+    <div>
+      <h3 style='margin:0 0 8px 0;'>👥 Participants</h3>
+      <div id='participants' style='background:#111; border-radius:8px; padding:12px; min-height:60px; color:#eee;'>
+        <em>Not connected</em>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right Column: Chat & Status -->
+  <div>
+    <!-- Chat Interface -->
+    <div style='margin-bottom:16px;'>
+      <h3 style='margin:0 0 8px 0;'>💬 Chat</h3>
+      <div id='chat-messages' style='background:#111; border-radius:8px; padding:12px; height:200px; overflow-y:auto; margin-bottom:8px; color:#eee;'>
+        <em style='color:#888;'>Messages will appear here...</em>
+      </div>
+      <div style='display:flex; gap:8px;'>
+        <input id='chat-input' type='text' placeholder='Type a message...' style='flex:1; padding:8px; border-radius:4px; border:1px solid #333; background:#222; color:#eee;' />
+        <button id='btn-send-chat' disabled>Send</button>
+      </div>
+    </div>
+
+    <!-- Status Log -->
+    <div>
+      <h3 style='margin:0 0 8px 0;'>📋 Status Log</h3>
+      <pre id='status' style='background:#111; color:#0f0; padding:12px; border-radius:8px; height:180px; overflow-y:auto; font-size:12px; margin:0;'>idle</pre>
+    </div>
+  </div>
+</div>
+
+<!-- Agent Worker Instructions -->
+<details style='margin-top:24px; padding:12px; background:#1a1a2e; border-radius:8px; color:#eee;'>
+  <summary style='cursor:pointer; font-weight:bold;'>🤖 Running an Agent Worker (Satellite)</summary>
+  <div style='margin-top:12px; font-size:14px; line-height:1.6;'>
+    <p>To test agent voice interaction, run the agent worker locally:</p>
+    <pre style='background:#111; padding:12px; border-radius:4px; overflow-x:auto;'>
+# 1. Navigate to the agent worker directory
+cd apps/agent_worker
+
+# 2. Create .env file with your credentials
+cat &gt; .env &lt;&lt;EOF
+LIVEKIT_URL=wss://marvain-dev-fo5ki513.livekit.cloud
+LIVEKIT_API_KEY=your-api-key
+LIVEKIT_API_SECRET=your-api-secret
+OPENAI_API_KEY=your-openai-key
+HUB_API_BASE=https://your-hub-api.execute-api.us-east-1.amazonaws.com/dev
+HUB_DEVICE_TOKEN=your-device-token
+SPACE_ID=your-space-id
+EOF
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Run the worker (it will auto-join rooms when users connect)
+python worker.py start
+    </pre>
+    <p><strong>Identity format:</strong></p>
+    <ul>
+      <li>Users join as <code>user:&lt;user_id&gt;</code></li>
+      <li>Devices/agents join as <code>device:&lt;device_id&gt;</code> or <code>agent:&lt;agent_id&gt;</code></li>
+    </ul>
+    <p>The agent worker uses LiveKit's agent framework to automatically join rooms and respond with voice.</p>
+  </div>
+</details>
+
+<script src='https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js'></script>
+<script>
+{_livekit_test_page_script()}
+</script>
+"""
+    return _gui_html_page(title="LiveKit Test", body_html=body)
 
 
 @app.post("/livekit/token", response_model=LiveKitTokenOut)
@@ -1148,7 +826,7 @@ def gui_livekit_token(request: Request, body: LiveKitTokenIn) -> LiveKitTokenOut
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return _mint_livekit_token(user=user, space_id=body.space_id)
+    return _mint_livekit_token_for_user(user=user, space_id=body.space_id)
 
 
 @app.get("/agents/{agent_id}", name="agent_detail")
@@ -1159,7 +837,7 @@ def gui_agent_detail(request: Request, agent_id: str) -> Response:
         return _gui_redirect_to_login(request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear)
 
     # Ensure the user can see this agent by filtering their memberships.
-    agents = list_agents_for_user(_db, user_id=user.user_id)
+    agents = list_agents_for_user(_get_db(), user_id=user.user_id)
     match = next((a for a in agents if a.agent_id == agent_id), None)
     if not match:
         return PlainTextResponse("not found", status_code=404)
