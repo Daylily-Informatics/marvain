@@ -1,5 +1,7 @@
 def run(argv: list[str]) -> int:
     # Import lazily so the repo can run without Typer installed.
+    import json
+
     import typer  # type: ignore
 
     from typing import NoReturn
@@ -9,18 +11,28 @@ def run(argv: list[str]) -> int:
     from marvain_cli import __version__
     from marvain_cli.config import ConfigError, find_config_path, render_config_yaml, sanitize_name_for_stack
     from marvain_cli.ops import (
+        GUI_DEFAULT_HOST,
+        GUI_DEFAULT_PORT,
         bootstrap,
-		cognito_admin_create_user,
-		cognito_admin_delete_user,
-		cognito_list_users,
+        cognito_create_user,
+        cognito_delete_user,
+        cognito_get_user,
+        cognito_list_users,
+        cognito_set_password,
         doctor,
+        gui_logs,
+        gui_restart,
         gui_run,
-		hub_claim_first_owner,
-		hub_grant_membership,
-		hub_list_memberships,
-		hub_register_device,
-		hub_revoke_membership,
-		hub_update_membership,
+        gui_start,
+        gui_status,
+        gui_stop,
+        hub_claim_first_owner,
+        hub_grant_membership,
+        hub_list_memberships,
+        hub_register_device,
+        hub_revoke_membership,
+        hub_update_membership,
+        info,
         init_db,
         load_ctx,
         monitor_outputs,
@@ -29,6 +41,7 @@ def run(argv: list[str]) -> int:
         sam_build_simple,
         sam_deploy,
         sam_logs,
+        status,
         teardown,
     )
 
@@ -177,11 +190,12 @@ def run(argv: list[str]) -> int:
     def _deploy(
         ctx: typer.Context,
         guided: bool = typer.Option(True, "--guided/--no-guided", help="Use SAM guided deploy"),
+        no_confirm: bool = typer.Option(False, "--no-confirm", help="Skip changeset confirmation (non-interactive)"),
         dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
     ) -> None:
         c = _load(ctx)
         dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
-        raise typer.Exit(code=sam_deploy(c, dry_run=dr, guided=guided))
+        raise typer.Exit(code=sam_deploy(c, dry_run=dr, guided=guided, no_confirm=no_confirm))
 
     @app.command("logs")
     def _logs(
@@ -233,6 +247,24 @@ def run(argv: list[str]) -> int:
         dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
         raise typer.Exit(code=monitor_status(c, dry_run=dr))
 
+    @app.command("status", help="Show deployment status (stack existence, status, outputs)")
+    def _status(
+        ctx: typer.Context,
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        raise typer.Exit(code=status(c, dry_run=dr))
+
+    @app.command("info", help="Show deployment info (stack name, region, profile, resources)")
+    def _info(
+        ctx: typer.Context,
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        raise typer.Exit(code=info(c, dry_run=dr))
+
     @app.command("teardown")
     def _teardown(
         ctx: typer.Context,
@@ -253,26 +285,104 @@ def run(argv: list[str]) -> int:
         dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
         raise typer.Exit(code=doctor(c, dry_run=dr))
 
-    @app.command("gui", help="Show the deployed Hub GUI URL (legacy local GUI removed)")
+    # GUI subcommands
+    gui_app = typer.Typer(help="Local GUI server management")
+    app.add_typer(gui_app, name="gui")
+
+    @gui_app.callback(invoke_without_command=True)
+    def gui_default(
+        ctx: typer.Context,
+        host: str = typer.Option(GUI_DEFAULT_HOST, "--host", help="Host to bind to"),
+        port: int = typer.Option(GUI_DEFAULT_PORT, "--port", help="Port to bind to"),
+        reload: bool = typer.Option(True, "--reload/--no-reload", help="Enable auto-reload"),
+        foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground (blocking)"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        """Start local GUI server (default action when no subcommand given)."""
+        if ctx.invoked_subcommand is None:
+            c = _load(ctx)
+            dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+            raise typer.Exit(
+                code=gui_start(c, dry_run=dr, host=host, port=port, reload=reload, foreground=foreground)
+            )
+
+    @gui_app.command("start", help="Start the local GUI server")
+    def gui_start_cmd(
+        ctx: typer.Context,
+        host: str = typer.Option(GUI_DEFAULT_HOST, "--host", help="Host to bind to"),
+        port: int = typer.Option(GUI_DEFAULT_PORT, "--port", help="Port to bind to"),
+        reload: bool = typer.Option(True, "--reload/--no-reload", help="Enable auto-reload"),
+        foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground (blocking)"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        raise typer.Exit(
+            code=gui_start(c, dry_run=dr, host=host, port=port, reload=reload, foreground=foreground)
+        )
+
+    @gui_app.command("stop", help="Stop the running GUI server")
+    def gui_stop_cmd(
+        ctx: typer.Context,
+        port: int = typer.Option(GUI_DEFAULT_PORT, "--port", help="Port the GUI is running on"),
+        force: bool = typer.Option(False, "--force", help="Force kill (SIGKILL instead of SIGTERM)"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        raise typer.Exit(code=gui_stop(c, dry_run=dr, port=port, force=force))
+
+    @gui_app.command("restart", help="Restart the GUI server (stop then start)")
+    def gui_restart_cmd(
+        ctx: typer.Context,
+        host: str = typer.Option(GUI_DEFAULT_HOST, "--host", help="Host to bind to"),
+        port: int = typer.Option(GUI_DEFAULT_PORT, "--port", help="Port to bind to"),
+        reload: bool = typer.Option(True, "--reload/--no-reload", help="Enable auto-reload"),
+        foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground (blocking)"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        raise typer.Exit(
+            code=gui_restart(c, dry_run=dr, host=host, port=port, reload=reload, foreground=foreground)
+        )
+
+    @gui_app.command("status", help="Show GUI server status")
+    def gui_status_cmd(
+        ctx: typer.Context,
+        port: int = typer.Option(GUI_DEFAULT_PORT, "--port", help="Port to check"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        raise typer.Exit(code=gui_status(c, dry_run=dr, port=port))
+
+    @gui_app.command("logs", help="Show GUI server logs")
+    def gui_logs_cmd(
+        ctx: typer.Context,
+        follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output (like tail -f)"),
+        lines: int = typer.Option(50, "--lines", "-n", help="Number of lines to show"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        raise typer.Exit(code=gui_logs(c, dry_run=dr, follow=follow, lines=lines))
+
+    # Legacy command for backward compatibility
+    @app.command("gui-legacy", hidden=True, help="[DEPRECATED] Use 'marvain gui start --foreground' instead")
     def gui_run_cmd(
         ctx: typer.Context,
-        host: str = typer.Option("127.0.0.1", "--host"),
-        port: int = typer.Option(8000, "--port"),
+        host: str = typer.Option(GUI_DEFAULT_HOST, "--host"),
+        port: int = typer.Option(GUI_DEFAULT_PORT, "--port"),
         reload: bool = typer.Option(True, "--reload/--no-reload"),
         stack_prefix: str | None = typer.Option(None, "--stack-prefix"),
         dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
     ) -> None:
         c = _load(ctx)
         dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        _ = stack_prefix  # Unused
         raise typer.Exit(
-            code=gui_run(
-                c,
-                dry_run=dr,
-                host=host,
-                port=port,
-                reload=reload,
-                stack_prefix=stack_prefix,
-            )
+            code=gui_run(c, dry_run=dr, host=host, port=port, reload=reload, stack_prefix=None)
         )
 
     init_app = typer.Typer(help="Initialization helpers")
@@ -312,51 +422,6 @@ def run(argv: list[str]) -> int:
         )
 
 
-    # ---- users (Cognito) ----
-    users_app = typer.Typer(help="Cognito user administration")
-    app.add_typer(users_app, name="users")
-
-    @users_app.command("create")
-    def users_create(
-        ctx: typer.Context,
-        email: str = typer.Option(..., "--email"),
-        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
-    ) -> None:
-        import json
-
-        c = _load(ctx)
-        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
-        data = cognito_admin_create_user(c, email=email, dry_run=dr)
-        if not dr:
-            typer.echo(json.dumps(data, indent=2, sort_keys=True))
-        raise typer.Exit(code=0)
-
-    @users_app.command("list")
-    def users_list(
-        ctx: typer.Context,
-        limit: int = typer.Option(60, "--limit"),
-        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
-    ) -> None:
-        import json
-
-        c = _load(ctx)
-        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
-        data = cognito_list_users(c, dry_run=dr, limit=limit)
-        if not dr:
-            typer.echo(json.dumps(data, indent=2, sort_keys=True))
-        raise typer.Exit(code=0)
-
-    @users_app.command("delete")
-    def users_delete(
-        ctx: typer.Context,
-        email: str = typer.Option(..., "--email"),
-        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
-    ) -> None:
-        c = _load(ctx)
-        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
-        rc = cognito_admin_delete_user(c, dry_run=dr, email=email)
-        raise typer.Exit(code=int(rc))
-
     # ---- members (Hub API) ----
     members_app = typer.Typer(help="Agent membership management (Hub API)")
     app.add_typer(members_app, name="members")
@@ -365,7 +430,7 @@ def run(argv: list[str]) -> int:
     def members_claim_owner(
         ctx: typer.Context,
         agent_id: str = typer.Option(..., "--agent-id"),
-        access_token: str | None = typer.Option(None, "--access-token", help="Cognito access token"),
+        access_token: str | None = typer.Option(None, "--access-token", help="User access token"),
         hub_rest_api_base: str | None = typer.Option(None, "--hub-rest-api-base"),
         dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
     ) -> None:
@@ -388,7 +453,7 @@ def run(argv: list[str]) -> int:
     def members_list(
         ctx: typer.Context,
         agent_id: str = typer.Option(..., "--agent-id"),
-        access_token: str | None = typer.Option(None, "--access-token", help="Cognito access token"),
+        access_token: str | None = typer.Option(None, "--access-token", help="User access token"),
         hub_rest_api_base: str | None = typer.Option(None, "--hub-rest-api-base"),
         dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
     ) -> None:
@@ -519,6 +584,108 @@ def run(argv: list[str]) -> int:
         )
         if not dr:
             typer.echo(json.dumps(data, indent=2, sort_keys=True))
+        raise typer.Exit(code=0)
+
+    # ---- cognito user management ----
+    cognito_app = typer.Typer(help="Cognito user management commands")
+    app.add_typer(cognito_app, name="cognito")
+
+    @cognito_app.command("create-user")
+    def _cognito_create_user(
+        ctx: typer.Context,
+        email: str = typer.Argument(..., help="Email address for the new user"),
+        password: str = typer.Option(None, "--password", "-p", help="Set permanent password (if not provided, user will need to set on first login)"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        """Create a new Cognito user."""
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+
+        # Create user with temporary password if password is provided
+        temp_pw = None
+        if password:
+            temp_pw = "TempPw123!"  # Cognito requires initial temp password
+
+        user = cognito_create_user(c, email=email, temporary_password=temp_pw, dry_run=dr)
+
+        # If password provided, set it as permanent
+        if password and not dr:
+            cognito_set_password(c, email=email, password=password, permanent=True, dry_run=dr)
+
+        if not dr:
+            typer.echo(json.dumps(user, indent=2, sort_keys=True, default=str))
+        raise typer.Exit(code=0)
+
+    @cognito_app.command("set-password")
+    def _cognito_set_password(
+        ctx: typer.Context,
+        email: str = typer.Argument(..., help="Email address of the user"),
+        password: str = typer.Argument(..., help="New password"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        """Set a user's password (makes it permanent)."""
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        cognito_set_password(c, email=email, password=password, permanent=True, dry_run=dr)
+        if not dr:
+            typer.echo(f"Password set for {email}")
+        raise typer.Exit(code=0)
+
+    @cognito_app.command("list-users")
+    def _cognito_list_users(
+        ctx: typer.Context,
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        """List all users in the Cognito User Pool."""
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        users = cognito_list_users(c, dry_run=dr)
+        if not dr:
+            # Format for display
+            for user in users:
+                username = user.get("Username", "")
+                status = user.get("UserStatus", "")
+                attrs = {a["Name"]: a["Value"] for a in user.get("Attributes", [])}
+                email = attrs.get("email", username)
+                typer.echo(f"{email} (status={status})")
+        raise typer.Exit(code=0)
+
+    @cognito_app.command("get-user")
+    def _cognito_get_user(
+        ctx: typer.Context,
+        email: str = typer.Argument(..., help="Email address of the user"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        """Get details of a specific user."""
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        user = cognito_get_user(c, email=email, dry_run=dr)
+        if not dr:
+            if user:
+                typer.echo(json.dumps(user, indent=2, sort_keys=True, default=str))
+            else:
+                typer.echo(f"User {email} not found", err=True)
+                raise typer.Exit(code=1)
+        raise typer.Exit(code=0)
+
+    @cognito_app.command("delete-user")
+    def _cognito_delete_user(
+        ctx: typer.Context,
+        email: str = typer.Argument(..., help="Email address of the user to delete"),
+        yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        """Delete a user from the Cognito User Pool."""
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+
+        if not yes and not dr:
+            confirm = typer.confirm(f"Delete user {email}?")
+            if not confirm:
+                typer.echo("Aborted")
+                raise typer.Exit(code=0)
+
+        cognito_delete_user(c, email=email, dry_run=dr)
         raise typer.Exit(code=0)
 
     @app.command("test")

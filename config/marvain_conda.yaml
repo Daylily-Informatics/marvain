@@ -35,3 +35,5 @@ dependencies:
       - amazon-transcribe
       - livekit-agents[openai]
       - livekit-plugins-noise-cancellation
+      - python-jose[cryptography]  # JWT validation for Cognito auth
+      - itsdangerous  # Session signing for SessionMiddleware
