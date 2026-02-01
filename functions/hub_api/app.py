@@ -1388,7 +1388,178 @@ def gui_actions(request: Request) -> Response:
     user = _gui_get_user(request)
     if not user:
         return _gui_redirect_to_login(request=request, next_path="/actions")
-    return _gui_html_page(title="Actions", body_html="<h1>Actions</h1><p>Coming soon - Phase 5.11</p>")
+
+    db = _get_db()
+    agents = list_agents_for_user(db, user_id=user.user_id)
+    spaces = list_spaces_for_user(db, user_id=user.user_id)
+
+    # Get actions for all agents the user has access to
+    agent_ids = [a.agent_id for a in agents]
+    actions_data = []
+    status_counts = {"proposed": 0, "approved": 0, "executed": 0, "failed": 0}
+    action_kinds_set: set = set()
+
+    if agent_ids:
+        from datetime import datetime, timezone
+        import json
+        placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+        params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+        rows = db.query(
+            f"""SELECT ac.action_id::TEXT as action_id, ac.agent_id::TEXT as agent_id,
+                       ac.space_id::TEXT as space_id, ac.kind, ac.payload,
+                       ac.required_scopes, ac.status, ac.created_at, ac.updated_at, ac.executed_at,
+                       a.name as agent_name, s.name as space_name
+                FROM actions ac
+                JOIN agents a ON a.agent_id = ac.agent_id
+                LEFT JOIN spaces s ON s.space_id = ac.space_id
+                WHERE ac.agent_id::TEXT IN ({placeholders})
+                ORDER BY ac.created_at DESC
+                LIMIT 100""",
+            params,
+        )
+
+        for row in rows:
+            status = row.get("status", "")
+            if status in status_counts:
+                status_counts[status] += 1
+
+            kind = row.get("kind", "")
+            action_kinds_set.add(kind)
+
+            created_at = row.get("created_at")
+            created_at_relative = None
+            if created_at:
+                try:
+                    if hasattr(created_at, "tzinfo"):
+                        now = datetime.now(timezone.utc)
+                        delta = now - created_at
+                        if delta.days > 0:
+                            created_at_relative = f"{delta.days}d ago"
+                        elif delta.seconds >= 3600:
+                            created_at_relative = f"{delta.seconds // 3600}h ago"
+                        else:
+                            created_at_relative = f"{delta.seconds // 60}m ago"
+                except Exception:
+                    pass
+
+            payload = row.get("payload") or {}
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = {}
+            payload_str = json.dumps(payload) if payload else "{}"
+            payload_preview = payload_str[:150] + ("..." if len(payload_str) > 150 else "")
+
+            required_scopes = row.get("required_scopes") or []
+            if isinstance(required_scopes, str):
+                try:
+                    required_scopes = json.loads(required_scopes)
+                except Exception:
+                    required_scopes = []
+
+            actions_data.append({
+                "action_id": str(row.get("action_id", "")),
+                "agent_id": str(row.get("agent_id", "")),
+                "agent_name": row.get("agent_name", ""),
+                "space_id": str(row.get("space_id", "")) if row.get("space_id") else None,
+                "space_name": row.get("space_name"),
+                "kind": kind,
+                "status": status,
+                "payload_str": payload_str,
+                "payload_preview": payload_preview,
+                "required_scopes": required_scopes,
+                "created_at_relative": created_at_relative,
+            })
+
+    agents_data = [
+        {"agent_id": a.agent_id, "name": a.name, "role": a.role}
+        for a in agents
+    ]
+
+    return templates.TemplateResponse(request, "actions.html", {
+        "user": {"email": user.email, "user_id": str(user.user_id)},
+        "stage": _cfg.stage,
+        "active_page": "actions",
+        "actions": actions_data,
+        "status_counts": status_counts,
+        "action_kinds": sorted(action_kinds_set),
+        "agents": agents_data,
+    })
+
+
+class ActionApproveReject(BaseModel):
+    reason: str | None = None
+
+
+@app.post("/api/actions/{action_id}/approve", name="api_approve_action")
+def api_approve_action(request: Request, action_id: str) -> dict:
+    """Approve a proposed action."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Get the action and check permission (admin/owner only)
+    rows = db.query("""
+        SELECT ac.action_id, ac.agent_id, ac.status
+        FROM actions ac
+        INNER JOIN memberships mb ON ac.agent_id = mb.agent_id
+        WHERE ac.action_id = :action_id::uuid AND mb.user_id = :user_id::uuid AND mb.role IN ('admin', 'owner')
+    """, {"action_id": action_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Action not found or permission denied")
+
+    action = rows[0]
+    if action.get("status") != "proposed":
+        raise HTTPException(status_code=400, detail=f"Action is not in proposed status (current: {action.get('status')})")
+
+    try:
+        db.execute("""
+            UPDATE actions SET status = 'approved', updated_at = now() WHERE action_id = :action_id::uuid
+        """, {"action_id": action_id})
+    except Exception as e:
+        logger.error(f"Failed to approve action: {e}")
+        raise HTTPException(status_code=500, detail="Failed to approve action")
+
+    return {"message": "Action approved", "action_id": action_id, "status": "approved"}
+
+
+@app.post("/api/actions/{action_id}/reject", name="api_reject_action")
+def api_reject_action(request: Request, action_id: str, body: ActionApproveReject | None = None) -> dict:
+    """Reject a proposed action."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Get the action and check permission (admin/owner only)
+    rows = db.query("""
+        SELECT ac.action_id, ac.agent_id, ac.status
+        FROM actions ac
+        INNER JOIN memberships mb ON ac.agent_id = mb.agent_id
+        WHERE ac.action_id = :action_id::uuid AND mb.user_id = :user_id::uuid AND mb.role IN ('admin', 'owner')
+    """, {"action_id": action_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Action not found or permission denied")
+
+    action = rows[0]
+    if action.get("status") != "proposed":
+        raise HTTPException(status_code=400, detail=f"Action is not in proposed status (current: {action.get('status')})")
+
+    try:
+        db.execute("""
+            UPDATE actions SET status = 'rejected', updated_at = now() WHERE action_id = :action_id::uuid
+        """, {"action_id": action_id})
+    except Exception as e:
+        logger.error(f"Failed to reject action: {e}")
+        raise HTTPException(status_code=500, detail="Failed to reject action")
+
+    return {"message": "Action rejected", "action_id": action_id, "status": "rejected"}
 
 
 @app.get("/events", name="gui_events")

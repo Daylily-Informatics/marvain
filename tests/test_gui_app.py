@@ -1004,3 +1004,106 @@ class TestEventsGui(unittest.TestCase):
 
         self.assertEqual(r.status_code, 200)
         self.assertIn("Event Stream", r.text)
+
+
+class TestActionsGui(unittest.TestCase):
+    """Tests for the actions dashboard GUI routes."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_hub_api_app_module()
+        from fastapi.testclient import TestClient
+
+        cls._TestClient = TestClient
+        cls._orig_gui_get_user = cls.mod._gui_get_user
+        cls._orig_list_agents_for_user = cls.mod.list_agents_for_user
+        cls._orig_list_spaces_for_user = cls.mod.list_spaces_for_user
+        cls._orig_get_db = cls.mod._get_db
+
+    def setUp(self) -> None:
+        self.mod._gui_get_user = self._orig_gui_get_user
+        self.mod.list_agents_for_user = self._orig_list_agents_for_user
+        self.mod.list_spaces_for_user = self._orig_list_spaces_for_user
+        self.mod._get_db = self._orig_get_db
+        self.client = self.__class__._TestClient(self.mod.app, raise_server_exceptions=False)
+
+    def test_actions_redirects_to_login_when_unauthenticated(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.get("/actions", follow_redirects=False)
+
+        self.assertIn(r.status_code, [302, 307])
+        self.assertIn("/login", r.headers.get("location", ""))
+
+    def test_actions_renders_when_authenticated(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[])
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+        self.mod.list_agents_for_user = mock.Mock(return_value=[])
+        self.mod.list_spaces_for_user = mock.Mock(return_value=[])
+
+        r = self.client.get("/actions")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Actions", r.text)
+
+    def test_approve_action_requires_authentication(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.post("/api/actions/action-1/approve")
+
+        self.assertEqual(r.status_code, 401)
+
+    def test_approve_action_requires_permission(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[])  # No permission
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post("/api/actions/action-1/approve")
+
+        self.assertEqual(r.status_code, 404)
+
+    def test_approve_action_success(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[{"action_id": "action-1", "agent_id": "agent-1", "status": "proposed"}])
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post("/api/actions/action-1/approve")
+
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["message"], "Action approved")
+        self.assertEqual(data["status"], "approved")
+
+    def test_reject_action_requires_authentication(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.post("/api/actions/action-1/reject")
+
+        self.assertEqual(r.status_code, 401)
+
+    def test_reject_action_success(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[{"action_id": "action-1", "agent_id": "agent-1", "status": "proposed"}])
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post("/api/actions/action-1/reject", json={"reason": "Not needed"})
+
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["message"], "Action rejected")
+        self.assertEqual(data["status"], "rejected")

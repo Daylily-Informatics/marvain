@@ -1329,3 +1329,142 @@ pre {
   }
 }
 
+/* ==========================================================================
+   Actions Dashboard
+   ========================================================================== */
+
+.actions-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.action-card {
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.action-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+.action-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: var(--spacing-sm);
+}
+
+.action-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+}
+
+.action-time {
+  font-size: 0.75rem;
+  color: var(--color-gray-400);
+}
+
+.status-badge {
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.status-badge.status-proposed,
+.status-proposed {
+  background: rgba(245, 158, 11, 0.2);
+  color: var(--color-warning);
+}
+
+.status-badge.status-approved,
+.status-approved {
+  background: rgba(59, 130, 246, 0.2);
+  color: var(--color-info);
+}
+
+.status-badge.status-rejected,
+.status-rejected {
+  background: rgba(239, 68, 68, 0.2);
+  color: var(--color-error);
+}
+
+.status-badge.status-executing {
+  background: rgba(99, 102, 241, 0.2);
+  color: var(--color-highlight);
+}
+
+.status-badge.status-executed,
+.status-executed {
+  background: rgba(34, 197, 94, 0.2);
+  color: var(--color-success);
+}
+
+.status-badge.status-failed,
+.status-failed {
+  background: rgba(239, 68, 68, 0.2);
+  color: var(--color-error);
+}
+
+.status-badge.status-canceled {
+  background: rgba(107, 114, 128, 0.2);
+  color: var(--color-gray-400);
+}
+
+.kind-badge {
+  padding: 2px 8px;
+  background: var(--color-gray-700);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  color: var(--color-gray-300);
+}
+
+.action-payload {
+  margin-bottom: var(--spacing-md);
+  overflow: hidden;
+}
+
+.action-payload code {
+  font-size: 0.875rem;
+  color: var(--color-gray-200);
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.action-scopes {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  margin-bottom: var(--spacing-md);
+}
+
+.action-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.action-id {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.action-actions {
+  display: flex;
+  gap: var(--spacing-xs);
+}
+
+.btn-success {
+  background: var(--color-success);
+  color: var(--color-white);
+}
+
+.btn-success:hover {
+  background: #16a34a;
+}
+
