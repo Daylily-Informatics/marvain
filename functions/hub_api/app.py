@@ -814,6 +814,63 @@ def api_delete_remote(request: Request, remote_id: str) -> dict:
     return {"message": "Remote deleted", "remote_id": remote_id}
 
 
+# ---------------------------------------------------------------------------
+# Spaces API endpoints
+# ---------------------------------------------------------------------------
+
+
+class SpaceCreate(BaseModel):
+    """Request body for creating a space."""
+    agent_id: str = Field(..., description="ID of the agent that owns this space")
+    name: str = Field(..., description="Name of the space")
+    privacy_mode: bool = Field(False, description="Whether privacy mode is enabled")
+
+
+class SpaceResponse(BaseModel):
+    """Response body for space operations."""
+    space_id: str
+    agent_id: str
+    name: str
+    privacy_mode: bool
+
+
+@app.post("/api/spaces", name="api_create_space")
+def api_create_space(request: Request, body: SpaceCreate) -> SpaceResponse:
+    """Create a new space."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Check user has admin permission on the agent
+    if not check_agent_permission(db, user_id=user.user_id, agent_id=body.agent_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Requires admin permission on the agent")
+
+    # Create the space
+    space_id = str(uuid.uuid4())
+    try:
+        db.execute("""
+            INSERT INTO spaces (space_id, agent_id, name, privacy_mode)
+            VALUES (:space_id::uuid, :agent_id::uuid, :name, :privacy_mode)
+        """, {
+            "space_id": space_id,
+            "agent_id": body.agent_id,
+            "name": body.name,
+            "privacy_mode": body.privacy_mode,
+        })
+    except Exception as e:
+        logger.error(f"Failed to create space: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create space")
+
+    return SpaceResponse(
+        space_id=space_id,
+        agent_id=body.agent_id,
+        name=body.name,
+        privacy_mode=body.privacy_mode,
+    )
+
+
 @app.get("/agents", name="gui_agents")
 def gui_agents(request: Request) -> Response:
     """Agents management - list all agents."""
@@ -858,7 +915,76 @@ def gui_spaces(request: Request) -> Response:
     user = _gui_get_user(request)
     if not user:
         return _gui_redirect_to_login(request=request, next_path="/spaces")
-    return _gui_html_page(title="Spaces", body_html="<h1>Spaces</h1><p>Coming soon - Phase 5.6</p>")
+
+    db = _get_db()
+    spaces = list_spaces_for_user(db, user_id=user.user_id)
+    agents = list_agents_for_user(db, user_id=user.user_id)
+
+    # Get privacy_mode and created_at for each space from database
+    space_ids = [s.space_id for s in spaces]
+    space_extra: dict[str, dict] = {}
+    if space_ids:
+        # Query for extra space data (privacy_mode, created_at)
+        placeholders = ", ".join(f":id{i}" for i in range(len(space_ids)))
+        params = {f"id{i}": sid for i, sid in enumerate(space_ids)}
+        rows = db.query(
+            f"SELECT space_id::TEXT as space_id, privacy_mode, created_at FROM spaces WHERE space_id::TEXT IN ({placeholders})",
+            params,
+        )
+        for row in rows:
+            sid = str(row.get("space_id", ""))
+            space_extra[sid] = {
+                "privacy_mode": row.get("privacy_mode", False),
+                "created_at": row.get("created_at"),
+            }
+
+    # Build spaces data list
+    spaces_data = []
+    for space in spaces:
+        extra = space_extra.get(space.space_id, {})
+        created_at = extra.get("created_at")
+        # Calculate relative time
+        if created_at:
+            try:
+                from datetime import datetime, timezone
+                if hasattr(created_at, "tzinfo"):
+                    now = datetime.now(timezone.utc)
+                    delta = now - created_at
+                    if delta.days > 0:
+                        created_at_relative = f"{delta.days}d ago"
+                    elif delta.seconds >= 3600:
+                        created_at_relative = f"{delta.seconds // 3600}h ago"
+                    else:
+                        created_at_relative = f"{delta.seconds // 60}m ago"
+                else:
+                    created_at_relative = str(created_at)[:10]
+            except Exception:
+                created_at_relative = str(created_at)[:10] if created_at else None
+        else:
+            created_at_relative = None
+
+        spaces_data.append({
+            "space_id": space.space_id,
+            "name": space.name,
+            "agent_id": space.agent_id,
+            "agent_name": space.agent_name,
+            "privacy_mode": extra.get("privacy_mode", False),
+            "created_at_relative": created_at_relative,
+        })
+
+    # Build agents data for dropdown
+    agents_data = [
+        {"agent_id": a.agent_id, "name": a.name, "role": a.role}
+        for a in agents
+    ]
+
+    return templates.TemplateResponse(request, "spaces.html", {
+        "user": {"email": user.email, "user_id": str(user.user_id)},
+        "stage": _cfg.stage,
+        "active_page": "spaces",
+        "spaces": spaces_data,
+        "agents": agents_data,
+    })
 
 
 @app.get("/devices", name="gui_devices")
