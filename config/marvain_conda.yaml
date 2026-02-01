@@ -32,6 +32,7 @@ dependencies:
   - pip:
       - awscli  # v2 requires awscrt crypto EC support (needs awscrt >= 0.28.4)
       - awscrt
+      - aws-sam-cli  # SAM CLI for build/deploy (conda package is outdated)
       - amazon-transcribe
       - livekit-agents[openai]
       - livekit-plugins-noise-cancellation
