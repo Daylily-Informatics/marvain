@@ -1,0 +1,217 @@
+{% extends "base.html" %}
+
+{% block title %}Artifacts - Marvain{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title"><i class="fas fa-file-archive"></i> Artifacts</h1>
+    <p class="text-muted">Browse and manage uploaded files</p>
+  </div>
+  <div class="page-actions">
+    <button type="button" class="btn btn-primary" onclick="showUploadModal()">
+      <i class="fas fa-upload"></i> Upload
+    </button>
+  </div>
+</div>
+
+<!-- Filter Bar -->
+<div class="filter-bar mb-lg">
+  <div class="filter-group">
+    <label for="agent-filter">Agent</label>
+    <select id="agent-filter" onchange="filterArtifacts()">
+      <option value="">All Agents</option>
+      {% for agent in agents %}
+      <option value="{{ agent.agent_id }}">{{ agent.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="filter-group flex-grow">
+    <label for="search-filter">Search</label>
+    <input type="text" id="search-filter" placeholder="Search artifacts..." oninput="filterArtifacts()">
+  </div>
+</div>
+
+<!-- Stats Bar -->
+<div class="stats-bar mb-lg">
+  <div class="stat-item">
+    <span class="stat-label">Total Files</span>
+    <span class="stat-value">{{ artifacts|length }}</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">Total Size</span>
+    <span class="stat-value">{{ total_size_formatted }}</span>
+  </div>
+</div>
+
+<!-- Artifacts List -->
+<div class="artifacts-list" id="artifacts-list">
+  {% if artifacts %}
+  {% for artifact in artifacts %}
+  <div class="artifact-row" data-agent="{{ artifact.agent_id }}" data-name="{{ artifact.filename|lower }}">
+    <div class="artifact-icon">
+      <i class="fas {{ artifact.icon }}"></i>
+    </div>
+    <div class="artifact-info">
+      <div class="artifact-name">{{ artifact.filename }}</div>
+      <div class="artifact-meta text-muted">
+        {{ artifact.agent_name }} • {{ artifact.size_formatted }} • {{ artifact.created_at_relative }}
+      </div>
+    </div>
+    <div class="artifact-actions">
+      <a href="{{ artifact.download_url }}" class="btn btn-sm btn-outline" target="_blank">
+        <i class="fas fa-download"></i>
+      </a>
+      <button class="btn btn-sm btn-outline" onclick="copyArtifactUrl('{{ artifact.download_url }}')">
+        <i class="fas fa-link"></i>
+      </button>
+    </div>
+  </div>
+  {% endfor %}
+  {% else %}
+  <div class="empty-state">
+    <i class="fas fa-file-archive fa-3x"></i>
+    <h3>No Artifacts Found</h3>
+    <p>Upload files to get started.</p>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Upload Modal -->
+<div class="modal" id="upload-modal">
+  <div class="modal-content">
+    <div class="modal-header">
+      <h2 class="modal-title">Upload Artifact</h2>
+      <button class="modal-close" onclick="closeUploadModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <form id="upload-form">
+        <div class="form-group">
+          <label for="upload-agent">Agent *</label>
+          <select id="upload-agent" required>
+            <option value="">Select agent...</option>
+            {% for agent in agents %}
+            {% if agent.role in ('admin', 'owner') %}
+            <option value="{{ agent.agent_id }}">{{ agent.name }}</option>
+            {% endif %}
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="upload-file">File *</label>
+          <input type="file" id="upload-file" required>
+        </div>
+        <div id="upload-progress" class="upload-progress" style="display: none;">
+          <div class="progress-bar">
+            <div class="progress-fill" id="progress-fill"></div>
+          </div>
+          <span class="progress-text" id="progress-text">0%</span>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-outline" onclick="closeUploadModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">Upload</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function filterArtifacts() {
+  const agent = document.getElementById('agent-filter').value;
+  const search = document.getElementById('search-filter').value.toLowerCase();
+  
+  document.querySelectorAll('.artifact-row').forEach(row => {
+    const matchAgent = !agent || row.dataset.agent === agent;
+    const matchSearch = !search || row.dataset.name.includes(search);
+    row.style.display = matchAgent && matchSearch ? '' : 'none';
+  });
+}
+
+function showUploadModal() {
+  document.getElementById('upload-modal').classList.add('active');
+}
+
+function closeUploadModal() {
+  document.getElementById('upload-modal').classList.remove('active');
+  document.getElementById('upload-form').reset();
+  document.getElementById('upload-progress').style.display = 'none';
+}
+
+function copyArtifactUrl(url) {
+  navigator.clipboard.writeText(url);
+  Marvain.showToast('success', 'Copied', 'Download URL copied to clipboard');
+}
+
+document.getElementById('upload-form').addEventListener('submit', async function(e) {
+  e.preventDefault();
+
+  const agentId = document.getElementById('upload-agent').value;
+  const fileInput = document.getElementById('upload-file');
+  const file = fileInput.files[0];
+
+  if (!agentId || !file) {
+    Marvain.showToast('error', 'Error', 'Please select an agent and file');
+    return;
+  }
+
+  const progressDiv = document.getElementById('upload-progress');
+  const progressFill = document.getElementById('progress-fill');
+  const progressText = document.getElementById('progress-text');
+  progressDiv.style.display = 'flex';
+  progressFill.style.width = '0%';
+  progressText.textContent = '0%';
+
+  try {
+    // Get presigned URL
+    const presignResponse = await fetch('/api/artifacts/presign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        agent_id: agentId,
+        filename: file.name,
+        content_type: file.type || 'application/octet-stream'
+      })
+    });
+
+    if (!presignResponse.ok) {
+      const err = await presignResponse.json();
+      throw new Error(err.detail || 'Failed to get upload URL');
+    }
+
+    const { upload_url } = await presignResponse.json();
+
+    // Upload file with progress tracking
+    const xhr = new XMLHttpRequest();
+    xhr.upload.addEventListener('progress', function(e) {
+      if (e.lengthComputable) {
+        const pct = Math.round((e.loaded / e.total) * 100);
+        progressFill.style.width = pct + '%';
+        progressText.textContent = pct + '%';
+      }
+    });
+
+    await new Promise((resolve, reject) => {
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) resolve();
+        else reject(new Error('Upload failed'));
+      };
+      xhr.onerror = () => reject(new Error('Upload failed'));
+      xhr.open('PUT', upload_url);
+      xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+      xhr.send(file);
+    });
+
+    Marvain.showToast('success', 'Uploaded', 'File uploaded successfully');
+    closeUploadModal();
+    window.location.reload();
+  } catch (err) {
+    Marvain.showToast('error', 'Error', err.message);
+    progressDiv.style.display = 'none';
+  }
+});
+</script>
+{% endblock %}
+
