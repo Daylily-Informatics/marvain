@@ -1,14 +1,22 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
-import time
+import urllib.error
 import urllib.request
 from functools import lru_cache
 from typing import Any
 
+from agent_hub.rate_limit import (
+    RetryableError,
+    exponential_backoff,
+    is_rate_limit_error,
+    is_transient_error,
+)
 from agent_hub.secrets import get_secret_json
 
+logger = logging.getLogger(__name__)
 
 OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
 
@@ -22,14 +30,43 @@ def _get_api_key(openai_secret_arn: str) -> str:
     return str(key)
 
 
-def _http_json(method: str, url: str, payload: dict[str, Any], *, api_key: str, timeout_s: int = 30) -> dict[str, Any]:
+def _http_json_raw(method: str, url: str, payload: dict[str, Any], *, api_key: str, timeout_s: int = 30) -> dict[str, Any]:
+    """Make HTTP request without retry logic."""
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=body, method=method)
     req.add_header("Authorization", f"Bearer {api_key}")
     req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-        raw = resp.read()
-    return json.loads(raw.decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            raw = resp.read()
+        return json.loads(raw.decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # Check if this is a retryable error
+        error_body = ""
+        try:
+            error_body = e.read().decode("utf-8")
+        except Exception:
+            pass
+        error_msg = f"HTTP {e.code}: {error_body}"
+
+        if e.code == 429 or is_rate_limit_error(Exception(error_msg)):
+            logger.warning("Rate limit hit: %s", error_msg[:500])
+            raise RetryableError(error_msg) from e
+        if e.code in (502, 503, 504) or is_transient_error(Exception(error_msg)):
+            logger.warning("Transient error: %s", error_msg[:500])
+            raise RetryableError(error_msg) from e
+        raise
+    except urllib.error.URLError as e:
+        # Connection errors are often transient
+        if is_transient_error(e):
+            raise RetryableError(str(e)) from e
+        raise
+
+
+@exponential_backoff(max_retries=3, base_delay=1.0, max_delay=60.0, retryable_exceptions=(RetryableError,))
+def _http_json(method: str, url: str, payload: dict[str, Any], *, api_key: str, timeout_s: int = 30) -> dict[str, Any]:
+    """Make HTTP request with exponential backoff retry."""
+    return _http_json_raw(method, url, payload, api_key=api_key, timeout_s=timeout_s)
 
 
 def extract_output_text(resp: dict[str, Any]) -> str:

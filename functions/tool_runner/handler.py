@@ -99,11 +99,11 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
         # - notification.push
         # - homeassistant.turn_on
 
-        # Mark done
+        # Mark executed (per spec: status should be 'executed', not 'done')
         _db.execute(
             """
             UPDATE actions
-            SET status='done', updated_at=now(), executed_at=now()
+            SET status='executed', updated_at=now(), executed_at=now()
             WHERE action_id = :action_id::uuid
             """,
             {"action_id": action_id},
