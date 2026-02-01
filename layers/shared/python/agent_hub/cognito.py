@@ -119,14 +119,18 @@ def build_logout_url(cfg: HubConfig, redirect_uri: str | None = None) -> str:
     if not cfg.cognito_logout_url or not cfg.cognito_user_pool_client_id:
         raise CognitoAuthError("Cognito is not fully configured")
 
-    # Default to base URL (without /auth/callback)
+    # Default to /logged-out page (must be registered in Cognito LogoutURLs)
     logout_target = redirect_uri
     if not logout_target and cfg.cognito_redirect_uri:
-        logout_target = cfg.cognito_redirect_uri.replace("/auth/callback", "")
+        # Replace /auth/callback with /logged-out
+        logout_target = cfg.cognito_redirect_uri.replace("/auth/callback", "/logged-out")
 
     params = {
         "client_id": cfg.cognito_user_pool_client_id,
+        # Cognito logout endpoint accepts both 'logout_uri' and 'redirect_uri'
+        # but some versions require 'redirect_uri', so we include both for compatibility
         "logout_uri": logout_target or "",
+        "redirect_uri": logout_target or "",
     }
     return f"{cfg.cognito_logout_url}?{urlencode(params)}"
 

@@ -127,7 +127,7 @@ def run(argv: list[str]) -> int:
             write_path = Path(write).expanduser().resolve()
         else:
             xdg_home = Path(os.getenv("XDG_CONFIG_HOME") or (Path.home() / ".config")).expanduser()
-            write_path = (xdg_home / "marvain" / "marvain.yaml").resolve()
+            write_path = (xdg_home / "marvain" / "marvain-config.yaml").resolve()
         write_path.parent.mkdir(parents=True, exist_ok=True)
 
         git_name = git_user_name() or os.getenv("USER") or "user"
@@ -315,12 +315,15 @@ def run(argv: list[str]) -> int:
         port: int = typer.Option(GUI_DEFAULT_PORT, "--port", help="Port to bind to"),
         reload: bool = typer.Option(True, "--reload/--no-reload", help="Enable auto-reload"),
         foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground (blocking)"),
+        https: bool = typer.Option(False, "--https", help="Enable HTTPS (requires --cert and --key)"),
+        cert: str = typer.Option(None, "--cert", help="Path to SSL certificate file (PEM format)"),
+        key: str = typer.Option(None, "--key", help="Path to SSL private key file (PEM format)"),
         dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
     ) -> None:
         c = _load(ctx)
         dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
         raise typer.Exit(
-            code=gui_start(c, dry_run=dr, host=host, port=port, reload=reload, foreground=foreground)
+            code=gui_start(c, dry_run=dr, host=host, port=port, reload=reload, foreground=foreground, https=https, cert=cert, key=key)
         )
 
     @gui_app.command("stop", help="Stop the running GUI server")
@@ -341,12 +344,15 @@ def run(argv: list[str]) -> int:
         port: int = typer.Option(GUI_DEFAULT_PORT, "--port", help="Port to bind to"),
         reload: bool = typer.Option(True, "--reload/--no-reload", help="Enable auto-reload"),
         foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground (blocking)"),
+        https: bool = typer.Option(False, "--https", help="Enable HTTPS (requires --cert and --key)"),
+        cert: str = typer.Option(None, "--cert", help="Path to SSL certificate file (PEM format)"),
+        key: str = typer.Option(None, "--key", help="Path to SSL private key file (PEM format)"),
         dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
     ) -> None:
         c = _load(ctx)
         dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
         raise typer.Exit(
-            code=gui_restart(c, dry_run=dr, host=host, port=port, reload=reload, foreground=foreground)
+            code=gui_restart(c, dry_run=dr, host=host, port=port, reload=reload, foreground=foreground, https=https, cert=cert, key=key)
         )
 
     @gui_app.command("status", help="Show GUI server status")

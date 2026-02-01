@@ -748,9 +748,11 @@ Resources:
       CallbackURLs:
         # GUI runs locally only - no deployed GUI endpoint
         - http://localhost:8084/auth/callback
+        - https://localhost:8084/auth/callback
       LogoutURLs:
         # GUI runs locally only - no deployed GUI endpoint
         - http://localhost:8084/logged-out
+        - https://localhost:8084/logged-out
       SupportedIdentityProviders:
         - COGNITO
       ExplicitAuthFlows:

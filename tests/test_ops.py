@@ -230,10 +230,23 @@ class TestGuiLifecycle(unittest.TestCase):
     """Unit tests for GUI lifecycle management functions."""
 
     def _make_ctx(self) -> Ctx:
-        """Create a minimal test context."""
+        """Create a minimal test context with resources for GUI tests."""
         return Ctx(
             config_path=Path("/tmp/marvain.yaml"),
-            cfg={"envs": {"dev": {}}},
+            cfg={
+                "envs": {
+                    "dev": {
+                        "resources": {
+                            "DbClusterArn": "arn:aws:rds:us-east-1:123456789012:cluster:test",
+                            "DbSecretArn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:test",
+                            "DbName": "testdb",
+                            "CognitoUserPoolId": "us-east-1_test",
+                            "CognitoAppClientId": "testclientid",
+                            "CognitoDomain": "test.auth.us-east-1.amazoncognito.com",
+                        }
+                    }
+                }
+            },
             env=ResolvedEnv(env="dev", aws_profile="p", aws_region="r", stack_name="s", raw={}),
         )
 

@@ -132,11 +132,12 @@ If `AuditBucket` deletion fails due to Object Lock retention, the practical “r
 
 ```sh
 # OPTIONAL: backup first
-cp -v "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain.yaml" \
-  "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain.yaml.bak" 2>/dev/null || true
+cp -v "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain-config.yaml" \
+  "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain-config.yaml.bak" 2>/dev/null || true
 
-# Delete config (XDG + legacy fallbacks)
-rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain.yaml" \
+# Delete config (canonical + legacy fallbacks)
+rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain-config.yaml" \
+      "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain.yaml" \
       "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/config.yaml" \
       "$HOME/.marvain/config.yaml"
 ```
@@ -186,7 +187,7 @@ Notes:
 
 Notes:
 
-- `marvain config init` writes to `${XDG_CONFIG_HOME:-~/.config}/marvain/marvain.yaml` by default.
+- `marvain config init` writes to `${XDG_CONFIG_HOME:-~/.config}/marvain/marvain-config.yaml` by default.
 - Treat that config as **secret** once you run `marvain bootstrap` (it will store a device token).
 - If you choose to write a repo-local config (e.g. `--write marvain.yaml`), it is gitignored.
 
@@ -208,7 +209,7 @@ Notes:
 The GUI runs locally on your machine and connects to deployed AWS resources (Aurora, Cognito, S3).
 
 ```bash
-# Write stack outputs to .env.local config
+# Write stack outputs to marvain-config.yaml
 ./bin/marvain monitor outputs --write-config
 
 # Start the local GUI server (background mode, default)
