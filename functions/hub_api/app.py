@@ -20,7 +20,7 @@ from typing import Optional
 
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.responses import Response
@@ -820,7 +820,36 @@ def gui_agents(request: Request) -> Response:
     user = _gui_get_user(request)
     if not user:
         return _gui_redirect_to_login(request=request, next_path="/agents")
-    return _gui_html_page(title="Agents", body_html="<h1>Agents</h1><p>Coming soon - Phase 5.5</p>")
+
+    db = _get_db()
+    agents = list_agents_for_user(db, user_id=user.user_id)
+
+    # Build agent data list
+    agents_data = []
+    for agent in agents:
+        agents_data.append({
+            "agent_id": str(agent.agent_id),
+            "name": agent.name,
+            "role": agent.role,
+            "relationship_label": agent.relationship_label,
+            "disabled": agent.disabled,
+        })
+
+    # Count by role
+    owner_count = sum(1 for a in agents_data if a["role"] == "owner")
+    admin_count = sum(1 for a in agents_data if a["role"] == "admin")
+    member_count = sum(1 for a in agents_data if a["role"] == "member")
+
+    return templates.TemplateResponse(request, "agents.html", {
+        "user": {"email": user.email, "user_id": str(user.user_id)},
+        "stage": _cfg.stage,
+        "active_page": "agents",
+        "agents": agents_data,
+        "owner_count": owner_count,
+        "admin_count": admin_count,
+        "member_count": member_count,
+        "total_count": len(agents_data),
+    })
 
 
 @app.get("/spaces", name="gui_spaces")
@@ -1319,22 +1348,42 @@ def gui_agent_detail(request: Request, agent_id: str) -> Response:
         clear = bool(str(request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or "").strip())
         return _gui_redirect_to_login(request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear)
 
+    db = _get_db()
     # Ensure the user can see this agent by filtering their memberships.
-    agents = list_agents_for_user(_get_db(), user_id=user.user_id)
+    agents = list_agents_for_user(db, user_id=user.user_id)
     match = next((a for a in agents if a.agent_id == agent_id), None)
     if not match:
         return PlainTextResponse("not found", status_code=404)
 
-    role = html.escape(match.role)
-    name = html.escape(match.name)
-    home_href = html.escape(_gui_path(request, "/"))
-    logout_href = html.escape(_gui_path(request, "/logout"))
-    body = (
-        "<div style='display:flex; justify-content:space-between; align-items:center;'>"
-        f"<h1>{name}</h1>"
-        f"<div><a href='{home_href}'>Home</a> | <a href='{logout_href}'>Logout</a></div>"
-        "</div>"
-        f"<p>Agent ID: <code>{html.escape(match.agent_id)}</code></p>"
-        f"<p>Your role: <code>{role}</code></p>"
+    # Fetch members for this agent
+    members_rows = db.query(
+        "SELECT m.user_id, m.role, m.created_at, u.email "
+        "FROM memberships m LEFT JOIN users u ON m.user_id = u.user_id "
+        "WHERE m.agent_id = :agent_id ORDER BY m.created_at",
+        {"agent_id": agent_id},
     )
-    return _gui_html_page(title=f"Agent {match.name}", body_html=body)
+    members = [
+        {
+            "user_id": str(row.get("user_id", "")),
+            "role": row.get("role", "member"),
+            "email": row.get("email"),
+            "created_at": str(row.get("created_at", ""))[:10] if row.get("created_at") else None,
+        }
+        for row in members_rows
+    ]
+
+    agent_data = {
+        "agent_id": str(match.agent_id),
+        "name": match.name,
+        "role": match.role,
+        "relationship_label": match.relationship_label,
+        "disabled": match.disabled,
+    }
+
+    return templates.TemplateResponse(request, "agent_detail.html", {
+        "user": {"email": user.email, "user_id": str(user.user_id)},
+        "stage": _cfg.stage,
+        "active_page": "agents",
+        "agent": agent_data,
+        "members": members,
+    })
