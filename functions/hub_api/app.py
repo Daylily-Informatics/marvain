@@ -623,6 +623,70 @@ def api_create_remote(request: Request, body: RemoteCreate) -> RemoteResponse:
     )
 
 
+def _ping_remote_address(address: str, connection_type: str, timeout: float = 2.0) -> tuple[bool, str]:
+    """Ping a remote to check if it's reachable.
+
+    Returns (is_online, status) where status is 'online', 'offline', or 'hibernate'.
+    """
+    import socket
+    import subprocess
+
+    if connection_type == "network":
+        # Try network ping - parse IP/hostname from address
+        # Address might be IP, IP:port, hostname, or URL
+        host = address.split(":")[0].split("/")[-1]
+        if not host:
+            return False, "offline"
+
+        # Try socket connection first (faster than ICMP ping)
+        try:
+            port = 80  # Default HTTP port
+            if ":" in address:
+                parts = address.split(":")
+                if len(parts) >= 2 and parts[-1].isdigit():
+                    port = int(parts[-1])
+
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)
+            result = sock.connect_ex((host, port))
+            sock.close()
+
+            if result == 0:
+                return True, "online"
+        except Exception:
+            pass
+
+        # Fall back to ICMP ping
+        try:
+            result = subprocess.run(
+                ["ping", "-c", "1", "-W", str(int(timeout)), host],
+                capture_output=True,
+                timeout=timeout + 1
+            )
+            if result.returncode == 0:
+                return True, "online"
+        except Exception:
+            pass
+
+        return False, "offline"
+
+    elif connection_type == "usb":
+        # USB devices - check if device path exists
+        # Address should be a device path like /dev/video0
+        import os
+        if address.startswith("/dev/") and os.path.exists(address):
+            return True, "online"
+        return False, "offline"
+
+    elif connection_type == "direct":
+        # Direct attached devices - assume online if registered
+        # Could check specific hardware interfaces in the future
+        return True, "online"
+
+    # Unknown connection type
+    return False, "offline"
+
+
 @app.post("/api/remotes/{remote_id}/ping", name="api_ping_remote")
 def api_ping_remote(request: Request, remote_id: str) -> dict:
     """Ping a remote to check its status."""
@@ -634,7 +698,7 @@ def api_ping_remote(request: Request, remote_id: str) -> dict:
 
     # Get the remote and check permission
     rows = db.query("""
-        SELECT r.remote_id, r.agent_id, r.address, r.connection_type
+        SELECT r.remote_id, r.agent_id, r.address, r.connection_type, r.status
         FROM remotes r
         INNER JOIN memberships m ON r.agent_id = m.agent_id
         WHERE r.remote_id = :remote_id::uuid AND m.user_id = :user_id::uuid
@@ -644,20 +708,79 @@ def api_ping_remote(request: Request, remote_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Remote not found")
 
     remote = rows[0]
-
-    # TODO: Actually ping the remote based on connection_type
-    # For now, just update last_ping timestamp
     from datetime import datetime, timezone
-
     now = datetime.now(timezone.utc)
-    try:
-        db.execute("""
-            UPDATE remotes SET last_ping = :now WHERE remote_id = :remote_id::uuid
-        """, {"remote_id": remote_id, "now": now.isoformat()})
-    except Exception as e:
-        logger.warning(f"Failed to update last_ping: {e}")
 
-    return {"message": "Ping request sent", "remote_id": remote_id}
+    # Actually ping the remote based on connection_type
+    is_online, new_status = _ping_remote_address(
+        remote["address"],
+        remote["connection_type"]
+    )
+
+    # Update status and timestamps
+    try:
+        update_params = {
+            "remote_id": remote_id,
+            "now": now.isoformat(),
+            "status": new_status,
+        }
+        if is_online:
+            db.execute("""
+                UPDATE remotes
+                SET last_ping = :now, last_seen = :now, status = :status
+                WHERE remote_id = :remote_id::uuid
+            """, update_params)
+        else:
+            db.execute("""
+                UPDATE remotes
+                SET last_ping = :now, status = :status
+                WHERE remote_id = :remote_id::uuid
+            """, update_params)
+    except Exception as e:
+        logger.warning(f"Failed to update remote status: {e}")
+
+    return {
+        "remote_id": remote_id,
+        "status": new_status,
+        "is_online": is_online,
+        "last_ping": now.isoformat(),
+    }
+
+
+@app.get("/api/remotes/status", name="api_remotes_status")
+def api_remotes_status(request: Request) -> dict:
+    """Get status of all remotes for the current user."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Get all remotes for user
+    rows = db.query("""
+        SELECT r.remote_id, r.name, r.status, r.last_ping, r.last_seen
+        FROM remotes r
+        INNER JOIN memberships m ON r.agent_id = m.agent_id
+        WHERE m.user_id = :user_id::uuid
+    """, {"user_id": str(user.user_id)})
+
+    remotes = []
+    for row in rows:
+        remotes.append({
+            "remote_id": str(row["remote_id"]),
+            "name": row["name"],
+            "status": row["status"] or "offline",
+            "last_ping": row["last_ping"].isoformat() if row.get("last_ping") else None,
+            "last_seen": row["last_seen"].isoformat() if row.get("last_seen") else None,
+        })
+
+    return {
+        "remotes": remotes,
+        "online_count": sum(1 for r in remotes if r["status"] == "online"),
+        "hibernate_count": sum(1 for r in remotes if r["status"] == "hibernate"),
+        "offline_count": sum(1 for r in remotes if r["status"] == "offline"),
+        "total_count": len(remotes),
+    }
 
 
 @app.delete("/api/remotes/{remote_id}", name="api_delete_remote")

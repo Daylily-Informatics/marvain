@@ -411,3 +411,52 @@ class TestRemotesGui(unittest.TestCase):
 
         r = self.client.delete("/api/remotes/r1")
         self.assertEqual(r.status_code, 404)
+
+    def test_ping_remote_returns_status(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
+        )
+
+        # Mock database
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[{
+            "remote_id": "r1",
+            "agent_id": "a1",
+            "address": "192.168.1.100",
+            "connection_type": "network",
+            "status": "offline",
+        }])
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        # Mock the ping function to avoid actual network calls
+        with mock.patch.object(self.mod, "_ping_remote_address", return_value=(True, "online")):
+            r = self.client.post("/api/remotes/r1/ping")
+
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["remote_id"], "r1")
+        self.assertEqual(body["status"], "online")
+        self.assertTrue(body["is_online"])
+        self.assertIn("last_ping", body)
+
+    def test_remotes_status_endpoint_returns_all_statuses(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
+        )
+
+        # Mock database
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[
+            {"remote_id": "r1", "name": "Remote 1", "status": "online", "last_ping": None, "last_seen": None},
+            {"remote_id": "r2", "name": "Remote 2", "status": "offline", "last_ping": None, "last_seen": None},
+        ])
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.get("/api/remotes/status")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["total_count"], 2)
+        self.assertEqual(body["online_count"], 1)
+        self.assertEqual(body["offline_count"], 1)
+        self.assertEqual(len(body["remotes"]), 2)
