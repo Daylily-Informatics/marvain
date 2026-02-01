@@ -9,6 +9,9 @@
     <p class="text-muted">Connected devices and services that marvain can control</p>
   </div>
   <div class="page-actions">
+    <button type="button" class="btn btn-outline" onclick="pingAllRemotes()" title="Ping all remotes">
+      <i class="fas fa-broadcast-tower"></i> Ping All
+    </button>
     <button type="button" class="btn btn-primary" onclick="Marvain.showAddRemoteModal()">
       <i class="fas fa-plus"></i> Add Remote
     </button>
@@ -97,7 +100,7 @@
         </thead>
         <tbody>
           {% for remote in remotes %}
-          <tr data-status="{{ remote.status }}" data-type="{{ remote.connection_type }}" data-name="{{ remote.name|lower }}" data-address="{{ remote.address|lower }}">
+          <tr data-remote-id="{{ remote.remote_id }}" data-status="{{ remote.status }}" data-type="{{ remote.connection_type }}" data-name="{{ remote.name|lower }}" data-address="{{ remote.address|lower }}">
             <td>
               <span class="status-dot {{ remote.status }}" title="{{ remote.status|title }}"></span>
               <span class="status-text">{{ remote.status|title }}</span>
@@ -118,14 +121,14 @@
             <td>{{ remote.agent_name or 'N/A' }}</td>
             <td>
               {% if remote.last_seen %}
-              <span title="{{ remote.last_seen }}">{{ remote.last_seen_relative }}</span>
+              <span class="last-seen" title="{{ remote.last_seen }}">{{ remote.last_seen_relative }}</span>
               {% else %}
-              <span class="text-muted">Never</span>
+              <span class="last-seen text-muted">Never</span>
               {% endif %}
             </td>
             <td>
-              <button class="btn btn-sm btn-outline" onclick="pingRemote('{{ remote.remote_id }}')" title="Ping">
-                <i class="fas fa-sync"></i>
+              <button class="btn btn-sm btn-outline ping-btn" onclick="pingRemote('{{ remote.remote_id }}')" title="Ping">
+                <i class="fas fa-wifi"></i>
               </button>
               <button class="btn btn-sm btn-outline" onclick="editRemote('{{ remote.remote_id }}')" title="Edit">
                 <i class="fas fa-edit"></i>
@@ -198,37 +201,121 @@
 
 {% block scripts %}
 <script>
+// Status refresh interval (30 seconds)
+const STATUS_REFRESH_INTERVAL = 30000;
+let statusRefreshTimer = null;
+
 function filterRemotes() {
   const statusFilter = document.getElementById('status-filter').value.toLowerCase();
   const typeFilter = document.getElementById('type-filter').value.toLowerCase();
   const searchFilter = document.getElementById('search-filter').value.toLowerCase();
-  
+
   document.querySelectorAll('#remotes-table tbody tr').forEach(row => {
     const status = row.dataset.status;
     const type = row.dataset.type;
     const name = row.dataset.name;
     const address = row.dataset.address;
-    
+
     const matchesStatus = !statusFilter || status === statusFilter;
     const matchesType = !typeFilter || type === typeFilter;
     const matchesSearch = !searchFilter || name.includes(searchFilter) || address.includes(searchFilter);
-    
+
     row.style.display = matchesStatus && matchesType && matchesSearch ? '' : 'none';
   });
 }
 
-function pingRemote(remoteId) {
-  Marvain.showLoading('Pinging remote...');
-  Marvain.api('/api/remotes/' + remoteId + '/ping', { method: 'POST' })
+function updateRemoteStatus(remoteId, status, lastPing) {
+  // Update the table row
+  const row = document.querySelector(`tr[data-remote-id="${remoteId}"]`);
+  if (row) {
+    row.dataset.status = status;
+    const statusCell = row.querySelector('.status-dot');
+    if (statusCell) {
+      statusCell.className = 'status-dot ' + status;
+      statusCell.title = status.charAt(0).toUpperCase() + status.slice(1);
+    }
+    const lastSeenCell = row.querySelector('.last-seen');
+    if (lastSeenCell && lastPing) {
+      lastSeenCell.textContent = Marvain.relativeTime(lastPing);
+    }
+  }
+}
+
+function updateStatusCounts(counts) {
+  const onlineEl = document.querySelector('.stat-card .success + .stat-content .stat-value');
+  const hibernateEl = document.querySelector('.stat-card .warning + .stat-content .stat-value');
+  const offlineEl = document.querySelector('.stat-card .error + .stat-content .stat-value');
+  const totalEl = document.querySelector('.stat-card .info + .stat-content .stat-value');
+
+  if (onlineEl) onlineEl.textContent = counts.online_count;
+  if (hibernateEl) hibernateEl.textContent = counts.hibernate_count;
+  if (offlineEl) offlineEl.textContent = counts.offline_count;
+  if (totalEl) totalEl.textContent = counts.total_count;
+}
+
+function refreshAllStatuses() {
+  Marvain.api('/api/remotes/status')
     .then(data => {
-      Marvain.hideLoading();
-      Marvain.showToast('success', 'Ping Sent', data.message || 'Ping request sent');
-      setTimeout(() => location.reload(), 2000);
+      data.remotes.forEach(remote => {
+        updateRemoteStatus(remote.remote_id, remote.status, remote.last_seen);
+      });
+      updateStatusCounts(data);
     })
     .catch(err => {
-      Marvain.hideLoading();
-      Marvain.showToast('error', 'Ping Failed', err.message);
+      console.warn('Failed to refresh statuses:', err);
     });
+}
+
+function pingRemote(remoteId) {
+  const row = document.querySelector(`tr[data-remote-id="${remoteId}"]`);
+  const pingBtn = row ? row.querySelector('.ping-btn') : null;
+  if (pingBtn) {
+    pingBtn.disabled = true;
+    pingBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+  }
+
+  Marvain.api('/api/remotes/' + remoteId + '/ping', { method: 'POST' })
+    .then(data => {
+      updateRemoteStatus(remoteId, data.status, data.last_ping);
+      const statusText = data.is_online ? 'Online' : 'Offline';
+      Marvain.showToast(data.is_online ? 'success' : 'warning', 'Ping Complete',
+        `Remote is ${statusText}`);
+      refreshAllStatuses();  // Refresh counts
+    })
+    .catch(err => {
+      Marvain.showToast('error', 'Ping Failed', err.message);
+    })
+    .finally(() => {
+      if (pingBtn) {
+        pingBtn.disabled = false;
+        pingBtn.innerHTML = '<i class="fas fa-wifi"></i>';
+      }
+    });
+}
+
+function pingAllRemotes() {
+  const rows = document.querySelectorAll('#remotes-table tbody tr');
+  if (rows.length === 0) {
+    Marvain.showToast('info', 'No Remotes', 'Add some remotes first');
+    return;
+  }
+
+  Marvain.showLoading('Pinging all remotes...');
+  const remoteIds = Array.from(rows).map(row => row.dataset.remoteId).filter(Boolean);
+
+  Promise.all(remoteIds.map(id =>
+    Marvain.api('/api/remotes/' + id + '/ping', { method: 'POST' })
+      .then(data => ({ id, ...data }))
+      .catch(err => ({ id, error: err.message }))
+  )).then(results => {
+    Marvain.hideLoading();
+    const online = results.filter(r => r.is_online).length;
+    const failed = results.filter(r => r.error).length;
+    Marvain.showToast('success', 'Ping Complete',
+      `${online} online, ${results.length - online - failed} offline` +
+      (failed ? `, ${failed} failed` : ''));
+    refreshAllStatuses();
+  });
 }
 
 function confirmDeleteRemote(remoteId, name) {
@@ -264,7 +351,7 @@ function submitAddRemote(event) {
     connection_type: form.connection_type.value,
     agent_id: form.agent_id.value
   };
-  
+
   Marvain.showLoading('Adding remote...');
   Marvain.api('/api/remotes', { method: 'POST', body: JSON.stringify(data), headers: {'Content-Type': 'application/json'} })
     .then(() => {
@@ -287,6 +374,21 @@ Marvain.showAddRemoteModal = function() {
 Marvain.hideModal = function(id) {
   document.getElementById(id).style.display = 'none';
 };
+
+// Start auto-refresh on page load
+document.addEventListener('DOMContentLoaded', function() {
+  statusRefreshTimer = setInterval(refreshAllStatuses, STATUS_REFRESH_INTERVAL);
+});
+
+// Stop refresh when page is hidden
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden) {
+    if (statusRefreshTimer) clearInterval(statusRefreshTimer);
+  } else {
+    refreshAllStatuses();
+    statusRefreshTimer = setInterval(refreshAllStatuses, STATUS_REFRESH_INTERVAL);
+  }
+});
 </script>
 {% endblock %}
 
