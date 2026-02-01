@@ -1,0 +1,479 @@
+{% extends "base.html" %}
+
+{% block title %}LiveKit Test - Marvain{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title"><i class="fas fa-video"></i> LiveKit Test</h1>
+    <p class="text-muted">Join a LiveKit room mapped from a Marvain space</p>
+  </div>
+  <div class="page-actions">
+    <a href="/spaces" class="btn btn-outline"><i class="fas fa-arrow-left"></i> Back to Spaces</a>
+  </div>
+</div>
+
+<!-- Hidden config element for JS -->
+<div id="lkcfg" data-token-url="{{ token_url }}" style="display:none"></div>
+
+<!-- Connection Status Bar -->
+<div class="lk-status-bar mb-md">
+  <div class="lk-status">
+    <span id="lk-connection-status" class="badge badge-info">
+      <i class="fas fa-circle"></i> <span id="lk-status-text">Not Connected</span>
+    </span>
+    <span id="lk-room-name" class="text-muted"></span>
+  </div>
+</div>
+
+<!-- Connection Controls -->
+<div class="card mb-md">
+  <div class="card-body" style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+    <div class="form-group" style="margin: 0; flex: 1; min-width: 300px;">
+      <label for="space_id" style="margin-bottom: 4px;">Select Space</label>
+      <select id="space_id" class="form-control">
+        <option value="">-- Select a space --</option>
+        {% for space in spaces %}
+        <option value="{{ space.space_id }}" {% if space.space_id == selected_space %}selected{% endif %}>
+          {{ space.name }} ({{ space.agent_name }}) - {{ space.space_id[:8] }}...
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="display: flex; gap: 8px; padding-top: 20px;">
+      <button id="btn-join" class="btn btn-primary"><i class="fas fa-sign-in-alt"></i> Join</button>
+      <button id="btn-leave" class="btn btn-outline"><i class="fas fa-sign-out-alt"></i> Leave</button>
+    </div>
+  </div>
+</div>
+
+<!-- Media Controls -->
+<div class="card mb-md">
+  <div class="card-body" style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+    <strong style="margin-right: 8px;">Media:</strong>
+    <button id="btn-mic" class="btn btn-sm btn-outline" disabled>
+      <i class="fas fa-microphone-slash"></i> Mic Off
+    </button>
+    <button id="btn-cam" class="btn btn-sm btn-outline" disabled>
+      <i class="fas fa-video-slash"></i> Cam Off
+    </button>
+    <span id="lk-media-hint" class="text-muted text-sm">Join a room to enable media controls</span>
+  </div>
+</div>
+
+<!-- Main Content Grid -->
+<div class="grid grid-2 gap-md">
+  <!-- Left Column: Video & Participants -->
+  <div>
+    <!-- Local Video Preview -->
+    <div class="card mb-md">
+      <div class="card-header"><h4 class="card-title"><i class="fas fa-user"></i> Local Preview</h4></div>
+      <div class="card-body">
+        <div id="local-video" class="lk-video-container">
+          <span class="text-muted">Camera off</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Remote Media -->
+    <div class="card mb-md">
+      <div class="card-header"><h4 class="card-title"><i class="fas fa-users"></i> Remote Media</h4></div>
+      <div class="card-body">
+        <div id="remote-media" class="lk-remote-container"></div>
+      </div>
+    </div>
+
+    <!-- Participants List -->
+    <div class="card">
+      <div class="card-header"><h4 class="card-title"><i class="fas fa-user-friends"></i> Participants</h4></div>
+      <div class="card-body">
+        <div id="participants"><em class="text-muted">Not connected</em></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right Column: Chat & Status -->
+  <div>
+    <!-- Chat Interface -->
+    <div class="card mb-md">
+      <div class="card-header"><h4 class="card-title"><i class="fas fa-comments"></i> Chat</h4></div>
+      <div class="card-body">
+        <div id="chat-messages" class="lk-chat-messages">
+          <em class="text-muted">Messages will appear here...</em>
+        </div>
+        <div style="display: flex; gap: 8px; margin-top: 8px;">
+          <input id="chat-input" type="text" class="form-control" placeholder="Type a message..." style="flex: 1;">
+          <button id="btn-send-chat" class="btn btn-primary" disabled>Send</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Status Log -->
+    <div class="card">
+      <div class="card-header"><h4 class="card-title"><i class="fas fa-terminal"></i> Status Log</h4></div>
+      <div class="card-body">
+        <pre id="status" class="lk-status-log">idle</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Agent Worker Instructions -->
+<details class="card mt-lg">
+  <summary class="card-header" style="cursor: pointer;">
+    <i class="fas fa-robot"></i> Running an Agent Worker (Satellite)
+  </summary>
+  <div class="card-body">
+    <p>To test agent voice interaction, run the agent worker locally:</p>
+    <pre class="lk-code-block">
+# 1. Navigate to the agent worker directory
+cd apps/agent_worker
+
+# 2. Export environment variables (get values from marvain-config.yaml or bootstrap output)
+export LIVEKIT_URL="wss://&lt;your-livekit-url&gt;"
+export LIVEKIT_API_KEY="&lt;from AWS Secrets Manager or LiveKit dashboard&gt;"
+export LIVEKIT_API_SECRET="&lt;from AWS Secrets Manager or LiveKit dashboard&gt;"
+export OPENAI_API_KEY="&lt;your-openai-key&gt;"
+export HUB_API_BASE="&lt;ApiUrl from marvain-config.yaml resources&gt;"
+export HUB_DEVICE_TOKEN="&lt;device token from bootstrap output&gt;"
+export SPACE_ID="&lt;space_id to join&gt;"
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Run the worker (it will auto-join rooms when users connect)
+python worker.py start
+    </pre>
+    <p class="mt-md"><strong>Identity format:</strong></p>
+    <ul>
+      <li>Users join as <code>user:&lt;user_id&gt;</code></li>
+      <li>Devices/agents join as <code>device:&lt;device_id&gt;</code> or <code>agent:&lt;agent_id&gt;</code></li>
+    </ul>
+  </div>
+</details>
+
+<!-- LiveKit Client Library -->
+<script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function(){
+  var room = null;
+  var localVideoTrack = null;
+  var localAudioTrack = null;
+  var statusEl = document.getElementById('status');
+  var selectEl = document.getElementById('space_id');
+  var tokenUrl = document.getElementById('lkcfg').getAttribute('data-token-url');
+  var participantsEl = document.getElementById('participants');
+  var localVideoEl = document.getElementById('local-video');
+  var remoteMediaEl = document.getElementById('remote-media');
+  var chatMessagesEl = document.getElementById('chat-messages');
+  var chatInputEl = document.getElementById('chat-input');
+  var connectionBadge = document.getElementById('lk-connection-status');
+  var statusText = document.getElementById('lk-status-text');
+  var roomNameEl = document.getElementById('lk-room-name');
+  var mediaHint = document.getElementById('lk-media-hint');
+  var myIdentity = '';
+
+  function log(msg) {
+    var ts = new Date().toLocaleTimeString();
+    statusEl.textContent = '[' + ts + '] ' + msg + '\n' + statusEl.textContent;
+    if (statusEl.textContent.length > 5000) {
+      statusEl.textContent = statusEl.textContent.substring(0, 4000);
+    }
+  }
+
+  function updateConnectionStatus(state, roomName) {
+    if (state === 'connected') {
+      connectionBadge.className = 'badge badge-success';
+      statusText.textContent = 'Connected';
+      roomNameEl.textContent = roomName ? '• Room: ' + roomName : '';
+      mediaHint.style.display = 'none';
+    } else if (state === 'connecting') {
+      connectionBadge.className = 'badge badge-warning';
+      statusText.textContent = 'Connecting...';
+      roomNameEl.textContent = '';
+    } else {
+      connectionBadge.className = 'badge badge-info';
+      statusText.textContent = 'Not Connected';
+      roomNameEl.textContent = '';
+      mediaHint.style.display = '';
+    }
+  }
+
+  function updateParticipantsList() {
+    if (!room) { participantsEl.innerHTML = '<em class="text-muted">Not connected</em>'; return; }
+    var items = [];
+    // Local participant
+    var lp = room.localParticipant;
+    var lpAudio = lp.isMicrophoneEnabled ? '<i class="fas fa-microphone text-success"></i>' : '<i class="fas fa-microphone-slash text-muted"></i>';
+    var lpVideo = lp.isCameraEnabled ? '<i class="fas fa-video text-success"></i>' : '<i class="fas fa-video-slash text-muted"></i>';
+    items.push('<li class="lk-participant-item"><strong>' + escapeHtml(lp.identity) + '</strong> <span class="badge badge-info">you</span> ' + lpAudio + ' ' + lpVideo + '</li>');
+    // Remote participants
+    room.remoteParticipants.forEach(function(p) {
+      var pAudio = '<i class="fas fa-microphone-slash text-muted"></i>';
+      var pVideo = '<i class="fas fa-video-slash text-muted"></i>';
+      p.trackPublications.forEach(function(pub) {
+        if (pub.kind === 'audio' && pub.isSubscribed) pAudio = '<i class="fas fa-volume-up text-success"></i>';
+        if (pub.kind === 'video' && pub.isSubscribed) pVideo = '<i class="fas fa-video text-success"></i>';
+      });
+      var state = p.connectionQuality || 'unknown';
+      var isAgent = p.identity.startsWith('agent:') || p.identity.startsWith('device:');
+      var icon = isAgent ? '<i class="fas fa-robot"></i> ' : '<i class="fas fa-user"></i> ';
+      items.push('<li class="lk-participant-item">' + icon + escapeHtml(p.identity) + ' ' + pAudio + ' ' + pVideo + ' <small class="text-muted">(' + state + ')</small></li>');
+    });
+    participantsEl.innerHTML = items.length ? '<ul class="lk-participant-list">' + items.join('') + '</ul>' : '<em class="text-muted">No participants</em>';
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function attachRemoteTrack(track, participant) {
+    var el;
+    if (track.kind === 'video') {
+      el = document.createElement('video');
+      el.autoplay = true;
+      el.playsInline = true;
+      el.className = 'lk-remote-video';
+    } else if (track.kind === 'audio') {
+      el = document.createElement('audio');
+      el.autoplay = true;
+    }
+    if (el) {
+      el.id = 'track-' + track.sid;
+      el.setAttribute('data-participant', participant.identity);
+      track.attach(el);
+      remoteMediaEl.appendChild(el);
+      log('Attached ' + track.kind + ' from ' + participant.identity);
+    }
+  }
+
+  function detachRemoteTrack(track) {
+    var el = document.getElementById('track-' + track.sid);
+    if (el) {
+      track.detach(el);
+      el.remove();
+    }
+  }
+
+  function setupRoomEvents() {
+    room.on('participantConnected', function(p) {
+      log('Participant joined: ' + p.identity);
+      updateParticipantsList();
+      Marvain.showToast('info', 'Participant Joined', p.identity);
+    });
+    room.on('participantDisconnected', function(p) {
+      log('Participant left: ' + p.identity);
+      remoteMediaEl.querySelectorAll('[data-participant="' + p.identity + '"]').forEach(function(el) { el.remove(); });
+      updateParticipantsList();
+      Marvain.showToast('info', 'Participant Left', p.identity);
+    });
+    room.on('trackSubscribed', function(track, pub, participant) {
+      log('Track subscribed: ' + track.kind + ' from ' + participant.identity);
+      attachRemoteTrack(track, participant);
+      updateParticipantsList();
+    });
+    room.on('trackUnsubscribed', function(track, pub, participant) {
+      log('Track unsubscribed: ' + track.kind + ' from ' + participant.identity);
+      detachRemoteTrack(track);
+      updateParticipantsList();
+    });
+    room.on('trackMuted', function(pub, participant) {
+      log('Track muted: ' + pub.kind + ' from ' + participant.identity);
+      updateParticipantsList();
+    });
+    room.on('trackUnmuted', function(pub, participant) {
+      log('Track unmuted: ' + pub.kind + ' from ' + participant.identity);
+      updateParticipantsList();
+    });
+    room.on('disconnected', function() {
+      log('Disconnected from room');
+      updateConnectionStatus('disconnected');
+      updateParticipantsList();
+      updateMediaButtons();
+      Marvain.showToast('warning', 'Disconnected', 'You have left the room');
+    });
+    room.on('dataReceived', function(payload, participant) {
+      try {
+        var msg = JSON.parse(new TextDecoder().decode(payload));
+        if (msg.type === 'chat') {
+          addChatMessage(participant ? participant.identity : 'unknown', msg.text, msg.ts);
+        }
+      } catch(e) { /* ignore non-chat data */ }
+    });
+  }
+
+  function addChatMessage(sender, text, ts) {
+    var time = ts ? new Date(ts).toLocaleTimeString() : new Date().toLocaleTimeString();
+    var isMe = sender === myIdentity;
+    var div = document.createElement('div');
+    div.className = 'lk-chat-message' + (isMe ? ' lk-chat-mine' : '');
+    div.innerHTML = '<small class="text-muted">[' + escapeHtml(time) + '] <strong>' + escapeHtml(sender) + '</strong></small><br>' + escapeHtml(text);
+    chatMessagesEl.appendChild(div);
+    chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+  }
+
+  function sendChatMessage() {
+    var text = (chatInputEl.value || '').trim();
+    if (!text || !room) return;
+    var msg = { type: 'chat', text: text, ts: Date.now() };
+    var data = new TextEncoder().encode(JSON.stringify(msg));
+    room.localParticipant.publishData(data, { reliable: true });
+    addChatMessage(myIdentity, text, msg.ts);
+    chatInputEl.value = '';
+  }
+
+  async function join() {
+    var spaceId = (selectEl.value || '').trim();
+    if (!spaceId) {
+      Marvain.showToast('warning', 'No Space Selected', 'Please select a space to join');
+      return;
+    }
+    log('Requesting token...');
+    updateConnectionStatus('connecting');
+    try {
+      var resp = await fetch(tokenUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ space_id: spaceId }) });
+      if (!resp.ok) {
+        log('Token request failed: ' + resp.status);
+        updateConnectionStatus('disconnected');
+        Marvain.showToast('error', 'Connection Failed', 'Could not get room token');
+        return;
+      }
+      var data = await resp.json();
+      log('Connecting to ' + data.url + '...');
+      var lk = window.LivekitClient || window.livekit || window.LiveKit;
+      if (!lk || !lk.Room) {
+        log('LiveKit client not loaded');
+        updateConnectionStatus('disconnected');
+        Marvain.showToast('error', 'Error', 'LiveKit client library not loaded');
+        return;
+      }
+      room = new lk.Room();
+      setupRoomEvents();
+      await room.connect(data.url, data.token);
+      myIdentity = data.identity;
+      log('Connected! room=' + data.room + ' identity=' + data.identity);
+      updateConnectionStatus('connected', data.room);
+      updateParticipantsList();
+      updateMediaButtons();
+      Marvain.showToast('success', 'Connected', 'Joined room: ' + data.room);
+      // Subscribe to existing remote tracks
+      room.remoteParticipants.forEach(function(p) {
+        p.trackPublications.forEach(function(pub) {
+          if (pub.isSubscribed && pub.track) {
+            attachRemoteTrack(pub.track, p);
+          }
+        });
+      });
+    } catch(e) {
+      log('Join error: ' + e);
+      updateConnectionStatus('disconnected');
+      Marvain.showToast('error', 'Connection Error', e.message || 'Failed to join room');
+    }
+  }
+
+  async function leave() {
+    if (localVideoTrack) { localVideoTrack.stop(); localVideoTrack = null; }
+    if (localAudioTrack) { localAudioTrack.stop(); localAudioTrack = null; }
+    localVideoEl.innerHTML = '<span class="text-muted">Camera off</span>';
+    remoteMediaEl.innerHTML = '';
+    if (room) { try { await room.disconnect(); } catch(e) {} room = null; }
+    log('Left room');
+    updateConnectionStatus('disconnected');
+    updateParticipantsList();
+    updateMediaButtons();
+  }
+
+  function updateMediaButtons() {
+    var connected = room && room.state === 'connected';
+    document.getElementById('btn-mic').disabled = !connected;
+    document.getElementById('btn-cam').disabled = !connected;
+    document.getElementById('btn-send-chat').disabled = !connected;
+    if (connected) {
+      var micBtn = document.getElementById('btn-mic');
+      var camBtn = document.getElementById('btn-cam');
+      if (room.localParticipant.isMicrophoneEnabled) {
+        micBtn.innerHTML = '<i class="fas fa-microphone"></i> Mic On';
+        micBtn.classList.add('btn-success');
+        micBtn.classList.remove('btn-outline');
+      } else {
+        micBtn.innerHTML = '<i class="fas fa-microphone-slash"></i> Mic Off';
+        micBtn.classList.remove('btn-success');
+        micBtn.classList.add('btn-outline');
+      }
+      if (room.localParticipant.isCameraEnabled) {
+        camBtn.innerHTML = '<i class="fas fa-video"></i> Cam On';
+        camBtn.classList.add('btn-success');
+        camBtn.classList.remove('btn-outline');
+      } else {
+        camBtn.innerHTML = '<i class="fas fa-video-slash"></i> Cam Off';
+        camBtn.classList.remove('btn-success');
+        camBtn.classList.add('btn-outline');
+      }
+    } else {
+      document.getElementById('btn-mic').innerHTML = '<i class="fas fa-microphone-slash"></i> Mic Off';
+      document.getElementById('btn-cam').innerHTML = '<i class="fas fa-video-slash"></i> Cam Off';
+    }
+  }
+
+  async function toggleMic() {
+    if (!room) return;
+    try {
+      await room.localParticipant.setMicrophoneEnabled(!room.localParticipant.isMicrophoneEnabled);
+      log('Microphone ' + (room.localParticipant.isMicrophoneEnabled ? 'enabled' : 'disabled'));
+      updateMediaButtons();
+      updateParticipantsList();
+    } catch(e) {
+      log('Mic error: ' + e.message);
+      Marvain.showToast('error', 'Microphone Error', e.message);
+    }
+  }
+
+  async function toggleCam() {
+    if (!room) return;
+    try {
+      var wasEnabled = room.localParticipant.isCameraEnabled;
+      await room.localParticipant.setCameraEnabled(!wasEnabled);
+      log('Camera ' + (room.localParticipant.isCameraEnabled ? 'enabled' : 'disabled'));
+      updateMediaButtons();
+      updateParticipantsList();
+      // Attach/detach local video preview
+      if (room.localParticipant.isCameraEnabled) {
+        var camPub = room.localParticipant.getTrackPublication('camera');
+        if (camPub && camPub.track) {
+          var vid = document.createElement('video');
+          vid.autoplay = true;
+          vid.playsInline = true;
+          vid.muted = true;
+          vid.className = 'lk-local-video';
+          camPub.track.attach(vid);
+          localVideoEl.innerHTML = '';
+          localVideoEl.appendChild(vid);
+        }
+      } else {
+        localVideoEl.innerHTML = '<span class="text-muted">Camera off</span>';
+      }
+    } catch(e) {
+      log('Camera error: ' + e.message);
+      Marvain.showToast('error', 'Camera Error', e.message);
+    }
+  }
+
+  // Event listeners
+  document.getElementById('btn-join').addEventListener('click', function() { join(); });
+  document.getElementById('btn-leave').addEventListener('click', function() { leave(); });
+  document.getElementById('btn-mic').addEventListener('click', function() { toggleMic(); });
+  document.getElementById('btn-cam').addEventListener('click', function() { toggleCam(); });
+  document.getElementById('btn-send-chat').addEventListener('click', sendChatMessage);
+  chatInputEl.addEventListener('keypress', function(e) { if (e.key === 'Enter') sendChatMessage(); });
+
+  // Initial state
+  updateMediaButtons();
+  updateParticipantsList();
+  updateConnectionStatus('disconnected');
+})();
+</script>
+{% endblock %}
+
