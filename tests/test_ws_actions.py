@@ -176,8 +176,10 @@ class TestApproveAction:
     @patch("handler._get_db")
     @patch("handler._mgmt_api")
     @patch("handler._sqs")
+    @patch("handler._get_cfg")
+    @patch("handler.append_audit_entry")
     @patch("handler._ACTION_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/action-queue")
-    def test_approve_action_queues_for_execution(self, mock_sqs, mock_mgmt, mock_db, mock_dynamo):
+    def test_approve_action_queues_for_execution(self, mock_audit, mock_cfg, mock_sqs, mock_mgmt, mock_db, mock_dynamo):
         """Admin should be able to approve action and it gets queued."""
         from handler import handler
 
@@ -192,6 +194,8 @@ class TestApproveAction:
             {"action_id": "act-1", "agent_id": "agent-xyz", "kind": "send_message", "status": "proposed"}
         ]
         mock_db.return_value = mock_db_instance
+
+        mock_cfg.return_value.audit_bucket = "test-audit-bucket"
 
         with patch("handler.check_agent_permission", return_value=True):
             mock_post = MagicMock()
@@ -209,6 +213,8 @@ class TestApproveAction:
             assert sent_data["type"] == "approve_action"
             assert sent_data["ok"] is True
             assert sent_data["new_status"] == "approved"
+            # Verify audit was called
+            mock_audit.assert_called_once()
 
     @patch("handler._dynamo")
     @patch("handler._get_db")
@@ -251,7 +257,9 @@ class TestRejectAction:
     @patch("handler._dynamo")
     @patch("handler._get_db")
     @patch("handler._mgmt_api")
-    def test_reject_action_updates_status(self, mock_mgmt, mock_db, mock_dynamo):
+    @patch("handler._get_cfg")
+    @patch("handler.append_audit_entry")
+    def test_reject_action_updates_status(self, mock_audit, mock_cfg, mock_mgmt, mock_db, mock_dynamo):
         """Admin should be able to reject action."""
         from handler import handler
 
@@ -266,6 +274,8 @@ class TestRejectAction:
             {"action_id": "act-1", "agent_id": "agent-xyz", "kind": "send_message", "status": "proposed"}
         ]
         mock_db.return_value = mock_db_instance
+
+        mock_cfg.return_value.audit_bucket = "test-audit-bucket"
 
         with patch("handler.check_agent_permission", return_value=True):
             mock_post = MagicMock()
@@ -283,6 +293,8 @@ class TestRejectAction:
             assert sent_data["type"] == "reject_action"
             assert sent_data["ok"] is True
             assert sent_data["new_status"] == "rejected"
+            # Verify audit was called with reason
+            mock_audit.assert_called_once()
 
 
 class TestSubscribePresence:
