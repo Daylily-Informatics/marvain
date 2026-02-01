@@ -1665,3 +1665,99 @@ pre {
   }
 }
 
+/* ==========================================================================
+   WebSocket Connection Indicator
+   ========================================================================== */
+
+.ws-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-size: 0.75rem;
+  font-weight: 500;
+  transition: all 0.3s ease;
+}
+
+.ws-indicator.connected {
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.ws-indicator.disconnected {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.ws-indicator.connecting {
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.ws-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  transition: background 0.3s ease;
+}
+
+.ws-indicator.connected .ws-dot {
+  background: var(--color-success);
+  box-shadow: 0 0 6px var(--color-success);
+  animation: ws-pulse 2s infinite;
+}
+
+.ws-indicator.disconnected .ws-dot {
+  background: var(--color-error);
+}
+
+.ws-indicator.connecting .ws-dot {
+  background: var(--color-warning);
+  animation: ws-blink 0.5s infinite;
+}
+
+.ws-status-text {
+  color: var(--color-gray-300);
+}
+
+.ws-indicator.connected .ws-status-text {
+  color: var(--color-success);
+}
+
+.ws-indicator.disconnected .ws-status-text {
+  color: var(--color-error);
+}
+
+@keyframes ws-pulse {
+  0%, 100% {
+    box-shadow: 0 0 6px var(--color-success);
+  }
+  50% {
+    box-shadow: 0 0 12px var(--color-success);
+  }
+}
+
+@keyframes ws-blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* Live update highlighting */
+.live-update {
+  animation: live-flash 0.5s ease;
+}
+
+@keyframes live-flash {
+  0% {
+    background: rgba(99, 102, 241, 0.3);
+  }
+  100% {
+    background: transparent;
+  }
+}
+

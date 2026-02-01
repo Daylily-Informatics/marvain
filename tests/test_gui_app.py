@@ -1298,3 +1298,76 @@ class TestAuditGui(unittest.TestCase):
         data = r.json()
         self.assertTrue(data["valid"])
         self.assertEqual(data["entries_checked"], 0)
+
+
+class TestWebSocketContext(unittest.TestCase):
+    """Tests for WebSocket context in templates."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load_hub_api_app_module()
+        from fastapi.testclient import TestClient
+
+        cls._TestClient = TestClient
+        cls._orig_gui_get_user = cls.mod._gui_get_user
+        cls._orig_get_db = cls.mod._get_db
+        cls._orig_list_agents_for_user = cls.mod.list_agents_for_user
+        cls._orig_list_spaces_for_user = cls.mod.list_spaces_for_user
+        cls._orig_cfg = cls.mod._cfg
+
+    def setUp(self):
+        self.client = self.__class__._TestClient(self.mod.app, raise_server_exceptions=False)
+        self.mod._gui_get_user = self._orig_gui_get_user
+        self.mod._get_db = self._orig_get_db
+        self.mod.list_agents_for_user = self._orig_list_agents_for_user
+        self.mod.list_spaces_for_user = self._orig_list_spaces_for_user
+        self.mod._cfg = self._orig_cfg
+
+    def test_ws_context_not_included_when_no_ws_url(self):
+        """WebSocket context should be empty when WS_API_URL is not configured."""
+        self.mod._gui_get_user = mock.Mock(return_value=mock.Mock(user_id="user-1", email="test@example.com"))
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[])
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+        self.mod.list_agents_for_user = mock.Mock(return_value=[])
+        self.mod.list_spaces_for_user = mock.Mock(return_value=[])
+        # Config without ws_api_url
+        self.mod._cfg = mock.Mock(stage="dev", ws_api_url=None)
+
+        r = self.client.get("/", cookies={"marvain_access_token": "test-token"})
+        self.assertEqual(r.status_code, 200)
+        # Should NOT contain WebSocket initialization
+        self.assertNotIn("wsConnect", r.text)
+
+    def test_ws_context_included_when_ws_url_configured(self):
+        """WebSocket context should be present when WS_API_URL is configured."""
+        self.mod._gui_get_user = mock.Mock(return_value=mock.Mock(user_id="user-1", email="test@example.com"))
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[])
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+        self.mod.list_agents_for_user = mock.Mock(return_value=[])
+        self.mod.list_spaces_for_user = mock.Mock(return_value=[])
+        # Config with ws_api_url
+        self.mod._cfg = mock.Mock(stage="dev", ws_api_url="wss://test-ws.example.com")
+
+        r = self.client.get("/", cookies={"marvain_access_token": "test-token"})
+        self.assertEqual(r.status_code, 200)
+        # Should contain WebSocket initialization
+        self.assertIn("wsConnect", r.text)
+        self.assertIn("wss://test-ws.example.com", r.text)
+
+    def test_ws_indicator_present_in_authenticated_pages(self):
+        """WebSocket indicator should be present in header for authenticated users."""
+        self.mod._gui_get_user = mock.Mock(return_value=mock.Mock(user_id="user-1", email="test@example.com"))
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[])
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+        self.mod.list_agents_for_user = mock.Mock(return_value=[])
+        self.mod.list_spaces_for_user = mock.Mock(return_value=[])
+        self.mod._cfg = mock.Mock(stage="dev", ws_api_url="wss://test-ws.example.com")
+
+        r = self.client.get("/", cookies={"marvain_access_token": "test-token"})
+        self.assertEqual(r.status_code, 200)
+        # Should contain WebSocket indicator
+        self.assertIn("ws-indicator", r.text)
+        self.assertIn("ws-status-text", r.text)

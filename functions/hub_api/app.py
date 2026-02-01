@@ -79,6 +79,19 @@ _GUI_OAUTH_VERIFIER_COOKIE = "marvain_oauth_verifier"
 _GUI_OAUTH_NEXT_COOKIE = "marvain_oauth_next"
 
 
+def _get_ws_context(request: Request) -> dict[str, str | None]:
+    """Get WebSocket context for template rendering.
+
+    Returns dict with ws_url and access_token for WebSocket connection.
+    """
+    ws_url = _cfg.ws_api_url
+    access_token = request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE)
+    return {
+        "ws_url": ws_url,
+        "access_token": access_token if ws_url else None,
+    }
+
+
 def _cookie_secure(request: Request) -> bool:
     # In Lambda behind API Gateway we expect HTTPS; in local dev/tests use http.
     try:
@@ -457,6 +470,7 @@ def gui_home(request: Request) -> Response:
         "remotes_online": remotes_online,
         "remotes_total": len(remotes),
         "pending_actions": pending_actions,
+        **_get_ws_context(request),
     })
 
 
@@ -552,6 +566,7 @@ def gui_remotes(request: Request) -> Response:
         "hibernate_count": hibernate_count,
         "offline_count": offline_count,
         "total_count": len(remotes),
+        **_get_ws_context(request),
     })
 
 
@@ -1005,6 +1020,7 @@ def gui_agents(request: Request) -> Response:
         "admin_count": admin_count,
         "member_count": member_count,
         "total_count": len(agents_data),
+        **_get_ws_context(request),
     })
 
 
@@ -1083,6 +1099,7 @@ def gui_spaces(request: Request) -> Response:
         "active_page": "spaces",
         "spaces": spaces_data,
         "agents": agents_data,
+        **_get_ws_context(request),
     })
 
 
@@ -1163,6 +1180,7 @@ def gui_devices(request: Request) -> Response:
         "active_page": "devices",
         "devices": devices_data,
         "agents": agents_data,
+        **_get_ws_context(request),
     })
 
 
@@ -1380,6 +1398,7 @@ def gui_people(request: Request) -> Response:
         "active_page": "people",
         "people": people_data,
         "agents": agents_data,
+        **_get_ws_context(request),
     })
 
 
@@ -1486,6 +1505,7 @@ def gui_actions(request: Request) -> Response:
         "status_counts": status_counts,
         "action_kinds": sorted(action_kinds_set),
         "agents": agents_data,
+        **_get_ws_context(request),
     })
 
 
@@ -1668,6 +1688,7 @@ def gui_events(request: Request) -> Response:
         "event_types": sorted(event_types_set),
         "agents": agents_data,
         "spaces": spaces_data,
+        **_get_ws_context(request),
     })
 
 
@@ -1771,6 +1792,7 @@ def gui_memories(request: Request) -> Response:
         "tier_counts": tier_counts,
         "agents": agents_data,
         "spaces": spaces_data,
+        **_get_ws_context(request),
     })
 
 
@@ -1920,6 +1942,7 @@ def gui_artifacts(request: Request) -> Response:
         "artifacts": artifacts_data,
         "total_size_formatted": _format_file_size(total_size),
         "agents": agents_data,
+        **_get_ws_context(request),
     })
 
 
@@ -2048,6 +2071,7 @@ def gui_audit(request: Request) -> Response:
         "entries_json": json.dumps(entries_data),
         "entry_types": sorted(entry_types),
         "agents": agents_data,
+        **_get_ws_context(request),
     })
 
 
@@ -2609,4 +2633,5 @@ def gui_agent_detail(request: Request, agent_id: str) -> Response:
         "active_page": "agents",
         "agent": agent_data,
         "members": members,
+        **_get_ws_context(request),
     })
