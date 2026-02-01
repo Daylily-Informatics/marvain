@@ -828,3 +828,104 @@ pre {
   accent-color: var(--color-highlight);
 }
 
+/* ==========================================================================
+   Device Cards
+   ========================================================================== */
+
+.device-card {
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.device-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+.device-header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-md);
+  margin-bottom: var(--spacing-md);
+}
+
+.device-icon {
+  width: 48px;
+  height: 48px;
+  background: var(--color-info);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+  color: var(--color-white);
+  flex-shrink: 0;
+}
+
+.device-icon.revoked {
+  background: var(--color-gray-500);
+}
+
+.device-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.device-name {
+  font-weight: 600;
+  color: var(--color-white);
+  margin: 0 0 var(--spacing-xs) 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.device-details {
+  margin-bottom: var(--spacing-md);
+}
+
+.device-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-xs);
+  margin-bottom: var(--spacing-md);
+}
+
+.scope-badge {
+  padding: 2px 8px;
+  background: var(--color-gray-700);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+  color: var(--color-gray-300);
+}
+
+.scope-badge.more {
+  background: var(--color-accent);
+  color: var(--color-white);
+}
+
+.device-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+  justify-content: flex-end;
+}
+
+.btn-danger {
+  color: var(--color-error);
+  border-color: var(--color-error);
+}
+
+.btn-danger:hover {
+  background: var(--color-error);
+  color: var(--color-white);
+}
+
+.scopes-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm);
+  background: var(--color-gray-800);
+  border-radius: var(--radius-sm);
+}
+
