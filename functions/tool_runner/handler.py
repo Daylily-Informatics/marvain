@@ -9,12 +9,17 @@ from agent_hub.audit import append_audit_entry
 from agent_hub.config import load_config
 from agent_hub.policy import is_agent_disabled
 from agent_hub.rds_data import RdsData, RdsDataEnv
+from agent_hub.tools import execute_tool, get_registry
+from agent_hub.tools.registry import ToolContext, ToolResult
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 _cfg = load_config()
 _db = RdsData(RdsDataEnv(resource_arn=_cfg.db_resource_arn, secret_arn=_cfg.db_secret_arn, database=_cfg.db_name))
+
+# Allowed HTTP hosts for http_request tool (configurable via env)
+_ALLOWED_HTTP_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HTTP_HOSTS", "").split(",") if h.strip()]
 
 
 def _load_action(action_id: str) -> dict[str, Any] | None:
@@ -87,26 +92,37 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
             {"action_id": action_id},
         )
 
-        # --- Execute tool (stub) ---
+        # --- Execute tool via registry ---
         kind = action.get("kind")
         payload = action.get("payload") or {}
+        space_id = action.get("space_id")
+        required_scopes = action.get("required_scopes") or []
 
-        result: dict[str, Any] = {"ok": True, "kind": kind, "note": "stub tool runner"}
+        # Build tool context
+        ctx = ToolContext(
+            db=_db,
+            agent_id=agent_id,
+            space_id=space_id,
+            action_id=action_id,
+            device_scopes=required_scopes,  # Action's required scopes are pre-approved
+            broadcast_fn=None,  # TODO: wire up WebSocket broadcast when available
+            allowed_http_hosts=_ALLOWED_HTTP_HOSTS,
+        )
 
-        # TODO: implement concrete tools, each with explicit permission checks.
-        # Examples:
-        # - calendar.create_event
-        # - notification.push
-        # - homeassistant.turn_on
+        # Execute the tool
+        tool_result = execute_tool(kind, payload, ctx)
+        result: dict[str, Any] = tool_result.to_dict()
+        result["kind"] = kind
 
-        # Mark executed (per spec: status should be 'executed', not 'done')
+        # Mark executed or failed based on result
+        new_status = "executed" if tool_result.ok else "failed"
         _db.execute(
             """
             UPDATE actions
-            SET status='executed', updated_at=now(), executed_at=now()
+            SET status=:status, updated_at=now(), executed_at=now()
             WHERE action_id = :action_id::uuid
             """,
-            {"action_id": action_id},
+            {"action_id": action_id, "status": new_status},
         )
 
         if _cfg.audit_bucket:
@@ -115,7 +131,7 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
                 bucket=_cfg.audit_bucket,
                 agent_id=agent_id,
                 entry_type="action_executed",
-                entry={"action_id": action_id, "kind": kind, "result": result},
+                entry={"action_id": action_id, "kind": kind, "result": result, "status": new_status},
             )
 
         processed += 1
