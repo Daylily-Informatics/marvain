@@ -1198,3 +1198,103 @@ class TestArtifactsGui(unittest.TestCase):
         data = r.json()
         self.assertIn("upload_url", data)
         self.assertIn("key", data)
+
+
+class TestAuditGui(unittest.TestCase):
+    """Tests for audit GUI routes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load_hub_api_app_module()
+        from fastapi.testclient import TestClient
+
+        cls._TestClient = TestClient
+        cls._orig_gui_get_user = cls.mod._gui_get_user
+        cls._orig_get_db = cls.mod._get_db
+        cls._orig_get_s3 = cls.mod._get_s3
+        cls._orig_list_agents_for_user = cls.mod.list_agents_for_user
+        cls._orig_cfg = cls.mod._cfg
+
+    def setUp(self):
+        self.client = self.__class__._TestClient(self.mod.app, raise_server_exceptions=False)
+        self.mod._gui_get_user = self._orig_gui_get_user
+        self.mod._get_db = self._orig_get_db
+        self.mod._get_s3 = self._orig_get_s3
+        self.mod.list_agents_for_user = self._orig_list_agents_for_user
+        self.mod._cfg = self._orig_cfg
+
+    def test_audit_redirects_to_login_when_unauthenticated(self):
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+        r = self.client.get("/audit", follow_redirects=False)
+        self.assertIn(r.status_code, [302, 307])
+
+    def test_audit_renders_when_authenticated(self):
+        self.mod._gui_get_user = mock.Mock(return_value=mock.Mock(user_id="user-1", email="test@example.com"))
+
+        mock_db = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        # Mock list_agents_for_user
+        self.mod.list_agents_for_user = mock.Mock(return_value=[
+            mock.Mock(agent_id="agent-1", name="Agent 1", role="owner")
+        ])
+
+        # Mock S3 client with empty audit entries
+        mock_s3 = mock.Mock()
+        mock_paginator = mock.Mock()
+        mock_paginator.paginate = mock.Mock(return_value=[{"Contents": []}])
+        mock_s3.get_paginator = mock.Mock(return_value=mock_paginator)
+        self.mod._get_s3 = mock.Mock(return_value=mock_s3)
+
+        # Mock config with audit bucket
+        self.mod._cfg = mock.Mock(audit_bucket="test-audit-bucket", stage="dev")
+
+        r = self.client.get("/audit")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Audit Log", r.text)
+
+    def test_verify_requires_authentication(self):
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+        r = self.client.post("/api/audit/verify")
+        self.assertEqual(r.status_code, 401)
+
+    def test_verify_requires_admin_permission(self):
+        self.mod._gui_get_user = mock.Mock(return_value=mock.Mock(user_id="user-1", email="test@example.com"))
+
+        mock_db = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        # Mock list_agents_for_user with only guest role
+        self.mod.list_agents_for_user = mock.Mock(return_value=[
+            mock.Mock(agent_id="agent-1", name="Agent 1", role="guest")
+        ])
+
+        r = self.client.post("/api/audit/verify")
+        self.assertEqual(r.status_code, 403)
+
+    def test_verify_success_with_empty_chain(self):
+        self.mod._gui_get_user = mock.Mock(return_value=mock.Mock(user_id="user-1", email="test@example.com"))
+
+        mock_db = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        # Mock list_agents_for_user with admin role
+        self.mod.list_agents_for_user = mock.Mock(return_value=[
+            mock.Mock(agent_id="agent-1", name="Agent 1", role="admin")
+        ])
+
+        # Mock S3 client with empty audit entries
+        mock_s3 = mock.Mock()
+        mock_paginator = mock.Mock()
+        mock_paginator.paginate = mock.Mock(return_value=[{"Contents": []}])
+        mock_s3.get_paginator = mock.Mock(return_value=mock_paginator)
+        self.mod._get_s3 = mock.Mock(return_value=mock_s3)
+
+        # Mock config with audit bucket
+        self.mod._cfg = mock.Mock(audit_bucket="test-audit-bucket", stage="dev")
+
+        r = self.client.post("/api/audit/verify")
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertTrue(data["valid"])
+        self.assertEqual(data["entries_checked"], 0)

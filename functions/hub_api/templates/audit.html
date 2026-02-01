@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+
+{% block title %}Audit Log - Marvain{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title"><i class="fas fa-shield-alt"></i> Audit Log</h1>
+    <p class="text-muted">Browse hash-chained audit entries</p>
+  </div>
+  <div class="page-actions">
+    <button type="button" class="btn btn-outline" onclick="verifyChain()">
+      <i class="fas fa-check-circle"></i> Verify Chain
+    </button>
+  </div>
+</div>
+
+<!-- Filter Bar -->
+<div class="filter-bar mb-lg">
+  <div class="filter-group">
+    <label for="agent-filter">Agent</label>
+    <select id="agent-filter" onchange="filterAudit()">
+      <option value="">All Agents</option>
+      {% for agent in agents %}
+      <option value="{{ agent.agent_id }}">{{ agent.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="filter-group">
+    <label for="type-filter">Type</label>
+    <select id="type-filter" onchange="filterAudit()">
+      <option value="">All Types</option>
+      {% for type in entry_types %}
+      <option value="{{ type }}">{{ type }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="filter-group flex-grow">
+    <label for="search-filter">Search</label>
+    <input type="text" id="search-filter" placeholder="Search audit entries..." oninput="filterAudit()">
+  </div>
+</div>
+
+<!-- Stats Bar -->
+<div class="stats-bar mb-lg">
+  <div class="stat-item">
+    <span class="stat-label">Total Entries</span>
+    <span class="stat-value">{{ entries|length }}</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">Chain Status</span>
+    <span class="stat-value" id="chain-status">
+      <i class="fas fa-question-circle text-muted"></i> Not Verified
+    </span>
+  </div>
+</div>
+
+<!-- Audit Entries List -->
+<div class="audit-list" id="audit-list">
+  {% if entries %}
+  {% for entry in entries %}
+  <div class="audit-entry" data-agent="{{ entry.agent_id }}" data-type="{{ entry.type }}" data-search="{{ entry.type|lower }} {{ entry.agent_name|lower }}">
+    <div class="audit-chain">
+      <div class="audit-hash" title="{{ entry.hash }}">
+        <i class="fas fa-link"></i>
+        {{ entry.hash[:12] }}...
+      </div>
+      <div class="audit-prev" title="{{ entry.prev_hash }}">
+        ← {{ entry.prev_hash[:12] if entry.prev_hash != 'GENESIS' else 'GENESIS' }}{{ '...' if entry.prev_hash != 'GENESIS' else '' }}
+      </div>
+    </div>
+    <div class="audit-info">
+      <div class="audit-header">
+        <span class="type-badge type-{{ entry.type }}">{{ entry.type }}</span>
+        <span class="audit-agent text-muted">{{ entry.agent_name }}</span>
+        <span class="audit-time text-muted">{{ entry.ts_relative }}</span>
+      </div>
+      <div class="audit-data">
+        <code>{{ entry.data_preview }}</code>
+      </div>
+    </div>
+    <div class="audit-actions">
+      <button class="btn btn-sm btn-outline" onclick="viewAuditEntry('{{ entry.entry_id }}')" title="View Details">
+        <i class="fas fa-eye"></i>
+      </button>
+    </div>
+  </div>
+  {% endfor %}
+  {% else %}
+  <div class="empty-state">
+    <i class="fas fa-shield-alt fa-3x"></i>
+    <h3>No Audit Entries Found</h3>
+    <p>Audit entries will appear here as actions are logged.</p>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Audit Detail Modal -->
+<div class="modal" id="audit-modal">
+  <div class="modal-content modal-lg">
+    <div class="modal-header">
+      <h2 class="modal-title">Audit Entry Details</h2>
+      <button class="modal-close" onclick="closeAuditModal()">&times;</button>
+    </div>
+    <div class="modal-body" id="audit-modal-body">
+      <!-- Content populated by JavaScript -->
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const auditEntries = {{ entries_json|safe }};
+
+function filterAudit() {
+  const agent = document.getElementById('agent-filter').value;
+  const type = document.getElementById('type-filter').value;
+  const search = document.getElementById('search-filter').value.toLowerCase();
+  
+  document.querySelectorAll('.audit-entry').forEach(entry => {
+    const matchAgent = !agent || entry.dataset.agent === agent;
+    const matchType = !type || entry.dataset.type === type;
+    const matchSearch = !search || entry.dataset.search.includes(search);
+    entry.style.display = matchAgent && matchType && matchSearch ? '' : 'none';
+  });
+}
+
+function viewAuditEntry(entryId) {
+  const entry = auditEntries.find(e => e.entry_id === entryId);
+  if (!entry) return;
+  
+  const modal = document.getElementById('audit-modal');
+  const body = document.getElementById('audit-modal-body');
+  
+  body.innerHTML = `
+    <div class="audit-detail">
+      <div class="detail-row"><strong>Entry ID:</strong> <code>${entry.entry_id}</code></div>
+      <div class="detail-row"><strong>Type:</strong> <span class="type-badge type-${entry.type}">${entry.type}</span></div>
+      <div class="detail-row"><strong>Agent:</strong> ${entry.agent_name}</div>
+      <div class="detail-row"><strong>Timestamp:</strong> ${entry.ts}</div>
+      <div class="detail-row"><strong>Hash:</strong> <code class="hash-code">${entry.hash}</code></div>
+      <div class="detail-row"><strong>Previous Hash:</strong> <code class="hash-code">${entry.prev_hash}</code></div>
+      <div class="detail-row"><strong>Data:</strong></div>
+      <pre class="audit-data-full">${JSON.stringify(entry.data, null, 2)}</pre>
+    </div>
+  `;
+  
+  modal.classList.add('active');
+}
+
+function closeAuditModal() {
+  document.getElementById('audit-modal').classList.remove('active');
+}
+
+async function verifyChain() {
+  const statusEl = document.getElementById('chain-status');
+  statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying...';
+
+  try {
+    const response = await fetch('/api/audit/verify', { method: 'POST' });
+    const result = await response.json();
+
+    if (result.valid) {
+      statusEl.innerHTML = '<i class="fas fa-check-circle text-success"></i> Valid (' + result.entries_checked + ' entries)';
+      Marvain.showToast('success', 'Chain Valid', 'All ' + result.entries_checked + ' audit entries verified');
+    } else {
+      statusEl.innerHTML = '<i class="fas fa-times-circle text-error"></i> Invalid';
+      Marvain.showToast('error', 'Chain Invalid', result.error || 'Chain verification failed');
+    }
+  } catch (err) {
+    statusEl.innerHTML = '<i class="fas fa-exclamation-triangle text-warning"></i> Error';
+    Marvain.showToast('error', 'Error', 'Failed to verify chain: ' + err.message);
+  }
+}
+</script>
+{% endblock %}
+
