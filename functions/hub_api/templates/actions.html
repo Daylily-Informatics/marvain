@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+
+{% block title %}Actions - Marvain{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title"><i class="fas fa-bolt"></i> Actions</h1>
+    <p class="text-muted">Review and manage agent actions</p>
+  </div>
+</div>
+
+<!-- Filter Bar -->
+<div class="filter-bar mb-lg">
+  <div class="filter-group">
+    <label for="agent-filter">Agent</label>
+    <select id="agent-filter" onchange="filterActions()">
+      <option value="">All Agents</option>
+      {% for agent in agents %}
+      <option value="{{ agent.agent_id }}">{{ agent.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="filter-group">
+    <label for="status-filter">Status</label>
+    <select id="status-filter" onchange="filterActions()">
+      <option value="">All Statuses</option>
+      <option value="proposed">Proposed</option>
+      <option value="approved">Approved</option>
+      <option value="rejected">Rejected</option>
+      <option value="executing">Executing</option>
+      <option value="executed">Executed</option>
+      <option value="failed">Failed</option>
+      <option value="canceled">Canceled</option>
+    </select>
+  </div>
+  <div class="filter-group">
+    <label for="kind-filter">Kind</label>
+    <select id="kind-filter" onchange="filterActions()">
+      <option value="">All Kinds</option>
+      {% for k in action_kinds %}
+      <option value="{{ k }}">{{ k }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="filter-group flex-grow">
+    <label for="search-filter">Search</label>
+    <input type="text" id="search-filter" placeholder="Search actions..." oninput="filterActions()">
+  </div>
+</div>
+
+<!-- Stats Bar -->
+<div class="stats-bar mb-lg">
+  <div class="stat-item">
+    <span class="stat-label">Pending</span>
+    <span class="stat-value status-proposed">{{ status_counts.proposed or 0 }}</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">Approved</span>
+    <span class="stat-value status-approved">{{ status_counts.approved or 0 }}</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">Executed</span>
+    <span class="stat-value status-executed">{{ status_counts.executed or 0 }}</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">Failed</span>
+    <span class="stat-value status-failed">{{ status_counts.failed or 0 }}</span>
+  </div>
+</div>
+
+<!-- Actions List -->
+<div class="actions-list" id="actions-list">
+  {% if actions %}
+  {% for action in actions %}
+  <div class="action-card card" data-agent="{{ action.agent_id }}" data-status="{{ action.status }}" data-kind="{{ action.kind }}" data-payload="{{ action.payload_str|lower }}">
+    <div class="card-body">
+      <div class="action-header">
+        <div class="action-meta">
+          <span class="status-badge status-{{ action.status }}">{{ action.status }}</span>
+          <span class="kind-badge">{{ action.kind }}</span>
+          <span class="text-muted">{{ action.agent_name }}</span>
+          {% if action.space_name %}
+          <span class="text-muted">• {{ action.space_name }}</span>
+          {% endif %}
+        </div>
+        <div class="action-time">{{ action.created_at_relative or 'Unknown' }}</div>
+      </div>
+      <div class="action-payload">
+        <code>{{ action.payload_preview }}</code>
+      </div>
+      {% if action.required_scopes %}
+      <div class="action-scopes">
+        <i class="fas fa-key"></i>
+        {% for scope in action.required_scopes[:3] %}
+        <span class="scope-badge">{{ scope }}</span>
+        {% endfor %}
+        {% if action.required_scopes|length > 3 %}
+        <span class="scope-badge more">+{{ action.required_scopes|length - 3 }}</span>
+        {% endif %}
+      </div>
+      {% endif %}
+      <div class="action-footer">
+        <div class="action-id text-muted">
+          <small>{{ action.action_id[:8] }}...</small>
+        </div>
+        <div class="action-actions">
+          {% if action.status == 'proposed' %}
+          <button class="btn btn-sm btn-success" onclick="approveAction('{{ action.action_id }}')">
+            <i class="fas fa-check"></i> Approve
+          </button>
+          <button class="btn btn-sm btn-outline btn-danger" onclick="rejectAction('{{ action.action_id }}')">
+            <i class="fas fa-times"></i> Reject
+          </button>
+          {% else %}
+          <button class="btn btn-sm btn-outline" onclick="viewAction('{{ action.action_id }}')">
+            <i class="fas fa-eye"></i> View
+          </button>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+  {% else %}
+  <div class="empty-state">
+    <i class="fas fa-bolt fa-3x"></i>
+    <h3>No Actions Found</h3>
+    <p>Actions will appear here as your agents propose tasks.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function filterActions() {
+  const agent = document.getElementById('agent-filter').value;
+  const status = document.getElementById('status-filter').value;
+  const kind = document.getElementById('kind-filter').value;
+  const search = document.getElementById('search-filter').value.toLowerCase();
+  
+  document.querySelectorAll('.action-card').forEach(card => {
+    const matchAgent = !agent || card.dataset.agent === agent;
+    const matchStatus = !status || card.dataset.status === status;
+    const matchKind = !kind || card.dataset.kind === kind;
+    const matchSearch = !search || card.dataset.payload.includes(search);
+    card.style.display = matchAgent && matchStatus && matchKind && matchSearch ? '' : 'none';
+  });
+}
+
+function viewAction(actionId) {
+  Marvain.showToast('info', 'Coming Soon', 'Action details view will be available soon.');
+}
+
+async function approveAction(actionId) {
+  if (!confirm('Approve this action? It will be queued for execution.')) {
+    return;
+  }
+
+  try {
+    Marvain.showLoading('Approving action...');
+    const response = await fetch(`/api/actions/${actionId}/approve`, {
+      method: 'POST'
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to approve action');
+    }
+
+    Marvain.hideLoading();
+    Marvain.showToast('success', 'Success', 'Action approved');
+    setTimeout(() => location.reload(), 1000);
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+}
+
+async function rejectAction(actionId) {
+  const reason = prompt('Reason for rejection (optional):');
+  if (reason === null) {
+    return; // User cancelled
+  }
+
+  try {
+    Marvain.showLoading('Rejecting action...');
+    const response = await fetch(`/api/actions/${actionId}/reject`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({reason: reason || null})
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to reject action');
+    }
+
+    Marvain.hideLoading();
+    Marvain.showToast('success', 'Success', 'Action rejected');
+    setTimeout(() => location.reload(), 1000);
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+}
+</script>
+{% endblock %}
+
