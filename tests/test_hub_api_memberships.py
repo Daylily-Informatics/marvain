@@ -47,6 +47,7 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         cls.mod = _load_hub_api_app_module()
         from fastapi.testclient import TestClient
 
+        cls._TestClient = TestClient
         cls.client = TestClient(cls.mod.api_app)
 
     def setUp(self) -> None:
@@ -133,6 +134,95 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         self.assertTrue(body["device_id"])
         self.assertEqual(body["device_token"], "devtok")
         self.assertTrue(fake_db.execute.called)
+
+    def test_create_agent_success(self) -> None:
+        """Test POST /v1/agents creates an agent and makes user the owner."""
+        fake_db = mock.Mock()
+        fake_db.begin = mock.Mock(return_value="tx123")
+        fake_db.execute = mock.Mock()
+        fake_db.commit = mock.Mock()
+        self.mod._db = fake_db
+
+        r = self.client.post(
+            "/v1/agents",
+            headers={"Authorization": "Bearer tok"},
+            json={"name": "My New Agent", "relationship_label": "Assistant"},
+        )
+
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["agent_id"])
+        self.assertEqual(body["name"], "My New Agent")
+        self.assertEqual(body["role"], "owner")
+        self.assertEqual(body["relationship_label"], "Assistant")
+        self.assertFalse(body["disabled"])
+        # Verify transaction was used
+        fake_db.begin.assert_called_once()
+        fake_db.commit.assert_called_once_with("tx123")
+        # Two execute calls: one for agent insert, one for membership insert
+        self.assertEqual(fake_db.execute.call_count, 2)
+
+    def test_create_agent_without_relationship_label(self) -> None:
+        """Test POST /v1/agents creates an agent without relationship_label."""
+        fake_db = mock.Mock()
+        fake_db.begin = mock.Mock(return_value="tx123")
+        fake_db.execute = mock.Mock()
+        fake_db.commit = mock.Mock()
+        self.mod._db = fake_db
+
+        r = self.client.post(
+            "/v1/agents",
+            headers={"Authorization": "Bearer tok"},
+            json={"name": "Simple Agent"},
+        )
+
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["name"], "Simple Agent")
+        self.assertIsNone(body["relationship_label"])
+
+    def test_create_agent_requires_authentication(self) -> None:
+        """Test POST /v1/agents returns 401 without auth."""
+        self.mod.authenticate_user_access_token = mock.Mock(
+            side_effect=PermissionError("Invalid token")
+        )
+
+        r = self.client.post(
+            "/v1/agents",
+            headers={"Authorization": "Bearer invalid"},
+            json={"name": "Test"},
+        )
+
+        self.assertEqual(r.status_code, 401)
+
+    def test_create_agent_requires_name(self) -> None:
+        """Test POST /v1/agents requires name field."""
+        r = self.client.post(
+            "/v1/agents",
+            headers={"Authorization": "Bearer tok"},
+            json={},
+        )
+
+        self.assertEqual(r.status_code, 422)  # Validation error
+
+    def test_create_agent_rollback_on_error(self) -> None:
+        """Test POST /v1/agents rolls back transaction on error."""
+        fake_db = mock.Mock()
+        fake_db.begin = mock.Mock(return_value="tx123")
+        fake_db.execute = mock.Mock(side_effect=Exception("DB error"))
+        fake_db.rollback = mock.Mock()
+        self.mod._db = fake_db
+
+        # Use a client that doesn't raise server exceptions
+        client = self._TestClient(self.mod.api_app, raise_server_exceptions=False)
+        r = client.post(
+            "/v1/agents",
+            headers={"Authorization": "Bearer tok"},
+            json={"name": "Test Agent"},
+        )
+
+        self.assertEqual(r.status_code, 500)
+        fake_db.rollback.assert_called_once_with("tx123")
 
 
 if __name__ == "__main__":
