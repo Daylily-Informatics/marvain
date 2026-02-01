@@ -21,7 +21,7 @@ class TestConfigLoader(unittest.TestCase):
             "    stack_name: marvain-u-dev\n"
         )
         with tempfile.TemporaryDirectory() as td:
-            p = Path(td) / "marvain.yaml"
+            p = Path(td) / "marvain-config.yaml"
             p.write_text(txt, encoding="utf-8")
             cfg = load_config_dict(p)
             self.assertEqual(cfg["version"], 1)
@@ -47,7 +47,7 @@ class TestConfigLoader(unittest.TestCase):
         }
         txt = dump_simple_yaml(cfg)
         with tempfile.TemporaryDirectory() as td:
-            p = Path(td) / "marvain.yaml"
+            p = Path(td) / "marvain-config.yaml"
             p.write_text(txt, encoding="utf-8")
             cfg2 = load_config_dict(p)
             self.assertEqual(cfg2["version"], 1)

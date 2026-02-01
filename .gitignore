@@ -8,6 +8,9 @@ samconfig.toml
 # Local marvain CLI config (may contain device tokens)
 marvain.yaml
 
+# Local SSL certificates for HTTPS development
+certs/
+
 # C extensions
 *.so
 

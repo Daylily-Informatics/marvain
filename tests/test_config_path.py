@@ -18,7 +18,8 @@ class TestFindConfigPath(unittest.TestCase):
       os.environ["XDG_CONFIG_HOME"] = os.path.join(td, ".config")
       try:
         os.chdir(td)
-        cfg = Path(os.environ["XDG_CONFIG_HOME"]) / "marvain" / "marvain.yaml"
+        # Test the new canonical config path
+        cfg = Path(os.environ["XDG_CONFIG_HOME"]) / "marvain" / "marvain-config.yaml"
         cfg.parent.mkdir(parents=True, exist_ok=True)
         cfg.write_text("version: 1\n", encoding="utf-8")
         p = find_config_path(None)
@@ -44,7 +45,8 @@ class TestFindConfigPath(unittest.TestCase):
       os.environ["XDG_CONFIG_HOME"] = os.path.join(td, ".config")
       try:
         os.chdir(td)
-        xdg_cfg = Path(os.environ["XDG_CONFIG_HOME"]) / "marvain" / "marvain.yaml"
+        # XDG config uses canonical path; repo-local marvain.yaml still overrides
+        xdg_cfg = Path(os.environ["XDG_CONFIG_HOME"]) / "marvain" / "marvain-config.yaml"
         xdg_cfg.parent.mkdir(parents=True, exist_ok=True)
         xdg_cfg.write_text("version: 1\n", encoding="utf-8")
         repo_cfg = Path(td) / "marvain.yaml"

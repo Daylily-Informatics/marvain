@@ -138,35 +138,41 @@ def run(argv: list[str]) -> int:
     gui = sub.add_parser("gui", help="Local GUI server management")
     gui_sub = gui.add_subparsers(dest="gui_cmd")
 
-    gui_start = gui_sub.add_parser("start", help="Start the local GUI server")
-    gui_start.add_argument("--host", default=GUI_DEFAULT_HOST)
-    gui_start.add_argument("--port", type=int, default=GUI_DEFAULT_PORT)
-    gui_start.add_argument("--reload", action="store_true")
-    gui_start.add_argument("--no-reload", action="store_true")
-    gui_start.add_argument("--foreground", "-f", action="store_true", help="Run in foreground (blocking)")
-    gui_start.add_argument("--dry-run", action="store_true")
+    gui_start_p = gui_sub.add_parser("start", help="Start the local GUI server")
+    gui_start_p.add_argument("--host", default=GUI_DEFAULT_HOST)
+    gui_start_p.add_argument("--port", type=int, default=GUI_DEFAULT_PORT)
+    gui_start_p.add_argument("--reload", action="store_true")
+    gui_start_p.add_argument("--no-reload", action="store_true")
+    gui_start_p.add_argument("--foreground", "-f", action="store_true", help="Run in foreground (blocking)")
+    gui_start_p.add_argument("--https", action="store_true", help="Enable HTTPS (requires --cert and --key)")
+    gui_start_p.add_argument("--cert", type=str, help="Path to SSL certificate file (PEM format)")
+    gui_start_p.add_argument("--key", type=str, help="Path to SSL private key file (PEM format)")
+    gui_start_p.add_argument("--dry-run", action="store_true")
 
-    gui_stop = gui_sub.add_parser("stop", help="Stop the running GUI server")
-    gui_stop.add_argument("--port", type=int, default=GUI_DEFAULT_PORT)
-    gui_stop.add_argument("--force", action="store_true", help="Force kill (SIGKILL)")
-    gui_stop.add_argument("--dry-run", action="store_true")
+    gui_stop_p = gui_sub.add_parser("stop", help="Stop the running GUI server")
+    gui_stop_p.add_argument("--port", type=int, default=GUI_DEFAULT_PORT)
+    gui_stop_p.add_argument("--force", action="store_true", help="Force kill (SIGKILL)")
+    gui_stop_p.add_argument("--dry-run", action="store_true")
 
-    gui_restart = gui_sub.add_parser("restart", help="Restart the GUI server")
-    gui_restart.add_argument("--host", default=GUI_DEFAULT_HOST)
-    gui_restart.add_argument("--port", type=int, default=GUI_DEFAULT_PORT)
-    gui_restart.add_argument("--reload", action="store_true")
-    gui_restart.add_argument("--no-reload", action="store_true")
-    gui_restart.add_argument("--foreground", "-f", action="store_true", help="Run in foreground (blocking)")
-    gui_restart.add_argument("--dry-run", action="store_true")
+    gui_restart_p = gui_sub.add_parser("restart", help="Restart the GUI server")
+    gui_restart_p.add_argument("--host", default=GUI_DEFAULT_HOST)
+    gui_restart_p.add_argument("--port", type=int, default=GUI_DEFAULT_PORT)
+    gui_restart_p.add_argument("--reload", action="store_true")
+    gui_restart_p.add_argument("--no-reload", action="store_true")
+    gui_restart_p.add_argument("--foreground", "-f", action="store_true", help="Run in foreground (blocking)")
+    gui_restart_p.add_argument("--https", action="store_true", help="Enable HTTPS (requires --cert and --key)")
+    gui_restart_p.add_argument("--cert", type=str, help="Path to SSL certificate file (PEM format)")
+    gui_restart_p.add_argument("--key", type=str, help="Path to SSL private key file (PEM format)")
+    gui_restart_p.add_argument("--dry-run", action="store_true")
 
-    gui_status = gui_sub.add_parser("status", help="Show GUI server status")
-    gui_status.add_argument("--port", type=int, default=GUI_DEFAULT_PORT)
-    gui_status.add_argument("--dry-run", action="store_true")
+    gui_status_p = gui_sub.add_parser("status", help="Show GUI server status")
+    gui_status_p.add_argument("--port", type=int, default=GUI_DEFAULT_PORT)
+    gui_status_p.add_argument("--dry-run", action="store_true")
 
-    gui_logs = gui_sub.add_parser("logs", help="Show GUI server logs")
-    gui_logs.add_argument("--follow", "-f", action="store_true", help="Follow log output")
-    gui_logs.add_argument("--lines", "-n", type=int, default=50, help="Number of lines to show")
-    gui_logs.add_argument("--dry-run", action="store_true")
+    gui_logs_p = gui_sub.add_parser("logs", help="Show GUI server logs")
+    gui_logs_p.add_argument("--follow", "-f", action="store_true", help="Follow log output")
+    gui_logs_p.add_argument("--lines", "-n", type=int, default=50, help="Number of lines to show")
+    gui_logs_p.add_argument("--dry-run", action="store_true")
 
     tst = sub.add_parser("test", help="Run tests")
     tst.add_argument("kind", nargs="?", default="unit", choices=["unit", "all"])
@@ -250,7 +256,7 @@ def run(argv: list[str]) -> int:
                 write_path = Path(args.write).expanduser().resolve()
             else:
                 xdg_home = Path(os.getenv("XDG_CONFIG_HOME") or (Path.home() / ".config")).expanduser()
-                write_path = (xdg_home / "marvain" / "marvain.yaml").resolve()
+                write_path = (xdg_home / "marvain" / "marvain-config.yaml").resolve()
             write_path.parent.mkdir(parents=True, exist_ok=True)
 
             env = args.env
@@ -416,6 +422,9 @@ def run(argv: list[str]) -> int:
                     port=int(getattr(args, "port", GUI_DEFAULT_PORT)),
                     reload=reload,
                     foreground=bool(getattr(args, "foreground", False)),
+                    https=bool(getattr(args, "https", False)),
+                    cert=getattr(args, "cert", None),
+                    key=getattr(args, "key", None),
                 )
             elif gui_cmd == "stop":
                 return gui_stop(
@@ -437,6 +446,9 @@ def run(argv: list[str]) -> int:
                     port=int(getattr(args, "port", GUI_DEFAULT_PORT)),
                     reload=reload,
                     foreground=bool(getattr(args, "foreground", False)),
+                    https=bool(getattr(args, "https", False)),
+                    cert=getattr(args, "cert", None),
+                    key=getattr(args, "key", None),
                 )
             elif gui_cmd == "status":
                 return gui_status(

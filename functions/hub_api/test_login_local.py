@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
-"""Test the login flow locally without needing full AWS infrastructure."""
+"""Test the login flow locally without needing full AWS infrastructure.
+
+DEPRECATED: This script requires a .env.local file which is no longer the
+standard configuration approach. Configuration should be in marvain-config.yaml.
+Use `marvain gui start` for local development instead.
+"""
 
 import os
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables
+# Load environment variables from .env.local
+# DEPRECATED: New code should use marvain-config.yaml via CLI
 env_file = Path(__file__).parent / ".env.local"
+if not env_file.exists():
+    print("ERROR: .env.local not found.", file=sys.stderr)
+    print("DEPRECATED: This script is deprecated.", file=sys.stderr)
+    print("Use 'marvain gui start' instead (reads from marvain-config.yaml).", file=sys.stderr)
+    sys.exit(1)
 load_dotenv(env_file)
 
 # Set AWS region

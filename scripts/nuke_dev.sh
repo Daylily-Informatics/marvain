@@ -107,6 +107,7 @@ echo ""
 # Step 4: Delete local config files
 log_info "Step 4: Removing local config files..."
 CONFIG_PATHS=(
+  "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain-config.yaml"
   "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain.yaml"
   "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/config.yaml"
   "$HOME/.marvain/config.yaml"

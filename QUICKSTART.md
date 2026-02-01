@@ -67,18 +67,19 @@ If `AuditBucket` deletion fails due to Object Lock retention, the “from scratc
 ### 2.1 Remove local config (this deletes your saved device token)
 
 Config default path:
-- `${XDG_CONFIG_HOME:-~/.config}/marvain/marvain.yaml`
+- `${XDG_CONFIG_HOME:-~/.config}/marvain/marvain-config.yaml`
 
 If you want to keep a copy of the token/config, back it up first.
 
 <augment_code_snippet mode="EXCERPT">
 ````sh
 # OPTIONAL backup
-cp -v "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain.yaml" \
-  "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain.yaml.bak" 2>/dev/null || true
+cp -v "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain-config.yaml" \
+  "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain-config.yaml.bak" 2>/dev/null || true
 
-# Delete config (XDG + legacy)
-rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain.yaml" \
+# Delete config (canonical + legacy)
+rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain-config.yaml" \
+      "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/marvain.yaml" \
       "${XDG_CONFIG_HOME:-$HOME/.config}/marvain/config.yaml" \
       "$HOME/.marvain/config.yaml"
 ````

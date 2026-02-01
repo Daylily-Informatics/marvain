@@ -74,15 +74,22 @@ fi
 
 _MARVAIN_REPO_CFG="$_MARVAIN_ROOT/marvain.yaml"
 _MARVAIN_XDG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
-_MARVAIN_USER_CFG="$_MARVAIN_XDG_HOME/marvain/marvain.yaml"
+# Primary canonical config location
+_MARVAIN_USER_CFG="$_MARVAIN_XDG_HOME/marvain/marvain-config.yaml"
+# Legacy locations (backward compatibility)
+_MARVAIN_USER_CFG_OLD="$_MARVAIN_XDG_HOME/marvain/marvain.yaml"
 _MARVAIN_USER_CFG_LEGACY="$HOME/.marvain/config.yaml"
 
 if [ -f "$_MARVAIN_REPO_CFG" ]; then
   _marvain_log INFO "Found repo config: $_MARVAIN_REPO_CFG"
 elif [ -f "$_MARVAIN_USER_CFG" ]; then
   _marvain_log INFO "Found user config: $_MARVAIN_USER_CFG"
+elif [ -f "$_MARVAIN_USER_CFG_OLD" ]; then
+  _marvain_log INFO "Found user config (legacy): $_MARVAIN_USER_CFG_OLD"
+  _marvain_log WARN "Consider migrating to: $_MARVAIN_USER_CFG"
 elif [ -f "$_MARVAIN_USER_CFG_LEGACY" ]; then
   _marvain_log INFO "Found user config (legacy): $_MARVAIN_USER_CFG_LEGACY"
+  _marvain_log WARN "Consider migrating to: $_MARVAIN_USER_CFG"
 else
   _marvain_log INFO "No config found. Create one via: marvain config init"
 fi
@@ -103,4 +110,5 @@ unset _MARVAIN_CONDA_FILE
 unset _MARVAIN_REPO_CFG
 unset _MARVAIN_XDG_HOME
 unset _MARVAIN_USER_CFG
+unset _MARVAIN_USER_CFG_OLD
 unset _MARVAIN_USER_CFG_LEGACY

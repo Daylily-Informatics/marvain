@@ -538,7 +538,7 @@ def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool, no_confirm: bool = Fals
     elif "LiveKitUrl" not in param_overrides:
         _eprint("ERROR: LIVEKIT_URL environment variable is not set and LiveKitUrl is not in parameter_overrides.")
         _eprint("Please set LIVEKIT_URL or add LiveKitUrl to your marvain config.")
-        _eprint("Hint: source .env before running deploy")
+        _eprint("Hint: export LIVEKIT_URL=<your-livekit-url> or add LiveKitUrl to sam.parameter_overrides in marvain-config.yaml")
         return 1
 
     # Always build before deploy so Lambda functions include vendored dependencies.
@@ -1010,41 +1010,64 @@ def gui_run(
     hub_api_dir = repo_root / "functions" / "hub_api"
     shared_layer = repo_root / "layers" / "shared" / "python"
 
-    # Ensure .env.local exists with stack outputs
-    env_local = hub_api_dir / ".env.local"
-    if not env_local.exists():
-        _eprint(f"ERROR: {env_local} not found")
-        _eprint("Create it with stack outputs:")
-        _eprint("  ./bin/marvain monitor outputs --write-config")
+    # Get resources from marvain-config.yaml config
+    resources = ctx.cfg.get("envs", {}).get(ctx.env.env, {}).get("resources", {})
+    if not resources:
+        _eprint(f"ERROR: No resources found in config for env '{ctx.env.env}'")
+        _eprint("Run 'marvain monitor outputs --write-config' to populate resources.")
         return 2
 
     cmd = ["uvicorn", "app:app", "--host", host, "--port", str(port)]
     if reload:
         cmd.append("--reload")
 
+    redirect_uri = f"http://localhost:{port}/auth/callback"
+
     _eprint(f"Starting local GUI server at http://{host}:{port}")
-    _eprint(f"Using environment from: {env_local}")
+    _eprint(f"Using config: {ctx.config_path} (env: {ctx.env.env})")
     _eprint(f"$ cd {hub_api_dir} && {' '.join(cmd)}")
 
     if dry_run:
         return 0
 
-    # Build environment: start with current env, add .env.local, set PYTHONPATH
+    # Build environment from marvain-config.yaml resources
     env = os.environ.copy()
 
-    # Load .env.local variables into environment
-    with open(env_local) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" in line:
-                key, _, value = line.partition("=")
-                env[key.strip()] = value.strip()
+    # Map config resource keys to environment variable names
+    resource_to_env = {
+        "DbClusterArn": "DB_RESOURCE_ARN",
+        "DbSecretArn": "DB_SECRET_ARN",
+        "DbName": "DB_NAME",
+        "CognitoUserPoolId": "COGNITO_USER_POOL_ID",
+        "CognitoAppClientId": "COGNITO_APP_CLIENT_ID",
+        "CognitoDomain": "COGNITO_DOMAIN",
+        "AdminApiKeySecretArn": "ADMIN_SECRET_ARN",
+        "OpenAISecretArn": "OPENAI_SECRET_ARN",
+        "LiveKitSecretArn": "LIVEKIT_SECRET_ARN",
+        "AuditBucketName": "AUDIT_BUCKET",
+        "ArtifactBucketName": "ARTIFACT_BUCKET",
+        "SessionSecretArn": "SESSION_SECRET_ARN",
+    }
 
-    # Ensure AWS_DEFAULT_REGION is set (boto3 sometimes prefers this)
-    if "AWS_REGION" in env and "AWS_DEFAULT_REGION" not in env:
-        env["AWS_DEFAULT_REGION"] = env["AWS_REGION"]
+    for res_key, env_key in resource_to_env.items():
+        if res_key in resources and resources[res_key]:
+            env[env_key] = str(resources[res_key])
+
+    # Set Cognito redirect URI dynamically
+    env["COGNITO_REDIRECT_URI"] = redirect_uri
+    env["COGNITO_REGION"] = ctx.env.aws_region
+
+    # Set AWS credentials from config
+    env["AWS_PROFILE"] = ctx.env.aws_profile
+    env["AWS_REGION"] = ctx.env.aws_region
+    env["AWS_DEFAULT_REGION"] = ctx.env.aws_region
+
+    # Local development settings
+    env["ENVIRONMENT"] = "local"
+    env["LOG_LEVEL"] = env.get("LOG_LEVEL", "DEBUG")
+    # For local dev, use a static session secret (Lambda uses SESSION_SECRET_ARN)
+    if "SESSION_SECRET_KEY" not in env:
+        env["SESSION_SECRET_KEY"] = "local-dev-session-secret-key-change-in-production-123456"
 
     # Set PYTHONPATH to include shared layer for agent_hub imports
     existing_pythonpath = env.get("PYTHONPATH", "")
@@ -1320,6 +1343,9 @@ def gui_start(
     port: int = GUI_DEFAULT_PORT,
     reload: bool = True,
     foreground: bool = False,
+    https: bool = False,
+    cert: str | None = None,
+    key: str | None = None,
 ) -> int:
     """Start the GUI server.
 
@@ -1331,6 +1357,9 @@ def gui_start(
         port: Port to bind to (default: 8084)
         reload: Enable auto-reload on code changes
         foreground: Run in foreground (blocking) instead of background
+        https: Enable HTTPS (requires --cert and --key)
+        cert: Path to SSL certificate file (PEM format)
+        key: Path to SSL private key file (PEM format)
     """
     rc = _conda_preflight(enforce=not dry_run)
     if rc != 0:
@@ -1340,13 +1369,34 @@ def gui_start(
     hub_api_dir = repo_root / "functions" / "hub_api"
     shared_layer = repo_root / "layers" / "shared" / "python"
 
-    # Ensure .env.local exists with stack outputs
-    env_local = hub_api_dir / ".env.local"
-    if not env_local.exists():
-        _eprint(f"ERROR: {env_local} not found")
-        _eprint("Create it with stack outputs:")
-        _eprint("  ./bin/marvain monitor outputs --write-config")
+    # Get resources from marvain-config.yaml
+    resources = ctx.cfg.get("envs", {}).get(ctx.env.env, {}).get("resources", {})
+    if not resources:
+        _eprint(f"ERROR: No resources found in config for env '{ctx.env.env}'")
+        _eprint("Run 'marvain monitor outputs --write-config' to populate resources.")
         return 2
+
+    # SSL certificate validation for HTTPS
+    cert_path: Path | None = None
+    key_path: Path | None = None
+    if https:
+        if not cert or not key:
+            _eprint("ERROR: HTTPS requires both --cert and --key options")
+            _eprint("")
+            _eprint("Generate a self-signed certificate for testing:")
+            _eprint("  openssl req -x509 -newkey rsa:4096 \\")
+            _eprint("      -keyout key.pem -out cert.pem \\")
+            _eprint("      -days 365 -nodes \\")
+            _eprint("      -subj \"/CN=localhost\"")
+            return 1
+        cert_path = Path(cert).resolve()
+        key_path = Path(key).resolve()
+        if not cert_path.exists():
+            _eprint(f"ERROR: Certificate file not found: {cert}")
+            return 1
+        if not key_path.exists():
+            _eprint(f"ERROR: Key file not found: {key}")
+            return 1
 
     # Check if port is already in use
     if _is_port_in_use(port, host):
@@ -1366,29 +1416,62 @@ def gui_start(
     if reload:
         cmd.append("--reload")
 
-    _eprint(f"Starting local GUI server at http://{host}:{port}")
-    _eprint(f"Using environment from: {env_local}")
+    # Add SSL flags if using HTTPS
+    if https and cert_path and key_path:
+        cmd.extend(["--ssl-keyfile", str(key_path)])
+        cmd.extend(["--ssl-certfile", str(cert_path)])
+
+    scheme = "https" if https else "http"
+    redirect_uri = f"{scheme}://localhost:{port}/auth/callback"
+
+    _eprint(f"Starting local GUI server at {scheme}://{host}:{port}")
+    _eprint(f"Using config: {ctx.config_path} (env: {ctx.env.env})")
+    if https:
+        _eprint(f"SSL Certificate: {cert}")
+        _eprint(f"SSL Key: {key}")
 
     if dry_run:
         _eprint(f"[dry-run] $ cd {hub_api_dir} && {' '.join(cmd)}")
         return 0
 
-    # Build environment: start with current env, add .env.local, set PYTHONPATH
+    # Build environment from marvain-config.yaml resources
     env = os.environ.copy()
 
-    # Load .env.local variables into environment
-    with open(env_local) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" in line:
-                key, _, value = line.partition("=")
-                env[key.strip()] = value.strip()
+    # Map config resource keys to environment variable names
+    resource_to_env = {
+        "DbClusterArn": "DB_RESOURCE_ARN",
+        "DbSecretArn": "DB_SECRET_ARN",
+        "DbName": "DB_NAME",
+        "CognitoUserPoolId": "COGNITO_USER_POOL_ID",
+        "CognitoAppClientId": "COGNITO_APP_CLIENT_ID",
+        "CognitoDomain": "COGNITO_DOMAIN",
+        "AdminApiKeySecretArn": "ADMIN_SECRET_ARN",
+        "OpenAISecretArn": "OPENAI_SECRET_ARN",
+        "LiveKitSecretArn": "LIVEKIT_SECRET_ARN",
+        "AuditBucketName": "AUDIT_BUCKET",
+        "ArtifactBucketName": "ARTIFACT_BUCKET",
+        "SessionSecretArn": "SESSION_SECRET_ARN",
+    }
 
-    # Ensure AWS_DEFAULT_REGION is set (boto3 sometimes prefers this)
-    if "AWS_REGION" in env and "AWS_DEFAULT_REGION" not in env:
-        env["AWS_DEFAULT_REGION"] = env["AWS_REGION"]
+    for res_key, env_key in resource_to_env.items():
+        if res_key in resources and resources[res_key]:
+            env[env_key] = str(resources[res_key])
+
+    # Set Cognito redirect URI dynamically based on http/https
+    env["COGNITO_REDIRECT_URI"] = redirect_uri
+    env["COGNITO_REGION"] = ctx.env.aws_region
+
+    # Set AWS credentials from config
+    env["AWS_PROFILE"] = ctx.env.aws_profile
+    env["AWS_REGION"] = ctx.env.aws_region
+    env["AWS_DEFAULT_REGION"] = ctx.env.aws_region
+
+    # Local development settings
+    env["ENVIRONMENT"] = "local"
+    env["LOG_LEVEL"] = env.get("LOG_LEVEL", "DEBUG")
+    # For local dev, use a static session secret (Lambda uses SESSION_SECRET_ARN)
+    if "SESSION_SECRET_KEY" not in env:
+        env["SESSION_SECRET_KEY"] = "local-dev-session-secret-key-change-in-production-123456"
 
     # Set PYTHONPATH to include shared layer for agent_hub imports
     existing_pythonpath = env.get("PYTHONPATH", "")
@@ -1421,7 +1504,7 @@ def gui_start(
         # Write PID file
         _write_pid_file(proc.pid)
         _eprint(f"GUI server started (PID {proc.pid})")
-        _eprint(f"  URL: http://{host}:{port}")
+        _eprint(f"  URL: {scheme}://{host}:{port}")
         _eprint(f"  Logs: tail -f {log_file}")
         _eprint(f"  Stop: marvain gui stop")
         return 0
@@ -1435,6 +1518,9 @@ def gui_restart(
     port: int = GUI_DEFAULT_PORT,
     reload: bool = True,
     foreground: bool = False,
+    https: bool = False,
+    cert: str | None = None,
+    key: str | None = None,
 ) -> int:
     """Restart the GUI server (stop then start)."""
     if dry_run:
@@ -1461,6 +1547,9 @@ def gui_restart(
         port=port,
         reload=reload,
         foreground=foreground,
+        https=https,
+        cert=cert,
+        key=key,
     )
 
 
