@@ -504,8 +504,8 @@ def sam_build_simple(*, dry_run: bool, template: str = "template.yaml") -> int:
     rc = _conda_preflight(enforce=not dry_run)
     if rc != 0:
         return rc
-    # `--clean` avoids stale dependency artifacts (important for Lambda vendored deps).
-    return run_cmd(["sam", "build", "--clean", "-t", template], env=None, dry_run=dry_run)
+    # Note: --clean was removed in newer SAM CLI versions; use --cached=false if needed.
+    return run_cmd(["sam", "build", "-t", template], env=None, dry_run=dry_run)
 
 
 def sam_build(ctx: Ctx, *, dry_run: bool) -> int:

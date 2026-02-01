@@ -204,6 +204,11 @@ class MeOut(BaseModel):
     email: str | None = None
 
 
+class CreateAgentIn(BaseModel):
+    name: str
+    relationship_label: str | None = None
+
+
 class AgentOut(BaseModel):
     agent_id: str
     name: str
@@ -334,6 +339,45 @@ def agents(user: AuthenticatedUser = Depends(get_user)) -> dict[str, list[AgentO
             for m in memberships
         ]
     }
+
+
+@api_app.post("/v1/agents", response_model=AgentOut)
+def create_agent(body: CreateAgentIn, user: AuthenticatedUser = Depends(get_user)) -> AgentOut:
+    """Create a new agent and make the creating user the owner."""
+    agent_id = str(uuid.uuid4())
+    tx = _get_db().begin()
+    try:
+        _get_db().execute(
+            "INSERT INTO agents(agent_id, name, disabled) VALUES (:agent_id::uuid, :name, false)",
+            {"agent_id": agent_id, "name": body.name},
+            transaction_id=tx,
+        )
+        _get_db().execute(
+            """
+            INSERT INTO agent_memberships (agent_id, user_id, role, relationship_label)
+            VALUES (:agent_id::uuid, :user_id::uuid, 'owner', :relationship_label)
+            """,
+            {"agent_id": agent_id, "user_id": user.user_id, "relationship_label": body.relationship_label},
+            transaction_id=tx,
+        )
+        _get_db().commit(tx)
+    except Exception:
+        _get_db().rollback(tx)
+        raise
+
+    if _cfg.audit_bucket:
+        append_audit_entry(
+            _get_db(), bucket=_cfg.audit_bucket, agent_id=agent_id,
+            entry_type="agent_created", entry={"user_id": user.user_id, "name": body.name},
+        )
+
+    return AgentOut(
+        agent_id=agent_id,
+        name=body.name,
+        role="owner",
+        relationship_label=body.relationship_label,
+        disabled=False,
+    )
 
 
 @api_app.post("/v1/livekit/token", response_model=LiveKitTokenOut)
