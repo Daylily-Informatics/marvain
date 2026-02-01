@@ -7,7 +7,9 @@ import logging
 
 import boto3
 
+from agent_hub.audit import append_audit_entry
 from agent_hub.auth import authenticate_device, authenticate_user_access_token
+from agent_hub.config import load_config
 from agent_hub.memberships import list_agents_for_user, check_agent_permission
 from agent_hub.rds_data import RdsData, RdsDataEnv
 
@@ -20,6 +22,7 @@ _dynamo = boto3.resource("dynamodb")
 _sqs = boto3.client("sqs")
 
 _db = None
+_cfg = None
 
 
 def _get_db() -> RdsData:
@@ -31,6 +34,13 @@ def _get_db() -> RdsData:
             database=os.environ["DB_NAME"],
         ))
     return _db
+
+
+def _get_cfg():
+    global _cfg
+    if _cfg is None:
+        _cfg = load_config()
+    return _cfg
 
 
 def _mgmt_api(event):
@@ -89,6 +99,8 @@ def _handle_action_decision(event, connection_id: str, table, conn_item: dict, a
         })
         return {"statusCode": 200, "body": "ok"}
 
+    new_status = "approved" if approve else "rejected"
+
     if approve:
         # Approve: update status and queue for execution
         _get_db().execute(
@@ -107,7 +119,7 @@ def _handle_action_decision(event, connection_id: str, table, conn_item: dict, a
                 MessageBody=json.dumps({"action_id": action_id, "agent_id": agent_id}),
             )
 
-        _send(event, connection_id, {"type": action_type, "ok": True, "action_id": action_id, "new_status": "approved"})
+        _send(event, connection_id, {"type": action_type, "ok": True, "action_id": action_id, "new_status": new_status})
     else:
         # Reject: update status
         _get_db().execute(
@@ -118,9 +130,25 @@ def _handle_action_decision(event, connection_id: str, table, conn_item: dict, a
             """,
             {"action_id": action_id},
         )
-        _send(event, connection_id, {"type": action_type, "ok": True, "action_id": action_id, "new_status": "rejected"})
+        _send(event, connection_id, {"type": action_type, "ok": True, "action_id": action_id, "new_status": new_status})
 
-    logger.info("Action %s %s by user %s", action_id, "approved" if approve else "rejected", user_id)
+    # Audit log the action decision
+    cfg = _get_cfg()
+    if cfg.audit_bucket:
+        append_audit_entry(
+            _get_db(),
+            bucket=cfg.audit_bucket,
+            agent_id=agent_id,
+            entry_type="action_decision",
+            entry={
+                "action_id": action_id,
+                "decision": new_status,
+                "by_user_id": user_id,
+                "reason": reason,
+            },
+        )
+
+    logger.info("Action %s %s by user %s", action_id, new_status, user_id)
     return {"statusCode": 200, "body": "ok"}
 
 
