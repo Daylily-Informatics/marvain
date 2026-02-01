@@ -871,6 +871,104 @@ def api_create_space(request: Request, body: SpaceCreate) -> SpaceResponse:
     )
 
 
+# ---------------------------------------------------------------------------
+# Devices API endpoints
+# ---------------------------------------------------------------------------
+
+
+class DeviceCreate(BaseModel):
+    """Request body for registering a device."""
+    agent_id: str = Field(..., description="ID of the agent this device belongs to")
+    name: str = Field(..., description="Name of the device")
+    scopes: list[str] = Field(default_factory=list, description="Scopes assigned to the device")
+
+
+class DeviceResponse(BaseModel):
+    """Response body for device registration."""
+    device_id: str
+    agent_id: str
+    name: str
+    scopes: list[str]
+    token: str  # Only returned on creation, not stored
+
+
+@app.post("/api/devices", name="api_create_device")
+def api_create_device(request: Request, body: DeviceCreate) -> DeviceResponse:
+    """Register a new device."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Check user has admin permission on the agent
+    if not check_agent_permission(db, user_id=user.user_id, agent_id=body.agent_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Requires admin permission on the agent")
+
+    # Generate device token and hash it
+    import hashlib
+    device_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(device_token.encode()).hexdigest()
+
+    # Create the device
+    device_id = str(uuid.uuid4())
+    try:
+        import json
+        db.execute("""
+            INSERT INTO devices (device_id, agent_id, name, scopes, token_hash)
+            VALUES (:device_id::uuid, :agent_id::uuid, :name, :scopes::jsonb, :token_hash)
+        """, {
+            "device_id": device_id,
+            "agent_id": body.agent_id,
+            "name": body.name,
+            "scopes": json.dumps(body.scopes),
+            "token_hash": token_hash,
+        })
+    except Exception as e:
+        logger.error(f"Failed to register device: {e}")
+        raise HTTPException(status_code=500, detail="Failed to register device")
+
+    return DeviceResponse(
+        device_id=device_id,
+        agent_id=body.agent_id,
+        name=body.name,
+        scopes=body.scopes,
+        token=device_token,  # Return token only on creation
+    )
+
+
+@app.post("/api/devices/{device_id}/revoke", name="api_revoke_device")
+def api_revoke_device(request: Request, device_id: str) -> dict:
+    """Revoke a device's access."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Get the device and check permission (require admin)
+    rows = db.query("""
+        SELECT d.device_id, d.agent_id
+        FROM devices d
+        INNER JOIN memberships m ON d.agent_id = m.agent_id
+        WHERE d.device_id = :device_id::uuid AND m.user_id = :user_id::uuid AND m.role IN ('admin', 'owner')
+    """, {"device_id": device_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Device not found or permission denied")
+
+    try:
+        from datetime import datetime, timezone
+        db.execute("""
+            UPDATE devices SET revoked_at = :now WHERE device_id = :device_id::uuid
+        """, {"device_id": device_id, "now": datetime.now(timezone.utc)})
+    except Exception as e:
+        logger.error(f"Failed to revoke device: {e}")
+        raise HTTPException(status_code=500, detail="Failed to revoke device")
+
+    return {"message": "Device revoked", "device_id": device_id}
+
+
 @app.get("/agents", name="gui_agents")
 def gui_agents(request: Request) -> Response:
     """Agents management - list all agents."""
@@ -993,7 +1091,78 @@ def gui_devices(request: Request) -> Response:
     user = _gui_get_user(request)
     if not user:
         return _gui_redirect_to_login(request=request, next_path="/devices")
-    return _gui_html_page(title="Devices", body_html="<h1>Devices</h1><p>Coming soon - Phase 5.7</p>")
+
+    db = _get_db()
+    agents = list_agents_for_user(db, user_id=user.user_id)
+
+    # Get devices for all agents the user has access to
+    agent_ids = [a.agent_id for a in agents]
+    devices_data = []
+    if agent_ids:
+        placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+        params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+        rows = db.query(
+            f"""SELECT d.device_id::TEXT as device_id, d.agent_id::TEXT as agent_id,
+                       d.name, d.scopes, d.revoked_at, d.created_at, d.last_seen,
+                       a.name as agent_name
+                FROM devices d
+                JOIN agents a ON a.agent_id = d.agent_id
+                WHERE d.agent_id::TEXT IN ({placeholders})
+                ORDER BY d.created_at DESC""",
+            params,
+        )
+        for row in rows:
+            last_seen = row.get("last_seen")
+            if last_seen:
+                try:
+                    from datetime import datetime, timezone
+                    if hasattr(last_seen, "tzinfo"):
+                        now = datetime.now(timezone.utc)
+                        delta = now - last_seen
+                        if delta.days > 0:
+                            last_seen_relative = f"{delta.days}d ago"
+                        elif delta.seconds >= 3600:
+                            last_seen_relative = f"{delta.seconds // 3600}h ago"
+                        else:
+                            last_seen_relative = f"{delta.seconds // 60}m ago"
+                    else:
+                        last_seen_relative = str(last_seen)[:16]
+                except Exception:
+                    last_seen_relative = str(last_seen)[:16] if last_seen else None
+            else:
+                last_seen_relative = None
+
+            scopes = row.get("scopes") or []
+            if isinstance(scopes, str):
+                import json
+                try:
+                    scopes = json.loads(scopes)
+                except Exception:
+                    scopes = []
+
+            devices_data.append({
+                "device_id": str(row.get("device_id", "")),
+                "agent_id": str(row.get("agent_id", "")),
+                "agent_name": row.get("agent_name", ""),
+                "name": row.get("name") or "Unnamed Device",
+                "scopes": scopes,
+                "revoked": row.get("revoked_at") is not None,
+                "last_seen_relative": last_seen_relative,
+            })
+
+    # Build agents data for dropdown
+    agents_data = [
+        {"agent_id": a.agent_id, "name": a.name, "role": a.role}
+        for a in agents
+    ]
+
+    return templates.TemplateResponse(request, "devices.html", {
+        "user": {"email": user.email, "user_id": str(user.user_id)},
+        "stage": _cfg.stage,
+        "active_page": "devices",
+        "devices": devices_data,
+        "agents": agents_data,
+    })
 
 
 @app.get("/actions", name="gui_actions")

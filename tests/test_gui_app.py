@@ -645,3 +645,121 @@ class TestSpacesGui(unittest.TestCase):
         self.assertEqual(data["agent_id"], "agent-1")
         self.assertTrue(data["privacy_mode"])
         self.assertIn("space_id", data)
+
+
+class TestDevicesGui(unittest.TestCase):
+    """Tests for the devices management GUI routes."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_hub_api_app_module()
+        from fastapi.testclient import TestClient
+
+        cls._TestClient = TestClient
+        cls._orig_gui_get_user = cls.mod._gui_get_user
+        cls._orig_list_agents_for_user = cls.mod.list_agents_for_user
+        cls._orig_get_db = cls.mod._get_db
+        cls._orig_check_agent_permission = cls.mod.check_agent_permission
+
+    def setUp(self) -> None:
+        self.mod._gui_get_user = self._orig_gui_get_user
+        self.mod.list_agents_for_user = self._orig_list_agents_for_user
+        self.mod._get_db = self._orig_get_db
+        self.mod.check_agent_permission = self._orig_check_agent_permission
+        self.client = self.__class__._TestClient(self.mod.app, raise_server_exceptions=False)
+
+    def test_devices_redirects_to_login_when_unauthenticated(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.get("/devices", follow_redirects=False)
+
+        self.assertIn(r.status_code, [302, 307])
+        self.assertIn("/login", r.headers.get("location", ""))
+
+    def test_devices_renders_when_authenticated(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[])
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+        self.mod.list_agents_for_user = mock.Mock(return_value=[])
+
+        r = self.client.get("/devices")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Devices", r.text)
+
+    def test_create_device_requires_authentication(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.post("/api/devices", json={
+            "agent_id": "agent-1",
+            "name": "Test Device",
+            "scopes": ["events:read"]
+        })
+
+        self.assertEqual(r.status_code, 401)
+
+    def test_create_device_requires_admin_permission(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+        self.mod.check_agent_permission = mock.Mock(return_value=False)
+
+        r = self.client.post("/api/devices", json={
+            "agent_id": "agent-1",
+            "name": "Test Device",
+            "scopes": ["events:read"]
+        })
+
+        self.assertEqual(r.status_code, 403)
+
+    def test_create_device_success(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+        self.mod.check_agent_permission = mock.Mock(return_value=True)
+
+        r = self.client.post("/api/devices", json={
+            "agent_id": "agent-1",
+            "name": "Test Device",
+            "scopes": ["events:read", "presence:write"]
+        })
+
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["name"], "Test Device")
+        self.assertEqual(data["agent_id"], "agent-1")
+        self.assertEqual(data["scopes"], ["events:read", "presence:write"])
+        self.assertIn("device_id", data)
+        self.assertIn("token", data)
+        self.assertIsNotNone(data["token"])
+
+    def test_revoke_device_requires_authentication(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.post("/api/devices/device-1/revoke")
+
+        self.assertEqual(r.status_code, 401)
+
+    def test_revoke_device_success(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[{"device_id": "device-1", "agent_id": "agent-1"}])
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post("/api/devices/device-1/revoke")
+
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["message"], "Device revoked")
+        self.assertEqual(data["device_id"], "device-1")
