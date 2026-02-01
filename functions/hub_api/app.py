@@ -1165,6 +1165,223 @@ def gui_devices(request: Request) -> Response:
     })
 
 
+# ---------------------------------------------------------------------------
+# People & Consent API endpoints
+# ---------------------------------------------------------------------------
+
+
+class PersonCreate(BaseModel):
+    """Request body for creating a person."""
+    agent_id: str = Field(..., description="ID of the agent this person belongs to")
+    display_name: str = Field(..., description="Display name of the person")
+
+
+class PersonResponse(BaseModel):
+    """Response body for person operations."""
+    person_id: str
+    agent_id: str
+    display_name: str
+
+
+class ConsentGrant(BaseModel):
+    """A single consent grant."""
+    type: str = Field(..., description="Type of consent: voice, face, or recording")
+    expires_at: str | None = Field(None, description="Optional expiration date (ISO format)")
+
+
+class ConsentUpdate(BaseModel):
+    """Request body for updating consents."""
+    consents: list[ConsentGrant] = Field(default_factory=list, description="List of consent grants")
+
+
+@app.post("/api/people", name="api_create_person")
+def api_create_person(request: Request, body: PersonCreate) -> PersonResponse:
+    """Create a new person."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Check user has admin permission on the agent
+    if not check_agent_permission(db, user_id=user.user_id, agent_id=body.agent_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Requires admin permission on the agent")
+
+    person_id = str(uuid.uuid4())
+    try:
+        db.execute("""
+            INSERT INTO people (person_id, agent_id, display_name)
+            VALUES (:person_id::uuid, :agent_id::uuid, :display_name)
+        """, {
+            "person_id": person_id,
+            "agent_id": body.agent_id,
+            "display_name": body.display_name,
+        })
+    except Exception as e:
+        logger.error(f"Failed to create person: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create person")
+
+    return PersonResponse(
+        person_id=person_id,
+        agent_id=body.agent_id,
+        display_name=body.display_name,
+    )
+
+
+@app.post("/api/people/{person_id}/consent", name="api_update_consent")
+def api_update_consent(request: Request, person_id: str, body: ConsentUpdate) -> dict:
+    """Update consent grants for a person."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Get the person and check permission
+    rows = db.query("""
+        SELECT p.person_id, p.agent_id
+        FROM people p
+        INNER JOIN memberships m ON p.agent_id = m.agent_id
+        WHERE p.person_id = :person_id::uuid AND m.user_id = :user_id::uuid AND m.role IN ('admin', 'owner')
+    """, {"person_id": person_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Person not found or permission denied")
+
+    agent_id = str(rows[0].get("agent_id", ""))
+
+    try:
+        from datetime import datetime, timezone
+
+        # First, revoke all existing active consents for this person
+        db.execute("""
+            UPDATE consent_grants SET revoked_at = :now
+            WHERE person_id = :person_id::uuid AND revoked_at IS NULL
+        """, {"person_id": person_id, "now": datetime.now(timezone.utc)})
+
+        # Then create new consent grants
+        for consent in body.consents:
+            consent_id = str(uuid.uuid4())
+            expires_at = None
+            if consent.expires_at:
+                try:
+                    expires_at = datetime.fromisoformat(consent.expires_at.replace("Z", "+00:00"))
+                except Exception:
+                    expires_at = None
+
+            db.execute("""
+                INSERT INTO consent_grants (consent_id, agent_id, person_id, consent_type, expires_at)
+                VALUES (:consent_id::uuid, :agent_id::uuid, :person_id::uuid, :consent_type, :expires_at)
+            """, {
+                "consent_id": consent_id,
+                "agent_id": agent_id,
+                "person_id": person_id,
+                "consent_type": consent.type,
+                "expires_at": expires_at,
+            })
+
+    except Exception as e:
+        logger.error(f"Failed to update consent: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update consent")
+
+    return {"message": "Consent updated", "person_id": person_id}
+
+
+@app.get("/people", name="gui_people")
+def gui_people(request: Request) -> Response:
+    """People & consent management."""
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/people")
+
+    db = _get_db()
+    agents = list_agents_for_user(db, user_id=user.user_id)
+
+    # Get people for all agents the user has access to
+    agent_ids = [a.agent_id for a in agents]
+    people_data = []
+    if agent_ids:
+        from datetime import datetime, timezone
+        placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+        params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+        rows = db.query(
+            f"""SELECT p.person_id::TEXT as person_id, p.agent_id::TEXT as agent_id,
+                       p.display_name, p.created_at,
+                       a.name as agent_name
+                FROM people p
+                JOIN agents a ON a.agent_id = p.agent_id
+                WHERE p.agent_id::TEXT IN ({placeholders})
+                ORDER BY p.created_at DESC""",
+            params,
+        )
+
+        # Build person list with consent status
+        for row in rows:
+            person_id = str(row.get("person_id", ""))
+            created_at = row.get("created_at")
+            created_at_relative = None
+            if created_at:
+                try:
+                    if hasattr(created_at, "tzinfo"):
+                        now = datetime.now(timezone.utc)
+                        delta = now - created_at
+                        if delta.days > 0:
+                            created_at_relative = f"{delta.days}d ago"
+                        elif delta.seconds >= 3600:
+                            created_at_relative = f"{delta.seconds // 3600}h ago"
+                        else:
+                            created_at_relative = f"{delta.seconds // 60}m ago"
+                except Exception:
+                    pass
+
+            # Get active consents for this person
+            consent_rows = db.query("""
+                SELECT consent_type, expires_at
+                FROM consent_grants
+                WHERE person_id = :person_id::uuid AND revoked_at IS NULL
+                  AND (expires_at IS NULL OR expires_at > :now)
+            """, {"person_id": person_id, "now": datetime.now(timezone.utc)})
+
+            voice_consent = None
+            face_consent = None
+            recording_consent = None
+            for cr in consent_rows:
+                ct = cr.get("consent_type", "")
+                exp = cr.get("expires_at")
+                exp_str = str(exp)[:10] if exp else "No expiry"
+                if ct == "voice":
+                    voice_consent = exp_str
+                elif ct == "face":
+                    face_consent = exp_str
+                elif ct == "recording":
+                    recording_consent = exp_str
+
+            people_data.append({
+                "person_id": person_id,
+                "agent_id": str(row.get("agent_id", "")),
+                "agent_name": row.get("agent_name", ""),
+                "display_name": row.get("display_name", ""),
+                "created_at_relative": created_at_relative,
+                "voice_consent": voice_consent,
+                "face_consent": face_consent,
+                "recording_consent": recording_consent,
+                "active_consents": bool(voice_consent or face_consent or recording_consent),
+            })
+
+    agents_data = [
+        {"agent_id": a.agent_id, "name": a.name, "role": a.role}
+        for a in agents
+    ]
+
+    return templates.TemplateResponse(request, "people.html", {
+        "user": {"email": user.email, "user_id": str(user.user_id)},
+        "stage": _cfg.stage,
+        "active_page": "people",
+        "people": people_data,
+        "agents": agents_data,
+    })
+
+
 @app.get("/actions", name="gui_actions")
 def gui_actions(request: Request) -> Response:
     """Actions dashboard - pending actions and history."""
