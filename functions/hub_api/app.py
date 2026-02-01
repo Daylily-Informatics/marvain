@@ -12,12 +12,14 @@ import base64
 import html
 import logging
 import os
+import uuid
 from pathlib import Path
 import secrets
 import urllib.parse
 from typing import Optional
 
 from fastapi import HTTPException, Request
+from pydantic import BaseModel, Field
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -468,7 +470,225 @@ def gui_remotes(request: Request) -> Response:
     user = _gui_get_user(request)
     if not user:
         return _gui_redirect_to_login(request=request, next_path="/remotes")
-    return _gui_html_page(title="Remotes", body_html="<h1>Remotes</h1><p>Coming soon - Phase 5.3</p>")
+
+    db = _get_db()
+
+    # Get all remotes for user's agents
+    remotes = []
+    try:
+        rows = db.query("""
+            SELECT r.remote_id, r.name, r.address, r.connection_type, r.capabilities,
+                   r.status, r.last_ping, r.last_seen, a.name as agent_name
+            FROM remotes r
+            INNER JOIN agents a ON r.agent_id = a.agent_id
+            INNER JOIN memberships m ON r.agent_id = m.agent_id
+            WHERE m.user_id = :user_id
+            ORDER BY r.status = 'online' DESC, r.status = 'hibernate' DESC, r.name ASC
+        """, {"user_id": str(user.user_id)})
+        for row in rows:
+            # Parse capabilities JSON if present
+            caps = row.get("capabilities") or []
+            if isinstance(caps, str):
+                try:
+                    import json
+                    caps = json.loads(caps)
+                except Exception:
+                    caps = []
+            if isinstance(caps, dict):
+                caps = list(caps.keys())
+
+            # Calculate relative time for last_seen
+            last_seen = row.get("last_seen")
+            last_seen_relative = None
+            if last_seen:
+                try:
+                    from datetime import datetime, timezone
+                    if isinstance(last_seen, str):
+                        last_seen = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+                    now = datetime.now(timezone.utc)
+                    delta = now - last_seen
+                    if delta.days > 0:
+                        last_seen_relative = f"{delta.days}d ago"
+                    elif delta.seconds >= 3600:
+                        last_seen_relative = f"{delta.seconds // 3600}h ago"
+                    elif delta.seconds >= 60:
+                        last_seen_relative = f"{delta.seconds // 60}m ago"
+                    else:
+                        last_seen_relative = "just now"
+                except Exception:
+                    last_seen_relative = str(last_seen)
+
+            remotes.append({
+                "remote_id": str(row.get("remote_id", "")),
+                "name": row.get("name", "Unknown"),
+                "address": row.get("address", ""),
+                "connection_type": row.get("connection_type", "network"),
+                "capabilities": caps,
+                "status": row.get("status", "offline"),
+                "last_seen": str(last_seen) if last_seen else None,
+                "last_seen_relative": last_seen_relative,
+                "agent_name": row.get("agent_name", ""),
+            })
+    except Exception as e:
+        logger.warning(f"Failed to fetch remotes: {e}")
+
+    # Get agents for the add remote dropdown
+    agents = list_agents_for_user(db, user_id=user.user_id)
+    agents_data = [{"agent_id": str(a.agent_id), "name": a.name} for a in agents]
+
+    # Count by status
+    online_count = sum(1 for r in remotes if r["status"] == "online")
+    hibernate_count = sum(1 for r in remotes if r["status"] == "hibernate")
+    offline_count = sum(1 for r in remotes if r["status"] == "offline")
+
+    return templates.TemplateResponse(request, "remotes.html", {
+        "user": {"email": user.email, "user_id": str(user.user_id)},
+        "stage": _cfg.stage,
+        "active_page": "remotes",
+        "remotes": remotes,
+        "agents": agents_data,
+        "online_count": online_count,
+        "hibernate_count": hibernate_count,
+        "offline_count": offline_count,
+        "total_count": len(remotes),
+    })
+
+
+# -----------------------------
+# Remotes API Endpoints
+# -----------------------------
+
+
+class RemoteCreate(BaseModel):
+    """Request body for creating a remote."""
+
+    name: str = Field(..., min_length=1, max_length=255)
+    address: str = Field(..., min_length=1, max_length=512)
+    connection_type: str = Field(default="network")
+    agent_id: str = Field(...)
+
+
+class RemoteResponse(BaseModel):
+    """Response for a remote."""
+
+    remote_id: str
+    name: str
+    address: str
+    connection_type: str
+    status: str
+    agent_id: str
+
+
+@app.post("/api/remotes", name="api_create_remote")
+def api_create_remote(request: Request, body: RemoteCreate) -> RemoteResponse:
+    """Create a new remote satellite."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Check user has permission on the agent
+    if not check_agent_permission(db, user_id=user.user_id, agent_id=body.agent_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Requires admin permission on the agent")
+
+    # Validate connection_type
+    if body.connection_type not in ("network", "usb", "direct"):
+        raise HTTPException(status_code=400, detail="Invalid connection_type")
+
+    # Create the remote
+    remote_id = str(uuid.uuid4())
+    try:
+        db.execute("""
+            INSERT INTO remotes (remote_id, agent_id, name, address, connection_type, status)
+            VALUES (:remote_id::uuid, :agent_id::uuid, :name, :address, :connection_type, 'offline')
+        """, {
+            "remote_id": remote_id,
+            "agent_id": body.agent_id,
+            "name": body.name,
+            "address": body.address,
+            "connection_type": body.connection_type,
+        })
+    except Exception as e:
+        logger.error(f"Failed to create remote: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create remote")
+
+    return RemoteResponse(
+        remote_id=remote_id,
+        name=body.name,
+        address=body.address,
+        connection_type=body.connection_type,
+        status="offline",
+        agent_id=body.agent_id,
+    )
+
+
+@app.post("/api/remotes/{remote_id}/ping", name="api_ping_remote")
+def api_ping_remote(request: Request, remote_id: str) -> dict:
+    """Ping a remote to check its status."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Get the remote and check permission
+    rows = db.query("""
+        SELECT r.remote_id, r.agent_id, r.address, r.connection_type
+        FROM remotes r
+        INNER JOIN memberships m ON r.agent_id = m.agent_id
+        WHERE r.remote_id = :remote_id::uuid AND m.user_id = :user_id::uuid
+    """, {"remote_id": remote_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Remote not found")
+
+    remote = rows[0]
+
+    # TODO: Actually ping the remote based on connection_type
+    # For now, just update last_ping timestamp
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    try:
+        db.execute("""
+            UPDATE remotes SET last_ping = :now WHERE remote_id = :remote_id::uuid
+        """, {"remote_id": remote_id, "now": now.isoformat()})
+    except Exception as e:
+        logger.warning(f"Failed to update last_ping: {e}")
+
+    return {"message": "Ping request sent", "remote_id": remote_id}
+
+
+@app.delete("/api/remotes/{remote_id}", name="api_delete_remote")
+def api_delete_remote(request: Request, remote_id: str) -> dict:
+    """Delete a remote."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Get the remote and check permission (require admin)
+    rows = db.query("""
+        SELECT r.remote_id, r.agent_id
+        FROM remotes r
+        INNER JOIN memberships m ON r.agent_id = m.agent_id
+        WHERE r.remote_id = :remote_id::uuid AND m.user_id = :user_id::uuid AND m.role IN ('admin', 'owner')
+    """, {"remote_id": remote_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Remote not found or permission denied")
+
+    try:
+        db.execute("""
+            DELETE FROM remotes WHERE remote_id = :remote_id::uuid
+        """, {"remote_id": remote_id})
+    except Exception as e:
+        logger.error(f"Failed to delete remote: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete remote")
+
+    return {"message": "Remote deleted", "remote_id": remote_id}
 
 
 @app.get("/agents", name="gui_agents")
