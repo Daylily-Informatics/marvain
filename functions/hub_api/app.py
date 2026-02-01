@@ -42,6 +42,7 @@ from agent_hub.secrets import get_secret_json
 from api_app import (
     api_app,
     _get_db,
+    _get_s3,
     get_config,
     LiveKitTokenIn,
     LiveKitTokenOut,
@@ -1802,6 +1803,158 @@ def api_delete_memory(request: Request, memory_id: str) -> dict:
         raise HTTPException(status_code=500, detail="Failed to delete memory")
 
     return {"message": "Memory deleted", "memory_id": memory_id}
+
+
+def _get_file_icon(filename: str) -> str:
+    """Get Font Awesome icon class for a file type."""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    icon_map = {
+        "pdf": "fa-file-pdf",
+        "doc": "fa-file-word", "docx": "fa-file-word",
+        "xls": "fa-file-excel", "xlsx": "fa-file-excel",
+        "ppt": "fa-file-powerpoint", "pptx": "fa-file-powerpoint",
+        "jpg": "fa-file-image", "jpeg": "fa-file-image", "png": "fa-file-image", "gif": "fa-file-image", "webp": "fa-file-image",
+        "mp3": "fa-file-audio", "wav": "fa-file-audio", "ogg": "fa-file-audio", "flac": "fa-file-audio",
+        "mp4": "fa-file-video", "webm": "fa-file-video", "mov": "fa-file-video", "avi": "fa-file-video",
+        "zip": "fa-file-archive", "tar": "fa-file-archive", "gz": "fa-file-archive", "rar": "fa-file-archive",
+        "txt": "fa-file-alt", "md": "fa-file-alt",
+        "py": "fa-file-code", "js": "fa-file-code", "ts": "fa-file-code", "html": "fa-file-code", "css": "fa-file-code", "json": "fa-file-code",
+    }
+    return icon_map.get(ext, "fa-file")
+
+
+def _format_file_size(size_bytes: int) -> str:
+    """Format file size in human-readable format."""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    elif size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+    else:
+        return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
+
+
+@app.get("/artifacts", name="gui_artifacts")
+def gui_artifacts(request: Request) -> Response:
+    """Artifacts browser."""
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/artifacts")
+
+    db = _get_db()
+    agents = list_agents_for_user(db, user_id=user.user_id)
+
+    # List artifacts from S3 for each agent
+    agent_ids = [a.agent_id for a in agents]
+    artifacts_data = []
+    total_size = 0
+
+    if agent_ids and _cfg.artifact_bucket:
+        from datetime import datetime, timezone
+        s3 = _get_s3()
+        agent_name_map = {a.agent_id: a.name for a in agents}
+
+        for agent_id in agent_ids:
+            prefix = f"artifacts/agent_id={agent_id}/"
+            try:
+                paginator = s3.get_paginator("list_objects_v2")
+                for page in paginator.paginate(Bucket=_cfg.artifact_bucket, Prefix=prefix):
+                    for obj in page.get("Contents", []):
+                        key = obj.get("Key", "")
+                        size = obj.get("Size", 0)
+                        last_modified = obj.get("LastModified")
+                        total_size += size
+
+                        # Extract filename from key
+                        filename = key.split("/")[-1]
+                        # Remove UUID prefix if present
+                        if "_" in filename and len(filename.split("_")[0]) == 36:
+                            filename = "_".join(filename.split("_")[1:])
+
+                        # Calculate relative time
+                        created_at_relative = None
+                        if last_modified:
+                            now = datetime.now(timezone.utc)
+                            delta = now - last_modified
+                            if delta.days > 0:
+                                created_at_relative = f"{delta.days}d ago"
+                            elif delta.seconds >= 3600:
+                                created_at_relative = f"{delta.seconds // 3600}h ago"
+                            else:
+                                created_at_relative = f"{delta.seconds // 60}m ago"
+
+                        # Generate presigned download URL
+                        download_url = s3.generate_presigned_url(
+                            ClientMethod="get_object",
+                            Params={"Bucket": _cfg.artifact_bucket, "Key": key},
+                            ExpiresIn=3600,
+                        )
+
+                        artifacts_data.append({
+                            "key": key,
+                            "filename": filename,
+                            "agent_id": agent_id,
+                            "agent_name": agent_name_map.get(agent_id, "Unknown"),
+                            "size": size,
+                            "size_formatted": _format_file_size(size),
+                            "created_at_relative": created_at_relative,
+                            "icon": _get_file_icon(filename),
+                            "download_url": download_url,
+                        })
+            except Exception as e:
+                logger.warning(f"Failed to list artifacts for agent {agent_id}: {e}")
+
+        # Sort by last modified (most recent first)
+        artifacts_data.sort(key=lambda x: x.get("created_at_relative", ""), reverse=False)
+
+    agents_data = [
+        {"agent_id": a.agent_id, "name": a.name, "role": a.role}
+        for a in agents
+    ]
+
+    return templates.TemplateResponse(request, "artifacts.html", {
+        "user": {"email": user.email, "user_id": str(user.user_id)},
+        "stage": _cfg.stage,
+        "active_page": "artifacts",
+        "artifacts": artifacts_data,
+        "total_size_formatted": _format_file_size(total_size),
+        "agents": agents_data,
+    })
+
+
+class ArtifactPresign(BaseModel):
+    agent_id: str
+    filename: str
+    content_type: str = "application/octet-stream"
+
+
+@app.post("/api/artifacts/presign", name="api_presign_upload")
+def api_presign_upload(request: Request, body: ArtifactPresign) -> dict:
+    """Get presigned URL for uploading an artifact."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Check admin/owner permission
+    if not check_agent_permission(db, agent_id=body.agent_id, user_id=user.user_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Admin permission required")
+
+    if not _cfg.artifact_bucket:
+        raise HTTPException(status_code=500, detail="Artifact bucket not configured")
+
+    import uuid as uuid_mod
+    key = f"artifacts/agent_id={body.agent_id}/{uuid_mod.uuid4()}_{body.filename}"
+    s3 = _get_s3()
+    url = s3.generate_presigned_url(
+        ClientMethod="put_object",
+        Params={"Bucket": _cfg.artifact_bucket, "Key": key, "ContentType": body.content_type},
+        ExpiresIn=900,
+    )
+
+    return {"upload_url": url, "key": key, "bucket": _cfg.artifact_bucket}
 
 
 @app.get("/audit", name="gui_audit")

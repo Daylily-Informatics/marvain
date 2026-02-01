@@ -1107,3 +1107,94 @@ class TestActionsGui(unittest.TestCase):
         data = r.json()
         self.assertEqual(data["message"], "Action rejected")
         self.assertEqual(data["status"], "rejected")
+
+
+class TestArtifactsGui(unittest.TestCase):
+    """Tests for artifacts GUI routes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load_hub_api_app_module()
+        from fastapi.testclient import TestClient
+
+        cls._TestClient = TestClient
+        cls._orig_gui_get_user = cls.mod._gui_get_user
+        cls._orig_get_db = cls.mod._get_db
+        cls._orig_check_agent_permission = cls.mod.check_agent_permission
+        cls._orig_get_s3 = cls.mod._get_s3
+        cls._orig_list_agents_for_user = cls.mod.list_agents_for_user
+        cls._orig_cfg = cls.mod._cfg
+
+    def setUp(self):
+        self.client = self.__class__._TestClient(self.mod.app, raise_server_exceptions=False)
+        self.mod._gui_get_user = self._orig_gui_get_user
+        self.mod._get_db = self._orig_get_db
+        self.mod.check_agent_permission = self._orig_check_agent_permission
+        self.mod._get_s3 = self._orig_get_s3
+        self.mod.list_agents_for_user = self._orig_list_agents_for_user
+        self.mod._cfg = self._orig_cfg
+
+    def test_artifacts_redirects_to_login_when_unauthenticated(self):
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+        r = self.client.get("/artifacts", follow_redirects=False)
+        self.assertIn(r.status_code, [302, 307])
+
+    def test_artifacts_renders_when_authenticated(self):
+        self.mod._gui_get_user = mock.Mock(return_value=mock.Mock(user_id="user-1", email="test@example.com"))
+
+        mock_db = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        # Mock list_agents_for_user
+        self.mod.list_agents_for_user = mock.Mock(return_value=[
+            mock.Mock(agent_id="agent-1", name="Agent 1", role="owner")
+        ])
+
+        # Mock S3 client with empty artifacts
+        mock_s3 = mock.Mock()
+        mock_paginator = mock.Mock()
+        mock_paginator.paginate = mock.Mock(return_value=[{"Contents": []}])
+        mock_s3.get_paginator = mock.Mock(return_value=mock_paginator)
+        self.mod._get_s3 = mock.Mock(return_value=mock_s3)
+
+        # Mock config with artifact bucket
+        self.mod._cfg = mock.Mock(artifact_bucket="test-bucket", stage="dev")
+
+        r = self.client.get("/artifacts")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Artifacts", r.text)
+
+    def test_presign_requires_authentication(self):
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+        r = self.client.post("/api/artifacts/presign", json={"agent_id": "agent-1", "filename": "test.txt"})
+        self.assertEqual(r.status_code, 401)
+
+    def test_presign_requires_permission(self):
+        self.mod._gui_get_user = mock.Mock(return_value=mock.Mock(user_id="user-1", email="test@example.com"))
+        self.mod.check_agent_permission = mock.Mock(return_value=False)
+
+        mock_db = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post("/api/artifacts/presign", json={"agent_id": "agent-1", "filename": "test.txt"})
+        self.assertEqual(r.status_code, 403)
+
+    def test_presign_success(self):
+        self.mod._gui_get_user = mock.Mock(return_value=mock.Mock(user_id="user-1", email="test@example.com"))
+        self.mod.check_agent_permission = mock.Mock(return_value=True)
+
+        mock_db = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        mock_s3 = mock.Mock()
+        mock_s3.generate_presigned_url = mock.Mock(return_value="https://s3.amazonaws.com/presigned-url")
+        self.mod._get_s3 = mock.Mock(return_value=mock_s3)
+
+        # Mock config
+        self.mod._cfg = mock.Mock(artifact_bucket="test-bucket", stage="dev")
+
+        r = self.client.post("/api/artifacts/presign", json={"agent_id": "agent-1", "filename": "test.txt"})
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertIn("upload_url", data)
+        self.assertIn("key", data)
