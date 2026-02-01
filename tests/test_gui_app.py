@@ -1300,6 +1300,80 @@ class TestAuditGui(unittest.TestCase):
         self.assertEqual(data["entries_checked"], 0)
 
 
+class TestLiveKitTestGui(unittest.TestCase):
+    """Tests for the LiveKit test page GUI routes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load_hub_api_app_module()
+        from fastapi.testclient import TestClient
+
+        cls._TestClient = TestClient
+        cls._orig_gui_get_user = cls.mod._gui_get_user
+        cls._orig_get_db = cls.mod._get_db
+        cls._orig_list_spaces_for_user = cls.mod.list_spaces_for_user
+        cls._orig_cfg = cls.mod._cfg
+
+    def setUp(self):
+        self.client = self.__class__._TestClient(self.mod.app, raise_server_exceptions=False)
+        self.mod._gui_get_user = self._orig_gui_get_user
+        self.mod._get_db = self._orig_get_db
+        self.mod.list_spaces_for_user = self._orig_list_spaces_for_user
+        self.mod._cfg = self._orig_cfg
+
+    def test_livekit_test_requires_authentication(self):
+        """LiveKit test page should redirect unauthenticated users."""
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+        r = self.client.get("/livekit-test", follow_redirects=False)
+        self.assertIn(r.status_code, (302, 303))
+        self.assertIn("/login", r.headers.get("location", ""))
+
+    def test_livekit_test_renders_for_authenticated_user(self):
+        """LiveKit test page should render for authenticated users."""
+        self.mod._gui_get_user = mock.Mock(return_value=mock.Mock(user_id="user-1", email="test@example.com"))
+        mock_db = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+        # Mock list_spaces_for_user to return some spaces
+        self.mod.list_spaces_for_user = mock.Mock(return_value=[
+            mock.Mock(space_id="space-1", name="Test Space", agent_name="Test Agent"),
+            mock.Mock(space_id="space-2", name="Another Space", agent_name="Another Agent"),
+        ])
+        self.mod._cfg = mock.Mock(stage="dev", ws_api_url=None)
+
+        r = self.client.get("/livekit-test", cookies={"marvain_access_token": "test-token"})
+        self.assertEqual(r.status_code, 200)
+        # Should contain page title
+        self.assertIn("LiveKit Test", r.text)
+        # Should contain space selector
+        self.assertIn("space_id", r.text)
+        self.assertIn("Test Space", r.text)
+        self.assertIn("Another Space", r.text)
+        # Should contain connection controls
+        self.assertIn("btn-join", r.text)
+        self.assertIn("btn-leave", r.text)
+        # Should contain media controls
+        self.assertIn("btn-mic", r.text)
+        self.assertIn("btn-cam", r.text)
+        # Should contain LiveKit client script
+        self.assertIn("livekit-client", r.text)
+
+    def test_livekit_test_with_space_preselected(self):
+        """LiveKit test page should preselect space when space_id is provided."""
+        self.mod._gui_get_user = mock.Mock(return_value=mock.Mock(user_id="user-1", email="test@example.com"))
+        mock_db = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+        self.mod.list_spaces_for_user = mock.Mock(return_value=[
+            mock.Mock(space_id="space-1", name="Test Space", agent_name="Test Agent"),
+            mock.Mock(space_id="space-2", name="Another Space", agent_name="Another Agent"),
+        ])
+        self.mod._cfg = mock.Mock(stage="dev", ws_api_url=None)
+
+        r = self.client.get("/livekit-test?space_id=space-1", cookies={"marvain_access_token": "test-token"})
+        self.assertEqual(r.status_code, 200)
+        # Should have space-1 option selected
+        self.assertIn('value="space-1" selected', r.text)
+
+
 class TestWebSocketContext(unittest.TestCase):
     """Tests for WebSocket context in templates."""
 
