@@ -277,3 +277,6 @@ python -m worker
 - Device auth uses opaque device tokens (hash stored server-side). Swap to Cognito/IoT later if desired.
 - Audit is written to an S3 Object Lock bucket with a hash chain (verify offline).
   
+## AND
+
+- I'd like marvain to be able to manage other agents on my and its behalf.
