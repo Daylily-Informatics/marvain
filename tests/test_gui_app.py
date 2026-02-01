@@ -460,3 +460,92 @@ class TestRemotesGui(unittest.TestCase):
         self.assertEqual(body["online_count"], 1)
         self.assertEqual(body["offline_count"], 1)
         self.assertEqual(len(body["remotes"]), 2)
+
+
+class TestAgentsGui(unittest.TestCase):
+    """Tests for the agents management GUI routes."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_hub_api_app_module()
+        from fastapi.testclient import TestClient
+
+        cls._TestClient = TestClient
+        cls._orig_gui_get_user = cls.mod._gui_get_user
+        cls._orig_list_agents_for_user = cls.mod.list_agents_for_user
+        cls._orig_get_db = cls.mod._get_db
+
+    def setUp(self) -> None:
+        self.mod._gui_get_user = self._orig_gui_get_user
+        self.mod.list_agents_for_user = self._orig_list_agents_for_user
+        self.mod._get_db = self._orig_get_db
+        self.client = self.__class__._TestClient(self.mod.app, raise_server_exceptions=False)
+
+    def test_agents_redirects_to_login_when_unauthenticated(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.get("/agents", follow_redirects=False)
+        self.assertEqual(r.status_code, 302)
+        self.assertIn("/login", r.headers.get("location", ""))
+
+    def test_agents_renders_when_authenticated(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+
+        # Mock list_agents_for_user
+        mock_agent = mock.Mock()
+        mock_agent.agent_id = "a1"
+        mock_agent.name = "Test Agent"
+        mock_agent.role = "owner"
+        mock_agent.relationship_label = "My Assistant"
+        mock_agent.disabled = False
+        self.mod.list_agents_for_user = mock.Mock(return_value=[mock_agent])
+
+        r = self.client.get("/agents")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Test Agent", r.text)
+        self.assertIn("Owner", r.text)
+
+    def test_agent_detail_renders_when_authenticated(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+
+        # Mock list_agents_for_user
+        mock_agent = mock.Mock()
+        mock_agent.agent_id = "a1"
+        mock_agent.name = "Test Agent"
+        mock_agent.role = "admin"
+        mock_agent.relationship_label = "Work Helper"
+        mock_agent.disabled = False
+        self.mod.list_agents_for_user = mock.Mock(return_value=[mock_agent])
+
+        # Mock database for members query
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[
+            {"user_id": "u1", "role": "admin", "email": "user@example.com", "created_at": "2025-01-01"},
+            {"user_id": "u2", "role": "member", "email": "member@example.com", "created_at": "2025-01-02"},
+        ])
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.get("/agents/a1")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Test Agent", r.text)
+        self.assertIn("Admin", r.text)
+        self.assertIn("member@example.com", r.text)
+
+    def test_agent_detail_returns_404_for_unknown_agent(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+
+        mock_db = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+        self.mod.list_agents_for_user = mock.Mock(return_value=[])
+
+        r = self.client.get("/agents/unknown-id")
+
+        self.assertEqual(r.status_code, 404)

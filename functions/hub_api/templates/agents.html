@@ -1,0 +1,204 @@
+{% extends "base.html" %}
+
+{% block title %}Agents - Marvain{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title"><i class="fas fa-robot"></i> Agents</h1>
+    <p class="text-muted">AI agents you can interact with and manage</p>
+  </div>
+  <div class="page-actions">
+    <button type="button" class="btn btn-primary" onclick="Marvain.showCreateAgentModal()">
+      <i class="fas fa-plus"></i> Create Agent
+    </button>
+  </div>
+</div>
+
+<!-- Role Summary -->
+<div class="grid grid-4 mb-lg">
+  <div class="stat-card">
+    <div class="card-icon success"><i class="fas fa-crown"></i></div>
+    <div class="stat-content">
+      <div class="stat-value">{{ owner_count }}</div>
+      <div class="stat-label">Owner</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="card-icon info"><i class="fas fa-user-shield"></i></div>
+    <div class="stat-content">
+      <div class="stat-value">{{ admin_count }}</div>
+      <div class="stat-label">Admin</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="card-icon warning"><i class="fas fa-user"></i></div>
+    <div class="stat-content">
+      <div class="stat-value">{{ member_count }}</div>
+      <div class="stat-label">Member</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="card-icon"><i class="fas fa-users"></i></div>
+    <div class="stat-content">
+      <div class="stat-value">{{ total_count }}</div>
+      <div class="stat-label">Total</div>
+    </div>
+  </div>
+</div>
+
+<!-- Agents List -->
+<div class="card">
+  <div class="card-header">
+    <h3 class="card-title">All Agents</h3>
+    <div class="card-actions">
+      <input type="text" id="agent-search" placeholder="Search agents..." 
+             oninput="filterAgents()" class="form-control" style="width: 200px;">
+    </div>
+  </div>
+  <div class="card-body">
+    {% if agents %}
+    <div class="grid grid-3" id="agents-grid">
+      {% for agent in agents %}
+      <div class="agent-card card" data-name="{{ agent.name|lower }}" data-role="{{ agent.role }}">
+        <div class="card-body">
+          <div class="agent-header">
+            <div class="agent-avatar">
+              <i class="fas fa-robot"></i>
+            </div>
+            <div class="agent-info">
+              <h4 class="agent-name">{{ agent.name }}</h4>
+              <span class="badge badge-{{ 'success' if agent.role == 'owner' else 'info' if agent.role == 'admin' else 'warning' }}">
+                {{ agent.role|title }}
+              </span>
+            </div>
+          </div>
+          <div class="agent-details">
+            <div class="detail-row">
+              <span class="detail-label">ID:</span>
+              <code class="detail-value">{{ agent.agent_id[:8] }}...</code>
+            </div>
+            {% if agent.relationship_label %}
+            <div class="detail-row">
+              <span class="detail-label">Label:</span>
+              <span class="detail-value">{{ agent.relationship_label }}</span>
+            </div>
+            {% endif %}
+            <div class="detail-row">
+              <span class="detail-label">Status:</span>
+              <span class="detail-value">
+                {% if agent.disabled %}
+                <span class="status-dot offline"></span> Disabled
+                {% else %}
+                <span class="status-dot online"></span> Active
+                {% endif %}
+              </span>
+            </div>
+          </div>
+          <div class="agent-actions">
+            <a href="/agents/{{ agent.agent_id }}" class="btn btn-sm btn-primary">
+              <i class="fas fa-eye"></i> View
+            </a>
+            {% if agent.role in ['owner', 'admin'] %}
+            <button class="btn btn-sm btn-outline" onclick="manageMembers('{{ agent.agent_id }}')">
+              <i class="fas fa-users"></i> Members
+            </button>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <i class="fas fa-robot fa-3x"></i>
+      <h3>No Agents Found</h3>
+      <p>Create your first agent to get started.</p>
+      <button type="button" class="btn btn-primary" onclick="Marvain.showCreateAgentModal()">
+        <i class="fas fa-plus"></i> Create Agent
+      </button>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Create Agent Modal -->
+<div id="create-agent-modal" class="modal" style="display: none;">
+  <div class="modal-backdrop" onclick="Marvain.hideModal('create-agent-modal')"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>Create New Agent</h3>
+      <button type="button" class="btn btn-sm" onclick="Marvain.hideModal('create-agent-modal')">
+        <i class="fas fa-times"></i>
+      </button>
+    </div>
+    <form onsubmit="submitCreateAgent(event)">
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="agent-name">Agent Name *</label>
+          <input type="text" id="agent-name" name="name" required placeholder="My Assistant">
+        </div>
+        <div class="form-group">
+          <label for="agent-label">Relationship Label</label>
+          <input type="text" id="agent-label" name="relationship_label" 
+                 placeholder="e.g., Work Assistant, Home Helper">
+          <small class="text-muted">Optional label to describe your relationship with this agent</small>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" onclick="Marvain.hideModal('create-agent-modal')">
+          Cancel
+        </button>
+        <button type="submit" class="btn btn-primary">Create Agent</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function filterAgents() {
+  const search = document.getElementById('agent-search').value.toLowerCase();
+  document.querySelectorAll('.agent-card').forEach(card => {
+    const name = card.dataset.name;
+    card.style.display = name.includes(search) ? '' : 'none';
+  });
+}
+
+function manageMembers(agentId) {
+  window.location.href = '/agents/' + agentId + '#members';
+}
+
+function submitCreateAgent(event) {
+  event.preventDefault();
+  const form = event.target;
+  const data = {
+    name: form.name.value,
+    relationship_label: form.relationship_label.value || null
+  };
+  
+  Marvain.showLoading('Creating agent...');
+  Marvain.api('/v1/agents', { method: 'POST', body: JSON.stringify(data), headers: {'Content-Type': 'application/json'} })
+    .then(() => {
+      Marvain.hideLoading();
+      Marvain.showToast('success', 'Created', 'Agent created successfully');
+      Marvain.hideModal('create-agent-modal');
+      location.reload();
+    })
+    .catch(err => {
+      Marvain.hideLoading();
+      Marvain.showToast('error', 'Create Failed', err.message);
+    });
+}
+
+Marvain.showCreateAgentModal = function() {
+  document.getElementById('create-agent-modal').style.display = 'flex';
+};
+
+Marvain.hideModal = function(id) {
+  document.getElementById(id).style.display = 'none';
+};
+</script>
+{% endblock %}
+
