@@ -500,6 +500,128 @@ pre {
   color: var(--color-gray-400);
 }
 
+/* ==================== Modals ==================== */
+.modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.modal-content {
+  position: relative;
+  background: var(--color-gray-800);
+  border-radius: var(--radius-lg);
+  width: 100%;
+  max-width: 500px;
+  max-height: 90vh;
+  overflow: auto;
+  box-shadow: var(--shadow-lg);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-bottom: 1px solid var(--color-gray-600);
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.btn-close {
+  background: none;
+  border: none;
+  color: var(--color-gray-400);
+  font-size: 1.5rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.btn-close:hover {
+  color: var(--color-white);
+}
+
+.modal-body {
+  padding: var(--spacing-lg);
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-top: 1px solid var(--color-gray-600);
+}
+
+/* ==================== Page Header ==================== */
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: var(--spacing-lg);
+  gap: var(--spacing-md);
+}
+
+.page-title {
+  margin: 0 0 var(--spacing-xs) 0;
+  font-size: 1.75rem;
+  font-weight: 600;
+}
+
+.page-title i {
+  margin-right: var(--spacing-sm);
+  color: var(--color-highlight);
+}
+
+.page-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+}
+
+/* ==================== Filter Bar ==================== */
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-md);
+  padding: var(--spacing-md);
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.filter-group.flex-grow {
+  flex: 1;
+  min-width: 200px;
+}
+
+.filter-group label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-gray-400);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* ==================== Status Text ==================== */
+.status-text {
+  margin-left: var(--spacing-xs);
+}
+
 /* ==================== Utilities ==================== */
 .text-muted { color: var(--color-gray-400); }
 .text-success { color: var(--color-success); }
@@ -512,4 +634,21 @@ pre {
 .mb-0 { margin-bottom: 0; }
 .mb-md { margin-bottom: var(--spacing-md); }
 .mb-lg { margin-bottom: var(--spacing-lg); }
+.flex-grow { flex-grow: 1; }
+
+/* ==================== Responsive ==================== */
+@media (max-width: 768px) {
+  .page-header {
+    flex-direction: column;
+  }
+
+  .filter-bar {
+    flex-direction: column;
+  }
+
+  .modal-content {
+    margin: var(--spacing-md);
+    max-width: calc(100% - var(--spacing-lg));
+  }
+}
 

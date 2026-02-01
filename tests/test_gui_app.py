@@ -10,9 +10,22 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+# Module-level cached module to ensure all test classes share the same module instance.
+# This is critical because route handlers capture function references at import time,
+# so mocking functions on a different module instance won't affect route behavior.
+_cached_hub_api_module = None
+
 
 def _load_hub_api_app_module():
-    """Load functions/hub_api/app.py as a module without requiring it be a package."""
+    """Load functions/hub_api/app.py as a module without requiring it be a package.
+
+    Returns a cached module if already loaded to ensure all test classes share
+    the same module instance and route handlers.
+    """
+    global _cached_hub_api_module
+    if _cached_hub_api_module is not None:
+        return _cached_hub_api_module
+
     repo_root = Path(__file__).resolve().parents[1]
     shared = repo_root / "layers" / "shared" / "python"
     if str(shared) not in sys.path:
@@ -34,6 +47,12 @@ def _load_hub_api_app_module():
     # Make session secret deterministic for stable cookie behavior.
     os.environ.setdefault("SESSION_SECRET_KEY", "test-session-secret")
 
+    # Clear cached api_app module to prevent route duplication when reloading
+    # app.py (which imports api_app and adds routes to the same app object)
+    for mod_name in ["api_app", "hub_api_app_for_tests_gui"]:
+        if mod_name in sys.modules:
+            del sys.modules[mod_name]
+
     app_py = repo_root / "functions" / "hub_api" / "app.py"
     spec = importlib.util.spec_from_file_location("hub_api_app_for_tests_gui", app_py)
     assert spec and spec.loader
@@ -41,6 +60,8 @@ def _load_hub_api_app_module():
     sys.modules[spec.name] = mod
     with mock.patch("boto3.client", return_value=mock.Mock()):
         spec.loader.exec_module(mod)
+
+    _cached_hub_api_module = mod
     return mod
 
 
@@ -59,6 +80,7 @@ class TestGuiApp(unittest.TestCase):
         cls._orig_get_secret_json = cls.mod.get_secret_json
         cls._orig_mint_livekit_join_token = cls.mod.mint_livekit_join_token
         cls._orig_check_agent_permission = cls.mod.check_agent_permission
+        cls._orig_get_db = cls.mod._get_db
 
     def setUp(self) -> None:
         # Fresh client per test to avoid cookie persistence across tests.
@@ -72,6 +94,7 @@ class TestGuiApp(unittest.TestCase):
         self.mod.get_secret_json = self.__class__._orig_get_secret_json
         self.mod.mint_livekit_join_token = self.__class__._orig_mint_livekit_join_token
         self.mod.check_agent_permission = self.__class__._orig_check_agent_permission
+        self.mod._get_db = self.__class__._orig_get_db
 
         # Provide Cognito config for GUI routes.
         self.mod._cfg = dataclasses.replace(
@@ -81,6 +104,17 @@ class TestGuiApp(unittest.TestCase):
             cognito_user_pool_client_id="client-123",
             cognito_redirect_uri="http://testserver/auth/callback",
         )
+
+    def tearDown(self) -> None:
+        # Restore originals after each test to prevent pollution to other test classes.
+        self.mod._gui_get_user = self.__class__._orig_gui_get_user
+        self.mod.ensure_user_row = self.__class__._orig_ensure_user_row
+        self.mod.list_agents_for_user = self.__class__._orig_list_agents_for_user
+        self.mod.list_spaces_for_user = self.__class__._orig_list_spaces_for_user
+        self.mod.get_secret_json = self.__class__._orig_get_secret_json
+        self.mod.mint_livekit_join_token = self.__class__._orig_mint_livekit_join_token
+        self.mod.check_agent_permission = self.__class__._orig_check_agent_permission
+        self.mod._get_db = self.__class__._orig_get_db
 
     def test_login_redirect_sets_state_and_verifier_cookies(self) -> None:
         r = self.client.get("/login", follow_redirects=False)
@@ -263,3 +297,117 @@ class TestGuiApp(unittest.TestCase):
         self.assertEqual(body["token"], "jwt")
         self.assertEqual(body["room"], "space-1")
         self.assertEqual(body["identity"], "user:u1")
+
+
+class TestRemotesGui(unittest.TestCase):
+    """Tests for the remotes GUI routes."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_hub_api_app_module()
+        from fastapi.testclient import TestClient
+
+        cls._TestClient = TestClient
+        cls._orig_gui_get_user = cls.mod._gui_get_user
+        cls._orig_list_agents_for_user = cls.mod.list_agents_for_user
+        cls._orig_get_db = cls.mod._get_db
+        cls._orig_check_agent_permission = cls.mod.check_agent_permission
+
+    def setUp(self) -> None:
+        self.mod._gui_get_user = self._orig_gui_get_user
+        self.mod.list_agents_for_user = self._orig_list_agents_for_user
+        self.mod._get_db = self._orig_get_db
+        self.mod.check_agent_permission = self._orig_check_agent_permission
+        self.client = self._TestClient(self.mod.app)
+
+    def test_remotes_redirects_to_login_when_unauthenticated(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.get("/remotes", follow_redirects=False)
+        self.assertEqual(r.status_code, 302)
+        self.assertIn("/login", r.headers.get("location", ""))
+
+    def test_remotes_renders_when_authenticated(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
+        )
+        self.mod.list_agents_for_user = mock.Mock(
+            return_value=[
+                types.SimpleNamespace(agent_id="a1", name="Agent One", role="owner", relationship_label=None, disabled=False),
+            ]
+        )
+
+        # Mock the database object
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[
+            {
+                "remote_id": "r1",
+                "name": "Camera 1",
+                "address": "192.168.1.100",
+                "connection_type": "network",
+                "capabilities": ["video", "audio"],
+                "status": "online",
+                "last_ping": None,
+                "last_seen": None,
+                "agent_name": "Agent One",
+            }
+        ])
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.get("/remotes")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Remote Satellites", r.text)
+        self.assertIn("Camera 1", r.text)
+        self.assertIn("192.168.1.100", r.text)
+
+    def test_create_remote_requires_authentication(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.post("/api/remotes", json={
+            "name": "Test Remote",
+            "address": "192.168.1.200",
+            "connection_type": "network",
+            "agent_id": "a1",
+        })
+        self.assertEqual(r.status_code, 401)
+
+    def test_create_remote_success(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
+        )
+        self.mod.check_agent_permission = mock.Mock(return_value=True)
+
+        mock_db = mock.Mock()
+        mock_db.execute = mock.Mock(return_value=None)
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post("/api/remotes", json={
+            "name": "Test Remote",
+            "address": "192.168.1.200",
+            "connection_type": "network",
+            "agent_id": "a1",
+        })
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["name"], "Test Remote")
+        self.assertEqual(body["address"], "192.168.1.200")
+        self.assertEqual(body["status"], "offline")
+
+    def test_ping_remote_requires_authentication(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.post("/api/remotes/r1/ping")
+        self.assertEqual(r.status_code, 401)
+
+    def test_delete_remote_requires_admin_permission(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
+        )
+
+        # Mock database to return no results (permission denied)
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[])
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.delete("/api/remotes/r1")
+        self.assertEqual(r.status_code, 404)
