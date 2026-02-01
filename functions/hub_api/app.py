@@ -1963,7 +1963,170 @@ def gui_audit(request: Request) -> Response:
     user = _gui_get_user(request)
     if not user:
         return _gui_redirect_to_login(request=request, next_path="/audit")
-    return _gui_html_page(title="Audit", body_html="<h1>Audit Log</h1><p>Coming soon - Phase 5.13</p>")
+
+    db = _get_db()
+    agents = list_agents_for_user(db, user_id=user.user_id)
+
+    # List audit entries from S3 for each agent
+    agent_ids = [a.agent_id for a in agents]
+    entries_data = []
+    entry_types = set()
+
+    if agent_ids and _cfg.audit_bucket:
+        from datetime import datetime, timezone
+        s3 = _get_s3()
+        agent_name_map = {a.agent_id: a.name for a in agents}
+
+        for agent_id in agent_ids:
+            prefix = f"audit/agent_id={agent_id}/"
+            try:
+                paginator = s3.get_paginator("list_objects_v2")
+                for page in paginator.paginate(Bucket=_cfg.audit_bucket, Prefix=prefix, MaxKeys=100):
+                    for obj in page.get("Contents", []):
+                        key = obj.get("Key", "")
+                        last_modified = obj.get("LastModified")
+
+                        # Download and parse the audit entry
+                        try:
+                            resp = s3.get_object(Bucket=_cfg.audit_bucket, Key=key)
+                            body = resp["Body"].read().decode("utf-8")
+                            import json
+                            entry = json.loads(body)
+
+                            # Calculate relative time
+                            ts_relative = None
+                            if last_modified:
+                                now = datetime.now(timezone.utc)
+                                delta = now - last_modified
+                                if delta.days > 0:
+                                    ts_relative = f"{delta.days}d ago"
+                                elif delta.seconds >= 3600:
+                                    ts_relative = f"{delta.seconds // 3600}h ago"
+                                else:
+                                    ts_relative = f"{delta.seconds // 60}m ago"
+
+                            # Data preview (truncate to 100 chars)
+                            data_str = json.dumps(entry.get("data", {}))
+                            data_preview = data_str[:100] + "..." if len(data_str) > 100 else data_str
+
+                            entry_type = entry.get("type", "unknown")
+                            entry_types.add(entry_type)
+
+                            entries_data.append({
+                                "entry_id": entry.get("entry_id", ""),
+                                "agent_id": agent_id,
+                                "agent_name": agent_name_map.get(agent_id, "Unknown"),
+                                "type": entry_type,
+                                "ts": entry.get("ts", ""),
+                                "ts_relative": ts_relative,
+                                "hash": entry.get("hash", ""),
+                                "prev_hash": entry.get("prev_hash", "GENESIS"),
+                                "data": entry.get("data", {}),
+                                "data_preview": data_preview,
+                            })
+                        except Exception as e:
+                            logger.warning(f"Failed to parse audit entry {key}: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to list audit entries for agent {agent_id}: {e}")
+
+        # Sort by timestamp (most recent first)
+        entries_data.sort(key=lambda x: x.get("ts", ""), reverse=True)
+        # Limit to 100 most recent
+        entries_data = entries_data[:100]
+
+    agents_data = [
+        {"agent_id": a.agent_id, "name": a.name, "role": a.role}
+        for a in agents
+    ]
+
+    import json
+    return templates.TemplateResponse(request, "audit.html", {
+        "user": {"email": user.email, "user_id": str(user.user_id)},
+        "stage": _cfg.stage,
+        "active_page": "audit",
+        "entries": entries_data,
+        "entries_json": json.dumps(entries_data),
+        "entry_types": sorted(entry_types),
+        "agents": agents_data,
+    })
+
+
+@app.post("/api/audit/verify", name="api_audit_verify")
+def api_audit_verify(request: Request) -> dict:
+    """Verify the integrity of the audit chain."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    agents = list_agents_for_user(db, user_id=user.user_id)
+
+    # Only admin/owner can verify
+    admin_agents = [a for a in agents if a.role in ("admin", "owner")]
+    if not admin_agents:
+        raise HTTPException(status_code=403, detail="Admin permission required")
+
+    if not _cfg.audit_bucket:
+        return {"valid": False, "error": "Audit bucket not configured", "entries_checked": 0}
+
+    import hashlib
+    import json
+
+    def _canon_json(obj: Any) -> str:
+        return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+    def _sha256_hex(s: str) -> str:
+        return hashlib.sha256(s.encode("utf-8")).hexdigest()
+
+    s3 = _get_s3()
+    entries_checked = 0
+    errors = []
+
+    for agent in admin_agents:
+        agent_id = agent.agent_id
+        prefix = f"audit/agent_id={agent_id}/"
+        entries = []
+
+        try:
+            paginator = s3.get_paginator("list_objects_v2")
+            for page in paginator.paginate(Bucket=_cfg.audit_bucket, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    key = obj.get("Key", "")
+                    try:
+                        resp = s3.get_object(Bucket=_cfg.audit_bucket, Key=key)
+                        body = resp["Body"].read().decode("utf-8")
+                        entry = json.loads(body)
+                        entries.append(entry)
+                    except Exception as e:
+                        errors.append(f"Failed to read {key}: {e}")
+        except Exception as e:
+            errors.append(f"Failed to list audit for agent {agent_id}: {e}")
+            continue
+
+        # Sort by timestamp
+        entries.sort(key=lambda x: x.get("ts", ""))
+
+        # Verify chain
+        expected_prev = "GENESIS"
+        for entry in entries:
+            prev_hash = entry.get("prev_hash", "")
+            if prev_hash != expected_prev:
+                errors.append(f"Chain break at entry {entry.get('entry_id')}: expected prev_hash {expected_prev[:12]}..., got {prev_hash[:12]}...")
+
+            # Verify hash
+            stored_hash = entry.get("hash", "")
+            entry_copy = {k: v for k, v in entry.items() if k != "hash"}
+            computed_hash = _sha256_hex(prev_hash + _canon_json(entry_copy))
+            if computed_hash != stored_hash:
+                errors.append(f"Hash mismatch at entry {entry.get('entry_id')}")
+
+            expected_prev = stored_hash
+            entries_checked += 1
+
+    if errors:
+        return {"valid": False, "error": "; ".join(errors[:5]), "entries_checked": entries_checked}
+
+    return {"valid": True, "entries_checked": entries_checked}
 
 
 @app.get("/profile", name="profile")
