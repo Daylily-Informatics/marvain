@@ -1397,7 +1397,106 @@ def gui_events(request: Request) -> Response:
     user = _gui_get_user(request)
     if not user:
         return _gui_redirect_to_login(request=request, next_path="/events")
-    return _gui_html_page(title="Events", body_html="<h1>Events</h1><p>Coming soon - Phase 5.10</p>")
+
+    db = _get_db()
+    agents = list_agents_for_user(db, user_id=user.user_id)
+    spaces = list_spaces_for_user(db, user_id=user.user_id)
+
+    # Get events for all agents the user has access to
+    agent_ids = [a.agent_id for a in agents]
+    events_data = []
+    event_types_set: set = set()
+
+    if agent_ids:
+        from datetime import datetime, timezone
+        import json
+        placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+        params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+        rows = db.query(
+            f"""SELECT e.event_id::TEXT as event_id, e.agent_id::TEXT as agent_id,
+                       e.space_id::TEXT as space_id, e.device_id::TEXT as device_id,
+                       e.person_id::TEXT as person_id, e.type, e.payload, e.created_at,
+                       a.name as agent_name, s.name as space_name, p.display_name as person_name
+                FROM events e
+                JOIN agents a ON a.agent_id = e.agent_id
+                LEFT JOIN spaces s ON s.space_id = e.space_id
+                LEFT JOIN people p ON p.person_id = e.person_id
+                WHERE e.agent_id::TEXT IN ({placeholders})
+                ORDER BY e.created_at DESC
+                LIMIT 200""",
+            params,
+        )
+
+        for row in rows:
+            event_type = row.get("type", "")
+            event_types_set.add(event_type)
+
+            # Categorize event type for badge styling
+            type_lower = event_type.lower()
+            if "audio" in type_lower or "sound" in type_lower:
+                type_category = "audio"
+            elif "video" in type_lower or "image" in type_lower:
+                type_category = "video"
+            elif "speech" in type_lower or "transcript" in type_lower or "voice" in type_lower:
+                type_category = "speech"
+            elif "action" in type_lower or "tool" in type_lower or "execute" in type_lower:
+                type_category = "action"
+            elif "system" in type_lower or "error" in type_lower or "connect" in type_lower:
+                type_category = "system"
+            else:
+                type_category = "other"
+
+            created_at = row.get("created_at")
+            created_at_str = ""
+            if created_at:
+                try:
+                    if hasattr(created_at, "strftime"):
+                        created_at_str = created_at.strftime("%H:%M:%S")
+                except Exception:
+                    pass
+
+            payload = row.get("payload") or {}
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = {}
+            payload_str = json.dumps(payload) if payload else "{}"
+            payload_preview = payload_str[:100] + ("..." if len(payload_str) > 100 else "")
+
+            events_data.append({
+                "event_id": str(row.get("event_id", "")),
+                "agent_id": str(row.get("agent_id", "")),
+                "agent_name": row.get("agent_name", ""),
+                "space_id": str(row.get("space_id", "")) if row.get("space_id") else None,
+                "space_name": row.get("space_name"),
+                "person_id": str(row.get("person_id", "")) if row.get("person_id") else None,
+                "person_name": row.get("person_name"),
+                "type": event_type,
+                "type_category": type_category,
+                "payload_str": payload_str,
+                "payload_preview": payload_preview,
+                "created_at_str": created_at_str,
+            })
+
+    agents_data = [
+        {"agent_id": a.agent_id, "name": a.name, "role": a.role}
+        for a in agents
+    ]
+    spaces_data = [
+        {"space_id": s.space_id, "name": s.name}
+        for s in spaces
+    ]
+
+    return templates.TemplateResponse(request, "events.html", {
+        "user": {"email": user.email, "user_id": str(user.user_id)},
+        "stage": _cfg.stage,
+        "active_page": "events",
+        "events": events_data,
+        "event_types": sorted(event_types_set),
+        "agents": agents_data,
+        "spaces": spaces_data,
+    })
 
 
 @app.get("/memories", name="gui_memories")

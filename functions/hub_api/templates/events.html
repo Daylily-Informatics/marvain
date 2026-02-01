@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+
+{% block title %}Events - Marvain{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title"><i class="fas fa-stream"></i> Event Stream</h1>
+    <p class="text-muted">Real-time event stream from your agents</p>
+  </div>
+  <div class="page-actions">
+    <button type="button" class="btn btn-outline" id="pause-btn" onclick="togglePause()">
+      <i class="fas fa-pause"></i> Pause
+    </button>
+  </div>
+</div>
+
+<!-- Filter Bar -->
+<div class="filter-bar mb-lg">
+  <div class="filter-group">
+    <label for="agent-filter">Agent</label>
+    <select id="agent-filter" onchange="filterEvents()">
+      <option value="">All Agents</option>
+      {% for agent in agents %}
+      <option value="{{ agent.agent_id }}">{{ agent.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="filter-group">
+    <label for="space-filter">Space</label>
+    <select id="space-filter" onchange="filterEvents()">
+      <option value="">All Spaces</option>
+      {% for space in spaces %}
+      <option value="{{ space.space_id }}">{{ space.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="filter-group">
+    <label for="type-filter">Type</label>
+    <select id="type-filter" onchange="filterEvents()">
+      <option value="">All Types</option>
+      {% for t in event_types %}
+      <option value="{{ t }}">{{ t }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="filter-group flex-grow">
+    <label for="search-filter">Search</label>
+    <input type="text" id="search-filter" placeholder="Search events..." oninput="filterEvents()">
+  </div>
+</div>
+
+<!-- Event Stats -->
+<div class="stats-bar mb-lg">
+  <div class="stat-item">
+    <span class="stat-label">Total</span>
+    <span class="stat-value" id="event-count">{{ events|length }}</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">Status</span>
+    <span class="stat-value" id="stream-status">
+      <i class="fas fa-circle text-success"></i> Live
+    </span>
+  </div>
+</div>
+
+<!-- Events List -->
+<div class="events-list" id="events-list">
+  {% if events %}
+  {% for event in events %}
+  <div class="event-row" data-agent="{{ event.agent_id }}" data-space="{{ event.space_id or '' }}" data-type="{{ event.type }}" data-payload="{{ event.payload_str|lower }}">
+    <div class="event-time">{{ event.created_at_str }}</div>
+    <div class="event-type">
+      <span class="type-badge type-{{ event.type_category }}">{{ event.type }}</span>
+    </div>
+    <div class="event-source">
+      <span class="text-muted">{{ event.agent_name }}</span>
+      {% if event.space_name %}
+      <span class="text-muted">• {{ event.space_name }}</span>
+      {% endif %}
+      {% if event.person_name %}
+      <span class="text-muted">• <i class="fas fa-user"></i> {{ event.person_name }}</span>
+      {% endif %}
+    </div>
+    <div class="event-payload">
+      <code>{{ event.payload_preview }}</code>
+    </div>
+    <div class="event-actions">
+      <button class="btn btn-sm btn-outline" onclick="viewEvent('{{ event.event_id }}')">
+        <i class="fas fa-eye"></i>
+      </button>
+    </div>
+  </div>
+  {% endfor %}
+  {% else %}
+  <div class="empty-state">
+    <i class="fas fa-stream fa-3x"></i>
+    <h3>No Events Yet</h3>
+    <p>Events will appear here as your agents interact with the world.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let isPaused = false;
+
+function filterEvents() {
+  const agent = document.getElementById('agent-filter').value;
+  const space = document.getElementById('space-filter').value;
+  const type = document.getElementById('type-filter').value;
+  const search = document.getElementById('search-filter').value.toLowerCase();
+  
+  let visibleCount = 0;
+  document.querySelectorAll('.event-row').forEach(row => {
+    const matchAgent = !agent || row.dataset.agent === agent;
+    const matchSpace = !space || row.dataset.space === space;
+    const matchType = !type || row.dataset.type === type;
+    const matchSearch = !search || row.dataset.payload.includes(search);
+    const visible = matchAgent && matchSpace && matchType && matchSearch;
+    row.style.display = visible ? '' : 'none';
+    if (visible) visibleCount++;
+  });
+  document.getElementById('event-count').textContent = visibleCount;
+}
+
+function togglePause() {
+  isPaused = !isPaused;
+  const btn = document.getElementById('pause-btn');
+  const status = document.getElementById('stream-status');
+  if (isPaused) {
+    btn.innerHTML = '<i class="fas fa-play"></i> Resume';
+    status.innerHTML = '<i class="fas fa-circle text-warning"></i> Paused';
+  } else {
+    btn.innerHTML = '<i class="fas fa-pause"></i> Pause';
+    status.innerHTML = '<i class="fas fa-circle text-success"></i> Live';
+  }
+}
+
+function viewEvent(eventId) {
+  Marvain.showToast('info', 'Coming Soon', 'Event details view will be available soon.');
+}
+</script>
+{% endblock %}
+
