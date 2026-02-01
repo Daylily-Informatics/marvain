@@ -164,9 +164,17 @@ class TestGuiApp(unittest.TestCase):
                 types.SimpleNamespace(agent_id="a2", name="Agent Two", role="member", relationship_label=None, disabled=True),
             ]
         )
+        self.mod.list_spaces_for_user = mock.Mock(return_value=[])
+
+        # Mock the database object to return empty results for remotes/actions queries
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[])
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
         r = self.client.get("/")
+
         self.assertEqual(r.status_code, 200)
-        self.assertIn("Your agents", r.text)
+        self.assertIn("Your Agents", r.text)
         self.assertIn("Agent One", r.text)
         self.assertIn("Agent Two", r.text)
 
