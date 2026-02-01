@@ -160,6 +160,132 @@
         throw new Error(error.detail || 'Request failed');
       }
       return response.json();
+    },
+
+    // WebSocket client for real-time updates
+    ws: null,
+    wsCallbacks: {},
+    wsReconnectAttempts: 0,
+    wsMaxReconnectAttempts: 5,
+    wsReconnectDelay: 1000,
+
+    /**
+     * Connect to WebSocket server
+     * @param {string} url - WebSocket URL
+     * @param {string} accessToken - Access token for authentication
+     */
+    wsConnect: function(url, accessToken) {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        console.log('[Marvain] WebSocket already connected');
+        return;
+      }
+
+      console.log('[Marvain] Connecting to WebSocket...');
+      this.ws = new WebSocket(url);
+
+      this.ws.onopen = () => {
+        console.log('[Marvain] WebSocket connected');
+        this.wsReconnectAttempts = 0;
+        // Send hello message with access token
+        this.wsSend({ action: 'hello', access_token: accessToken });
+        this._wsEmit('connected');
+      };
+
+      this.ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          console.log('[Marvain] WebSocket message:', msg);
+          this._wsEmit('message', msg);
+          // Also emit specific action type
+          if (msg.action) {
+            this._wsEmit(msg.action, msg);
+          }
+        } catch (e) {
+          console.error('[Marvain] WebSocket parse error:', e);
+        }
+      };
+
+      this.ws.onclose = (event) => {
+        console.log('[Marvain] WebSocket closed:', event.code);
+        this._wsEmit('disconnected', event);
+        this.ws = null;
+        // Attempt reconnect
+        if (this.wsReconnectAttempts < this.wsMaxReconnectAttempts) {
+          this.wsReconnectAttempts++;
+          const delay = this.wsReconnectDelay * Math.pow(2, this.wsReconnectAttempts - 1);
+          console.log('[Marvain] Reconnecting in ' + delay + 'ms...');
+          setTimeout(() => this.wsConnect(url, accessToken), delay);
+        }
+      };
+
+      this.ws.onerror = (error) => {
+        console.error('[Marvain] WebSocket error:', error);
+        this._wsEmit('error', error);
+      };
+    },
+
+    /**
+     * Send a message through WebSocket
+     * @param {Object} message - Message to send
+     */
+    wsSend: function(message) {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify(message));
+      } else {
+        console.warn('[Marvain] WebSocket not connected');
+      }
+    },
+
+    /**
+     * Subscribe to WebSocket events
+     * @param {string} event - Event name
+     * @param {Function} callback - Callback function
+     */
+    wsOn: function(event, callback) {
+      if (!this.wsCallbacks[event]) {
+        this.wsCallbacks[event] = [];
+      }
+      this.wsCallbacks[event].push(callback);
+    },
+
+    /**
+     * Unsubscribe from WebSocket events
+     * @param {string} event - Event name
+     * @param {Function} callback - Callback function
+     */
+    wsOff: function(event, callback) {
+      if (this.wsCallbacks[event]) {
+        this.wsCallbacks[event] = this.wsCallbacks[event].filter(cb => cb !== callback);
+      }
+    },
+
+    /**
+     * Emit WebSocket event to subscribers
+     * @private
+     */
+    _wsEmit: function(event, data) {
+      if (this.wsCallbacks[event]) {
+        this.wsCallbacks[event].forEach(cb => cb(data));
+      }
+    },
+
+    /**
+     * Disconnect WebSocket
+     */
+    wsDisconnect: function() {
+      this.wsMaxReconnectAttempts = 0; // Prevent reconnect
+      if (this.ws) {
+        this.ws.close();
+        this.ws = null;
+      }
+    },
+
+    /**
+     * Check if WebSocket is connected
+     * @returns {boolean}
+     */
+    wsIsConnected: function() {
+      return this.ws && this.ws.readyState === WebSocket.OPEN;
     }
   };
 
