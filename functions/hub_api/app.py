@@ -8,14 +8,19 @@ For Lambda deployment, use api_app.py instead (via lambda_handler.py).
 """
 from __future__ import annotations
 
+import base64
 import html
 import logging
 import os
+from pathlib import Path
 import secrets
 import urllib.parse
+from typing import Optional
 
 from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from starlette.responses import Response
 
 from agent_hub.auth import AuthenticatedUser, ensure_user_row
@@ -49,6 +54,16 @@ app = api_app
 
 # Get config from api_app
 _cfg = get_config()
+
+# Setup Jinja2 templates and static files
+_TEMPLATES_DIR = Path(__file__).parent / "templates"
+_STATIC_DIR = Path(__file__).parent / "static"
+
+# Mount static files
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+# Setup Jinja2 templates
+templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
 
 # -----------------------------
@@ -362,39 +377,161 @@ def gui_logged_out(request: Request) -> HTMLResponse:
     return _gui_html_page(title="Logged out", body_html=f"<h1>Logged out</h1><p><a href='{login_href}'>Log in</a></p>")
 
 
-@app.get("/", name="home")
+@app.get("/", name="gui_home")
 def gui_home(request: Request) -> Response:
+    """Home dashboard - central hub with status overview and navigation."""
     user = _gui_get_user(request)
     if not user:
         clear = bool(str(request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or "").strip())
         return _gui_redirect_to_login(request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear)
 
-    items = []
-    agents = list_agents_for_user(_get_db(), user_id=user.user_id)
-    for a in agents:
-        name = html.escape(a.name)
-        agent_href = html.escape(_gui_path(request, f"/agents/{a.agent_id}"))
-        items.append(
-            "<li>"
-            f"<a href='{agent_href}'>{name}</a> "
-            f"<small>(role={html.escape(a.role)}{' disabled' if a.disabled else ''})</small>"
-            "</li>"
-        )
+    db = _get_db()
 
-    email = html.escape(user.email or "")
-    profile_href = html.escape(_gui_path(request, "/profile"))
-    livekit_href = html.escape(_gui_path(request, "/livekit-test"))
-    logout_href = html.escape(_gui_path(request, "/logout"))
-    body = (
-        "<div style='display:flex; justify-content:space-between; align-items:center;'>"
-        "<h1>Marvain</h1>"
-        f"<div><a href='{profile_href}'>Profile</a> | <a href='{livekit_href}'>LiveKit test</a> | <a href='{logout_href}'>Logout</a></div>"
-        "</div>"
-        f"<p>Signed in as <code>{email}</code></p>"
-        "<h2>Your agents</h2>"
-        + ("<ul>" + "".join(items) + "</ul>" if items else "<p>No agents yet.</p>")
-    )
-    return _gui_html_page(title="Marvain", body_html=body)
+    # Get agents for user
+    agents = list_agents_for_user(db, user_id=user.user_id)
+
+    # Get spaces for user
+    spaces = list_spaces_for_user(db, user_id=user.user_id)
+
+    # Get remotes (satellites) - query from database
+    remotes = []
+    remotes_online = 0
+    try:
+        rows = db.query("""
+            SELECT r.remote_id, r.name, r.address, r.connection_type, r.status, r.last_seen
+            FROM remotes r
+            INNER JOIN memberships m ON r.agent_id = m.agent_id
+            WHERE m.user_id = :user_id
+            ORDER BY r.status = 'online' DESC, r.name ASC
+            LIMIT 10
+        """, {"user_id": str(user.user_id)})
+        for row in rows:
+            remote = {
+                "remote_id": str(row.get("remote_id", "")),
+                "name": row.get("name", "Unknown"),
+                "address": row.get("address", ""),
+                "connection_type": row.get("connection_type", "network"),
+                "status": row.get("status", "offline"),
+            }
+            remotes.append(remote)
+            if remote["status"] == "online":
+                remotes_online += 1
+    except Exception as e:
+        logger.warning(f"Failed to fetch remotes: {e}")
+
+    # Get pending actions count
+    pending_actions = 0
+    try:
+        rows = db.query("""
+            SELECT COUNT(*) as cnt FROM actions a
+            INNER JOIN memberships m ON a.agent_id = m.agent_id
+            WHERE m.user_id = :user_id AND a.status = 'proposed'
+        """, {"user_id": str(user.user_id)})
+        if rows:
+            pending_actions = rows[0].get("cnt", 0) or 0
+    except Exception as e:
+        logger.warning(f"Failed to fetch pending actions: {e}")
+
+    # Convert agents to dicts for template
+    agents_data = [
+        {
+            "agent_id": str(a.agent_id),
+            "name": a.name,
+            "role": a.role,
+            "disabled": a.disabled,
+        }
+        for a in agents
+    ]
+
+    return templates.TemplateResponse(request, "home.html", {
+        "user": {"email": user.email, "user_id": str(user.user_id)},
+        "stage": _cfg.stage,
+        "active_page": "home",
+        "agents": agents_data,
+        "agents_count": len(agents_data),
+        "spaces_count": len(spaces),
+        "remotes": remotes,
+        "remotes_online": remotes_online,
+        "remotes_total": len(remotes),
+        "pending_actions": pending_actions,
+    })
+
+
+# -----------------------------
+# GUI Routes - Placeholder stubs for navigation
+# These will be fully implemented in subsequent Phase 5 tasks
+# -----------------------------
+
+@app.get("/remotes", name="gui_remotes")
+def gui_remotes(request: Request) -> Response:
+    """Remotes management - view connected satellites."""
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/remotes")
+    return _gui_html_page(title="Remotes", body_html="<h1>Remotes</h1><p>Coming soon - Phase 5.3</p>")
+
+
+@app.get("/agents", name="gui_agents")
+def gui_agents(request: Request) -> Response:
+    """Agents management - list all agents."""
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/agents")
+    return _gui_html_page(title="Agents", body_html="<h1>Agents</h1><p>Coming soon - Phase 5.5</p>")
+
+
+@app.get("/spaces", name="gui_spaces")
+def gui_spaces(request: Request) -> Response:
+    """Spaces management - list all spaces."""
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/spaces")
+    return _gui_html_page(title="Spaces", body_html="<h1>Spaces</h1><p>Coming soon - Phase 5.6</p>")
+
+
+@app.get("/devices", name="gui_devices")
+def gui_devices(request: Request) -> Response:
+    """Devices management - list registered devices."""
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/devices")
+    return _gui_html_page(title="Devices", body_html="<h1>Devices</h1><p>Coming soon - Phase 5.7</p>")
+
+
+@app.get("/actions", name="gui_actions")
+def gui_actions(request: Request) -> Response:
+    """Actions dashboard - pending actions and history."""
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/actions")
+    return _gui_html_page(title="Actions", body_html="<h1>Actions</h1><p>Coming soon - Phase 5.11</p>")
+
+
+@app.get("/events", name="gui_events")
+def gui_events(request: Request) -> Response:
+    """Event stream viewer."""
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/events")
+    return _gui_html_page(title="Events", body_html="<h1>Events</h1><p>Coming soon - Phase 5.10</p>")
+
+
+@app.get("/memories", name="gui_memories")
+def gui_memories(request: Request) -> Response:
+    """Memories browser."""
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/memories")
+    return _gui_html_page(title="Memories", body_html="<h1>Memories</h1><p>Coming soon - Phase 5.9</p>")
+
+
+@app.get("/audit", name="gui_audit")
+def gui_audit(request: Request) -> Response:
+    """Audit log viewer."""
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/audit")
+    return _gui_html_page(title="Audit", body_html="<h1>Audit Log</h1><p>Coming soon - Phase 5.13</p>")
 
 
 @app.get("/profile", name="profile")
@@ -678,7 +815,7 @@ def _livekit_test_page_script() -> str:
 """
 
 
-@app.get("/livekit-test", name="livekit_test")
+@app.get("/livekit-test", name="gui_livekit_test")
 def gui_livekit_test(request: Request, space_id: str | None = None) -> Response:
     user = _gui_get_user(request)
     if not user:
@@ -832,7 +969,7 @@ def gui_livekit_token(request: Request, body: LiveKitTokenIn) -> LiveKitTokenOut
     return _mint_livekit_token_for_user(user=user, space_id=body.space_id)
 
 
-@app.get("/agents/{agent_id}", name="agent_detail")
+@app.get("/agents/{agent_id}", name="gui_agent_detail")
 def gui_agent_detail(request: Request, agent_id: str) -> Response:
     user = _gui_get_user(request)
     if not user:

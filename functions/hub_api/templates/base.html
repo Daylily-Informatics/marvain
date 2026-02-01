@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Marvain{% endblock %}</title>
+  
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  
+  <!-- Font Awesome -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  
+  <!-- Marvain Styles -->
+  <link rel="stylesheet" href="{{ url_for('static', path='css/marvain.css') }}">
+  
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <!-- Zebra stripe accent bar -->
+  <div class="zebra-stripe-bar"></div>
+  
+  <!-- Header -->
+  <header class="header">
+    <a href="{{ url_for('gui_home') }}" class="header-logo">
+      <i class="fas fa-satellite-dish"></i>
+      <span>Marvain</span>
+    </a>
+    
+    <nav class="header-nav">
+      <a href="{{ url_for('gui_home') }}" class="{% if active_page == 'home' %}active{% endif %}">
+        <i class="fas fa-home"></i> Home
+      </a>
+      <a href="{{ url_for('gui_remotes') }}" class="{% if active_page == 'remotes' %}active{% endif %}">
+        <i class="fas fa-network-wired"></i> Remotes
+      </a>
+      <a href="{{ url_for('gui_agents') }}" class="{% if active_page == 'agents' %}active{% endif %}">
+        <i class="fas fa-robot"></i> Agents
+      </a>
+      <a href="{{ url_for('gui_spaces') }}" class="{% if active_page == 'spaces' %}active{% endif %}">
+        <i class="fas fa-door-open"></i> Spaces
+      </a>
+      <a href="{{ url_for('gui_devices') }}" class="{% if active_page == 'devices' %}active{% endif %}">
+        <i class="fas fa-microchip"></i> Devices
+      </a>
+      <a href="{{ url_for('gui_actions') }}" class="{% if active_page == 'actions' %}active{% endif %}">
+        <i class="fas fa-tasks"></i> Actions
+      </a>
+    </nav>
+    
+    <div class="header-actions">
+      {% if user %}
+        <span class="text-muted text-sm">{{ user.email }}</span>
+        <a href="{{ url_for('profile') }}" class="btn btn-outline btn-sm">
+          <i class="fas fa-user"></i> Profile
+        </a>
+        <a href="{{ url_for('logout') }}" class="btn btn-outline btn-sm">
+          <i class="fas fa-sign-out-alt"></i> Logout
+        </a>
+      {% else %}
+        <a href="{{ url_for('login') }}" class="btn btn-primary btn-sm">
+          <i class="fas fa-sign-in-alt"></i> Login
+        </a>
+      {% endif %}
+    </div>
+  </header>
+  
+  <!-- Main Content -->
+  <main class="main-content">
+    <div class="container">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+  
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <span>Marvain Hub</span>
+      {% if stage %}
+        <span class="badge badge-info" style="margin-left: 8px;">{{ stage }}</span>
+      {% endif %}
+    </div>
+  </footer>
+  
+  <!-- Marvain JS -->
+  <script src="{{ url_for('static', path='js/marvain.js') }}"></script>
+  
+  {% block scripts %}{% endblock %}
+</body>
+</html>
+
