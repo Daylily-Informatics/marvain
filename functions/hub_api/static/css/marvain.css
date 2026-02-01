@@ -1072,3 +1072,142 @@ pre {
   font-size: 0.875rem;
 }
 
+/* ==========================================================================
+   Memories Browser
+   ========================================================================== */
+
+.stats-bar {
+  display: flex;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-md);
+  background: var(--color-gray-800);
+  border-radius: var(--radius-md);
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.stat-label {
+  font-size: 0.75rem;
+  color: var(--color-gray-400);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stat-value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--color-white);
+}
+
+.memories-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.memory-card {
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.memory-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+.memory-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: var(--spacing-sm);
+}
+
+.memory-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+}
+
+.memory-time {
+  font-size: 0.75rem;
+  color: var(--color-gray-400);
+}
+
+.tier-badge {
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.tier-badge.tier-episodic,
+.tier-episodic {
+  background: rgba(99, 102, 241, 0.2);
+  color: var(--color-highlight);
+}
+
+.tier-badge.tier-semantic,
+.tier-semantic {
+  background: rgba(34, 197, 94, 0.2);
+  color: var(--color-success);
+}
+
+.tier-badge.tier-procedural,
+.tier-procedural {
+  background: rgba(245, 158, 11, 0.2);
+  color: var(--color-warning);
+}
+
+.memory-content {
+  color: var(--color-gray-200);
+  line-height: 1.6;
+  margin-bottom: var(--spacing-md);
+}
+
+.memory-participants {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  margin-bottom: var(--spacing-md);
+}
+
+.participant-badge {
+  padding: 2px 8px;
+  background: var(--color-gray-700);
+  border-radius: var(--radius-full);
+  font-size: 0.75rem;
+  color: var(--color-gray-300);
+}
+
+.participant-badge.more {
+  background: var(--color-accent);
+  color: var(--color-white);
+}
+
+.memory-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.provenance-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: 2px 8px;
+  background: var(--color-gray-700);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  color: var(--color-gray-400);
+}
+
+.memory-actions {
+  display: flex;
+  gap: var(--spacing-xs);
+}
+

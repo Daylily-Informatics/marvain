@@ -1406,7 +1406,132 @@ def gui_memories(request: Request) -> Response:
     user = _gui_get_user(request)
     if not user:
         return _gui_redirect_to_login(request=request, next_path="/memories")
-    return _gui_html_page(title="Memories", body_html="<h1>Memories</h1><p>Coming soon - Phase 5.9</p>")
+
+    db = _get_db()
+    agents = list_agents_for_user(db, user_id=user.user_id)
+    spaces = list_spaces_for_user(db, user_id=user.user_id)
+
+    # Get memories for all agents the user has access to
+    agent_ids = [a.agent_id for a in agents]
+    memories_data = []
+    tier_counts = {"episodic": 0, "semantic": 0, "procedural": 0}
+
+    if agent_ids:
+        from datetime import datetime, timezone
+        import json
+        placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+        params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+        rows = db.query(
+            f"""SELECT m.memory_id::TEXT as memory_id, m.agent_id::TEXT as agent_id,
+                       m.space_id::TEXT as space_id, m.tier, m.content,
+                       m.participants, m.provenance, m.created_at,
+                       a.name as agent_name, s.name as space_name
+                FROM memories m
+                JOIN agents a ON a.agent_id = m.agent_id
+                LEFT JOIN spaces s ON s.space_id = m.space_id
+                WHERE m.agent_id::TEXT IN ({placeholders})
+                ORDER BY m.created_at DESC
+                LIMIT 100""",
+            params,
+        )
+
+        for row in rows:
+            tier = row.get("tier", "")
+            if tier in tier_counts:
+                tier_counts[tier] += 1
+
+            created_at = row.get("created_at")
+            created_at_relative = None
+            if created_at:
+                try:
+                    if hasattr(created_at, "tzinfo"):
+                        now = datetime.now(timezone.utc)
+                        delta = now - created_at
+                        if delta.days > 0:
+                            created_at_relative = f"{delta.days}d ago"
+                        elif delta.seconds >= 3600:
+                            created_at_relative = f"{delta.seconds // 3600}h ago"
+                        else:
+                            created_at_relative = f"{delta.seconds // 60}m ago"
+                except Exception:
+                    pass
+
+            participants = row.get("participants") or []
+            if isinstance(participants, str):
+                try:
+                    participants = json.loads(participants)
+                except Exception:
+                    participants = []
+
+            provenance = row.get("provenance") or {}
+            if isinstance(provenance, str):
+                try:
+                    provenance = json.loads(provenance)
+                except Exception:
+                    provenance = {}
+
+            memories_data.append({
+                "memory_id": str(row.get("memory_id", "")),
+                "agent_id": str(row.get("agent_id", "")),
+                "agent_name": row.get("agent_name", ""),
+                "space_id": str(row.get("space_id", "")) if row.get("space_id") else None,
+                "space_name": row.get("space_name"),
+                "tier": tier,
+                "content": row.get("content", ""),
+                "participants": participants,
+                "provenance_source": provenance.get("source", ""),
+                "created_at_relative": created_at_relative,
+            })
+
+    agents_data = [
+        {"agent_id": a.agent_id, "name": a.name, "role": a.role}
+        for a in agents
+    ]
+    spaces_data = [
+        {"space_id": s.space_id, "name": s.name}
+        for s in spaces
+    ]
+
+    return templates.TemplateResponse(request, "memories.html", {
+        "user": {"email": user.email, "user_id": str(user.user_id)},
+        "stage": _cfg.stage,
+        "active_page": "memories",
+        "memories": memories_data,
+        "tier_counts": tier_counts,
+        "agents": agents_data,
+        "spaces": spaces_data,
+    })
+
+
+@app.delete("/api/memories/{memory_id}", name="api_delete_memory")
+def api_delete_memory(request: Request, memory_id: str) -> dict:
+    """Delete a memory."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Get the memory and check permission
+    rows = db.query("""
+        SELECT m.memory_id, m.agent_id
+        FROM memories m
+        INNER JOIN memberships mb ON m.agent_id = mb.agent_id
+        WHERE m.memory_id = :memory_id::uuid AND mb.user_id = :user_id::uuid AND mb.role IN ('admin', 'owner')
+    """, {"memory_id": memory_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Memory not found or permission denied")
+
+    try:
+        db.execute("""
+            DELETE FROM memories WHERE memory_id = :memory_id::uuid
+        """, {"memory_id": memory_id})
+    except Exception as e:
+        logger.error(f"Failed to delete memory: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete memory")
+
+    return {"message": "Memory deleted", "memory_id": memory_id}
 
 
 @app.get("/audit", name="gui_audit")
