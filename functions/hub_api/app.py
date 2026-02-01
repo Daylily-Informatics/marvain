@@ -787,16 +787,18 @@ def gui_livekit_test(request: Request, space_id: str | None = None) -> Response:
 # 1. Navigate to the agent worker directory
 cd apps/agent_worker
 
-# 2. Create .env file with your credentials
-cat &gt; .env &lt;&lt;EOF
-LIVEKIT_URL=wss://marvain-dev-fo5ki513.livekit.cloud
-LIVEKIT_API_KEY=your-api-key
-LIVEKIT_API_SECRET=your-api-secret
-OPENAI_API_KEY=your-openai-key
-HUB_API_BASE=https://your-hub-api.execute-api.us-east-1.amazonaws.com/dev
-HUB_DEVICE_TOKEN=your-device-token
-SPACE_ID=your-space-id
-EOF
+# 2. Export environment variables (get values from marvain-config.yaml or bootstrap output)
+export LIVEKIT_URL="wss://&lt;your-livekit-url&gt;"
+export LIVEKIT_API_KEY="&lt;from AWS Secrets Manager or LiveKit dashboard&gt;"
+export LIVEKIT_API_SECRET="&lt;from AWS Secrets Manager or LiveKit dashboard&gt;"
+export OPENAI_API_KEY="&lt;your-openai-key&gt;"
+export HUB_API_BASE="&lt;ApiUrl from marvain-config.yaml resources&gt;"
+export HUB_DEVICE_TOKEN="&lt;device token from bootstrap output&gt;"
+export SPACE_ID="&lt;space_id to join&gt;"
+
+# Or use marvain CLI to get config values:
+# ./bin/marvain monitor outputs  # Shows stack outputs including ApiUrl
+# Check ~/.config/marvain/marvain-config.yaml for LiveKitUrl, LiveKitSecretArn
 
 # 3. Install dependencies
 pip install -r requirements.txt
@@ -810,6 +812,7 @@ python worker.py start
       <li>Devices/agents join as <code>device:&lt;device_id&gt;</code> or <code>agent:&lt;agent_id&gt;</code></li>
     </ul>
     <p>The agent worker uses LiveKit's agent framework to automatically join rooms and respond with voice.</p>
+    <p><strong>Note:</strong> LiveKit credentials are stored in AWS Secrets Manager. Use <code>aws secretsmanager get-secret-value --secret-id &lt;LiveKitSecretArn&gt;</code> to retrieve them.</p>
   </div>
 </details>
 
