@@ -217,8 +217,9 @@ export SPACE_ID="&lt;space_id to join&gt;"
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Run the worker (it will auto-join rooms when users connect)
-python worker.py start
+# 4. Run the worker (dev mode for local testing, auto-joins rooms)
+python worker.py dev
+# Or for production: python worker.py start
     </pre>
     <p class="mt-md"><strong>Identity format:</strong></p>
     <ul>
@@ -269,10 +270,6 @@ python worker.py start
   var transcriptStatus = document.getElementById('transcript-status');
 
   // Audio level monitoring
-  var localAudioContext = null;
-  var localAnalyser = null;
-  var remoteAudioContext = null;
-  var remoteAnalyser = null;
   var audioLevelInterval = null;
   var chatInitialized = false;
 
@@ -453,32 +450,33 @@ python worker.py start
   }
 
   function updateAudioLevels() {
-    // Update local mic level
+    // Update local mic level using participant.audioLevel (LiveKit API)
     if (room && room.localParticipant && room.localParticipant.isMicrophoneEnabled) {
-      var micPub = room.localParticipant.getTrackPublication('microphone');
-      if (micPub && micPub.track) {
-        var level = micPub.track.audioLevel || 0;
-        micLevelEl.style.width = Math.min(level * 100, 100) + '%';
-      }
+      // audioLevel is on the Participant object, not the track
+      var level = room.localParticipant.audioLevel || 0;
+      micLevelEl.style.width = Math.min(level * 100, 100) + '%';
     } else {
       micLevelEl.style.width = '0%';
     }
 
     // Update remote audio level (aggregate from all remote participants)
     var maxRemoteLevel = 0;
+    var anyRemoteSpeaking = false;
     if (room) {
       room.remoteParticipants.forEach(function(p) {
-        p.trackPublications.forEach(function(pub) {
-          if (pub.kind === 'audio' && pub.track && pub.track.audioLevel) {
-            maxRemoteLevel = Math.max(maxRemoteLevel, pub.track.audioLevel);
-          }
-        });
+        // audioLevel is on the Participant object (0.0 to 1.0)
+        var level = p.audioLevel || 0;
+        maxRemoteLevel = Math.max(maxRemoteLevel, level);
+        // Also check isSpeaking property for more reliable detection
+        if (p.isSpeaking) {
+          anyRemoteSpeaking = true;
+        }
       });
     }
     speakerLevelEl.style.width = Math.min(maxRemoteLevel * 100, 100) + '%';
 
-    // Update status icons based on activity
-    updateAudioStatusIcons(maxRemoteLevel > 0.01);
+    // Update status icons based on activity (use isSpeaking or audio level threshold)
+    updateAudioStatusIcons(anyRemoteSpeaking || maxRemoteLevel > 0.01);
   }
 
   function updateAudioStatusIcons(hasRemoteAudio) {
@@ -641,6 +639,16 @@ python worker.py start
       log('Track unmuted: ' + pub.kind + ' from ' + participant.identity);
       updateParticipantsList();
     });
+    // Active speakers changed - more responsive than polling audioLevel
+    room.on('activeSpeakersChanged', function(speakers) {
+      var hasRemoteSpeaker = speakers.some(function(s) {
+        return s !== room.localParticipant;
+      });
+      if (hasRemoteSpeaker) {
+        speakerStatusIcon.className = 'fas fa-volume-up text-success';
+        speakerStatusText.textContent = 'Agent Speaking';
+      }
+    });
     room.on('disconnected', function() {
       log('Disconnected from room');
       updateConnectionStatus('disconnected');
@@ -677,6 +685,30 @@ python worker.py start
 
     // Start audio level monitoring
     startAudioLevelMonitoring();
+
+    // Register text stream handler for transcriptions (modern LiveKit API)
+    // AgentSession automatically sends transcriptions via 'lk.transcription' topic
+    if (room.registerTextStreamHandler) {
+      room.registerTextStreamHandler('lk.transcription', async function(reader, participantInfo) {
+        try {
+          var message = await reader.readAll();
+          var sender = participantInfo ? participantInfo.identity : 'agent';
+          var isFinal = reader.info && reader.info.attributes && reader.info.attributes['lk.transcription_final'] === 'true';
+
+          // Update transcript status
+          transcriptStatus.textContent = 'Receiving';
+          transcriptStatus.className = 'badge badge-success';
+
+          // Add or update transcript entry
+          addTranscriptEntry(sender, message, isFinal);
+
+          log('Transcript from ' + sender + ': ' + message.substring(0, 50) + (message.length > 50 ? '...' : ''));
+        } catch(e) {
+          console.error('Error processing text stream:', e);
+        }
+      });
+      log('Registered text stream handler for transcriptions');
+    }
   }
 
   function addChatMessage(sender, text, ts) {
