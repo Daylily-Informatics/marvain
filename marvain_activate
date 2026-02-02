@@ -49,12 +49,20 @@ else
     return 1 2>/dev/null || exit 1
   fi
 
-  # Initialize conda for POSIX shells (required for `conda activate`).
+  # Initialize conda for the current shell (required for `conda activate`).
   # shellcheck disable=SC1090
-  if ! eval "$(conda shell.posix hook 2>/dev/null)"; then
+  if [ -n "${ZSH_VERSION:-}" ]; then
+    _MARVAIN_CONDA_HOOK="$(conda shell.zsh hook 2>/dev/null)"
+  elif [ -n "${BASH_VERSION:-}" ]; then
+    _MARVAIN_CONDA_HOOK="$(conda shell.bash hook 2>/dev/null)"
+  else
+    _MARVAIN_CONDA_HOOK="$(conda shell.posix hook 2>/dev/null)"
+  fi
+  if ! eval "$_MARVAIN_CONDA_HOOK"; then
     _marvain_log ERROR "Failed to initialize conda shell hook. Try running: conda init (for your shell), then re-source: . ./marvain_activate"
     return 1 2>/dev/null || exit 1
   fi
+  unset _MARVAIN_CONDA_HOOK
 
   if ! conda info --envs 2>/dev/null | awk 'NF{print $1}' | sed 's/*//' | grep -Fxq "$_MARVAIN_CONDA_ENV"; then
     _marvain_log ERROR "Conda env '$_MARVAIN_CONDA_ENV' not found. Create it with: conda env create -f $_MARVAIN_CONDA_FILE"
@@ -95,12 +103,23 @@ else
 fi
 
 # Enable Typer/Click completion when available.
+# Note: Only works if CLI uses Typer/Click. Argparse CLIs output help text instead,
+# which would cause zsh glob errors if eval'd. We check for valid completion output.
 if command -v marvain >/dev/null 2>&1; then
   if [ -n "${ZSH_VERSION:-}" ]; then
-    # click/typer zsh completion
-    eval "$( _MARVAIN_COMPLETE=source_zsh marvain 2>/dev/null || true )"
+    _MARVAIN_COMP_OUT="$( _MARVAIN_COMPLETE=zsh_source marvain 2>/dev/null )"
+    # Only eval if it looks like completion code (starts with #compdef or _marvain)
+    case "$_MARVAIN_COMP_OUT" in
+      '#compdef'*|'_marvain'*) eval "$_MARVAIN_COMP_OUT" ;;
+    esac
+    unset _MARVAIN_COMP_OUT
   elif [ -n "${BASH_VERSION:-}" ]; then
-    eval "$( _MARVAIN_COMPLETE=source_bash marvain 2>/dev/null || true )"
+    _MARVAIN_COMP_OUT="$( _MARVAIN_COMPLETE=bash_source marvain 2>/dev/null )"
+    # Only eval if it looks like completion code (contains complete -o or _marvain)
+    case "$_MARVAIN_COMP_OUT" in
+      *'complete -'*|*'_marvain'*) eval "$_MARVAIN_COMP_OUT" ;;
+    esac
+    unset _MARVAIN_COMP_OUT
   fi
 fi
 
