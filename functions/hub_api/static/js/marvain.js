@@ -143,6 +143,42 @@
     },
 
     /**
+     * Show a modal by ID
+     * @param {string} modalId - The ID of the modal element to show
+     */
+    showModal: function(modalId) {
+      const modal = document.getElementById(modalId);
+      if (modal) {
+        modal.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+        // Focus the first input in the modal
+        const firstInput = modal.querySelector('input, select, textarea');
+        if (firstInput) {
+          setTimeout(() => firstInput.focus(), 100);
+        }
+      } else {
+        console.warn('[Marvain] Modal not found:', modalId);
+      }
+    },
+
+    /**
+     * Hide a modal by ID
+     * @param {string} modalId - The ID of the modal element to hide
+     */
+    hideModal: function(modalId) {
+      const modal = document.getElementById(modalId);
+      if (modal) {
+        modal.style.display = 'none';
+        document.body.style.overflow = '';
+        // Reset form if there's one in the modal
+        const form = modal.querySelector('form');
+        if (form) {
+          form.reset();
+        }
+      }
+    },
+
+    /**
      * Make an authenticated API request
      * @param {string} url - URL to fetch
      * @param {Object} options - Fetch options

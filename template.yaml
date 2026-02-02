@@ -794,6 +794,9 @@ Outputs:
   LiveKitSecretArn:
     Description: Secrets Manager ARN containing LiveKit API key/secret placeholder
     Value: !Ref LiveKitSecret
+  LiveKitUrl:
+    Description: LiveKit server URL for media connections
+    Value: !Ref LiveKitUrl
   DbClusterArn:
     Description: Aurora cluster ARN (Data API resourceArn)
     Value: !GetAtt AuroraCluster.DBClusterArn

@@ -529,8 +529,8 @@ class TestAgentsGui(unittest.TestCase):
         # Mock database for members query
         mock_db = mock.Mock()
         mock_db.query = mock.Mock(return_value=[
-            {"user_id": "u1", "role": "admin", "email": "user@example.com", "created_at": "2025-01-01"},
-            {"user_id": "u2", "role": "member", "email": "member@example.com", "created_at": "2025-01-02"},
+            {"user_id": "u1", "role": "admin", "relationship_label": "Work Helper", "email": "user@example.com", "created_at": "2025-01-01"},
+            {"user_id": "u2", "role": "member", "relationship_label": None, "email": "member@example.com", "created_at": "2025-01-02"},
         ])
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
@@ -553,6 +553,45 @@ class TestAgentsGui(unittest.TestCase):
         r = self.client.get("/agents/unknown-id")
 
         self.assertEqual(r.status_code, 404)
+
+    def test_agent_detail_requires_authentication(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.get("/agents/some-agent-id", follow_redirects=False)
+
+        self.assertEqual(r.status_code, 302)
+        self.assertIn("/login", r.headers.get("location", ""))
+
+    def test_agent_detail_shows_member_relationship_labels(self) -> None:
+        """Test that member relationship labels are displayed correctly."""
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+
+        mock_agent = mock.Mock()
+        mock_agent.agent_id = "a1"
+        mock_agent.name = "Test Agent"
+        mock_agent.role = "owner"
+        mock_agent.relationship_label = "My Assistant"
+        mock_agent.disabled = False
+        self.mod.list_agents_for_user = mock.Mock(return_value=[mock_agent])
+
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[
+            {"user_id": "u1", "role": "owner", "relationship_label": "My Assistant", "email": "owner@example.com", "created_at": "2025-01-01"},
+            {"user_id": "u2", "role": "admin", "relationship_label": "Work Partner", "email": "admin@example.com", "created_at": "2025-01-02"},
+        ])
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.get("/agents/a1")
+
+        self.assertEqual(r.status_code, 200)
+        # Members query should use agent_memberships table with UUID cast
+        mock_db.query.assert_called_once()
+        call_args = mock_db.query.call_args
+        query_sql = call_args[0][0]
+        self.assertIn("agent_memberships", query_sql)
+        self.assertIn("::uuid", query_sql)
 
     def test_create_agent_requires_authentication(self) -> None:
         self.mod._gui_get_user = mock.Mock(return_value=None)

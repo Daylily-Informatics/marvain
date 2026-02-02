@@ -1336,6 +1336,65 @@ def gui_stop(
     return 0
 
 
+def _get_mkcert_certs_dir() -> Path:
+    """Get the directory for mkcert-generated certificates."""
+    xdg_config = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+    return Path(xdg_config) / "marvain" / "certs"
+
+
+def _ensure_mkcert_certs(dry_run: bool = False) -> tuple[Path, Path] | None:
+    """Ensure mkcert certificates exist, generating them if needed.
+
+    Returns:
+        Tuple of (cert_path, key_path) if successful, None if mkcert not available.
+    """
+    certs_dir = _get_mkcert_certs_dir()
+    cert_path = certs_dir / "localhost.pem"
+    key_path = certs_dir / "localhost-key.pem"
+
+    # Check if certs already exist
+    if cert_path.exists() and key_path.exists():
+        _eprint(f"Using existing mkcert certificates from {certs_dir}")
+        return cert_path, key_path
+
+    # Check if mkcert is available
+    mkcert_path = shutil.which("mkcert")
+    if not mkcert_path:
+        _eprint("WARNING: mkcert not found. Install with: brew install mkcert")
+        _eprint("         Falling back to HTTP mode.")
+        return None
+
+    # Create certs directory
+    if not dry_run:
+        certs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate certificates with mkcert
+    _eprint(f"Generating mkcert certificates in {certs_dir}...")
+    cmd = [
+        mkcert_path,
+        "-cert-file", str(cert_path),
+        "-key-file", str(key_path),
+        "localhost", "127.0.0.1", "::1",
+    ]
+    _eprint(f"$ {' '.join(cmd)}")
+
+    if dry_run:
+        return cert_path, key_path
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            _eprint(f"ERROR: mkcert failed: {result.stderr}")
+            _eprint("Falling back to HTTP mode.")
+            return None
+        _eprint("Certificates generated successfully.")
+        return cert_path, key_path
+    except Exception as e:
+        _eprint(f"ERROR: Failed to run mkcert: {e}")
+        _eprint("Falling back to HTTP mode.")
+        return None
+
+
 def gui_start(
     ctx: Ctx,
     *,
@@ -1344,7 +1403,7 @@ def gui_start(
     port: int = GUI_DEFAULT_PORT,
     reload: bool = True,
     foreground: bool = False,
-    https: bool = False,
+    https: bool = True,
     cert: str | None = None,
     key: str | None = None,
 ) -> int:
@@ -1358,9 +1417,9 @@ def gui_start(
         port: Port to bind to (default: 8084)
         reload: Enable auto-reload on code changes
         foreground: Run in foreground (blocking) instead of background
-        https: Enable HTTPS (requires --cert and --key)
-        cert: Path to SSL certificate file (PEM format)
-        key: Path to SSL private key file (PEM format)
+        https: Enable HTTPS (default: True). Use --no-https to disable.
+        cert: Path to SSL certificate file (PEM format). Auto-generated with mkcert if not provided.
+        key: Path to SSL private key file (PEM format). Auto-generated with mkcert if not provided.
     """
     rc = _conda_preflight(enforce=not dry_run)
     if rc != 0:
@@ -1377,27 +1436,29 @@ def gui_start(
         _eprint("Run 'marvain monitor outputs --write-config' to populate resources.")
         return 2
 
-    # SSL certificate validation for HTTPS
+    # SSL certificate handling for HTTPS
     cert_path: Path | None = None
     key_path: Path | None = None
     if https:
-        if not cert or not key:
-            _eprint("ERROR: HTTPS requires both --cert and --key options")
-            _eprint("")
-            _eprint("Generate a self-signed certificate for testing:")
-            _eprint("  openssl req -x509 -newkey rsa:4096 \\")
-            _eprint("      -keyout key.pem -out cert.pem \\")
-            _eprint("      -days 365 -nodes \\")
-            _eprint("      -subj \"/CN=localhost\"")
-            return 1
-        cert_path = Path(cert).resolve()
-        key_path = Path(key).resolve()
-        if not cert_path.exists():
-            _eprint(f"ERROR: Certificate file not found: {cert}")
-            return 1
-        if not key_path.exists():
-            _eprint(f"ERROR: Key file not found: {key}")
-            return 1
+        if cert and key:
+            # User provided explicit cert/key paths
+            cert_path = Path(cert).resolve()
+            key_path = Path(key).resolve()
+            if not cert_path.exists():
+                _eprint(f"ERROR: Certificate file not found: {cert}")
+                return 1
+            if not key_path.exists():
+                _eprint(f"ERROR: Key file not found: {key}")
+                return 1
+        else:
+            # Auto-generate with mkcert
+            mkcert_result = _ensure_mkcert_certs(dry_run=dry_run)
+            if mkcert_result:
+                cert_path, key_path = mkcert_result
+            else:
+                # mkcert not available, fall back to HTTP
+                _eprint("Continuing with HTTP (use --no-https to suppress this warning)")
+                https = False
 
     # Check if port is already in use
     if _is_port_in_use(port, host):
@@ -1427,9 +1488,9 @@ def gui_start(
 
     _eprint(f"Starting local GUI server at {scheme}://{host}:{port}")
     _eprint(f"Using config: {ctx.config_path} (env: {ctx.env.env})")
-    if https:
-        _eprint(f"SSL Certificate: {cert}")
-        _eprint(f"SSL Key: {key}")
+    if https and cert_path and key_path:
+        _eprint(f"SSL Certificate: {cert_path}")
+        _eprint(f"SSL Key: {key_path}")
 
     if dry_run:
         _eprint(f"[dry-run] $ cd {hub_api_dir} && {' '.join(cmd)}")
@@ -1458,6 +1519,15 @@ def gui_start(
     for res_key, env_key in resource_to_env.items():
         if res_key in resources and resources[res_key]:
             env[env_key] = str(resources[res_key])
+
+    # Fallback: read LiveKitUrl from sam.parameter_overrides if not in resources
+    # (This can be removed once the stack is redeployed with the LiveKitUrl output)
+    if "LIVEKIT_URL" not in env:
+        sam_params = ctx.cfg.get("envs", {}).get(ctx.env.env, {}).get("sam", {}).get("parameter_overrides", {})
+        lk_url = sam_params.get("LiveKitUrl", "")
+        if lk_url:
+            env["LIVEKIT_URL"] = str(lk_url)
+            _eprint(f"NOTE: Using LiveKitUrl from sam.parameter_overrides (redeploy stack for proper output)")
 
     # Set Cognito redirect URI dynamically based on http/https
     env["COGNITO_REDIRECT_URI"] = redirect_uri
