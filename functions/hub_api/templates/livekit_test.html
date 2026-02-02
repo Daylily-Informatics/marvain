@@ -49,15 +49,47 @@
 
 <!-- Media Controls -->
 <div class="card mb-md">
-  <div class="card-body" style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
-    <strong style="margin-right: 8px;">Media:</strong>
-    <button id="btn-mic" class="btn btn-sm btn-outline" disabled>
-      <i class="fas fa-microphone-slash"></i> Mic Off
-    </button>
-    <button id="btn-cam" class="btn btn-sm btn-outline" disabled>
-      <i class="fas fa-video-slash"></i> Cam Off
-    </button>
-    <span id="lk-media-hint" class="text-muted text-sm">Join a room to enable media controls</span>
+  <div class="card-body">
+    <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 12px;">
+      <strong style="margin-right: 8px;">Media:</strong>
+      <button id="btn-mic" class="btn btn-sm btn-outline" disabled>
+        <i class="fas fa-microphone-slash"></i> Mic Off
+      </button>
+      <button id="btn-cam" class="btn btn-sm btn-outline" disabled>
+        <i class="fas fa-video-slash"></i> Cam Off
+      </button>
+      <span id="lk-media-hint" class="text-muted text-sm">Join a room to enable media controls</span>
+    </div>
+    <!-- Device Selection -->
+    <div id="device-selectors" style="display: flex; gap: 16px; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid var(--color-gray-600);">
+      <div class="form-group" style="margin: 0; min-width: 200px; flex: 1;">
+        <label for="mic-select" style="font-size: 0.75rem; margin-bottom: 4px;">
+          <i class="fas fa-microphone"></i> Microphone
+        </label>
+        <select id="mic-select" class="form-control form-control-sm">
+          <option value="">Default Microphone</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin: 0; min-width: 200px; flex: 1;">
+        <label for="speaker-select" style="font-size: 0.75rem; margin-bottom: 4px;">
+          <i class="fas fa-volume-up"></i> Speaker
+        </label>
+        <select id="speaker-select" class="form-control form-control-sm">
+          <option value="">Default Speaker</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin: 0; min-width: 200px; flex: 1;">
+        <label for="cam-select" style="font-size: 0.75rem; margin-bottom: 4px;">
+          <i class="fas fa-video"></i> Camera
+        </label>
+        <select id="cam-select" class="form-control form-control-sm">
+          <option value="">Default Camera</option>
+        </select>
+      </div>
+      <button id="btn-refresh-devices" class="btn btn-sm btn-outline" style="align-self: flex-end;" title="Refresh device list">
+        <i class="fas fa-sync-alt"></i>
+      </button>
+    </div>
   </div>
 </div>
 
@@ -92,8 +124,52 @@
     </div>
   </div>
 
-  <!-- Right Column: Chat & Status -->
+  <!-- Right Column: Audio Status, Transcript, Chat & Status -->
   <div>
+    <!-- Audio Status Indicators -->
+    <div class="card mb-md">
+      <div class="card-header"><h4 class="card-title"><i class="fas fa-broadcast-tower"></i> Audio Status</h4></div>
+      <div class="card-body">
+        <div style="display: flex; gap: 24px; flex-wrap: wrap;">
+          <!-- Local Mic Status -->
+          <div style="flex: 1; min-width: 150px;">
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+              <i id="mic-status-icon" class="fas fa-microphone-slash text-muted"></i>
+              <span id="mic-status-text">Mic Off</span>
+            </div>
+            <div class="audio-meter" style="height: 8px; background: var(--color-gray-700); border-radius: 4px; overflow: hidden;">
+              <div id="mic-level" style="height: 100%; width: 0%; background: linear-gradient(90deg, #22c55e, #f59e0b, #ef4444); transition: width 50ms;"></div>
+            </div>
+            <small class="text-muted">Local Input</small>
+          </div>
+          <!-- Remote Audio Status -->
+          <div style="flex: 1; min-width: 150px;">
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+              <i id="speaker-status-icon" class="fas fa-volume-mute text-muted"></i>
+              <span id="speaker-status-text">No Audio</span>
+            </div>
+            <div class="audio-meter" style="height: 8px; background: var(--color-gray-700); border-radius: 4px; overflow: hidden;">
+              <div id="speaker-level" style="height: 100%; width: 0%; background: linear-gradient(90deg, #3b82f6, #6366f1, #8b5cf6); transition: width 50ms;"></div>
+            </div>
+            <small class="text-muted">Remote Output</small>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Live Transcript -->
+    <div class="card mb-md">
+      <div class="card-header">
+        <h4 class="card-title"><i class="fas fa-closed-captioning"></i> Live Transcript</h4>
+        <span id="transcript-status" class="badge badge-info" style="margin-left: auto;">Waiting</span>
+      </div>
+      <div class="card-body">
+        <div id="transcript-container" class="lk-transcript-container" style="max-height: 200px; overflow-y: auto; font-size: 0.9rem;">
+          <em class="text-muted">Transcript will appear here when speaking...</em>
+        </div>
+      </div>
+    </div>
+
     <!-- Chat Interface -->
     <div class="card mb-md">
       <div class="card-header"><h4 class="card-title"><i class="fas fa-comments"></i> Chat</h4></div>
@@ -176,12 +252,287 @@ python worker.py start
   var mediaHint = document.getElementById('lk-media-hint');
   var myIdentity = '';
 
+  // Device selection elements
+  var micSelectEl = document.getElementById('mic-select');
+  var speakerSelectEl = document.getElementById('speaker-select');
+  var camSelectEl = document.getElementById('cam-select');
+  var selectedSpeakerId = '';  // Track selected speaker
+
+  // Audio status elements
+  var micStatusIcon = document.getElementById('mic-status-icon');
+  var micStatusText = document.getElementById('mic-status-text');
+  var micLevelEl = document.getElementById('mic-level');
+  var speakerStatusIcon = document.getElementById('speaker-status-icon');
+  var speakerStatusText = document.getElementById('speaker-status-text');
+  var speakerLevelEl = document.getElementById('speaker-level');
+  var transcriptContainer = document.getElementById('transcript-container');
+  var transcriptStatus = document.getElementById('transcript-status');
+
+  // Audio level monitoring
+  var localAudioContext = null;
+  var localAnalyser = null;
+  var remoteAudioContext = null;
+  var remoteAnalyser = null;
+  var audioLevelInterval = null;
+  var chatInitialized = false;
+
   function log(msg) {
     var ts = new Date().toLocaleTimeString();
     statusEl.textContent = '[' + ts + '] ' + msg + '\n' + statusEl.textContent;
     if (statusEl.textContent.length > 5000) {
       statusEl.textContent = statusEl.textContent.substring(0, 4000);
     }
+  }
+
+  // Device enumeration and selection
+  async function enumerateDevices() {
+    try {
+      // Request permissions first to get device labels
+      try {
+        await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+      } catch(permErr) {
+        // May not have camera/mic, try audio only
+        try {
+          await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch(e) { /* ignore */ }
+      }
+
+      var devices = await navigator.mediaDevices.enumerateDevices();
+
+      // Preserve current selections (only if user has made a selection)
+      var currentMic = micSelectEl.value;
+      var currentSpeaker = speakerSelectEl.value;
+      var currentCam = camSelectEl.value;
+      var isFirstEnum = micSelectEl.options.length <= 1;
+
+      // Clear existing options (keep default)
+      micSelectEl.innerHTML = '<option value="">Default Microphone</option>';
+      speakerSelectEl.innerHTML = '<option value="">Default Speaker</option>';
+      camSelectEl.innerHTML = '<option value="">Default Camera</option>';
+
+      var micCount = 0, speakerCount = 0, camCount = 0;
+      var builtInMic = null, builtInSpeaker = null, builtInCam = null;
+
+      devices.forEach(function(device) {
+        var option = document.createElement('option');
+        option.value = device.deviceId;
+        var label = device.label || (device.kind + ' ' + device.deviceId.substring(0, 8));
+        option.text = label;
+
+        // Check if this is a built-in device (case-insensitive)
+        var isBuiltIn = label.toLowerCase().indexOf('built-in') !== -1;
+
+        if (device.kind === 'audioinput') {
+          micSelectEl.appendChild(option);
+          if (isBuiltIn && !builtInMic) builtInMic = device.deviceId;
+          micCount++;
+        } else if (device.kind === 'audiooutput') {
+          speakerSelectEl.appendChild(option);
+          if (isBuiltIn && !builtInSpeaker) builtInSpeaker = device.deviceId;
+          speakerCount++;
+        } else if (device.kind === 'videoinput') {
+          camSelectEl.appendChild(option);
+          if (isBuiltIn && !builtInCam) builtInCam = device.deviceId;
+          camCount++;
+        }
+      });
+
+      // Auto-select built-in devices on first enumeration, otherwise restore user selection
+      if (isFirstEnum) {
+        if (builtInMic) {
+          micSelectEl.value = builtInMic;
+          log('Auto-selected built-in microphone');
+        }
+        if (builtInSpeaker) {
+          speakerSelectEl.value = builtInSpeaker;
+          selectedSpeakerId = builtInSpeaker;
+          log('Auto-selected built-in speaker');
+        }
+        if (builtInCam) {
+          camSelectEl.value = builtInCam;
+          log('Auto-selected built-in camera');
+        }
+      } else {
+        // Restore user selections if still available
+        if (currentMic) micSelectEl.value = currentMic;
+        if (currentSpeaker) speakerSelectEl.value = currentSpeaker;
+        if (currentCam) camSelectEl.value = currentCam;
+      }
+
+      log('Devices: ' + micCount + ' mics, ' + speakerCount + ' speakers, ' + camCount + ' cameras');
+
+      // Check if speaker selection is supported
+      if (!('setSinkId' in HTMLAudioElement.prototype)) {
+        speakerSelectEl.disabled = true;
+        speakerSelectEl.title = 'Speaker selection not supported in this browser';
+        log('Note: Speaker selection not supported in this browser');
+      }
+    } catch(e) {
+      log('Device enumeration error: ' + e.message);
+      Marvain.showToast('error', 'Device Error', 'Could not enumerate devices: ' + e.message);
+    }
+  }
+
+  async function changeMicrophone(deviceId) {
+    if (!room) return;
+    try {
+      await room.switchActiveDevice('audioinput', deviceId || 'default');
+      log('Switched microphone: ' + (deviceId || 'default'));
+    } catch(e) {
+      log('Microphone switch error: ' + e.message);
+      Marvain.showToast('error', 'Microphone Error', e.message);
+    }
+  }
+
+  async function changeCamera(deviceId) {
+    if (!room) return;
+    try {
+      await room.switchActiveDevice('videoinput', deviceId || 'default');
+      log('Switched camera: ' + (deviceId || 'default'));
+      // Re-attach local video preview if camera is enabled
+      if (room.localParticipant.isCameraEnabled) {
+        var camPub = room.localParticipant.getTrackPublication('camera');
+        if (camPub && camPub.track) {
+          localVideoEl.innerHTML = '';
+          var vid = document.createElement('video');
+          vid.autoplay = true;
+          vid.playsInline = true;
+          vid.muted = true;
+          vid.className = 'lk-local-video';
+          camPub.track.attach(vid);
+          localVideoEl.appendChild(vid);
+        }
+      }
+    } catch(e) {
+      log('Camera switch error: ' + e.message);
+      Marvain.showToast('error', 'Camera Error', e.message);
+    }
+  }
+
+  async function changeSpeaker(deviceId) {
+    selectedSpeakerId = deviceId;
+    try {
+      // Set sink ID on all remote audio elements
+      var audioElements = remoteMediaEl.querySelectorAll('audio');
+      var count = 0;
+      for (var i = 0; i < audioElements.length; i++) {
+        if (typeof audioElements[i].setSinkId !== 'undefined') {
+          await audioElements[i].setSinkId(deviceId || '');
+          count++;
+        }
+      }
+      log('Switched speaker to: ' + (deviceId || 'default') + ' (' + count + ' audio elements updated)');
+    } catch(e) {
+      log('Speaker switch error: ' + e.message);
+      Marvain.showToast('error', 'Speaker Error', e.message);
+    }
+  }
+
+  // Apply speaker to newly added audio elements
+  function applySelectedSpeaker(audioElement) {
+    if (selectedSpeakerId && typeof audioElement.setSinkId !== 'undefined') {
+      audioElement.setSinkId(selectedSpeakerId).catch(function(e) {
+        log('Failed to set speaker on new audio: ' + e.message);
+      });
+    }
+  }
+
+  // Audio level monitoring
+  function startAudioLevelMonitoring() {
+    if (audioLevelInterval) return;
+    audioLevelInterval = setInterval(updateAudioLevels, 50);
+  }
+
+  function stopAudioLevelMonitoring() {
+    if (audioLevelInterval) {
+      clearInterval(audioLevelInterval);
+      audioLevelInterval = null;
+    }
+    micLevelEl.style.width = '0%';
+    speakerLevelEl.style.width = '0%';
+  }
+
+  function updateAudioLevels() {
+    // Update local mic level
+    if (room && room.localParticipant && room.localParticipant.isMicrophoneEnabled) {
+      var micPub = room.localParticipant.getTrackPublication('microphone');
+      if (micPub && micPub.track) {
+        var level = micPub.track.audioLevel || 0;
+        micLevelEl.style.width = Math.min(level * 100, 100) + '%';
+      }
+    } else {
+      micLevelEl.style.width = '0%';
+    }
+
+    // Update remote audio level (aggregate from all remote participants)
+    var maxRemoteLevel = 0;
+    if (room) {
+      room.remoteParticipants.forEach(function(p) {
+        p.trackPublications.forEach(function(pub) {
+          if (pub.kind === 'audio' && pub.track && pub.track.audioLevel) {
+            maxRemoteLevel = Math.max(maxRemoteLevel, pub.track.audioLevel);
+          }
+        });
+      });
+    }
+    speakerLevelEl.style.width = Math.min(maxRemoteLevel * 100, 100) + '%';
+
+    // Update status icons based on activity
+    updateAudioStatusIcons(maxRemoteLevel > 0.01);
+  }
+
+  function updateAudioStatusIcons(hasRemoteAudio) {
+    if (room && room.localParticipant && room.localParticipant.isMicrophoneEnabled) {
+      micStatusIcon.className = 'fas fa-microphone text-success';
+      micStatusText.textContent = 'Mic Active';
+    } else {
+      micStatusIcon.className = 'fas fa-microphone-slash text-muted';
+      micStatusText.textContent = 'Mic Off';
+    }
+
+    if (hasRemoteAudio) {
+      speakerStatusIcon.className = 'fas fa-volume-up text-success';
+      speakerStatusText.textContent = 'Receiving Audio';
+    } else if (room && room.remoteParticipants.size > 0) {
+      speakerStatusIcon.className = 'fas fa-volume-down text-muted';
+      speakerStatusText.textContent = 'Waiting...';
+    } else {
+      speakerStatusIcon.className = 'fas fa-volume-mute text-muted';
+      speakerStatusText.textContent = 'No Audio';
+    }
+  }
+
+  // Transcript handling
+  function addTranscriptEntry(speaker, text, isFinal) {
+    // Clear placeholder on first entry
+    if (transcriptContainer.querySelector('em.text-muted')) {
+      transcriptContainer.innerHTML = '';
+    }
+
+    // Check if we should update the last entry (for interim results)
+    var lastEntry = transcriptContainer.lastElementChild;
+    if (lastEntry && lastEntry.dataset.speaker === speaker && !lastEntry.dataset.final) {
+      lastEntry.querySelector('.transcript-text').textContent = text;
+      if (isFinal) {
+        lastEntry.dataset.final = 'true';
+        lastEntry.classList.remove('transcript-interim');
+      }
+    } else {
+      var div = document.createElement('div');
+      div.className = 'transcript-entry' + (isFinal ? '' : ' transcript-interim');
+      div.dataset.speaker = speaker;
+      div.dataset.final = isFinal ? 'true' : 'false';
+      var isAgent = speaker.startsWith('agent:') || speaker.startsWith('device:');
+      var icon = isAgent ? '<i class="fas fa-robot"></i>' : '<i class="fas fa-user"></i>';
+      div.innerHTML = '<small class="text-muted">' + icon + ' ' + escapeHtml(speaker) + '</small> <span class="transcript-text">' + escapeHtml(text) + '</span>';
+      div.style.cssText = 'padding: 4px 0; border-bottom: 1px solid var(--color-gray-700);' + (isFinal ? '' : ' opacity: 0.7; font-style: italic;');
+      transcriptContainer.appendChild(div);
+    }
+    transcriptContainer.scrollTop = transcriptContainer.scrollHeight;
+
+    // Update transcript status
+    transcriptStatus.textContent = isFinal ? 'Active' : 'Listening...';
+    transcriptStatus.className = 'badge ' + (isFinal ? 'badge-success' : 'badge-warning');
   }
 
   function updateConnectionStatus(state, roomName) {
@@ -240,6 +591,8 @@ python worker.py start
     } else if (track.kind === 'audio') {
       el = document.createElement('audio');
       el.autoplay = true;
+      // Apply selected speaker to new audio element
+      applySelectedSpeaker(el);
     }
     if (el) {
       el.id = 'track-' + track.sid;
@@ -293,19 +646,45 @@ python worker.py start
       updateConnectionStatus('disconnected');
       updateParticipantsList();
       updateMediaButtons();
+      stopAudioLevelMonitoring();
+      transcriptStatus.textContent = 'Disconnected';
+      transcriptStatus.className = 'badge badge-info';
       Marvain.showToast('warning', 'Disconnected', 'You have left the room');
     });
     room.on('dataReceived', function(payload, participant) {
       try {
         var msg = JSON.parse(new TextDecoder().decode(payload));
+        var sender = participant ? participant.identity : 'unknown';
         if (msg.type === 'chat') {
-          addChatMessage(participant ? participant.identity : 'unknown', msg.text, msg.ts);
+          addChatMessage(sender, msg.text, msg.ts);
+        } else if (msg.type === 'transcript') {
+          // Handle transcript messages from agents
+          addTranscriptEntry(sender, msg.text, msg.final !== false);
+        } else if (msg.type === 'transcription') {
+          // Alternative format for transcription
+          addTranscriptEntry(sender, msg.text || msg.transcript, msg.is_final !== false);
         }
-      } catch(e) { /* ignore non-chat data */ }
+      } catch(e) {
+        // Try to handle as plain text transcript
+        try {
+          var text = new TextDecoder().decode(payload);
+          if (text && participant) {
+            addTranscriptEntry(participant.identity, text, true);
+          }
+        } catch(e2) { /* ignore */ }
+      }
     });
+
+    // Start audio level monitoring
+    startAudioLevelMonitoring();
   }
 
   function addChatMessage(sender, text, ts) {
+    // Clear placeholder on first message
+    if (!chatInitialized) {
+      chatMessagesEl.innerHTML = '';
+      chatInitialized = true;
+    }
     var time = ts ? new Date(ts).toLocaleTimeString() : new Date().toLocaleTimeString();
     var isMe = sender === myIdentity;
     var div = document.createElement('div');
@@ -384,6 +763,10 @@ python worker.py start
     updateConnectionStatus('disconnected');
     updateParticipantsList();
     updateMediaButtons();
+    stopAudioLevelMonitoring();
+    // Reset transcript status
+    transcriptStatus.textContent = 'Waiting';
+    transcriptStatus.className = 'badge badge-info';
   }
 
   function updateMediaButtons() {
@@ -425,6 +808,7 @@ python worker.py start
       log('Microphone ' + (room.localParticipant.isMicrophoneEnabled ? 'enabled' : 'disabled'));
       updateMediaButtons();
       updateParticipantsList();
+      updateAudioStatusIcons(false);
     } catch(e) {
       log('Mic error: ' + e.message);
       Marvain.showToast('error', 'Microphone Error', e.message);
@@ -469,10 +853,22 @@ python worker.py start
   document.getElementById('btn-send-chat').addEventListener('click', sendChatMessage);
   chatInputEl.addEventListener('keypress', function(e) { if (e.key === 'Enter') sendChatMessage(); });
 
+  // Device selection event listeners
+  micSelectEl.addEventListener('change', function() { changeMicrophone(this.value); });
+  speakerSelectEl.addEventListener('change', function() { changeSpeaker(this.value); });
+  camSelectEl.addEventListener('change', function() { changeCamera(this.value); });
+  document.getElementById('btn-refresh-devices').addEventListener('click', function() {
+    enumerateDevices();
+    Marvain.showToast('info', 'Devices', 'Device list refreshed');
+  });
+
   // Initial state
   updateMediaButtons();
   updateParticipantsList();
   updateConnectionStatus('disconnected');
+
+  // Enumerate devices on page load
+  enumerateDevices();
 })();
 </script>
 {% endblock %}
