@@ -412,6 +412,50 @@ def handler(event, context):
         })
         return {"statusCode": 200, "body": "ok"}
 
+    # -------------------------------------------------------------------------
+    # subscribe_events - subscribe to real-time event stream for an agent
+    # -------------------------------------------------------------------------
+    if action == "subscribe_events":
+        agent_id = str(msg.get("agent_id") or "").strip()
+        space_id = str(msg.get("space_id") or "").strip()
+        event_types = msg.get("event_types") or []  # Optional filter
+
+        if not agent_id:
+            _send(event, connection_id, {"type": "subscribe_events", "ok": False, "error": "missing_agent_id"})
+            return {"statusCode": 200, "body": "ok"}
+
+        # Check permission
+        if principal_type == "user":
+            if not check_agent_permission(_get_db(), agent_id=agent_id, user_id=user_id, required_role="member"):
+                _send(event, connection_id, {"type": "subscribe_events", "ok": False, "error": "permission_denied"})
+                return {"statusCode": 200, "body": "ok"}
+        else:
+            dev_agent = conn_item.get("agent_id")
+            if dev_agent != agent_id:
+                _send(event, connection_id, {"type": "subscribe_events", "ok": False, "error": "permission_denied"})
+                return {"statusCode": 200, "body": "ok"}
+
+        # Store subscription in connection record
+        subscriptions = conn_item.get("subscriptions") or []
+        sub_key = f"events:{agent_id}" if not space_id else f"events:{agent_id}:{space_id}"
+        if sub_key not in subscriptions:
+            subscriptions.append(sub_key)
+            table.update_item(
+                Key={"connection_id": connection_id},
+                UpdateExpression="SET subscriptions = :subs",
+                ExpressionAttributeValues={":subs": subscriptions},
+            )
+
+        _send(event, connection_id, {
+            "type": "subscribe_events",
+            "ok": True,
+            "subscription": sub_key,
+            "agent_id": agent_id,
+            "space_id": space_id or None,
+            "event_types": event_types if event_types else None,
+        })
+        return {"statusCode": 200, "body": "ok"}
+
     # Default: unknown action
     _send(event, connection_id, {"type": "error", "error": "unknown_action", "action": action})
     return {"statusCode": 200, "body": "ok"}
