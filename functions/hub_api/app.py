@@ -474,11 +474,6 @@ def gui_home(request: Request) -> Response:
     })
 
 
-# -----------------------------
-# GUI Routes - Placeholder stubs for navigation
-# These will be fully implemented in subsequent Phase 5 tasks
-# -----------------------------
-
 @app.get("/remotes", name="gui_remotes")
 def gui_remotes(request: Request) -> Response:
     """Remotes management - view connected satellites."""
@@ -2228,22 +2223,35 @@ def api_audit_verify(request: Request) -> dict:
 
 @app.get("/profile", name="profile")
 def gui_profile(request: Request) -> Response:
+    """User profile page - shows account info and agent memberships."""
     user = _gui_get_user(request)
     if not user:
         clear = bool(str(request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or "").strip())
         return _gui_redirect_to_login(request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear)
 
-    home_href = html.escape(_gui_path(request, "/"))
-    logout_href = html.escape(_gui_path(request, "/logout"))
-    body = (
-        "<div style='display:flex; justify-content:space-between; align-items:center;'>"
-        "<h1>Profile</h1>"
-        f"<div><a href='{home_href}'>Home</a> | <a href='{logout_href}'>Logout</a></div>"
-        "</div>"
-        f"<p>User ID: <code>{html.escape(user.user_id)}</code></p>"
-        f"<p>Email: <code>{html.escape(user.email or '')}</code></p>"
-    )
-    return _gui_html_page(title="Profile", body_html=body)
+    db = _get_db()
+    agents = list_agents_for_user(db, user_id=user.user_id)
+    agents_data = [
+        {
+            "agent_id": str(a.agent_id),
+            "name": a.name,
+            "role": a.role,
+            "relationship_label": a.relationship_label,
+        }
+        for a in agents
+    ]
+
+    return templates.TemplateResponse(request, "profile.html", {
+        "user": {
+            "email": user.email,
+            "user_id": str(user.user_id),
+            "cognito_sub": getattr(user, "cognito_sub", None),
+        },
+        "stage": _cfg.stage,
+        "active_page": "profile",
+        "agents": agents_data,
+        **_get_ws_context(request),
+    })
 
 
 @app.get("/livekit-test", name="gui_livekit_test")

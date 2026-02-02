@@ -333,3 +333,131 @@ class TestSubscribePresence:
             # Verify DynamoDB was updated
             mock_table.update_item.assert_called_once()
 
+
+class TestSubscribeEvents:
+    """Tests for the subscribe_events action."""
+
+    @patch("handler._dynamo")
+    @patch("handler._get_db")
+    @patch("handler._mgmt_api")
+    def test_subscribe_events_stores_subscription(self, mock_mgmt, mock_db, mock_dynamo):
+        """User should be able to subscribe to event stream."""
+        from handler import handler
+
+        mock_table = MagicMock()
+        mock_table.get_item.return_value = {
+            "Item": {"connection_id": "conn-123", "status": "authenticated", "principal_type": "user", "user_id": "user-abc", "subscriptions": []}
+        }
+        mock_dynamo.Table.return_value = mock_table
+
+        with patch("handler.check_agent_permission", return_value=True):
+            mock_post = MagicMock()
+            mock_mgmt.return_value.post_to_connection = mock_post
+
+            event = {
+                "requestContext": {"connectionId": "conn-123", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
+                "body": json.dumps({"action": "subscribe_events", "agent_id": "agent-xyz"})
+            }
+
+            result = handler(event, {})
+
+            assert result["statusCode"] == 200
+            sent_data = json.loads(mock_post.call_args[1]["Data"].decode())
+            assert sent_data["type"] == "subscribe_events"
+            assert sent_data["ok"] is True
+            assert sent_data["subscription"] == "events:agent-xyz"
+            assert sent_data["agent_id"] == "agent-xyz"
+
+            # Verify DynamoDB was updated
+            mock_table.update_item.assert_called_once()
+
+    @patch("handler._dynamo")
+    @patch("handler._get_db")
+    @patch("handler._mgmt_api")
+    def test_subscribe_events_with_space_filter(self, mock_mgmt, mock_db, mock_dynamo):
+        """User should be able to subscribe to events for a specific space."""
+        from handler import handler
+
+        mock_table = MagicMock()
+        mock_table.get_item.return_value = {
+            "Item": {"connection_id": "conn-123", "status": "authenticated", "principal_type": "user", "user_id": "user-abc", "subscriptions": []}
+        }
+        mock_dynamo.Table.return_value = mock_table
+
+        with patch("handler.check_agent_permission", return_value=True):
+            mock_post = MagicMock()
+            mock_mgmt.return_value.post_to_connection = mock_post
+
+            event = {
+                "requestContext": {"connectionId": "conn-123", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
+                "body": json.dumps({"action": "subscribe_events", "agent_id": "agent-xyz", "space_id": "space-1"})
+            }
+
+            result = handler(event, {})
+
+            assert result["statusCode"] == 200
+            sent_data = json.loads(mock_post.call_args[1]["Data"].decode())
+            assert sent_data["type"] == "subscribe_events"
+            assert sent_data["ok"] is True
+            assert sent_data["subscription"] == "events:agent-xyz:space-1"
+            assert sent_data["space_id"] == "space-1"
+
+    @patch("handler._dynamo")
+    @patch("handler._get_db")
+    @patch("handler._mgmt_api")
+    def test_subscribe_events_requires_agent_id(self, mock_mgmt, mock_db, mock_dynamo):
+        """subscribe_events should require agent_id."""
+        from handler import handler
+
+        mock_table = MagicMock()
+        mock_table.get_item.return_value = {
+            "Item": {"connection_id": "conn-123", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
+        }
+        mock_dynamo.Table.return_value = mock_table
+
+        mock_post = MagicMock()
+        mock_mgmt.return_value.post_to_connection = mock_post
+
+        event = {
+            "requestContext": {"connectionId": "conn-123", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
+            "body": json.dumps({"action": "subscribe_events"})  # Missing agent_id
+        }
+
+        result = handler(event, {})
+
+        assert result["statusCode"] == 200
+        sent_data = json.loads(mock_post.call_args[1]["Data"].decode())
+        assert sent_data["type"] == "subscribe_events"
+        assert sent_data["ok"] is False
+        assert sent_data["error"] == "missing_agent_id"
+
+    @patch("handler._dynamo")
+    @patch("handler._get_db")
+    @patch("handler._mgmt_api")
+    def test_subscribe_events_requires_permission(self, mock_mgmt, mock_db, mock_dynamo):
+        """subscribe_events should check agent permission."""
+        from handler import handler
+
+        mock_table = MagicMock()
+        mock_table.get_item.return_value = {
+            "Item": {"connection_id": "conn-123", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
+        }
+        mock_dynamo.Table.return_value = mock_table
+
+        with patch("handler.check_agent_permission", return_value=False):
+            mock_post = MagicMock()
+            mock_mgmt.return_value.post_to_connection = mock_post
+
+            event = {
+                "requestContext": {"connectionId": "conn-123", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
+                "body": json.dumps({"action": "subscribe_events", "agent_id": "agent-xyz"})
+            }
+
+            result = handler(event, {})
+
+            assert result["statusCode"] == 200
+            sent_data = json.loads(mock_post.call_args[1]["Data"].decode())
+            assert sent_data["type"] == "subscribe_events"
+            assert sent_data["ok"] is False
+            assert sent_data["error"] == "permission_denied"
+

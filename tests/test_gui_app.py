@@ -1581,3 +1581,195 @@ class TestWebSocketContext(unittest.TestCase):
         # Should contain WebSocket indicator
         self.assertIn("ws-indicator", r.text)
         self.assertIn("ws-status-text", r.text)
+
+
+class TestProfileGui(unittest.TestCase):
+    """Tests for the profile page GUI routes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load_hub_api_app_module()
+        from fastapi.testclient import TestClient
+
+        cls._TestClient = TestClient
+        cls._orig_gui_get_user = cls.mod._gui_get_user
+        cls._orig_get_db = cls.mod._get_db
+        cls._orig_list_agents_for_user = cls.mod.list_agents_for_user
+        cls._orig_cfg = cls.mod._cfg
+
+    def setUp(self):
+        self.client = self.__class__._TestClient(self.mod.app, raise_server_exceptions=False)
+        self.mod._gui_get_user = self._orig_gui_get_user
+        self.mod._get_db = self._orig_get_db
+        self.mod.list_agents_for_user = self._orig_list_agents_for_user
+        self.mod._cfg = self._orig_cfg
+
+    def test_profile_redirects_to_login_when_unauthenticated(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.get("/profile", follow_redirects=False)
+
+        self.assertIn(r.status_code, [302, 307])
+        self.assertIn("/login", r.headers.get("location", ""))
+
+    def test_profile_renders_when_authenticated(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(
+                user_id="u1", cognito_sub="sub-1", email="user@example.com"
+            )
+        )
+        mock_db = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+        self.mod.list_agents_for_user = mock.Mock(return_value=[
+            mock.Mock(agent_id="agent-1", name="Test Agent", role="owner", relationship_label="self"),
+        ])
+        self.mod._cfg = mock.Mock(stage="dev", ws_api_url=None)
+
+        r = self.client.get("/profile", cookies={"marvain_access_token": "test-token"})
+
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Profile", r.text)
+        self.assertIn("u1", r.text)
+        self.assertIn("user@example.com", r.text)
+        self.assertIn("Test Agent", r.text)
+
+    def test_profile_shows_agent_memberships(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(
+                user_id="u1", cognito_sub="sub-1", email="user@example.com"
+            )
+        )
+        mock_db = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+        self.mod.list_agents_for_user = mock.Mock(return_value=[
+            mock.Mock(agent_id="agent-1", name="Agent One", role="owner", relationship_label="self"),
+            mock.Mock(agent_id="agent-2", name="Agent Two", role="member", relationship_label="friend"),
+        ])
+        self.mod._cfg = mock.Mock(stage="dev", ws_api_url=None)
+
+        r = self.client.get("/profile", cookies={"marvain_access_token": "test-token"})
+
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Agent One", r.text)
+        self.assertIn("Agent Two", r.text)
+        self.assertIn("owner", r.text)
+        self.assertIn("member", r.text)
+
+
+class TestWebSocketReconnection(unittest.TestCase):
+    """Tests for WebSocket reconnection behavior in marvain.js."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load_hub_api_app_module()
+        from fastapi.testclient import TestClient
+
+        cls._TestClient = TestClient
+        cls._orig_gui_get_user = cls.mod._gui_get_user
+        cls._orig_get_db = cls.mod._get_db
+        cls._orig_list_agents_for_user = cls.mod.list_agents_for_user
+        cls._orig_list_spaces_for_user = cls.mod.list_spaces_for_user
+        cls._orig_cfg = cls.mod._cfg
+
+    def setUp(self):
+        self.client = self.__class__._TestClient(self.mod.app, raise_server_exceptions=False)
+        self.mod._gui_get_user = self._orig_gui_get_user
+        self.mod._get_db = self._orig_get_db
+        self.mod.list_agents_for_user = self._orig_list_agents_for_user
+        self.mod.list_spaces_for_user = self._orig_list_spaces_for_user
+        self.mod._cfg = self._orig_cfg
+
+    def test_marvain_js_contains_reconnect_logic(self) -> None:
+        """Verify marvain.js contains WebSocket reconnection logic."""
+        r = self.client.get("/static/js/marvain.js")
+
+        self.assertEqual(r.status_code, 200)
+        # Check for reconnection-related code
+        self.assertIn("wsReconnectAttempts", r.text)
+        self.assertIn("wsMaxReconnectAttempts", r.text)
+        self.assertIn("wsReconnectDelay", r.text)
+        # Check for exponential backoff
+        self.assertIn("Math.pow", r.text)
+
+    def test_marvain_js_has_max_reconnect_limit(self) -> None:
+        """Verify marvain.js limits reconnection attempts."""
+        r = self.client.get("/static/js/marvain.js")
+
+        self.assertEqual(r.status_code, 200)
+        # Should check against max attempts before reconnecting
+        self.assertIn("wsReconnectAttempts < this.wsMaxReconnectAttempts", r.text)
+
+
+class TestLiveKitTokenExpiration(unittest.TestCase):
+    """Tests for LiveKit token expiration handling."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load_hub_api_app_module()
+        from fastapi.testclient import TestClient
+
+        cls._TestClient = TestClient
+        cls._orig_gui_get_user = cls.mod._gui_get_user
+        cls._orig_get_db = cls.mod._get_db
+        cls._orig_list_spaces_for_user = cls.mod.list_spaces_for_user
+        cls._orig_mint_livekit_join_token = cls.mod.mint_livekit_join_token
+        cls._orig_cfg = cls.mod._cfg
+
+    def setUp(self):
+        self.client = self.__class__._TestClient(self.mod.app, raise_server_exceptions=False)
+        self.mod._gui_get_user = self._orig_gui_get_user
+        self.mod._get_db = self._orig_get_db
+        self.mod.list_spaces_for_user = self._orig_list_spaces_for_user
+        self.mod.mint_livekit_join_token = self._orig_mint_livekit_join_token
+        self.mod._cfg = self._orig_cfg
+
+    def test_livekit_token_requires_authentication(self) -> None:
+        """Token endpoint should reject unauthenticated requests."""
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.post(
+            "/livekit/token",
+            json={"space_id": "space-1"},
+        )
+
+        self.assertEqual(r.status_code, 401)
+
+    def test_livekit_token_returns_token_for_authenticated_user(self) -> None:
+        """Token endpoint should return a token for authenticated users."""
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(
+                user_id="u1", cognito_sub="sub-1", email="user@example.com"
+            )
+        )
+        self.mod.mint_livekit_join_token = mock.Mock(return_value="jwt-token-123")
+        self.mod._cfg = mock.Mock(stage="dev", ws_api_url=None, livekit_secret_arn="arn:aws:secretsmanager:...")
+
+        r = self.client.post(
+            "/livekit/token",
+            json={"space_id": "space-1"},
+            cookies={"marvain_access_token": "test-token"},
+        )
+
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertIn("token", data)
+        self.assertIn("room", data)
+
+    def test_livekit_test_page_has_token_refresh_capability(self) -> None:
+        """LiveKit test page should have ability to request new tokens."""
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(
+                user_id="u1", cognito_sub="sub-1", email="user@example.com"
+            )
+        )
+        mock_db = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+        self.mod.list_spaces_for_user = mock.Mock(return_value=[])
+        self.mod._cfg = mock.Mock(stage="dev", ws_api_url=None)
+
+        r = self.client.get("/livekit-test", cookies={"marvain_access_token": "test-token"})
+
+        self.assertEqual(r.status_code, 200)
+        # Should have token URL for fetching tokens (data-token-url attribute)
+        self.assertIn("data-token-url", r.text)
+        self.assertIn("/livekit/token", r.text)

@@ -105,13 +105,124 @@
 {% block extra_js %}
 <script>
 let isPaused = false;
+let wsSubscribed = false;
+let eventCount = {{ events|length }};
+
+// Subscribe to real-time events via WebSocket
+function subscribeToEvents() {
+  if (wsSubscribed) return;
+
+  // Wait for WebSocket to be ready
+  if (typeof Marvain !== 'undefined' && Marvain.ws && Marvain.ws.readyState === WebSocket.OPEN) {
+    // Subscribe to events for all agents
+    {% for agent in agents %}
+    Marvain.wsSend({
+      action: 'subscribe_events',
+      agent_id: '{{ agent.agent_id }}'
+    });
+    {% endfor %}
+    wsSubscribed = true;
+    console.log('[Events] Subscribed to real-time events');
+  } else {
+    // Retry after a short delay
+    setTimeout(subscribeToEvents, 500);
+  }
+}
+
+// Handle incoming events from WebSocket
+function handleWsEvent(msg) {
+  if (isPaused) return;
+  if (msg.type !== 'event' && msg.type !== 'push_event') return;
+
+  const event = msg.event || msg;
+  if (!event.event_id) return;
+
+  // Check if event already exists
+  if (document.querySelector(`[data-event-id="${event.event_id}"]`)) return;
+
+  // Create new event row
+  const row = document.createElement('div');
+  row.className = 'event-row';
+  row.dataset.agent = event.agent_id || '';
+  row.dataset.space = event.space_id || '';
+  row.dataset.type = event.type || '';
+  row.dataset.eventId = event.event_id;
+  row.dataset.payload = JSON.stringify(event.payload || {}).toLowerCase();
+
+  // Determine type category for styling
+  const typeLower = (event.type || '').toLowerCase();
+  let typeCategory = 'other';
+  if (typeLower.includes('audio') || typeLower.includes('sound')) typeCategory = 'audio';
+  else if (typeLower.includes('video') || typeLower.includes('image')) typeCategory = 'video';
+  else if (typeLower.includes('speech') || typeLower.includes('transcript') || typeLower.includes('voice')) typeCategory = 'speech';
+  else if (typeLower.includes('action') || typeLower.includes('tool') || typeLower.includes('execute')) typeCategory = 'action';
+  else if (typeLower.includes('system') || typeLower.includes('error') || typeLower.includes('connect')) typeCategory = 'system';
+
+  const payloadStr = JSON.stringify(event.payload || {});
+  const payloadPreview = payloadStr.length > 100 ? payloadStr.substring(0, 100) + '...' : payloadStr;
+  const timeStr = new Date().toLocaleTimeString('en-US', { hour12: false });
+
+  row.innerHTML = `
+    <div class="event-time">${timeStr}</div>
+    <div class="event-type">
+      <span class="type-badge type-${typeCategory}">${event.type || 'unknown'}</span>
+    </div>
+    <div class="event-source">
+      <span class="text-muted">${event.agent_name || ''}</span>
+      ${event.space_name ? `<span class="text-muted">• ${event.space_name}</span>` : ''}
+    </div>
+    <div class="event-payload">
+      <code>${payloadPreview}</code>
+    </div>
+    <div class="event-actions">
+      <button class="btn btn-sm btn-outline" onclick="viewEvent('${event.event_id}')">
+        <i class="fas fa-eye"></i>
+      </button>
+    </div>
+  `;
+
+  // Add to top of list with animation
+  const list = document.getElementById('events-list');
+  const emptyState = list.querySelector('.empty-state');
+  if (emptyState) emptyState.remove();
+
+  row.style.opacity = '0';
+  row.style.transform = 'translateY(-10px)';
+  list.insertBefore(row, list.firstChild);
+
+  // Animate in
+  requestAnimationFrame(() => {
+    row.style.transition = 'opacity 0.3s, transform 0.3s';
+    row.style.opacity = '1';
+    row.style.transform = 'translateY(0)';
+  });
+
+  // Update count
+  eventCount++;
+  document.getElementById('event-count').textContent = eventCount;
+
+  // Apply current filters
+  filterEvents();
+}
+
+// Initialize WebSocket event listener
+if (typeof Marvain !== 'undefined') {
+  Marvain.wsOn('message', handleWsEvent);
+  Marvain.wsOn('connected', () => {
+    wsSubscribed = false;
+    subscribeToEvents();
+  });
+}
+
+// Start subscription when page loads
+document.addEventListener('DOMContentLoaded', subscribeToEvents);
 
 function filterEvents() {
   const agent = document.getElementById('agent-filter').value;
   const space = document.getElementById('space-filter').value;
   const type = document.getElementById('type-filter').value;
   const search = document.getElementById('search-filter').value.toLowerCase();
-  
+
   let visibleCount = 0;
   document.querySelectorAll('.event-row').forEach(row => {
     const matchAgent = !agent || row.dataset.agent === agent;
