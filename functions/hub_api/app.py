@@ -2303,15 +2303,16 @@ def gui_agent_detail(request: Request, agent_id: str) -> Response:
 
     # Fetch members for this agent
     members_rows = db.query(
-        "SELECT m.user_id, m.role, m.created_at, u.email "
-        "FROM memberships m LEFT JOIN users u ON m.user_id = u.user_id "
-        "WHERE m.agent_id = :agent_id ORDER BY m.created_at",
+        "SELECT m.user_id, m.role, m.relationship_label, m.created_at, u.email "
+        "FROM agent_memberships m LEFT JOIN users u ON m.user_id = u.user_id "
+        "WHERE m.agent_id = :agent_id::uuid AND m.revoked_at IS NULL ORDER BY m.created_at",
         {"agent_id": agent_id},
     )
     members = [
         {
             "user_id": str(row.get("user_id", "")),
             "role": row.get("role", "member"),
+            "relationship_label": row.get("relationship_label"),
             "email": row.get("email"),
             "created_at": str(row.get("created_at", ""))[:10] if row.get("created_at") else None,
         }

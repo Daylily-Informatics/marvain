@@ -144,7 +144,8 @@ def run(argv: list[str]) -> int:
     gui_start_p.add_argument("--reload", action="store_true")
     gui_start_p.add_argument("--no-reload", action="store_true")
     gui_start_p.add_argument("--foreground", "-f", action="store_true", help="Run in foreground (blocking)")
-    gui_start_p.add_argument("--https", action="store_true", help="Enable HTTPS (requires --cert and --key)")
+    gui_start_p.add_argument("--https", action="store_true", default=True, help="Enable HTTPS (default: on, uses mkcert if no cert/key)")
+    gui_start_p.add_argument("--no-https", action="store_true", help="Disable HTTPS, use HTTP instead")
     gui_start_p.add_argument("--cert", type=str, help="Path to SSL certificate file (PEM format)")
     gui_start_p.add_argument("--key", type=str, help="Path to SSL private key file (PEM format)")
     gui_start_p.add_argument("--dry-run", action="store_true")
@@ -160,7 +161,8 @@ def run(argv: list[str]) -> int:
     gui_restart_p.add_argument("--reload", action="store_true")
     gui_restart_p.add_argument("--no-reload", action="store_true")
     gui_restart_p.add_argument("--foreground", "-f", action="store_true", help="Run in foreground (blocking)")
-    gui_restart_p.add_argument("--https", action="store_true", help="Enable HTTPS (requires --cert and --key)")
+    gui_restart_p.add_argument("--https", action="store_true", default=True, help="Enable HTTPS (default: on, uses mkcert if no cert/key)")
+    gui_restart_p.add_argument("--no-https", action="store_true", help="Disable HTTPS, use HTTP instead")
     gui_restart_p.add_argument("--cert", type=str, help="Path to SSL certificate file (PEM format)")
     gui_restart_p.add_argument("--key", type=str, help="Path to SSL private key file (PEM format)")
     gui_restart_p.add_argument("--dry-run", action="store_true")
@@ -415,6 +417,10 @@ def run(argv: list[str]) -> int:
                     reload = False
                 if getattr(args, "reload", False):
                     reload = True
+                # HTTPS is default True, but --no-https disables it
+                https = True
+                if getattr(args, "no_https", False):
+                    https = False
                 return gui_start(
                     ctx,
                     dry_run=bool(args.dry_run),
@@ -422,7 +428,7 @@ def run(argv: list[str]) -> int:
                     port=int(getattr(args, "port", GUI_DEFAULT_PORT)),
                     reload=reload,
                     foreground=bool(getattr(args, "foreground", False)),
-                    https=bool(getattr(args, "https", False)),
+                    https=https,
                     cert=getattr(args, "cert", None),
                     key=getattr(args, "key", None),
                 )
@@ -439,6 +445,10 @@ def run(argv: list[str]) -> int:
                     reload = False
                 if getattr(args, "reload", False):
                     reload = True
+                # HTTPS is default True, but --no-https disables it
+                https = True
+                if getattr(args, "no_https", False):
+                    https = False
                 return gui_restart(
                     ctx,
                     dry_run=bool(args.dry_run),
@@ -446,7 +456,7 @@ def run(argv: list[str]) -> int:
                     port=int(getattr(args, "port", GUI_DEFAULT_PORT)),
                     reload=reload,
                     foreground=bool(getattr(args, "foreground", False)),
-                    https=bool(getattr(args, "https", False)),
+                    https=https,
                     cert=getattr(args, "cert", None),
                     key=getattr(args, "key", None),
                 )
