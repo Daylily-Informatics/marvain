@@ -985,6 +985,79 @@ def api_revoke_device(request: Request, device_id: str) -> dict:
     return {"message": "Device revoked", "device_id": device_id}
 
 
+# ---------------------------------------------------------------------------
+# Agents API endpoints (session-based auth for GUI)
+# ---------------------------------------------------------------------------
+
+
+class AgentCreate(BaseModel):
+    """Request body for creating an agent."""
+    name: str = Field(..., min_length=1, max_length=255, description="Name of the agent")
+    relationship_label: str | None = Field(None, max_length=255, description="Optional label for the relationship")
+
+
+class AgentResponse(BaseModel):
+    """Response body for agent creation."""
+    agent_id: str
+    name: str
+    role: str
+    relationship_label: str | None
+    disabled: bool
+
+
+@app.post("/api/agents", name="api_create_agent")
+def api_create_agent(request: Request, body: AgentCreate) -> AgentResponse:
+    """Create a new agent and make the creating user the owner."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    agent_id = str(uuid.uuid4())
+
+    # Use a transaction to ensure atomicity
+    tx = db.begin()
+    try:
+        # Create the agent
+        db.execute(
+            "INSERT INTO agents(agent_id, name, disabled) VALUES (:agent_id::uuid, :name, false)",
+            {"agent_id": agent_id, "name": body.name},
+            transaction_id=tx,
+        )
+
+        # Make the creating user the owner
+        db.execute(
+            """
+            INSERT INTO agent_memberships (agent_id, user_id, role, relationship_label)
+            VALUES (:agent_id::uuid, :user_id::uuid, 'owner', :relationship_label)
+            """,
+            {"agent_id": agent_id, "user_id": user.user_id, "relationship_label": body.relationship_label},
+            transaction_id=tx,
+        )
+
+        db.commit(tx)
+    except Exception as e:
+        db.rollback(tx)
+        logger.error(f"Failed to create agent: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create agent")
+
+    # Add audit log entry if audit bucket is configured
+    if _cfg.audit_bucket:
+        from agent_hub.audit import append_audit_entry
+        append_audit_entry(
+            db, bucket=_cfg.audit_bucket, agent_id=agent_id,
+            entry_type="agent_created", entry={"user_id": user.user_id, "name": body.name},
+        )
+
+    return AgentResponse(
+        agent_id=agent_id,
+        name=body.name,
+        role="owner",
+        relationship_label=body.relationship_label,
+        disabled=False,
+    )
+
+
 @app.get("/agents", name="gui_agents")
 def gui_agents(request: Request) -> Response:
     """Agents management - list all agents."""
