@@ -179,7 +179,7 @@ function submitCreateAgent(event) {
   };
   
   Marvain.showLoading('Creating agent...');
-  Marvain.api('/v1/agents', { method: 'POST', body: JSON.stringify(data), headers: {'Content-Type': 'application/json'} })
+  Marvain.api('/api/agents', { method: 'POST', body: JSON.stringify(data), headers: {'Content-Type': 'application/json'} })
     .then(() => {
       Marvain.hideLoading();
       Marvain.showToast('success', 'Created', 'Agent created successfully');

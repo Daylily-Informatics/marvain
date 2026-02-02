@@ -493,6 +493,10 @@ class TestAgentsGui(unittest.TestCase):
             return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
         )
 
+        # Mock database
+        mock_db = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
         # Mock list_agents_for_user
         mock_agent = mock.Mock()
         mock_agent.agent_id = "a1"
@@ -549,6 +553,99 @@ class TestAgentsGui(unittest.TestCase):
         r = self.client.get("/agents/unknown-id")
 
         self.assertEqual(r.status_code, 404)
+
+    def test_create_agent_requires_authentication(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.post("/api/agents", json={"name": "New Agent"})
+
+        self.assertEqual(r.status_code, 401)
+
+    def test_create_agent_success(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+
+        mock_db = mock.Mock()
+        mock_db.begin = mock.Mock(return_value="tx-123")
+        mock_db.execute = mock.Mock()
+        mock_db.commit = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        # Mock the config to not have audit_bucket
+        orig_cfg = self.mod._cfg
+        mock_cfg = mock.Mock()
+        mock_cfg.audit_bucket = None
+        self.mod._cfg = mock_cfg
+
+        try:
+            r = self.client.post("/api/agents", json={"name": "New Agent", "relationship_label": "My Helper"})
+
+            self.assertEqual(r.status_code, 200)
+            data = r.json()
+            self.assertEqual(data["name"], "New Agent")
+            self.assertEqual(data["role"], "owner")
+            self.assertEqual(data["relationship_label"], "My Helper")
+            self.assertFalse(data["disabled"])
+            self.assertIn("agent_id", data)
+
+            # Verify transaction was used
+            mock_db.begin.assert_called_once()
+            mock_db.commit.assert_called_once_with("tx-123")
+            self.assertEqual(mock_db.execute.call_count, 2)  # Create agent + create membership
+        finally:
+            self.mod._cfg = orig_cfg
+
+    def test_create_agent_without_relationship_label(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+
+        mock_db = mock.Mock()
+        mock_db.begin = mock.Mock(return_value="tx-123")
+        mock_db.execute = mock.Mock()
+        mock_db.commit = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        orig_cfg = self.mod._cfg
+        mock_cfg = mock.Mock()
+        mock_cfg.audit_bucket = None
+        self.mod._cfg = mock_cfg
+
+        try:
+            r = self.client.post("/api/agents", json={"name": "Simple Agent"})
+
+            self.assertEqual(r.status_code, 200)
+            data = r.json()
+            self.assertEqual(data["name"], "Simple Agent")
+            self.assertIsNone(data["relationship_label"])
+        finally:
+            self.mod._cfg = orig_cfg
+
+    def test_create_agent_requires_name(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+
+        r = self.client.post("/api/agents", json={})
+
+        self.assertEqual(r.status_code, 422)  # Validation error
+
+    def test_create_agent_rollback_on_error(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+
+        mock_db = mock.Mock()
+        mock_db.begin = mock.Mock(return_value="tx-123")
+        mock_db.execute = mock.Mock(side_effect=Exception("DB error"))
+        mock_db.rollback = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post("/api/agents", json={"name": "Failing Agent"})
+
+        self.assertEqual(r.status_code, 500)
+        mock_db.rollback.assert_called_once_with("tx-123")
 
 
 class TestSpacesGui(unittest.TestCase):
