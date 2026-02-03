@@ -282,20 +282,21 @@ class TestGuiApp(unittest.TestCase):
         # Mock the token minting function that's imported from api_app.
         # The GUI route calls _mint_livekit_token_for_user which is imported from api_app,
         # so we need to mock it on the app module where it's used.
+        # Note: _mint_livekit_token_for_user is now async, so we use AsyncMock.
         expected_response = self.mod.LiveKitTokenOut(
             url="wss://livekit.example",
             token="jwt",
-            room="space-1",
+            room="space-1:abc123",  # Ephemeral room format
             identity="user:u1",
         )
-        self.mod._mint_livekit_token_for_user = mock.Mock(return_value=expected_response)
+        self.mod._mint_livekit_token_for_user = mock.AsyncMock(return_value=expected_response)
 
         r = self.client.post("/livekit/token", json={"space_id": "space-1"})
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertEqual(body["url"], "wss://livekit.example")
         self.assertEqual(body["token"], "jwt")
-        self.assertEqual(body["room"], "space-1")
+        self.assertTrue(body["room"].startswith("space-1:"), f"Expected ephemeral room, got: {body['room']}")
         self.assertEqual(body["identity"], "user:u1")
 
 
@@ -1741,8 +1742,14 @@ class TestLiveKitTokenExpiration(unittest.TestCase):
                 user_id="u1", cognito_sub="sub-1", email="user@example.com"
             )
         )
-        self.mod.mint_livekit_join_token = mock.Mock(return_value="jwt-token-123")
-        self.mod._cfg = mock.Mock(stage="dev", ws_api_url=None, livekit_secret_arn="arn:aws:secretsmanager:...")
+        # _mint_livekit_token_for_user is now async, so mock with AsyncMock
+        expected_response = self.mod.LiveKitTokenOut(
+            url="wss://livekit.example",
+            token="jwt-token-123",
+            room="space-1:abc123",
+            identity="user:u1",
+        )
+        self.mod._mint_livekit_token_for_user = mock.AsyncMock(return_value=expected_response)
 
         r = self.client.post(
             "/livekit/token",
