@@ -12,6 +12,11 @@ from marvain_cli.config import ConfigError, render_config_yaml, sanitize_name_fo
 from marvain_cli.ops import (
     GUI_DEFAULT_HOST,
     GUI_DEFAULT_PORT,
+    agent_logs,
+    agent_restart,
+    agent_start,
+    agent_status,
+    agent_stop,
     bootstrap,
     cognito_create_user,
     cognito_delete_user,
@@ -175,6 +180,30 @@ def run(argv: list[str]) -> int:
     gui_logs_p.add_argument("--follow", "-f", action="store_true", help="Follow log output")
     gui_logs_p.add_argument("--lines", "-n", type=int, default=50, help="Number of lines to show")
     gui_logs_p.add_argument("--dry-run", action="store_true")
+
+    # Agent worker management
+    agent = sub.add_parser("agent", help="Agent worker management")
+    agent_sub = agent.add_subparsers(dest="agent_cmd")
+
+    agent_start_p = agent_sub.add_parser("start", help="Start the agent worker")
+    agent_start_p.add_argument("--foreground", "-f", action="store_true", help="Run in foreground (blocking)")
+    agent_start_p.add_argument("--dry-run", action="store_true")
+
+    agent_stop_p = agent_sub.add_parser("stop", help="Stop the agent worker")
+    agent_stop_p.add_argument("--force", action="store_true", help="Force kill (SIGKILL)")
+    agent_stop_p.add_argument("--dry-run", action="store_true")
+
+    agent_restart_p = agent_sub.add_parser("restart", help="Restart the agent worker")
+    agent_restart_p.add_argument("--foreground", "-f", action="store_true", help="Run in foreground (blocking)")
+    agent_restart_p.add_argument("--dry-run", action="store_true")
+
+    agent_status_p = agent_sub.add_parser("status", help="Show agent worker status")
+    agent_status_p.add_argument("--dry-run", action="store_true")
+
+    agent_logs_p = agent_sub.add_parser("logs", help="Show agent worker logs")
+    agent_logs_p.add_argument("--follow", "-f", action="store_true", help="Follow log output")
+    agent_logs_p.add_argument("--lines", "-n", type=int, default=50, help="Number of lines to show")
+    agent_logs_p.add_argument("--dry-run", action="store_true")
 
     tst = sub.add_parser("test", help="Run tests")
     tst.add_argument("kind", nargs="?", default="unit", choices=["unit", "all"])
@@ -475,6 +504,47 @@ def run(argv: list[str]) -> int:
                 )
             else:
                 print(f"Unknown gui subcommand: {gui_cmd}", file=sys.stderr)
+                return 1
+
+        if args.cmd == "agent":
+            agent_cmd = getattr(args, "agent_cmd", None)
+
+            # Default to "status" if no subcommand given
+            if agent_cmd is None:
+                agent_cmd = "status"
+
+            if agent_cmd == "start":
+                return agent_start(
+                    ctx,
+                    dry_run=bool(args.dry_run),
+                    foreground=bool(getattr(args, "foreground", False)),
+                )
+            elif agent_cmd == "stop":
+                return agent_stop(
+                    ctx,
+                    dry_run=bool(args.dry_run),
+                    force=bool(getattr(args, "force", False)),
+                )
+            elif agent_cmd == "restart":
+                return agent_restart(
+                    ctx,
+                    dry_run=bool(args.dry_run),
+                    foreground=bool(getattr(args, "foreground", False)),
+                )
+            elif agent_cmd == "status":
+                return agent_status(
+                    ctx,
+                    dry_run=bool(args.dry_run),
+                )
+            elif agent_cmd == "logs":
+                return agent_logs(
+                    ctx,
+                    dry_run=bool(args.dry_run),
+                    follow=bool(getattr(args, "follow", False)),
+                    lines=int(getattr(args, "lines", 50)),
+                )
+            else:
+                print(f"Unknown agent subcommand: {agent_cmd}", file=sys.stderr)
                 return 1
 
         if args.cmd == "users":

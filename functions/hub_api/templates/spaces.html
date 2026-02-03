@@ -74,7 +74,7 @@
         <a href="/livekit-test?space={{ space.space_id }}" class="btn btn-sm btn-primary">
           <i class="fas fa-video"></i> Join
         </a>
-        <button class="btn btn-sm btn-outline" onclick="editSpace('{{ space.space_id }}')">
+        <button class="btn btn-sm btn-outline" onclick="editSpace('{{ space.space_id }}', '{{ space.name | replace("'", "\\'") }}')">
           <i class="fas fa-cog"></i>
         </button>
       </div>
@@ -137,6 +137,39 @@
     </form>
   </div>
 </div>
+
+<!-- Edit Space Modal -->
+<div id="edit-space-modal" class="modal" style="display: none;">
+  <div class="modal-backdrop" onclick="Marvain.hideModal('edit-space-modal')"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>Manage Space</h3>
+      <button type="button" class="btn btn-sm" onclick="Marvain.hideModal('edit-space-modal')">
+        <i class="fas fa-times"></i>
+      </button>
+    </div>
+    <div class="modal-body">
+      <p class="text-muted" style="margin-bottom: 1rem;">
+        <strong id="edit-space-name"></strong>
+      </p>
+      <div class="form-group" style="margin-bottom: 1.5rem;">
+        <p class="text-muted">More editing options coming soon. For now, you can delete this space.</p>
+      </div>
+      <div class="danger-zone" style="border: 1px solid var(--color-error); border-radius: var(--radius-md); padding: 1rem; background: rgba(239, 68, 68, 0.1);">
+        <h4 style="color: var(--color-error); margin: 0 0 0.5rem 0;"><i class="fas fa-exclamation-triangle"></i> Danger Zone</h4>
+        <p class="text-muted" style="margin-bottom: 1rem;">Deleting a space cannot be undone. All conversation history in this space will be lost.</p>
+        <button type="button" class="btn" style="background: var(--color-error); color: white;" onclick="confirmDeleteSpace()">
+          <i class="fas fa-trash"></i> Delete Space
+        </button>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-outline" onclick="Marvain.hideModal('edit-space-modal')">
+        Close
+      </button>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
@@ -154,8 +187,48 @@ function filterSpaces() {
   });
 }
 
-function editSpace(spaceId) {
-  Marvain.showToast('info', 'Coming Soon', 'Space editing will be available in a future update.');
+// Track current space being edited
+let currentEditSpaceId = null;
+let currentEditSpaceName = null;
+
+function editSpace(spaceId, spaceName) {
+  currentEditSpaceId = spaceId;
+  currentEditSpaceName = spaceName;
+  document.getElementById('edit-space-name').textContent = spaceName;
+  Marvain.showModal('edit-space-modal');
+}
+
+function confirmDeleteSpace() {
+  if (!currentEditSpaceId) return;
+
+  if (!confirm(`Are you sure you want to delete "${currentEditSpaceName}"? This action cannot be undone.`)) {
+    return;
+  }
+
+  deleteSpace(currentEditSpaceId);
+}
+
+async function deleteSpace(spaceId) {
+  try {
+    Marvain.showLoading('Deleting space...');
+    const response = await fetch(`/api/spaces/${spaceId}`, {
+      method: 'DELETE',
+      headers: {'Content-Type': 'application/json'}
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to delete space');
+    }
+
+    Marvain.hideLoading();
+    Marvain.hideModal('edit-space-modal');
+    Marvain.showToast('success', 'Deleted', 'Space deleted successfully');
+    setTimeout(() => location.reload(), 1000);
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
 }
 
 async function submitCreateSpace(event) {

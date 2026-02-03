@@ -207,6 +207,7 @@
       <div style="background: var(--color-gray-800); padding: 8px; border-radius: 4px; margin-bottom: 8px;">
         <div><span class="text-muted">Room Name:</span> <span id="debug-room-name">—</span></div>
         <div><span class="text-muted">Room SID:</span> <span id="debug-room-sid">—</span></div>
+        <div><span class="text-muted">Room Type:</span> <span id="debug-room-type">—</span></div>
         <div><span class="text-muted">Created:</span> <span id="debug-room-created">—</span></div>
         <div><span class="text-muted">Participants:</span> <span id="debug-room-participants">0</span></div>
         <div><span class="text-muted">Age:</span> <span id="debug-room-age">—</span></div>
@@ -393,6 +394,7 @@ python worker.py dev
       document.getElementById('debug-status-badge').className = 'badge badge-info';
       document.getElementById('debug-room-name').textContent = '—';
       document.getElementById('debug-room-sid').textContent = '—';
+      document.getElementById('debug-room-type').textContent = '—';
       document.getElementById('debug-room-created').textContent = '—';
       document.getElementById('debug-room-participants').textContent = '0';
       document.getElementById('debug-room-age').textContent = '—';
@@ -406,7 +408,34 @@ python worker.py dev
 
     // Update room information
     document.getElementById('debug-room-name').textContent = room.name || '—';
-    document.getElementById('debug-room-sid').textContent = room.sid || '—';
+
+    // Room SID may not be immediately available in v2 SDK - use async getter
+    var sidElement = document.getElementById('debug-room-sid');
+    if (room.sid) {
+      sidElement.textContent = room.sid;
+    } else if (typeof room.getSid === 'function') {
+      // v2 SDK: getSid() returns a Promise
+      sidElement.textContent = 'Loading...';
+      room.getSid().then(function(sid) {
+        sidElement.textContent = sid || '—';
+      }).catch(function() {
+        sidElement.textContent = '—';
+      });
+    } else {
+      sidElement.textContent = '—';
+    }
+
+    // Detect room type: ephemeral ({space_id}:{session_id}) vs legacy (space_id only)
+    var roomName = room.name || '';
+    var isEphemeral = roomName.includes(':');
+    var roomTypeElement = document.getElementById('debug-room-type');
+    if (isEphemeral) {
+      roomTypeElement.innerHTML = '<span style="color: var(--color-success);">Ephemeral Session</span>';
+    } else if (roomName) {
+      roomTypeElement.innerHTML = '<span style="color: var(--color-warning);">Legacy (fixed name)</span>';
+    } else {
+      roomTypeElement.textContent = '—';
+    }
 
     // Calculate room age if we have creation time
     if (debugState.roomCreatedTime) {

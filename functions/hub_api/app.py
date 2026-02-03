@@ -34,7 +34,16 @@ from agent_hub.cognito import (
     exchange_code_for_tokens,
     get_user_info_from_tokens,
 )
-from agent_hub.memberships import check_agent_permission, list_agents_for_user, list_spaces_for_user, SpaceInfo
+from agent_hub.memberships import (
+    check_agent_permission,
+    grant_membership,
+    list_agents_for_user,
+    list_spaces_for_user,
+    revoke_membership,
+    SpaceInfo,
+    update_membership,
+)
+from agent_hub.auth import ensure_user_row, lookup_cognito_user_by_email
 from agent_hub.livekit_tokens import mint_livekit_join_token
 from agent_hub.secrets import get_secret_json
 
@@ -882,6 +891,42 @@ def api_create_space(request: Request, body: SpaceCreate) -> SpaceResponse:
     )
 
 
+@app.delete("/api/spaces/{space_id}", name="api_delete_space")
+def api_delete_space(request: Request, space_id: str) -> dict:
+    """Delete a space."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Get the space and check permission (require admin/owner on the agent)
+    rows = db.query("""
+        SELECT s.space_id, s.agent_id, s.name
+        FROM spaces s
+        INNER JOIN agent_memberships m ON s.agent_id = m.agent_id
+        WHERE s.space_id = :space_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.role IN ('admin', 'owner')
+          AND m.revoked_at IS NULL
+    """, {"space_id": space_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Space not found or permission denied")
+
+    space_name = rows[0].get("name", "")
+
+    try:
+        db.execute("""
+            DELETE FROM spaces WHERE space_id = :space_id::uuid
+        """, {"space_id": space_id})
+    except Exception as e:
+        logger.error(f"Failed to delete space: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete space")
+
+    return {"message": "Space deleted", "space_id": space_id, "name": space_name}
+
+
 # ---------------------------------------------------------------------------
 # Devices API endpoints
 # ---------------------------------------------------------------------------
@@ -1051,6 +1096,154 @@ def api_create_agent(request: Request, body: AgentCreate) -> AgentResponse:
         relationship_label=body.relationship_label,
         disabled=False,
     )
+
+
+# ----- Membership Management API Endpoints -----
+
+@app.get("/api/cognito/users", name="api_list_cognito_users")
+def api_list_cognito_users(request: Request) -> list[dict]:
+    """List all users in the Cognito user pool (for member selection)."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    if not _cfg.cognito_user_pool_id:
+        raise HTTPException(status_code=500, detail="Cognito not configured")
+
+    import boto3
+    client = boto3.client("cognito-idp")
+    users = []
+    paginator = client.get_paginator("list_users")
+    for page in paginator.paginate(UserPoolId=_cfg.cognito_user_pool_id):
+        for u in page.get("Users", []):
+            attrs = {a["Name"]: a["Value"] for a in u.get("Attributes", [])}
+            email = attrs.get("email", u.get("Username", ""))
+            if email:
+                users.append({
+                    "email": email,
+                    "status": u.get("UserStatus", "UNKNOWN"),
+                    "enabled": u.get("Enabled", False),
+                })
+    return users
+
+
+class MemberAdd(BaseModel):
+    email: str
+    role: str = "member"
+    relationship_label: str | None = None
+
+
+class MemberUpdate(BaseModel):
+    role: str
+    relationship_label: str | None = None
+
+
+class MemberResponse(BaseModel):
+    user_id: str
+    email: str | None
+    role: str
+
+
+@app.post("/api/agents/{agent_id}/memberships", name="api_add_member")
+def api_add_member(request: Request, agent_id: str, body: MemberAdd) -> MemberResponse:
+    """Add a member to an agent."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    if not check_agent_permission(db, agent_id=agent_id, user_id=user.user_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    # Look up the user by email in Cognito
+    if not _cfg.cognito_user_pool_id:
+        raise HTTPException(status_code=500, detail="Cognito not configured")
+
+    try:
+        cognito_sub, resolved_email = lookup_cognito_user_by_email(
+            user_pool_id=_cfg.cognito_user_pool_id, email=body.email
+        )
+    except LookupError as e:
+        # Provide a more helpful error message
+        raise HTTPException(
+            status_code=404,
+            detail=f"User '{body.email}' not found in Cognito. They must have a Cognito account before being added as a member. Use 'marvain cognito create-user' to create one."
+        )
+
+    # Ensure user exists in local DB
+    target_user_id = ensure_user_row(db, cognito_sub=cognito_sub, email=resolved_email or body.email)
+
+    try:
+        grant_membership(
+            db, agent_id=agent_id, user_id=target_user_id,
+            role=body.role, relationship_label=body.relationship_label
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if _cfg.audit_bucket:
+        from agent_hub.audit import append_audit_entry
+        append_audit_entry(
+            db, bucket=_cfg.audit_bucket, agent_id=agent_id,
+            entry_type="member_granted",
+            entry={"by_user_id": user.user_id, "user_id": target_user_id, "email": resolved_email or body.email, "role": body.role},
+        )
+
+    return MemberResponse(user_id=target_user_id, email=resolved_email or body.email, role=body.role)
+
+
+@app.patch("/api/agents/{agent_id}/memberships/{member_user_id}", name="api_update_member")
+def api_update_member(request: Request, agent_id: str, member_user_id: str, body: MemberUpdate) -> dict:
+    """Update a member's role in an agent."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    if not check_agent_permission(db, agent_id=agent_id, user_id=user.user_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    try:
+        update_membership(
+            db, agent_id=agent_id, user_id=member_user_id,
+            role=body.role, relationship_label=body.relationship_label
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if _cfg.audit_bucket:
+        from agent_hub.audit import append_audit_entry
+        append_audit_entry(
+            db, bucket=_cfg.audit_bucket, agent_id=agent_id,
+            entry_type="member_updated",
+            entry={"by_user_id": user.user_id, "user_id": member_user_id, "role": body.role},
+        )
+
+    return {"ok": True}
+
+
+@app.delete("/api/agents/{agent_id}/memberships/{member_user_id}", name="api_delete_member")
+def api_delete_member(request: Request, agent_id: str, member_user_id: str) -> dict:
+    """Remove a member from an agent."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    if not check_agent_permission(db, agent_id=agent_id, user_id=user.user_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    revoke_membership(db, agent_id=agent_id, user_id=member_user_id)
+
+    if _cfg.audit_bucket:
+        from agent_hub.audit import append_audit_entry
+        append_audit_entry(
+            db, bucket=_cfg.audit_bucket, agent_id=agent_id,
+            entry_type="member_revoked",
+            entry={"by_user_id": user.user_id, "user_id": member_user_id},
+        )
+
+    return {"ok": True}
 
 
 @app.get("/agents", name="gui_agents")
@@ -2288,11 +2481,11 @@ def gui_livekit_test(request: Request, space_id: str | None = None) -> Response:
 
 
 @app.post("/livekit/token", response_model=LiveKitTokenOut)
-def gui_livekit_token(request: Request, body: LiveKitTokenIn) -> LiveKitTokenOut:
+async def gui_livekit_token(request: Request, body: LiveKitTokenIn) -> LiveKitTokenOut:
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return _mint_livekit_token_for_user(user=user, space_id=body.space_id)
+    return await _mint_livekit_token_for_user(user=user, space_id=body.space_id)
 
 
 @app.get("/agents/{agent_id}", name="gui_agent_detail")
