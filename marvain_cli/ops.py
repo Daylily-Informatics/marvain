@@ -2468,3 +2468,296 @@ def cognito_get_user(
         return client.admin_get_user(UserPoolId=pool_id, Username=email)
     except client.exceptions.UserNotFoundException:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Device Detection (USB and Direct-Attach)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DetectedDevice:
+    """A detected local device (USB or direct-attach)."""
+
+    device_type: str  # "video", "audio_input", "audio_output", "serial"
+    name: str
+    path: str  # e.g., /dev/video0, /dev/ttyUSB0
+    connection_type: str  # "usb" or "direct"
+    vendor_id: str | None = None
+    product_id: str | None = None
+    serial: str | None = None
+
+
+def detect_local_devices() -> list[DetectedDevice]:
+    """Detect USB and direct-attach devices on the local machine.
+
+    Detects:
+    - Video devices (cameras, webcams)
+    - Audio input devices (microphones)
+    - Audio output devices (speakers)
+    - Serial ports (USB-to-serial adapters)
+
+    Returns a list of DetectedDevice objects.
+    """
+    devices: list[DetectedDevice] = []
+
+    # Detect video devices
+    devices.extend(_detect_video_devices())
+
+    # Detect audio devices
+    devices.extend(_detect_audio_devices())
+
+    # Detect serial ports
+    devices.extend(_detect_serial_ports())
+
+    return devices
+
+
+def _detect_video_devices() -> list[DetectedDevice]:
+    """Detect video capture devices (cameras, webcams)."""
+    devices: list[DetectedDevice] = []
+
+    if sys.platform == "darwin":
+        # macOS: Use system_profiler to list cameras
+        try:
+            result = subprocess.run(
+                ["system_profiler", "SPCameraDataType", "-json"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                data = json.loads(result.stdout)
+                cameras = data.get("SPCameraDataType", [])
+                for i, cam in enumerate(cameras):
+                    name = cam.get("_name", f"Camera {i}")
+                    # macOS doesn't expose /dev paths for cameras directly
+                    # Use AVFoundation index as identifier
+                    path = f"avfoundation:{i}"
+                    conn_type = "usb" if "usb" in name.lower() else "direct"
+                    devices.append(
+                        DetectedDevice(
+                            device_type="video",
+                            name=name,
+                            path=path,
+                            connection_type=conn_type,
+                            vendor_id=cam.get("spcamera_vendor-id"),
+                            product_id=cam.get("spcamera_model-id"),
+                        )
+                    )
+        except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
+            pass
+
+    else:
+        # Linux: Check /dev/video* devices
+        import glob
+
+        for video_path in sorted(glob.glob("/dev/video*")):
+            try:
+                # Try to get device name from v4l2
+                result = subprocess.run(
+                    ["v4l2-ctl", "--device", video_path, "--info"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                name = video_path
+                if result.returncode == 0:
+                    for line in result.stdout.split("\n"):
+                        if "Card type" in line:
+                            name = line.split(":", 1)[-1].strip()
+                            break
+
+                # Check if USB device
+                conn_type = "usb" if "usb" in video_path.lower() or os.path.exists(
+                    f"/sys/class/video4linux/{os.path.basename(video_path)}/device/driver"
+                ) else "direct"
+
+                devices.append(
+                    DetectedDevice(
+                        device_type="video",
+                        name=name,
+                        path=video_path,
+                        connection_type=conn_type,
+                    )
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                # v4l2-ctl not installed, just add the device path
+                devices.append(
+                    DetectedDevice(
+                        device_type="video",
+                        name=video_path,
+                        path=video_path,
+                        connection_type="usb",
+                    )
+                )
+
+    return devices
+
+
+def _detect_audio_devices() -> list[DetectedDevice]:
+    """Detect audio input/output devices."""
+    devices: list[DetectedDevice] = []
+
+    if sys.platform == "darwin":
+        # macOS: Use system_profiler for audio devices
+        try:
+            result = subprocess.run(
+                ["system_profiler", "SPAudioDataType", "-json"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                data = json.loads(result.stdout)
+                audio_devices = data.get("SPAudioDataType", [])
+                for device in audio_devices:
+                    items = device.get("_items", [])
+                    for item in items:
+                        name = item.get("_name", "Unknown Audio Device")
+                        # Determine if input or output
+                        dev_type = "audio_input" if "input" in name.lower() or "microphone" in name.lower() else "audio_output"
+                        # macOS uses CoreAudio, no /dev path
+                        path = f"coreaudio:{name}"
+                        conn_type = "usb" if "usb" in name.lower() else "direct"
+                        devices.append(
+                            DetectedDevice(
+                                device_type=dev_type,
+                                name=name,
+                                path=path,
+                                connection_type=conn_type,
+                            )
+                        )
+        except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
+            pass
+
+    else:
+        # Linux: Check ALSA devices
+        try:
+            # List capture devices (microphones)
+            result = subprocess.run(
+                ["arecord", "-l"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.split("\n"):
+                    if line.startswith("card"):
+                        # Parse: "card 0: PCH [HDA Intel PCH], device 0: ALC..."
+                        parts = line.split(":")
+                        if len(parts) >= 2:
+                            card_info = parts[0].split()
+                            card_num = card_info[1] if len(card_info) > 1 else "0"
+                            name = parts[1].strip().split(",")[0].strip()
+                            path = f"hw:{card_num}"
+                            devices.append(
+                                DetectedDevice(
+                                    device_type="audio_input",
+                                    name=name,
+                                    path=path,
+                                    connection_type="direct",
+                                )
+                            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+        try:
+            # List playback devices (speakers)
+            result = subprocess.run(
+                ["aplay", "-l"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.split("\n"):
+                    if line.startswith("card"):
+                        parts = line.split(":")
+                        if len(parts) >= 2:
+                            card_info = parts[0].split()
+                            card_num = card_info[1] if len(card_info) > 1 else "0"
+                            name = parts[1].strip().split(",")[0].strip()
+                            path = f"hw:{card_num}"
+                            devices.append(
+                                DetectedDevice(
+                                    device_type="audio_output",
+                                    name=name,
+                                    path=path,
+                                    connection_type="direct",
+                                )
+                            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+    return devices
+
+
+def _detect_serial_ports() -> list[DetectedDevice]:
+    """Detect serial ports (USB-to-serial adapters, etc.)."""
+    devices: list[DetectedDevice] = []
+    import glob
+
+    # Common serial port patterns
+    patterns = [
+        "/dev/ttyUSB*",  # USB-to-serial adapters (Linux)
+        "/dev/ttyACM*",  # Arduino, etc. (Linux)
+        "/dev/tty.usb*",  # USB serial (macOS)
+        "/dev/cu.usb*",  # USB serial (macOS)
+        "/dev/tty.Bluetooth*",  # Bluetooth serial (macOS)
+    ]
+
+    for pattern in patterns:
+        for port_path in sorted(glob.glob(pattern)):
+            name = os.path.basename(port_path)
+            conn_type = "usb" if "usb" in port_path.lower() else "direct"
+            devices.append(
+                DetectedDevice(
+                    device_type="serial",
+                    name=name,
+                    path=port_path,
+                    connection_type=conn_type,
+                )
+            )
+
+    return devices
+
+
+def list_detected_devices(
+    *,
+    device_type: str | None = None,
+    connection_type: str | None = None,
+    output_format: str = "table",
+) -> list[dict[str, Any]]:
+    """List detected local devices with optional filtering.
+
+    Args:
+        device_type: Filter by type ("video", "audio_input", "audio_output", "serial")
+        connection_type: Filter by connection ("usb", "direct")
+        output_format: Output format ("table", "json")
+
+    Returns:
+        List of device dictionaries.
+    """
+    devices = detect_local_devices()
+
+    # Apply filters
+    if device_type:
+        devices = [d for d in devices if d.device_type == device_type]
+    if connection_type:
+        devices = [d for d in devices if d.connection_type == connection_type]
+
+    # Convert to dicts
+    result = []
+    for d in devices:
+        result.append({
+            "device_type": d.device_type,
+            "name": d.name,
+            "path": d.path,
+            "connection_type": d.connection_type,
+            "vendor_id": d.vendor_id,
+            "product_id": d.product_id,
+            "serial": d.serial,
+        })
+
+    return result
