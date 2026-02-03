@@ -811,3 +811,260 @@ def get_agent(request: Request) -> AuthenticatedAgent:
         raise HTTPException(status_code=401, detail="Invalid or expired agent token")
     return agent
 
+
+# -----------------------------------------------------------------------------
+# Agent-to-Agent Delegation Endpoints
+# These endpoints allow agents to access other agents' resources using tokens.
+# -----------------------------------------------------------------------------
+
+# Standard scopes for agent-to-agent delegation
+AGENT_SCOPES = {
+    "read_memories": "Read memories from the issuing agent",
+    "write_memories": "Create memories for the issuing agent",
+    "read_events": "Read events from the issuing agent",
+    "write_events": "Create events for the issuing agent",
+    "read_spaces": "List spaces belonging to the issuing agent",
+    "execute_actions": "Execute actions on behalf of the issuing agent",
+    "delegate": "Create sub-tokens with subset of own scopes",
+}
+
+
+def _require_agent_scope(agent: AuthenticatedAgent, scope: str) -> None:
+    """Check that an authenticated agent has a required scope."""
+    if scope not in agent.scopes:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Missing required scope: {scope}",
+        )
+
+
+def _check_agent_space(agent: AuthenticatedAgent, space_id: str) -> None:
+    """Check that an authenticated agent can access a space."""
+    if agent.allowed_spaces is not None and space_id not in agent.allowed_spaces:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Token not authorized for space: {space_id}",
+        )
+
+
+@api_app.get("/v1/delegate/scopes")
+def list_available_scopes() -> dict[str, str]:
+    """List all available scopes for agent-to-agent delegation."""
+    return AGENT_SCOPES
+
+
+@api_app.get("/v1/delegate/memories")
+def delegate_read_memories(
+    space_id: str | None = None,
+    limit: int = 100,
+    agent: AuthenticatedAgent = Depends(get_agent),
+) -> list[dict[str, Any]]:
+    """Read memories from the issuing agent (requires read_memories scope)."""
+    _require_agent_scope(agent, "read_memories")
+
+    if space_id:
+        _check_agent_space(agent, space_id)
+
+    query = """
+        SELECT
+            memory_id::TEXT as memory_id,
+            space_id::TEXT as space_id,
+            tier,
+            content,
+            participants::TEXT as participants,
+            created_at::TEXT as created_at
+        FROM memories
+        WHERE agent_id = :agent_id::uuid
+    """
+    params: dict[str, Any] = {"agent_id": agent.issuer_agent_id, "limit": limit}
+
+    if space_id:
+        query += " AND space_id = :space_id::uuid"
+        params["space_id"] = space_id
+
+    query += " ORDER BY created_at DESC LIMIT :limit"
+
+    rows = _get_db().query(query, params)
+
+    return [
+        {
+            "memory_id": r["memory_id"],
+            "space_id": r.get("space_id"),
+            "tier": r.get("tier"),
+            "content": r.get("content"),
+            "participants": json.loads(r.get("participants") or "[]"),
+            "created_at": r.get("created_at"),
+        }
+        for r in rows
+    ]
+
+
+@api_app.get("/v1/delegate/events")
+def delegate_read_events(
+    space_id: str,
+    limit: int = 100,
+    agent: AuthenticatedAgent = Depends(get_agent),
+) -> list[dict[str, Any]]:
+    """Read events from the issuing agent (requires read_events scope)."""
+    _require_agent_scope(agent, "read_events")
+    _check_agent_space(agent, space_id)
+
+    rows = _get_db().query(
+        """
+        SELECT
+            event_id::TEXT as event_id,
+            space_id::TEXT as space_id,
+            device_id::TEXT as device_id,
+            person_id::TEXT as person_id,
+            type,
+            payload::TEXT as payload,
+            created_at::TEXT as created_at
+        FROM events
+        WHERE agent_id = :agent_id::uuid
+          AND space_id = :space_id::uuid
+        ORDER BY created_at DESC
+        LIMIT :limit
+        """,
+        {"agent_id": agent.issuer_agent_id, "space_id": space_id, "limit": limit},
+    )
+
+    return [
+        {
+            "event_id": r["event_id"],
+            "space_id": r.get("space_id"),
+            "device_id": r.get("device_id"),
+            "person_id": r.get("person_id"),
+            "type": r.get("type"),
+            "payload": json.loads(r.get("payload") or "{}"),
+            "created_at": r.get("created_at"),
+        }
+        for r in rows
+    ]
+
+
+@api_app.get("/v1/delegate/spaces")
+def delegate_list_spaces(
+    agent: AuthenticatedAgent = Depends(get_agent),
+) -> list[dict[str, Any]]:
+    """List spaces belonging to the issuing agent (requires read_spaces scope)."""
+    _require_agent_scope(agent, "read_spaces")
+
+    rows = _get_db().query(
+        """
+        SELECT
+            space_id::TEXT as space_id,
+            name,
+            privacy_mode,
+            created_at::TEXT as created_at
+        FROM spaces
+        WHERE agent_id = :agent_id::uuid
+        ORDER BY created_at DESC
+        """,
+        {"agent_id": agent.issuer_agent_id},
+    )
+
+    # Filter by allowed_spaces if set
+    result = []
+    for r in rows:
+        if agent.allowed_spaces is None or r["space_id"] in agent.allowed_spaces:
+            result.append({
+                "space_id": r["space_id"],
+                "name": r.get("name"),
+                "privacy_mode": r.get("privacy_mode", False),
+                "created_at": r.get("created_at"),
+            })
+
+    return result
+
+
+class DelegateEventIn(BaseModel):
+    """Request body for creating an event via delegation."""
+
+    space_id: str
+    type: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    person_id: str | None = None
+
+
+@api_app.post("/v1/delegate/events")
+def delegate_write_event(
+    body: DelegateEventIn,
+    agent: AuthenticatedAgent = Depends(get_agent),
+) -> dict[str, Any]:
+    """Create an event for the issuing agent (requires write_events scope)."""
+    _require_agent_scope(agent, "write_events")
+    _check_agent_space(agent, body.space_id)
+
+    event_id = str(uuid.uuid4())
+
+    _get_db().execute(
+        """
+        INSERT INTO events (event_id, agent_id, space_id, person_id, type, payload)
+        VALUES (
+            :event_id::uuid,
+            :agent_id::uuid,
+            :space_id::uuid,
+            CASE WHEN :person_id IS NULL THEN NULL ELSE :person_id::uuid END,
+            :type,
+            :payload::jsonb
+        )
+        """,
+        {
+            "event_id": event_id,
+            "agent_id": agent.issuer_agent_id,
+            "space_id": body.space_id,
+            "person_id": body.person_id,
+            "type": body.type,
+            "payload": json.dumps(body.payload),
+        },
+    )
+
+    return {"event_id": event_id, "created": True}
+
+
+class DelegateMemoryIn(BaseModel):
+    """Request body for creating a memory via delegation."""
+
+    space_id: str | None = None
+    tier: str = "short"
+    content: str
+    participants: list[str] = Field(default_factory=list)
+
+
+@api_app.post("/v1/delegate/memories")
+def delegate_write_memory(
+    body: DelegateMemoryIn,
+    agent: AuthenticatedAgent = Depends(get_agent),
+) -> dict[str, Any]:
+    """Create a memory for the issuing agent (requires write_memories scope)."""
+    _require_agent_scope(agent, "write_memories")
+
+    if body.space_id:
+        _check_agent_space(agent, body.space_id)
+
+    memory_id = str(uuid.uuid4())
+
+    _get_db().execute(
+        """
+        INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants)
+        VALUES (
+            :memory_id::uuid,
+            :agent_id::uuid,
+            CASE WHEN :space_id IS NULL THEN NULL ELSE :space_id::uuid END,
+            :tier,
+            :content,
+            :participants::jsonb
+        )
+        """,
+        {
+            "memory_id": memory_id,
+            "agent_id": agent.issuer_agent_id,
+            "space_id": body.space_id,
+            "tier": body.tier,
+            "content": body.content,
+            "participants": json.dumps(body.participants),
+        },
+    )
+
+    return {"memory_id": memory_id, "created": True}
+
