@@ -13,6 +13,12 @@ def run(argv: list[str]) -> int:
     from marvain_cli.ops import (
         GUI_DEFAULT_HOST,
         GUI_DEFAULT_PORT,
+        agent_logs,
+        agent_rebuild,
+        agent_restart,
+        agent_start,
+        agent_status,
+        agent_stop,
         bootstrap,
         cognito_create_user,
         cognito_delete_user,
@@ -375,6 +381,80 @@ def run(argv: list[str]) -> int:
         c = _load(ctx)
         dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
         raise typer.Exit(code=gui_logs(c, dry_run=dr, follow=follow, lines=lines))
+
+    # Agent worker subcommands
+    agent_app = typer.Typer(help="Agent worker management")
+    app.add_typer(agent_app, name="agent")
+
+    @agent_app.callback(invoke_without_command=True)
+    def agent_default(
+        ctx: typer.Context,
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        if ctx.invoked_subcommand is None:
+            c = _load(ctx)
+            dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+            raise typer.Exit(code=agent_status(c, dry_run=dr))
+
+    @agent_app.command("start", help="Start the agent worker")
+    def agent_start_cmd(
+        ctx: typer.Context,
+        foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground (blocking)"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        raise typer.Exit(code=agent_start(c, dry_run=dr, foreground=foreground))
+
+    @agent_app.command("stop", help="Stop the agent worker")
+    def agent_stop_cmd(
+        ctx: typer.Context,
+        force: bool = typer.Option(False, "--force", help="Force kill (SIGKILL instead of SIGTERM)"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        raise typer.Exit(code=agent_stop(c, dry_run=dr, force=force))
+
+    @agent_app.command("restart", help="Restart the agent worker (stop then start)")
+    def agent_restart_cmd(
+        ctx: typer.Context,
+        foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground (blocking)"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        raise typer.Exit(code=agent_restart(c, dry_run=dr, foreground=foreground))
+
+    @agent_app.command("rebuild", help="Nuclear reset: stop agent, clear LiveKit rooms, restart agent")
+    def agent_rebuild_cmd(
+        ctx: typer.Context,
+        foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground (blocking)"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        raise typer.Exit(code=agent_rebuild(c, dry_run=dr, foreground=foreground))
+
+    @agent_app.command("status", help="Show agent worker status")
+    def agent_status_cmd(
+        ctx: typer.Context,
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        raise typer.Exit(code=agent_status(c, dry_run=dr))
+
+    @agent_app.command("logs", help="Show agent worker logs")
+    def agent_logs_cmd(
+        ctx: typer.Context,
+        follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output (like tail -f)"),
+        lines: int = typer.Option(50, "--lines", "-n", help="Number of lines to show"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        raise typer.Exit(code=agent_logs(c, dry_run=dr, follow=follow, lines=lines))
 
     # Legacy command for backward compatibility
     @app.command("gui-legacy", hidden=True, help="[DEPRECATED] Use 'marvain gui start --foreground' instead")
