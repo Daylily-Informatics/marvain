@@ -2488,6 +2488,52 @@ class DetectedDevice:
     serial: str | None = None
 
 
+def _get_linux_video_connection_type(video_path: str) -> str:
+    """Determine if a Linux video device is USB or direct-attached.
+
+    Checks the sysfs device path ancestry to determine the bus type.
+    USB devices have '/usb' in their resolved sysfs path.
+
+    Args:
+        video_path: Path to the video device (e.g., /dev/video0)
+
+    Returns:
+        'usb' if the device is connected via USB, 'direct' otherwise
+        (includes PCI, platform, virtual devices like v4l2loopback)
+    """
+    device_name = os.path.basename(video_path)
+    sysfs_device_path = f"/sys/class/video4linux/{device_name}/device"
+
+    try:
+        # Resolve the symlink to get the actual device path in sysfs
+        # USB devices will have paths like:
+        #   /sys/devices/pci0000:00/.../usb1/1-2/1-2:1.0/video4linux/video0
+        # Built-in/PCI cameras will have paths like:
+        #   /sys/devices/pci0000:00/.../0000:00:14.0/video4linux/video0
+        # Platform devices (e.g., Raspberry Pi camera):
+        #   /sys/devices/platform/.../video4linux/video0
+        if os.path.exists(sysfs_device_path):
+            real_path = os.path.realpath(sysfs_device_path)
+            # Check if 'usb' appears in the path hierarchy
+            if "/usb" in real_path:
+                return "usb"
+    except OSError:
+        pass
+
+    # Fallback: check subsystem symlink
+    subsystem_path = f"/sys/class/video4linux/{device_name}/device/subsystem"
+    try:
+        if os.path.islink(subsystem_path):
+            subsystem = os.path.basename(os.path.realpath(subsystem_path))
+            if subsystem == "usb":
+                return "usb"
+    except OSError:
+        pass
+
+    # Default to direct for non-USB devices (PCI, platform, virtual, etc.)
+    return "direct"
+
+
 def detect_local_devices() -> list[DetectedDevice]:
     """Detect USB and direct-attach devices on the local machine.
 
@@ -2568,10 +2614,8 @@ def _detect_video_devices() -> list[DetectedDevice]:
                             name = line.split(":", 1)[-1].strip()
                             break
 
-                # Check if USB device
-                conn_type = "usb" if "usb" in video_path.lower() or os.path.exists(
-                    f"/sys/class/video4linux/{os.path.basename(video_path)}/device/driver"
-                ) else "direct"
+                # Determine connection type by checking sysfs device path ancestry
+                conn_type = _get_linux_video_connection_type(video_path)
 
                 devices.append(
                     DetectedDevice(
@@ -2582,13 +2626,14 @@ def _detect_video_devices() -> list[DetectedDevice]:
                     )
                 )
             except (subprocess.TimeoutExpired, FileNotFoundError):
-                # v4l2-ctl not installed, just add the device path
+                # v4l2-ctl not installed, try to determine connection type anyway
+                conn_type = _get_linux_video_connection_type(video_path)
                 devices.append(
                     DetectedDevice(
                         device_type="video",
                         name=video_path,
                         path=video_path,
-                        connection_type="usb",
+                        connection_type=conn_type,
                     )
                 )
 
