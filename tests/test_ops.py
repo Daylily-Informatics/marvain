@@ -488,6 +488,58 @@ class TestDeviceDetection(unittest.TestCase):
         devices = _detect_audio_devices()
         self.assertIsInstance(devices, list)
 
+    def test_get_linux_video_connection_type_returns_valid_type(self) -> None:
+        """_get_linux_video_connection_type should return 'usb' or 'direct'."""
+        from marvain_cli.ops import _get_linux_video_connection_type
+
+        # Test with a non-existent device path (should return 'direct' as fallback)
+        result = _get_linux_video_connection_type("/dev/video999")
+        self.assertIn(result, ["usb", "direct"])
+
+    def test_get_linux_video_connection_type_usb_path_detection(self) -> None:
+        """_get_linux_video_connection_type should detect USB from sysfs path."""
+        from marvain_cli.ops import _get_linux_video_connection_type
+        import tempfile
+        import os
+
+        # Create a mock sysfs structure with USB in the path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Mock: /sys/class/video4linux/video0/device -> .../usb1/...
+            video_dir = os.path.join(tmpdir, "sys", "class", "video4linux", "video0")
+            usb_device_dir = os.path.join(tmpdir, "sys", "devices", "pci0000:00", "usb1", "1-2", "1-2:1.0")
+            os.makedirs(video_dir, exist_ok=True)
+            os.makedirs(usb_device_dir, exist_ok=True)
+
+            # Create symlink: video0/device -> usb device path
+            device_link = os.path.join(video_dir, "device")
+            os.symlink(usb_device_dir, device_link)
+
+            # Patch the sysfs base path for testing
+            with mock.patch("marvain_cli.ops.os.path.exists") as mock_exists, \
+                 mock.patch("marvain_cli.ops.os.path.realpath") as mock_realpath:
+                mock_exists.return_value = True
+                # Simulate USB device path
+                mock_realpath.return_value = "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-2/1-2:1.0"
+
+                result = _get_linux_video_connection_type("/dev/video0")
+                self.assertEqual(result, "usb")
+
+    def test_get_linux_video_connection_type_non_usb_path(self) -> None:
+        """_get_linux_video_connection_type should return 'direct' for non-USB devices."""
+        from marvain_cli.ops import _get_linux_video_connection_type
+
+        # Patch to simulate a PCI device (no 'usb' in path)
+        with mock.patch("marvain_cli.ops.os.path.exists") as mock_exists, \
+             mock.patch("marvain_cli.ops.os.path.realpath") as mock_realpath, \
+             mock.patch("marvain_cli.ops.os.path.islink") as mock_islink:
+            mock_exists.return_value = True
+            mock_islink.return_value = False
+            # Simulate PCI device path (no 'usb' in path)
+            mock_realpath.return_value = "/sys/devices/pci0000:00/0000:00:02.0/drm/card0"
+
+            result = _get_linux_video_connection_type("/dev/video0")
+            self.assertEqual(result, "direct")
+
 
 if __name__ == "__main__":
     unittest.main()
