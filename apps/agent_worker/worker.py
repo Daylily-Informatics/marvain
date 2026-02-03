@@ -247,6 +247,58 @@ async def forge_agent(ctx: agents.JobContext):
 
     session.on("conversation_item_added", on_conversation_item_added)
 
+    # Handle typed chat messages from data channel
+    import json as _json_dc
+
+    @ctx.room.on("data_received")
+    def on_data_received(data: rtc.DataPacket) -> None:
+        """Handle typed chat messages from participants.
+
+        When a user types a message in the chat UI, it's sent via LiveKit's
+        data channel. We parse it and inject it into the conversation as if
+        the user had spoken it.
+        """
+        try:
+            payload = data.data.decode("utf-8")
+            msg = _json_dc.loads(payload)
+
+            # Only handle chat messages
+            if msg.get("type") != "chat":
+                return
+
+            text = msg.get("text", "").strip()
+            if not text:
+                return
+
+            sender = data.participant.identity if data.participant else "user"
+            logger.info(f"Received typed chat from {sender}: {text[:50]}...")
+
+            # Ingest to Hub for persistence
+            hub_ingest_transcript(
+                space_id=space_id,
+                text=text,
+                role="user",
+                participant_identity=sender,
+            )
+
+            # Inject the typed message into the agent's conversation
+            # Use generate_reply with the user's text as instructions
+            asyncio.create_task(_handle_typed_message(text, sender))
+
+        except Exception as e:
+            logger.warning(f"Failed to process data channel message: {e}")
+
+    async def _handle_typed_message(text: str, sender: str) -> None:
+        """Process a typed chat message and generate a response."""
+        try:
+            # Use generate_reply to have the agent respond to the typed text
+            # The agent will speak the response aloud
+            await session.generate_reply(
+                instructions=f"The user '{sender}' typed this message (not spoken): {text}\n\nRespond naturally as if they had said it aloud."
+            )
+        except Exception as e:
+            logger.warning(f"Failed to generate reply for typed message: {e}")
+
     await session.start(
         room=ctx.room,
         agent=ForgeAssistant(),
