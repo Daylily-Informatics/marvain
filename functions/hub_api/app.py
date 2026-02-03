@@ -425,8 +425,8 @@ def gui_home(request: Request) -> Response:
         rows = db.query("""
             SELECT r.remote_id, r.name, r.address, r.connection_type, r.status, r.last_seen
             FROM remotes r
-            INNER JOIN memberships m ON r.agent_id = m.agent_id
-            WHERE m.user_id = :user_id
+            INNER JOIN agent_memberships m ON r.agent_id = m.agent_id
+            WHERE m.user_id = :user_id AND m.revoked_at IS NULL
             ORDER BY r.status = 'online' DESC, r.name ASC
             LIMIT 10
         """, {"user_id": str(user.user_id)})
@@ -449,8 +449,8 @@ def gui_home(request: Request) -> Response:
     try:
         rows = db.query("""
             SELECT COUNT(*) as cnt FROM actions a
-            INNER JOIN memberships m ON a.agent_id = m.agent_id
-            WHERE m.user_id = :user_id AND a.status = 'proposed'
+            INNER JOIN agent_memberships m ON a.agent_id = m.agent_id
+            WHERE m.user_id = :user_id AND m.revoked_at IS NULL AND a.status = 'proposed'
         """, {"user_id": str(user.user_id)})
         if rows:
             pending_actions = rows[0].get("cnt", 0) or 0
@@ -500,8 +500,8 @@ def gui_remotes(request: Request) -> Response:
                    r.status, r.last_ping, r.last_seen, a.name as agent_name
             FROM remotes r
             INNER JOIN agents a ON r.agent_id = a.agent_id
-            INNER JOIN memberships m ON r.agent_id = m.agent_id
-            WHERE m.user_id = :user_id
+            INNER JOIN agent_memberships m ON r.agent_id = m.agent_id
+            WHERE m.user_id = :user_id AND m.revoked_at IS NULL
             ORDER BY r.status = 'online' DESC, r.status = 'hibernate' DESC, r.name ASC
         """, {"user_id": str(user.user_id)})
         for row in rows:
@@ -720,8 +720,8 @@ def api_ping_remote(request: Request, remote_id: str) -> dict:
     rows = db.query("""
         SELECT r.remote_id, r.agent_id, r.address, r.connection_type, r.status
         FROM remotes r
-        INNER JOIN memberships m ON r.agent_id = m.agent_id
-        WHERE r.remote_id = :remote_id::uuid AND m.user_id = :user_id::uuid
+        INNER JOIN agent_memberships m ON r.agent_id = m.agent_id
+        WHERE r.remote_id = :remote_id::uuid AND m.user_id = :user_id::uuid AND m.revoked_at IS NULL
     """, {"remote_id": remote_id, "user_id": str(user.user_id)})
 
     if not rows:
@@ -780,8 +780,8 @@ def api_remotes_status(request: Request) -> dict:
     rows = db.query("""
         SELECT r.remote_id, r.name, r.status, r.last_ping, r.last_seen
         FROM remotes r
-        INNER JOIN memberships m ON r.agent_id = m.agent_id
-        WHERE m.user_id = :user_id::uuid
+        INNER JOIN agent_memberships m ON r.agent_id = m.agent_id
+        WHERE m.user_id = :user_id::uuid AND m.revoked_at IS NULL
     """, {"user_id": str(user.user_id)})
 
     remotes = []
@@ -816,8 +816,8 @@ def api_delete_remote(request: Request, remote_id: str) -> dict:
     rows = db.query("""
         SELECT r.remote_id, r.agent_id
         FROM remotes r
-        INNER JOIN memberships m ON r.agent_id = m.agent_id
-        WHERE r.remote_id = :remote_id::uuid AND m.user_id = :user_id::uuid AND m.role IN ('admin', 'owner')
+        INNER JOIN agent_memberships m ON r.agent_id = m.agent_id
+        WHERE r.remote_id = :remote_id::uuid AND m.user_id = :user_id::uuid AND m.role IN ('admin', 'owner') AND m.revoked_at IS NULL
     """, {"remote_id": remote_id, "user_id": str(user.user_id)})
 
     if not rows:
@@ -1006,8 +1006,8 @@ def api_revoke_device(request: Request, device_id: str) -> dict:
     rows = db.query("""
         SELECT d.device_id, d.agent_id
         FROM devices d
-        INNER JOIN memberships m ON d.agent_id = m.agent_id
-        WHERE d.device_id = :device_id::uuid AND m.user_id = :user_id::uuid AND m.role IN ('admin', 'owner')
+        INNER JOIN agent_memberships m ON d.agent_id = m.agent_id
+        WHERE d.device_id = :device_id::uuid AND m.user_id = :user_id::uuid AND m.role IN ('admin', 'owner') AND m.revoked_at IS NULL
     """, {"device_id": device_id, "user_id": str(user.user_id)})
 
     if not rows:
@@ -1521,8 +1521,8 @@ def api_update_consent(request: Request, person_id: str, body: ConsentUpdate) ->
     rows = db.query("""
         SELECT p.person_id, p.agent_id
         FROM people p
-        INNER JOIN memberships m ON p.agent_id = m.agent_id
-        WHERE p.person_id = :person_id::uuid AND m.user_id = :user_id::uuid AND m.role IN ('admin', 'owner')
+        INNER JOIN agent_memberships m ON p.agent_id = m.agent_id
+        WHERE p.person_id = :person_id::uuid AND m.user_id = :user_id::uuid AND m.role IN ('admin', 'owner') AND m.revoked_at IS NULL
     """, {"person_id": person_id, "user_id": str(user.user_id)})
 
     if not rows:
@@ -1787,8 +1787,8 @@ def api_approve_action(request: Request, action_id: str) -> dict:
     rows = db.query("""
         SELECT ac.action_id, ac.agent_id, ac.status
         FROM actions ac
-        INNER JOIN memberships mb ON ac.agent_id = mb.agent_id
-        WHERE ac.action_id = :action_id::uuid AND mb.user_id = :user_id::uuid AND mb.role IN ('admin', 'owner')
+        INNER JOIN agent_memberships mb ON ac.agent_id = mb.agent_id
+        WHERE ac.action_id = :action_id::uuid AND mb.user_id = :user_id::uuid AND mb.role IN ('admin', 'owner') AND mb.revoked_at IS NULL
     """, {"action_id": action_id, "user_id": str(user.user_id)})
 
     if not rows:
@@ -1822,8 +1822,8 @@ def api_reject_action(request: Request, action_id: str, body: ActionApproveRejec
     rows = db.query("""
         SELECT ac.action_id, ac.agent_id, ac.status
         FROM actions ac
-        INNER JOIN memberships mb ON ac.agent_id = mb.agent_id
-        WHERE ac.action_id = :action_id::uuid AND mb.user_id = :user_id::uuid AND mb.role IN ('admin', 'owner')
+        INNER JOIN agent_memberships mb ON ac.agent_id = mb.agent_id
+        WHERE ac.action_id = :action_id::uuid AND mb.user_id = :user_id::uuid AND mb.role IN ('admin', 'owner') AND mb.revoked_at IS NULL
     """, {"action_id": action_id, "user_id": str(user.user_id)})
 
     if not rows:
@@ -2070,8 +2070,8 @@ def api_delete_memory(request: Request, memory_id: str) -> dict:
     rows = db.query("""
         SELECT m.memory_id, m.agent_id
         FROM memories m
-        INNER JOIN memberships mb ON m.agent_id = mb.agent_id
-        WHERE m.memory_id = :memory_id::uuid AND mb.user_id = :user_id::uuid AND mb.role IN ('admin', 'owner')
+        INNER JOIN agent_memberships mb ON m.agent_id = mb.agent_id
+        WHERE m.memory_id = :memory_id::uuid AND mb.user_id = :user_id::uuid AND mb.role IN ('admin', 'owner') AND mb.revoked_at IS NULL
     """, {"memory_id": memory_id, "user_id": str(user.user_id)})
 
     if not rows:
