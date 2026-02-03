@@ -644,7 +644,7 @@ def run(argv: list[str]) -> int:
         raise typer.Exit(code=0)
 
     # ---- devices (Hub API) ----
-    devices_app = typer.Typer(help="Device token management (Hub API)")
+    devices_app = typer.Typer(help="Device token management and detection")
     app.add_typer(devices_app, name="devices")
 
     @devices_app.command("register")
@@ -672,6 +672,49 @@ def run(argv: list[str]) -> int:
         )
         if not dr:
             typer.echo(json.dumps(data, indent=2, sort_keys=True))
+        raise typer.Exit(code=0)
+
+    @devices_app.command("detect")
+    def devices_detect(
+        device_type: str | None = typer.Option(None, "--type", "-t", help="Filter by type: video, audio_input, audio_output, serial"),
+        connection_type: str | None = typer.Option(None, "--connection", "-c", help="Filter by connection: usb, direct"),
+        output_format: str = typer.Option("table", "--format", "-f", help="Output format: table, json"),
+    ) -> None:
+        """Detect USB and direct-attach devices on the local machine.
+
+        Scans for:
+        - Video devices (cameras, webcams)
+        - Audio input devices (microphones)
+        - Audio output devices (speakers)
+        - Serial ports (USB-to-serial adapters)
+        """
+        import json
+        from marvain_cli.ops import list_detected_devices
+
+        devices = list_detected_devices(
+            device_type=device_type,
+            connection_type=connection_type,
+            output_format=output_format,
+        )
+
+        if output_format == "json":
+            typer.echo(json.dumps(devices, indent=2))
+        else:
+            # Table format
+            if not devices:
+                typer.echo("No devices detected.")
+                raise typer.Exit(code=0)
+
+            # Print header
+            typer.echo(f"{'TYPE':<14} {'CONNECTION':<10} {'NAME':<40} {'PATH'}")
+            typer.echo("-" * 90)
+
+            for d in devices:
+                name = d["name"][:38] + ".." if len(d["name"]) > 40 else d["name"]
+                typer.echo(f"{d['device_type']:<14} {d['connection_type']:<10} {name:<40} {d['path']}")
+
+            typer.echo(f"\nTotal: {len(devices)} device(s) detected")
+
         raise typer.Exit(code=0)
 
     # ---- members (agent memberships via Hub API) ----

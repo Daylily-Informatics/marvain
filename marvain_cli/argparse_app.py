@@ -256,7 +256,7 @@ def run(argv: list[str]) -> int:
     m_revoke.add_argument("--hub-rest-api-base", default=None)
     m_revoke.add_argument("--dry-run", action="store_true")
 
-    devices = sub.add_parser("devices", help="Device token management (Hub API)")
+    devices = sub.add_parser("devices", help="Device token management and detection")
     devices_sub = devices.add_subparsers(dest="devices_cmd")
     d_register = devices_sub.add_parser("register", help="Register a new device (mint device token)")
     d_register.add_argument("--agent-id", required=True)
@@ -265,6 +265,11 @@ def run(argv: list[str]) -> int:
     d_register.add_argument("--access-token", default=None)
     d_register.add_argument("--hub-rest-api-base", default=None)
     d_register.add_argument("--dry-run", action="store_true")
+
+    d_detect = devices_sub.add_parser("detect", help="Detect USB and direct-attach devices")
+    d_detect.add_argument("--type", "-t", dest="device_type", default=None, help="Filter: video, audio_input, audio_output, serial")
+    d_detect.add_argument("--connection", "-c", dest="connection_type", default=None, help="Filter: usb, direct")
+    d_detect.add_argument("--format", "-f", dest="output_format", default="table", help="Output: table, json")
 
     args = ap.parse_args(argv)
 
@@ -643,6 +648,27 @@ def run(argv: list[str]) -> int:
                 )
                 if not bool(args.dry_run):
                     print(json.dumps(data, indent=2, sort_keys=True))
+                return 0
+            if args.devices_cmd == "detect":
+                from marvain_cli.ops import list_detected_devices
+
+                detected = list_detected_devices(
+                    device_type=args.device_type,
+                    connection_type=args.connection_type,
+                    output_format=args.output_format,
+                )
+                if args.output_format == "json":
+                    print(json.dumps(detected, indent=2))
+                else:
+                    if not detected:
+                        print("No devices detected.")
+                        return 0
+                    print(f"{'TYPE':<14} {'CONNECTION':<10} {'NAME':<40} {'PATH'}")
+                    print("-" * 90)
+                    for d in detected:
+                        name = d["name"][:38] + ".." if len(d["name"]) > 40 else d["name"]
+                        print(f"{d['device_type']:<14} {d['connection_type']:<10} {name:<40} {d['path']}")
+                    print(f"\nTotal: {len(detected)} device(s) detected")
                 return 0
             devices.print_help()
             return 2
