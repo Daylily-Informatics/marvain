@@ -194,6 +194,66 @@
   </div>
 </div>
 
+<!-- LiveKit Debug Info Panel -->
+<details class="card mt-lg" id="debug-panel">
+  <summary class="card-header" style="cursor: pointer;">
+    <i class="fas fa-bug"></i> LiveKit Debug Info
+    <span id="debug-status-badge" class="badge badge-info" style="margin-left: auto;">Disconnected</span>
+  </summary>
+  <div class="card-body" style="font-size: 0.85rem; font-family: monospace;">
+    <!-- Room Information -->
+    <div style="margin-bottom: 16px;">
+      <strong style="display: block; margin-bottom: 8px; color: var(--color-highlight);">Room Information</strong>
+      <div style="background: var(--color-gray-800); padding: 8px; border-radius: 4px; margin-bottom: 8px;">
+        <div><span class="text-muted">Room Name:</span> <span id="debug-room-name">—</span></div>
+        <div><span class="text-muted">Room SID:</span> <span id="debug-room-sid">—</span></div>
+        <div><span class="text-muted">Created:</span> <span id="debug-room-created">—</span></div>
+        <div><span class="text-muted">Participants:</span> <span id="debug-room-participants">0</span></div>
+        <div><span class="text-muted">Age:</span> <span id="debug-room-age">—</span></div>
+      </div>
+    </div>
+
+    <!-- Participant Information -->
+    <div style="margin-bottom: 16px;">
+      <strong style="display: block; margin-bottom: 8px; color: var(--color-highlight);">Participants</strong>
+      <div id="debug-participants" style="background: var(--color-gray-800); padding: 8px; border-radius: 4px;">
+        <em class="text-muted">Not connected</em>
+      </div>
+    </div>
+
+    <!-- Token Information -->
+    <div style="margin-bottom: 16px;">
+      <strong style="display: block; margin-bottom: 8px; color: var(--color-highlight);">Token Information</strong>
+      <div style="background: var(--color-gray-800); padding: 8px; border-radius: 4px; margin-bottom: 8px;">
+        <div><span class="text-muted">Requested:</span> <span id="debug-token-requested">—</span></div>
+        <div><span class="text-muted">Expires:</span> <span id="debug-token-expires">—</span></div>
+        <div><span class="text-muted">Grants:</span> <span id="debug-token-grants">—</span></div>
+      </div>
+    </div>
+
+    <!-- Agent Dispatch Information -->
+    <div style="margin-bottom: 16px;">
+      <strong style="display: block; margin-bottom: 8px; color: var(--color-highlight);">Agent Dispatch</strong>
+      <div id="debug-dispatch" style="background: var(--color-gray-800); padding: 8px; border-radius: 4px;">
+        <div><span class="text-muted">Room Deletion:</span> <span id="debug-deletion-status">—</span></div>
+        <div><span class="text-muted">Agent Detected:</span> <span id="debug-agent-detected">—</span></div>
+        <div><span class="text-muted">Time to Agent:</span> <span id="debug-time-to-agent">—</span></div>
+        <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--color-gray-700);">
+          <div id="debug-issues" style="color: var(--color-warning);"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Event Timeline -->
+    <div>
+      <strong style="display: block; margin-bottom: 8px; color: var(--color-highlight);">Event Timeline</strong>
+      <div id="debug-timeline" style="background: var(--color-gray-800); padding: 8px; border-radius: 4px; max-height: 200px; overflow-y: auto;">
+        <em class="text-muted">Events will appear here...</em>
+      </div>
+    </div>
+  </div>
+</details>
+
 <!-- Agent Worker Instructions -->
 <details class="card mt-lg">
   <summary class="card-header" style="cursor: pointer;">
@@ -273,12 +333,150 @@ python worker.py dev
   var audioLevelInterval = null;
   var chatInitialized = false;
 
+  // Debug panel state
+  var debugState = {
+    tokenRequestTime: null,
+    tokenData: null,
+    roomCreatedTime: null,
+    agentDetectedTime: null,
+    deletionStatus: null,
+    events: []
+  };
+
   function log(msg) {
     var ts = new Date().toLocaleTimeString();
     statusEl.textContent = '[' + ts + '] ' + msg + '\n' + statusEl.textContent;
     if (statusEl.textContent.length > 5000) {
       statusEl.textContent = statusEl.textContent.substring(0, 4000);
     }
+  }
+
+  function debugLog(event, details) {
+    var ts = new Date().toLocaleTimeString();
+    debugState.events.push({ ts: ts, event: event, details: details });
+    if (debugState.events.length > 50) {
+      debugState.events.shift();
+    }
+    updateDebugTimeline();
+  }
+
+  function decodeJWT(token) {
+    try {
+      var parts = token.split('.');
+      if (parts.length !== 3) return null;
+      var decoded = JSON.parse(atob(parts[1]));
+      return decoded;
+    } catch(e) {
+      return null;
+    }
+  }
+
+  function updateDebugTimeline() {
+    var timelineEl = document.getElementById('debug-timeline');
+    if (debugState.events.length === 0) {
+      timelineEl.innerHTML = '<em class="text-muted">Events will appear here...</em>';
+      return;
+    }
+    var html = debugState.events.map(function(e) {
+      return '<div style="padding: 4px 0; border-bottom: 1px solid var(--color-gray-700);">' +
+             '<span class="text-muted">[' + e.ts + ']</span> <strong>' + escapeHtml(e.event) + '</strong>' +
+             (e.details ? ' — ' + escapeHtml(e.details) : '') +
+             '</div>';
+    }).join('');
+    timelineEl.innerHTML = html;
+    timelineEl.scrollTop = timelineEl.scrollHeight;
+  }
+
+  function updateDebugPanel() {
+    if (!room) {
+      document.getElementById('debug-status-badge').textContent = 'Disconnected';
+      document.getElementById('debug-status-badge').className = 'badge badge-info';
+      document.getElementById('debug-room-name').textContent = '—';
+      document.getElementById('debug-room-sid').textContent = '—';
+      document.getElementById('debug-room-created').textContent = '—';
+      document.getElementById('debug-room-participants').textContent = '0';
+      document.getElementById('debug-room-age').textContent = '—';
+      document.getElementById('debug-participants').innerHTML = '<em class="text-muted">Not connected</em>';
+      return;
+    }
+
+    // Update connection status badge
+    document.getElementById('debug-status-badge').textContent = 'Connected';
+    document.getElementById('debug-status-badge').className = 'badge badge-success';
+
+    // Update room information
+    document.getElementById('debug-room-name').textContent = room.name || '—';
+    document.getElementById('debug-room-sid').textContent = room.sid || '—';
+
+    // Calculate room age if we have creation time
+    if (debugState.roomCreatedTime) {
+      var ageMs = Date.now() - debugState.roomCreatedTime;
+      var ageSec = Math.floor(ageMs / 1000);
+      document.getElementById('debug-room-created').textContent = new Date(debugState.roomCreatedTime).toLocaleTimeString();
+      document.getElementById('debug-room-age').textContent = ageSec + 's';
+    } else {
+      document.getElementById('debug-room-created').textContent = '—';
+      document.getElementById('debug-room-age').textContent = '—';
+    }
+
+    // Update participant count
+    var participantCount = 1 + room.remoteParticipants.size;
+    document.getElementById('debug-room-participants').textContent = participantCount;
+
+    // Update participants list with detailed info
+    var participantsList = [];
+    var lp = room.localParticipant;
+    participantsList.push(
+      '<div style="padding: 4px 0; border-bottom: 1px solid var(--color-gray-700);">' +
+      '<strong>' + escapeHtml(lp.identity) + '</strong> (you)<br>' +
+      '<small class="text-muted">SID: ' + escapeHtml(lp.sid || '—') + ' | Kind: STANDARD | Connected</small>' +
+      '</div>'
+    );
+
+    var agentFound = false;
+    room.remoteParticipants.forEach(function(p) {
+      var isAgent = p.identity.startsWith('agent-') || p.identity.startsWith('device:');
+      if (isAgent) agentFound = true;
+      var kind = isAgent ? 'AGENT' : 'STANDARD';
+      var state = p.connectionState || 'unknown';
+      participantsList.push(
+        '<div style="padding: 4px 0; border-bottom: 1px solid var(--color-gray-700);">' +
+        '<strong>' + escapeHtml(p.identity) + '</strong><br>' +
+        '<small class="text-muted">SID: ' + escapeHtml(p.sid || '—') + ' | Kind: ' + kind + ' | State: ' + state + '</small>' +
+        '</div>'
+      );
+    });
+
+    document.getElementById('debug-participants').innerHTML = participantsList.length > 0 ?
+      participantsList.join('') : '<em class="text-muted">No participants</em>';
+
+    // Update agent detection
+    if (agentFound && !debugState.agentDetectedTime) {
+      debugState.agentDetectedTime = Date.now();
+      debugLog('Agent Detected', 'AGENT participant joined');
+    }
+
+    if (agentFound) {
+      var timeToAgent = debugState.agentDetectedTime ?
+        Math.floor((debugState.agentDetectedTime - (debugState.tokenRequestTime || Date.now())) / 1000) + 's' : '—';
+      document.getElementById('debug-agent-detected').textContent = 'Yes ✓';
+      document.getElementById('debug-time-to-agent').textContent = timeToAgent;
+    } else {
+      document.getElementById('debug-agent-detected').textContent = 'No ✗';
+      document.getElementById('debug-time-to-agent').textContent = debugState.tokenRequestTime ?
+        Math.floor((Date.now() - debugState.tokenRequestTime) / 1000) + 's (waiting)' : '—';
+    }
+
+    // Update issues
+    var issues = [];
+    if (!agentFound && debugState.tokenRequestTime && (Date.now() - debugState.tokenRequestTime) > 5000) {
+      issues.push('⚠ No agent detected after 5 seconds');
+    }
+    if (debugState.deletionStatus === 'timeout') {
+      issues.push('⚠ Room deletion timed out - agent may not dispatch');
+    }
+    document.getElementById('debug-issues').innerHTML = issues.length > 0 ?
+      issues.map(function(i) { return '<div>' + i + '</div>'; }).join('') : '';
   }
 
   // Device enumeration and selection
@@ -520,7 +718,7 @@ python worker.py dev
       div.className = 'transcript-entry' + (isFinal ? '' : ' transcript-interim');
       div.dataset.speaker = speaker;
       div.dataset.final = isFinal ? 'true' : 'false';
-      var isAgent = speaker.startsWith('agent:') || speaker.startsWith('device:');
+      var isAgent = speaker.startsWith('agent-') || speaker.startsWith('device:');
       var icon = isAgent ? '<i class="fas fa-robot"></i>' : '<i class="fas fa-user"></i>';
       div.innerHTML = '<small class="text-muted">' + icon + ' ' + escapeHtml(speaker) + '</small> <span class="transcript-text">' + escapeHtml(text) + '</span>';
       div.style.cssText = 'padding: 4px 0; border-bottom: 1px solid var(--color-gray-700);' + (isFinal ? '' : ' opacity: 0.7; font-style: italic;');
@@ -568,7 +766,7 @@ python worker.py dev
         if (pub.kind === 'video' && pub.isSubscribed) pVideo = '<i class="fas fa-video text-success"></i>';
       });
       var state = p.connectionQuality || 'unknown';
-      var isAgent = p.identity.startsWith('agent:') || p.identity.startsWith('device:');
+      var isAgent = p.identity.startsWith('agent-') || p.identity.startsWith('device:');
       var icon = isAgent ? '<i class="fas fa-robot"></i> ' : '<i class="fas fa-user"></i> ';
       items.push('<li class="lk-participant-item">' + icon + escapeHtml(p.identity) + ' ' + pAudio + ' ' + pVideo + ' <small class="text-muted">(' + state + ')</small></li>');
     });
@@ -612,13 +810,18 @@ python worker.py dev
   function setupRoomEvents() {
     room.on('participantConnected', function(p) {
       log('Participant joined: ' + p.identity);
+      var isAgent = p.identity.startsWith('agent-') || p.identity.startsWith('device:');
+      debugLog('Participant Joined', p.identity + (isAgent ? ' [AGENT]' : ''));
       updateParticipantsList();
+      updateDebugPanel();
       Marvain.showToast('info', 'Participant Joined', p.identity);
     });
     room.on('participantDisconnected', function(p) {
       log('Participant left: ' + p.identity);
+      debugLog('Participant Left', p.identity);
       remoteMediaEl.querySelectorAll('[data-participant="' + p.identity + '"]').forEach(function(el) { el.remove(); });
       updateParticipantsList();
+      updateDebugPanel();
       Marvain.showToast('info', 'Participant Left', p.identity);
     });
     room.on('trackSubscribed', function(track, pub, participant) {
@@ -742,33 +945,69 @@ python worker.py dev
       Marvain.showToast('warning', 'No Space Selected', 'Please select a space to join');
       return;
     }
+
+    // Reset debug state for new join
+    debugState.tokenRequestTime = Date.now();
+    debugState.tokenData = null;
+    debugState.roomCreatedTime = null;
+    debugState.agentDetectedTime = null;
+    debugState.deletionStatus = null;
+    debugState.events = [];
+    debugLog('Join Requested', 'space_id=' + spaceId);
+
     log('Requesting token...');
     updateConnectionStatus('connecting');
     try {
       var resp = await fetch(tokenUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ space_id: spaceId }) });
       if (!resp.ok) {
         log('Token request failed: ' + resp.status);
+        debugLog('Token Request Failed', 'HTTP ' + resp.status);
         updateConnectionStatus('disconnected');
         Marvain.showToast('error', 'Connection Failed', 'Could not get room token');
         return;
       }
       var data = await resp.json();
+      debugState.tokenData = data;
+      debugLog('Token Received', 'room=' + data.room);
+
+      // Parse JWT to extract grants
+      var decoded = decodeJWT(data.token);
+      if (decoded) {
+        var grants = [];
+        if (decoded.video) {
+          if (decoded.video.roomJoin) grants.push('roomJoin');
+          if (decoded.video.roomCreate) grants.push('roomCreate');
+          if (decoded.video.canPublish) grants.push('canPublish');
+          if (decoded.video.canSubscribe) grants.push('canSubscribe');
+          if (decoded.video.canPublishData) grants.push('canPublishData');
+        }
+        var expiresAt = new Date(decoded.exp * 1000).toLocaleTimeString();
+        document.getElementById('debug-token-requested').textContent = new Date(debugState.tokenRequestTime).toLocaleTimeString();
+        document.getElementById('debug-token-expires').textContent = expiresAt;
+        document.getElementById('debug-token-grants').textContent = grants.length > 0 ? grants.join(', ') : 'none';
+      }
+
       log('Connecting to ' + data.url + '...');
+      debugLog('Connecting', 'url=' + data.url.substring(0, 40) + '...');
       var lk = window.LivekitClient || window.livekit || window.LiveKit;
       if (!lk || !lk.Room) {
         log('LiveKit client not loaded');
+        debugLog('Error', 'LiveKit client not loaded');
         updateConnectionStatus('disconnected');
         Marvain.showToast('error', 'Error', 'LiveKit client library not loaded');
         return;
       }
       room = new lk.Room();
+      debugState.roomCreatedTime = Date.now();
       setupRoomEvents();
       await room.connect(data.url, data.token);
       myIdentity = data.identity;
       log('Connected! room=' + data.room + ' identity=' + data.identity);
+      debugLog('Connected', 'room=' + data.room);
       updateConnectionStatus('connected', data.room);
       updateParticipantsList();
       updateMediaButtons();
+      updateDebugPanel();
       Marvain.showToast('success', 'Connected', 'Joined room: ' + data.room);
       // Subscribe to existing remote tracks
       room.remoteParticipants.forEach(function(p) {
@@ -780,6 +1019,7 @@ python worker.py dev
       });
     } catch(e) {
       log('Join error: ' + e);
+      debugLog('Join Error', e.message || String(e));
       updateConnectionStatus('disconnected');
       Marvain.showToast('error', 'Connection Error', e.message || 'Failed to join room');
     }
@@ -792,9 +1032,11 @@ python worker.py dev
     remoteMediaEl.innerHTML = '';
     if (room) { try { await room.disconnect(); } catch(e) {} room = null; }
     log('Left room');
+    debugLog('Left Room', 'disconnected');
     updateConnectionStatus('disconnected');
     updateParticipantsList();
     updateMediaButtons();
+    updateDebugPanel();
     stopAudioLevelMonitoring();
     // Reset transcript status
     transcriptStatus.textContent = 'Waiting';
@@ -898,6 +1140,14 @@ python worker.py dev
   updateMediaButtons();
   updateParticipantsList();
   updateConnectionStatus('disconnected');
+  updateDebugPanel();
+
+  // Periodic debug panel updates (every 500ms while connected)
+  setInterval(function() {
+    if (room && room.state === 'connected') {
+      updateDebugPanel();
+    }
+  }, 500);
 
   // Enumerate devices on page load
   enumerateDevices();
