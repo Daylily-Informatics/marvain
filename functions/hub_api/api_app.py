@@ -38,6 +38,7 @@ from agent_hub.auth import (
     hash_token,
     list_agent_tokens,
     lookup_cognito_user_by_email,
+    require_scope,
     revoke_agent_token,
 )
 from agent_hub.config import load_config
@@ -588,6 +589,7 @@ def admin_set_privacy(space_id: str, body: SetPrivacyIn) -> dict[str, Any]:
 
 @api_app.post("/v1/events", response_model=IngestEventOut)
 def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_device)) -> IngestEventOut:
+    require_scope(device, "events:write")
     if is_agent_disabled(_get_db(), device.agent_id):
         raise HTTPException(status_code=403, detail="Agent is disabled")
     if is_privacy_mode(_get_db(), body.space_id):
@@ -614,6 +616,7 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
 
 @api_app.get("/v1/memories")
 def list_memories(limit: int = 50, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
+    require_scope(device, "memories:read")
     limit = max(1, min(200, limit))
     rows = _get_db().query(
         """SELECT memory_id::TEXT as memory_id, tier, content, created_at::TEXT as created_at,
@@ -626,6 +629,7 @@ def list_memories(limit: int = 50, device: AuthenticatedDevice = Depends(get_dev
 
 @api_app.delete("/v1/memories/{memory_id}")
 def delete_memory(memory_id: str, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
+    require_scope(device, "memories:write")
     _get_db().execute("DELETE FROM memories WHERE memory_id = :memory_id::uuid AND agent_id = :agent_id::uuid",
                       {"memory_id": memory_id, "agent_id": device.agent_id})
     if _cfg.audit_bucket:
@@ -636,6 +640,7 @@ def delete_memory(memory_id: str, device: AuthenticatedDevice = Depends(get_devi
 
 @api_app.post("/v1/artifacts/presign")
 def presign_upload(body: PresignIn, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
+    require_scope(device, "artifacts:write")
     if not _cfg.artifact_bucket:
         raise HTTPException(status_code=500, detail="Artifact bucket not configured")
     key = f"artifacts/agent_id={device.agent_id}/{uuid.uuid4()}_{body.filename}"
@@ -645,6 +650,60 @@ def presign_upload(body: PresignIn, device: AuthenticatedDevice = Depends(get_de
         ExpiresIn=900,
     )
     return {"upload_url": url, "bucket": _cfg.artifact_bucket, "key": key}
+
+
+# -----------------------------------------------------------------------------
+# Device Heartbeat Endpoint
+# -----------------------------------------------------------------------------
+
+
+class HeartbeatIn(BaseModel):
+    """Optional metadata to update on heartbeat."""
+    metadata: dict[str, Any] | None = Field(default=None, description="Optional device metadata update")
+
+
+class HeartbeatOut(BaseModel):
+    """Response for heartbeat."""
+    ok: bool
+    device_id: str
+    last_heartbeat_at: str
+
+
+@api_app.post("/v1/devices/heartbeat", response_model=HeartbeatOut)
+def device_heartbeat(body: HeartbeatIn | None = None, device: AuthenticatedDevice = Depends(get_device)) -> HeartbeatOut:
+    """Update device heartbeat timestamp and optionally metadata.
+
+    This endpoint should be called periodically (every 15-30 seconds) by devices
+    to indicate they are still online and reachable.
+    """
+    require_scope(device, "presence:write")
+
+    db = _get_db()
+
+    # Update last_heartbeat_at and optionally metadata
+    if body and body.metadata:
+        db.execute(
+            """UPDATE devices
+               SET last_heartbeat_at = now(), last_seen = now(),
+                   metadata = COALESCE(metadata, '{}'::jsonb) || :metadata::jsonb
+               WHERE device_id = :device_id::uuid""",
+            {"device_id": device.device_id, "metadata": json.dumps(body.metadata)},
+        )
+    else:
+        db.execute(
+            """UPDATE devices SET last_heartbeat_at = now(), last_seen = now()
+               WHERE device_id = :device_id::uuid""",
+            {"device_id": device.device_id},
+        )
+
+    # Fetch the updated timestamp
+    rows = db.query(
+        "SELECT last_heartbeat_at::TEXT as last_heartbeat_at FROM devices WHERE device_id = :device_id::uuid",
+        {"device_id": device.device_id},
+    )
+    ts = rows[0]["last_heartbeat_at"] if rows else "unknown"
+
+    return HeartbeatOut(ok=True, device_id=device.device_id, last_heartbeat_at=ts)
 
 
 # -----------------------------------------------------------------------------
