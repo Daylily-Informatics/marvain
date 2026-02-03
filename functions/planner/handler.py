@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -11,8 +12,11 @@ import boto3
 from agent_hub.audit import append_audit_entry
 from agent_hub.config import load_config
 from agent_hub.openai_http import call_embeddings, call_responses, extract_output_text
-from agent_hub.policy import is_agent_disabled
+from agent_hub.policy import is_agent_disabled, is_privacy_mode
+from agent_hub.rate_limit import RateLimitError
 from agent_hub.rds_data import RdsData, RdsDataEnv
+
+from .validation import sanitize_planner_output, validate_planner_output
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -20,6 +24,55 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 _cfg = load_config()
 _db = RdsData(RdsDataEnv(resource_arn=_cfg.db_resource_arn, secret_arn=_cfg.db_secret_arn, database=_cfg.db_name))
 _sqs = boto3.client("sqs")
+
+# Idempotency: track processed event IDs in memory (per Lambda invocation)
+# For true cross-invocation idempotency, we use a database check
+_PROCESSED_EVENTS: set[str] = set()
+
+
+def _compute_idempotency_key(event_id: str, transcript_text: str) -> str:
+    """Compute a deterministic idempotency key for an event.
+
+    This ensures that the same event with the same content produces
+    the same key, allowing us to detect duplicate processing.
+    """
+    content = f"{event_id}:{transcript_text}"
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:32]
+
+
+def _is_already_processed(event_id: str) -> bool:
+    """Check if an event has already been processed.
+
+    Uses both in-memory cache and database check for idempotency.
+    """
+    if event_id in _PROCESSED_EVENTS:
+        return True
+
+    # Check if memories or actions already exist for this event
+    rows = _db.query(
+        """
+        SELECT 1 FROM memories
+        WHERE provenance->>'source_event_id' = :event_id
+        LIMIT 1
+        """,
+        {"event_id": event_id},
+    )
+    if rows:
+        _PROCESSED_EVENTS.add(event_id)
+        return True
+
+    return False
+
+
+def _mark_processed(event_id: str) -> None:
+    """Mark an event as processed in the in-memory cache."""
+    _PROCESSED_EVENTS.add(event_id)
+    # Limit cache size to prevent memory issues
+    if len(_PROCESSED_EVENTS) > 10000:
+        # Remove oldest entries (arbitrary, since set is unordered)
+        to_remove = list(_PROCESSED_EVENTS)[:5000]
+        for item in to_remove:
+            _PROCESSED_EVENTS.discard(item)
 
 
 def _load_event(event_id: str) -> dict[str, Any] | None:
@@ -124,6 +177,9 @@ def _insert_memory(*, agent_id: str, space_id: str | None, tier: str, content: s
 def handler(event: dict, context: Any) -> dict[str, Any]:
     records = event.get("Records") or []
     processed = 0
+    skipped_idempotent = 0
+    skipped_privacy = 0
+    skipped_rate_limit = 0
 
     for rec in records:
         body = rec.get("body") or "{}"
@@ -138,13 +194,27 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
         if not event_id:
             continue
 
+        # Idempotency check: skip if already processed
+        if _is_already_processed(event_id):
+            logger.info("Event already processed (idempotent skip): %s", event_id)
+            skipped_idempotent += 1
+            continue
+
         ev = _load_event(event_id)
         if not ev:
             continue
 
         agent_id = ev["agent_id"]
+        space_id = ev.get("space_id")
+
         if is_agent_disabled(_db, agent_id):
             logger.info("Agent disabled; skipping")
+            continue
+
+        # Privacy mode check: skip planning for private spaces
+        if space_id and is_privacy_mode(_db, space_id):
+            logger.info("Space is in privacy mode; skipping planning for event %s", event_id)
+            skipped_privacy += 1
             continue
 
         payload = ev.get("payload") or {}
@@ -191,12 +261,23 @@ Rules:
             logger.warning("OPENAI_SECRET_ARN not configured; skipping planning")
             continue
 
-        resp = call_responses(
-            openai_secret_arn=_cfg.openai_secret_arn,
-            model=os.getenv("PLANNER_MODEL", _cfg.planner_model or "gpt-4.1-mini"),
-            system=system,
-            user=json.dumps(user),
-        )
+        # Call LLM with rate limit handling
+        try:
+            resp = call_responses(
+                openai_secret_arn=_cfg.openai_secret_arn,
+                model=os.getenv("PLANNER_MODEL", _cfg.planner_model or "gpt-4.1-mini"),
+                system=system,
+                user=json.dumps(user),
+            )
+        except RateLimitError as e:
+            logger.error("Rate limit exceeded for event %s: %s", event_id, str(e))
+            skipped_rate_limit += 1
+            # Don't mark as processed - allow retry on next invocation
+            continue
+        except Exception as e:
+            logger.error("LLM call failed for event %s: %s", event_id, str(e))
+            continue
+
         out_text = extract_output_text(resp)
 
         try:
@@ -205,56 +286,46 @@ Rules:
             logger.warning("Planner returned non-JSON; skipping. output=%s", out_text[:4000])
             continue
 
+        # Validate planner output against schema
+        is_valid, validation_error = validate_planner_output(plan)
+        if not is_valid:
+            logger.warning("Planner output failed schema validation: %s", validation_error)
+            # Continue with sanitized output instead of skipping
+
+        # Sanitize and normalize the output
+        plan = sanitize_planner_output(plan)
+
         episodic = plan.get("episodic") or []
         semantic = plan.get("semantic") or []
         actions = plan.get("actions") or []
 
         created_memory_ids: list[str] = []
         for item in episodic:
-            if not isinstance(item, dict):
-                continue
-            content = str(item.get("content") or "").strip()
-            if not content:
-                continue
-            participants = item.get("participants") or []
+            # Already sanitized, so we can use directly
             mid = _insert_memory(
                 agent_id=agent_id,
                 space_id=ev["space_id"],
                 tier="episodic",
-                content=content,
-                participants=[str(p) for p in participants],
+                content=item["content"],
+                participants=item["participants"],
                 provenance={"source_event_id": ev["event_id"]},
             )
             created_memory_ids.append(mid)
 
         for item in semantic:
-            if not isinstance(item, dict):
-                continue
-            content = str(item.get("content") or "").strip()
-            if not content:
-                continue
-            participants = item.get("participants") or []
             mid = _insert_memory(
                 agent_id=agent_id,
                 space_id=None,
                 tier="semantic",
-                content=content,
-                participants=[str(p) for p in participants],
+                content=item["content"],
+                participants=item["participants"],
                 provenance={"source_event_id": ev["event_id"]},
             )
             created_memory_ids.append(mid)
 
         created_action_ids: list[str] = []
         for a in actions:
-            if not isinstance(a, dict):
-                continue
-            kind = str(a.get("kind") or "").strip()
-            if not kind:
-                continue
-            payload_obj = a.get("payload") or {}
-            required_scopes = a.get("required_scopes") or []
-            auto = bool(a.get("auto_approve"))
-
+            # Already sanitized
             action_id = str(uuid.uuid4())
             _db.execute(
                 """
@@ -273,15 +344,15 @@ Rules:
                     "action_id": action_id,
                     "agent_id": agent_id,
                     "space_id": ev["space_id"],
-                    "kind": kind,
-                    "payload": json.dumps(payload_obj),
-                    "required_scopes": json.dumps(required_scopes),
-                    "status": "approved" if auto else "proposed",
+                    "kind": a["kind"],
+                    "payload": json.dumps(a["payload"]),
+                    "required_scopes": json.dumps(a["required_scopes"]),
+                    "status": "approved" if a["auto_approve"] else "proposed",
                 },
             )
             created_action_ids.append(action_id)
 
-            if auto and _cfg.action_queue_url:
+            if a["auto_approve"] and _cfg.action_queue_url:
                 _sqs.send_message(
                     QueueUrl=_cfg.action_queue_url,
                     MessageBody=json.dumps({"action_id": action_id, "agent_id": agent_id}),
@@ -300,6 +371,13 @@ Rules:
                 },
             )
 
+        # Mark event as processed for idempotency
+        _mark_processed(event_id)
         processed += 1
 
-    return {"processed": processed}
+    return {
+        "processed": processed,
+        "skipped_idempotent": skipped_idempotent,
+        "skipped_privacy": skipped_privacy,
+        "skipped_rate_limit": skipped_rate_limit,
+    }

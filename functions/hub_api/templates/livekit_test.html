@@ -1,0 +1,1157 @@
+{% extends "base.html" %}
+
+{% block title %}LiveKit Test - Marvain{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title"><i class="fas fa-video"></i> LiveKit Test</h1>
+    <p class="text-muted">Join a LiveKit room mapped from a Marvain space</p>
+  </div>
+  <div class="page-actions">
+    <a href="/spaces" class="btn btn-outline"><i class="fas fa-arrow-left"></i> Back to Spaces</a>
+  </div>
+</div>
+
+<!-- Hidden config element for JS -->
+<div id="lkcfg" data-token-url="{{ token_url }}" style="display:none"></div>
+
+<!-- Connection Status Bar -->
+<div class="lk-status-bar mb-md">
+  <div class="lk-status">
+    <span id="lk-connection-status" class="badge badge-info">
+      <i class="fas fa-circle"></i> <span id="lk-status-text">Not Connected</span>
+    </span>
+    <span id="lk-room-name" class="text-muted"></span>
+  </div>
+</div>
+
+<!-- Connection Controls -->
+<div class="card mb-md">
+  <div class="card-body" style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+    <div class="form-group" style="margin: 0; flex: 1; min-width: 300px;">
+      <label for="space_id" style="margin-bottom: 4px;">Select Space</label>
+      <select id="space_id" class="form-control">
+        <option value="">-- Select a space --</option>
+        {% for space in spaces %}
+        <option value="{{ space.space_id }}" {% if space.space_id == selected_space %}selected{% endif %}>
+          {{ space.name }} ({{ space.agent_name }}) - {{ space.space_id[:8] }}...
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="display: flex; gap: 8px; padding-top: 20px;">
+      <button id="btn-join" class="btn btn-primary"><i class="fas fa-sign-in-alt"></i> Join</button>
+      <button id="btn-leave" class="btn btn-outline"><i class="fas fa-sign-out-alt"></i> Leave</button>
+    </div>
+  </div>
+</div>
+
+<!-- Media Controls -->
+<div class="card mb-md">
+  <div class="card-body">
+    <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 12px;">
+      <strong style="margin-right: 8px;">Media:</strong>
+      <button id="btn-mic" class="btn btn-sm btn-outline" disabled>
+        <i class="fas fa-microphone-slash"></i> Mic Off
+      </button>
+      <button id="btn-cam" class="btn btn-sm btn-outline" disabled>
+        <i class="fas fa-video-slash"></i> Cam Off
+      </button>
+      <span id="lk-media-hint" class="text-muted text-sm">Join a room to enable media controls</span>
+    </div>
+    <!-- Device Selection -->
+    <div id="device-selectors" style="display: flex; gap: 16px; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid var(--color-gray-600);">
+      <div class="form-group" style="margin: 0; min-width: 200px; flex: 1;">
+        <label for="mic-select" style="font-size: 0.75rem; margin-bottom: 4px;">
+          <i class="fas fa-microphone"></i> Microphone
+        </label>
+        <select id="mic-select" class="form-control form-control-sm">
+          <option value="">Default Microphone</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin: 0; min-width: 200px; flex: 1;">
+        <label for="speaker-select" style="font-size: 0.75rem; margin-bottom: 4px;">
+          <i class="fas fa-volume-up"></i> Speaker
+        </label>
+        <select id="speaker-select" class="form-control form-control-sm">
+          <option value="">Default Speaker</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin: 0; min-width: 200px; flex: 1;">
+        <label for="cam-select" style="font-size: 0.75rem; margin-bottom: 4px;">
+          <i class="fas fa-video"></i> Camera
+        </label>
+        <select id="cam-select" class="form-control form-control-sm">
+          <option value="">Default Camera</option>
+        </select>
+      </div>
+      <button id="btn-refresh-devices" class="btn btn-sm btn-outline" style="align-self: flex-end;" title="Refresh device list">
+        <i class="fas fa-sync-alt"></i>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Main Content Grid -->
+<div class="grid grid-2 gap-md">
+  <!-- Left Column: Video & Participants -->
+  <div>
+    <!-- Local Video Preview -->
+    <div class="card mb-md">
+      <div class="card-header"><h4 class="card-title"><i class="fas fa-user"></i> Local Preview</h4></div>
+      <div class="card-body">
+        <div id="local-video" class="lk-video-container">
+          <span class="text-muted">Camera off</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Remote Media -->
+    <div class="card mb-md">
+      <div class="card-header"><h4 class="card-title"><i class="fas fa-users"></i> Remote Media</h4></div>
+      <div class="card-body">
+        <div id="remote-media" class="lk-remote-container"></div>
+      </div>
+    </div>
+
+    <!-- Participants List -->
+    <div class="card">
+      <div class="card-header"><h4 class="card-title"><i class="fas fa-user-friends"></i> Participants</h4></div>
+      <div class="card-body">
+        <div id="participants"><em class="text-muted">Not connected</em></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right Column: Audio Status, Transcript, Chat & Status -->
+  <div>
+    <!-- Audio Status Indicators -->
+    <div class="card mb-md">
+      <div class="card-header"><h4 class="card-title"><i class="fas fa-broadcast-tower"></i> Audio Status</h4></div>
+      <div class="card-body">
+        <div style="display: flex; gap: 24px; flex-wrap: wrap;">
+          <!-- Local Mic Status -->
+          <div style="flex: 1; min-width: 150px;">
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+              <i id="mic-status-icon" class="fas fa-microphone-slash text-muted"></i>
+              <span id="mic-status-text">Mic Off</span>
+            </div>
+            <div class="audio-meter" style="height: 8px; background: var(--color-gray-700); border-radius: 4px; overflow: hidden;">
+              <div id="mic-level" style="height: 100%; width: 0%; background: linear-gradient(90deg, #22c55e, #f59e0b, #ef4444); transition: width 50ms;"></div>
+            </div>
+            <small class="text-muted">Local Input</small>
+          </div>
+          <!-- Remote Audio Status -->
+          <div style="flex: 1; min-width: 150px;">
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+              <i id="speaker-status-icon" class="fas fa-volume-mute text-muted"></i>
+              <span id="speaker-status-text">No Audio</span>
+            </div>
+            <div class="audio-meter" style="height: 8px; background: var(--color-gray-700); border-radius: 4px; overflow: hidden;">
+              <div id="speaker-level" style="height: 100%; width: 0%; background: linear-gradient(90deg, #3b82f6, #6366f1, #8b5cf6); transition: width 50ms;"></div>
+            </div>
+            <small class="text-muted">Remote Output</small>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Live Transcript -->
+    <div class="card mb-md">
+      <div class="card-header">
+        <h4 class="card-title"><i class="fas fa-closed-captioning"></i> Live Transcript</h4>
+        <span id="transcript-status" class="badge badge-info" style="margin-left: auto;">Waiting</span>
+      </div>
+      <div class="card-body">
+        <div id="transcript-container" class="lk-transcript-container" style="max-height: 200px; overflow-y: auto; font-size: 0.9rem;">
+          <em class="text-muted">Transcript will appear here when speaking...</em>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chat Interface -->
+    <div class="card mb-md">
+      <div class="card-header"><h4 class="card-title"><i class="fas fa-comments"></i> Chat</h4></div>
+      <div class="card-body">
+        <div id="chat-messages" class="lk-chat-messages">
+          <em class="text-muted">Messages will appear here...</em>
+        </div>
+        <div style="display: flex; gap: 8px; margin-top: 8px;">
+          <input id="chat-input" type="text" class="form-control" placeholder="Type a message..." style="flex: 1;">
+          <button id="btn-send-chat" class="btn btn-primary" disabled>Send</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Status Log -->
+    <div class="card">
+      <div class="card-header"><h4 class="card-title"><i class="fas fa-terminal"></i> Status Log</h4></div>
+      <div class="card-body">
+        <pre id="status" class="lk-status-log">idle</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- LiveKit Debug Info Panel -->
+<details class="card mt-lg" id="debug-panel">
+  <summary class="card-header" style="cursor: pointer;">
+    <i class="fas fa-bug"></i> LiveKit Debug Info
+    <span id="debug-status-badge" class="badge badge-info" style="margin-left: auto;">Disconnected</span>
+  </summary>
+  <div class="card-body" style="font-size: 0.85rem; font-family: monospace;">
+    <!-- Room Information -->
+    <div style="margin-bottom: 16px;">
+      <strong style="display: block; margin-bottom: 8px; color: var(--color-highlight);">Room Information</strong>
+      <div style="background: var(--color-gray-800); padding: 8px; border-radius: 4px; margin-bottom: 8px;">
+        <div><span class="text-muted">Room Name:</span> <span id="debug-room-name">—</span></div>
+        <div><span class="text-muted">Room SID:</span> <span id="debug-room-sid">—</span></div>
+        <div><span class="text-muted">Created:</span> <span id="debug-room-created">—</span></div>
+        <div><span class="text-muted">Participants:</span> <span id="debug-room-participants">0</span></div>
+        <div><span class="text-muted">Age:</span> <span id="debug-room-age">—</span></div>
+      </div>
+    </div>
+
+    <!-- Participant Information -->
+    <div style="margin-bottom: 16px;">
+      <strong style="display: block; margin-bottom: 8px; color: var(--color-highlight);">Participants</strong>
+      <div id="debug-participants" style="background: var(--color-gray-800); padding: 8px; border-radius: 4px;">
+        <em class="text-muted">Not connected</em>
+      </div>
+    </div>
+
+    <!-- Token Information -->
+    <div style="margin-bottom: 16px;">
+      <strong style="display: block; margin-bottom: 8px; color: var(--color-highlight);">Token Information</strong>
+      <div style="background: var(--color-gray-800); padding: 8px; border-radius: 4px; margin-bottom: 8px;">
+        <div><span class="text-muted">Requested:</span> <span id="debug-token-requested">—</span></div>
+        <div><span class="text-muted">Expires:</span> <span id="debug-token-expires">—</span></div>
+        <div><span class="text-muted">Grants:</span> <span id="debug-token-grants">—</span></div>
+      </div>
+    </div>
+
+    <!-- Agent Dispatch Information -->
+    <div style="margin-bottom: 16px;">
+      <strong style="display: block; margin-bottom: 8px; color: var(--color-highlight);">Agent Dispatch</strong>
+      <div id="debug-dispatch" style="background: var(--color-gray-800); padding: 8px; border-radius: 4px;">
+        <div><span class="text-muted">Room Deletion:</span> <span id="debug-deletion-status">—</span></div>
+        <div><span class="text-muted">Agent Detected:</span> <span id="debug-agent-detected">—</span></div>
+        <div><span class="text-muted">Time to Agent:</span> <span id="debug-time-to-agent">—</span></div>
+        <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--color-gray-700);">
+          <div id="debug-issues" style="color: var(--color-warning);"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Event Timeline -->
+    <div>
+      <strong style="display: block; margin-bottom: 8px; color: var(--color-highlight);">Event Timeline</strong>
+      <div id="debug-timeline" style="background: var(--color-gray-800); padding: 8px; border-radius: 4px; max-height: 200px; overflow-y: auto;">
+        <em class="text-muted">Events will appear here...</em>
+      </div>
+    </div>
+  </div>
+</details>
+
+<!-- Agent Worker Instructions -->
+<details class="card mt-lg">
+  <summary class="card-header" style="cursor: pointer;">
+    <i class="fas fa-robot"></i> Running an Agent Worker (Satellite)
+  </summary>
+  <div class="card-body">
+    <p>To test agent voice interaction, run the agent worker locally:</p>
+    <pre class="lk-code-block">
+# 1. Navigate to the agent worker directory
+cd apps/agent_worker
+
+# 2. Export environment variables (get values from marvain-config.yaml or bootstrap output)
+export LIVEKIT_URL="wss://&lt;your-livekit-url&gt;"
+export LIVEKIT_API_KEY="&lt;from AWS Secrets Manager or LiveKit dashboard&gt;"
+export LIVEKIT_API_SECRET="&lt;from AWS Secrets Manager or LiveKit dashboard&gt;"
+export OPENAI_API_KEY="&lt;your-openai-key&gt;"
+export HUB_API_BASE="&lt;ApiUrl from marvain-config.yaml resources&gt;"
+export HUB_DEVICE_TOKEN="&lt;device token from bootstrap output&gt;"
+export SPACE_ID="&lt;space_id to join&gt;"
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Run the worker (dev mode for local testing, auto-joins rooms)
+python worker.py dev
+# Or for production: python worker.py start
+    </pre>
+    <p class="mt-md"><strong>Identity format:</strong></p>
+    <ul>
+      <li>Users join as <code>user:&lt;user_id&gt;</code></li>
+      <li>Devices/agents join as <code>device:&lt;device_id&gt;</code> or <code>agent:&lt;agent_id&gt;</code></li>
+    </ul>
+  </div>
+</details>
+
+<!-- LiveKit Client Library -->
+<script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function(){
+  var room = null;
+  var localVideoTrack = null;
+  var localAudioTrack = null;
+  var statusEl = document.getElementById('status');
+  var selectEl = document.getElementById('space_id');
+  var tokenUrl = document.getElementById('lkcfg').getAttribute('data-token-url');
+  var participantsEl = document.getElementById('participants');
+  var localVideoEl = document.getElementById('local-video');
+  var remoteMediaEl = document.getElementById('remote-media');
+  var chatMessagesEl = document.getElementById('chat-messages');
+  var chatInputEl = document.getElementById('chat-input');
+  var connectionBadge = document.getElementById('lk-connection-status');
+  var statusText = document.getElementById('lk-status-text');
+  var roomNameEl = document.getElementById('lk-room-name');
+  var mediaHint = document.getElementById('lk-media-hint');
+  var myIdentity = '';
+
+  // Device selection elements
+  var micSelectEl = document.getElementById('mic-select');
+  var speakerSelectEl = document.getElementById('speaker-select');
+  var camSelectEl = document.getElementById('cam-select');
+  var selectedSpeakerId = '';  // Track selected speaker
+
+  // Audio status elements
+  var micStatusIcon = document.getElementById('mic-status-icon');
+  var micStatusText = document.getElementById('mic-status-text');
+  var micLevelEl = document.getElementById('mic-level');
+  var speakerStatusIcon = document.getElementById('speaker-status-icon');
+  var speakerStatusText = document.getElementById('speaker-status-text');
+  var speakerLevelEl = document.getElementById('speaker-level');
+  var transcriptContainer = document.getElementById('transcript-container');
+  var transcriptStatus = document.getElementById('transcript-status');
+
+  // Audio level monitoring
+  var audioLevelInterval = null;
+  var chatInitialized = false;
+
+  // Debug panel state
+  var debugState = {
+    tokenRequestTime: null,
+    tokenData: null,
+    roomCreatedTime: null,
+    agentDetectedTime: null,
+    deletionStatus: null,
+    events: []
+  };
+
+  function log(msg) {
+    var ts = new Date().toLocaleTimeString();
+    statusEl.textContent = '[' + ts + '] ' + msg + '\n' + statusEl.textContent;
+    if (statusEl.textContent.length > 5000) {
+      statusEl.textContent = statusEl.textContent.substring(0, 4000);
+    }
+  }
+
+  function debugLog(event, details) {
+    var ts = new Date().toLocaleTimeString();
+    debugState.events.push({ ts: ts, event: event, details: details });
+    if (debugState.events.length > 50) {
+      debugState.events.shift();
+    }
+    updateDebugTimeline();
+  }
+
+  function decodeJWT(token) {
+    try {
+      var parts = token.split('.');
+      if (parts.length !== 3) return null;
+      var decoded = JSON.parse(atob(parts[1]));
+      return decoded;
+    } catch(e) {
+      return null;
+    }
+  }
+
+  function updateDebugTimeline() {
+    var timelineEl = document.getElementById('debug-timeline');
+    if (debugState.events.length === 0) {
+      timelineEl.innerHTML = '<em class="text-muted">Events will appear here...</em>';
+      return;
+    }
+    var html = debugState.events.map(function(e) {
+      return '<div style="padding: 4px 0; border-bottom: 1px solid var(--color-gray-700);">' +
+             '<span class="text-muted">[' + e.ts + ']</span> <strong>' + escapeHtml(e.event) + '</strong>' +
+             (e.details ? ' — ' + escapeHtml(e.details) : '') +
+             '</div>';
+    }).join('');
+    timelineEl.innerHTML = html;
+    timelineEl.scrollTop = timelineEl.scrollHeight;
+  }
+
+  function updateDebugPanel() {
+    if (!room) {
+      document.getElementById('debug-status-badge').textContent = 'Disconnected';
+      document.getElementById('debug-status-badge').className = 'badge badge-info';
+      document.getElementById('debug-room-name').textContent = '—';
+      document.getElementById('debug-room-sid').textContent = '—';
+      document.getElementById('debug-room-created').textContent = '—';
+      document.getElementById('debug-room-participants').textContent = '0';
+      document.getElementById('debug-room-age').textContent = '—';
+      document.getElementById('debug-participants').innerHTML = '<em class="text-muted">Not connected</em>';
+      return;
+    }
+
+    // Update connection status badge
+    document.getElementById('debug-status-badge').textContent = 'Connected';
+    document.getElementById('debug-status-badge').className = 'badge badge-success';
+
+    // Update room information
+    document.getElementById('debug-room-name').textContent = room.name || '—';
+    document.getElementById('debug-room-sid').textContent = room.sid || '—';
+
+    // Calculate room age if we have creation time
+    if (debugState.roomCreatedTime) {
+      var ageMs = Date.now() - debugState.roomCreatedTime;
+      var ageSec = Math.floor(ageMs / 1000);
+      document.getElementById('debug-room-created').textContent = new Date(debugState.roomCreatedTime).toLocaleTimeString();
+      document.getElementById('debug-room-age').textContent = ageSec + 's';
+    } else {
+      document.getElementById('debug-room-created').textContent = '—';
+      document.getElementById('debug-room-age').textContent = '—';
+    }
+
+    // Update participant count
+    var participantCount = 1 + room.remoteParticipants.size;
+    document.getElementById('debug-room-participants').textContent = participantCount;
+
+    // Update participants list with detailed info
+    var participantsList = [];
+    var lp = room.localParticipant;
+    participantsList.push(
+      '<div style="padding: 4px 0; border-bottom: 1px solid var(--color-gray-700);">' +
+      '<strong>' + escapeHtml(lp.identity) + '</strong> (you)<br>' +
+      '<small class="text-muted">SID: ' + escapeHtml(lp.sid || '—') + ' | Kind: STANDARD | Connected</small>' +
+      '</div>'
+    );
+
+    var agentFound = false;
+    room.remoteParticipants.forEach(function(p) {
+      var isAgent = p.identity.startsWith('agent-') || p.identity.startsWith('device:');
+      if (isAgent) agentFound = true;
+      var kind = isAgent ? 'AGENT' : 'STANDARD';
+      var state = p.connectionState || 'unknown';
+      participantsList.push(
+        '<div style="padding: 4px 0; border-bottom: 1px solid var(--color-gray-700);">' +
+        '<strong>' + escapeHtml(p.identity) + '</strong><br>' +
+        '<small class="text-muted">SID: ' + escapeHtml(p.sid || '—') + ' | Kind: ' + kind + ' | State: ' + state + '</small>' +
+        '</div>'
+      );
+    });
+
+    document.getElementById('debug-participants').innerHTML = participantsList.length > 0 ?
+      participantsList.join('') : '<em class="text-muted">No participants</em>';
+
+    // Update agent detection
+    if (agentFound && !debugState.agentDetectedTime) {
+      debugState.agentDetectedTime = Date.now();
+      debugLog('Agent Detected', 'AGENT participant joined');
+    }
+
+    if (agentFound) {
+      var timeToAgent = debugState.agentDetectedTime ?
+        Math.floor((debugState.agentDetectedTime - (debugState.tokenRequestTime || Date.now())) / 1000) + 's' : '—';
+      document.getElementById('debug-agent-detected').textContent = 'Yes ✓';
+      document.getElementById('debug-time-to-agent').textContent = timeToAgent;
+    } else {
+      document.getElementById('debug-agent-detected').textContent = 'No ✗';
+      document.getElementById('debug-time-to-agent').textContent = debugState.tokenRequestTime ?
+        Math.floor((Date.now() - debugState.tokenRequestTime) / 1000) + 's (waiting)' : '—';
+    }
+
+    // Update issues
+    var issues = [];
+    if (!agentFound && debugState.tokenRequestTime && (Date.now() - debugState.tokenRequestTime) > 5000) {
+      issues.push('⚠ No agent detected after 5 seconds');
+    }
+    if (debugState.deletionStatus === 'timeout') {
+      issues.push('⚠ Room deletion timed out - agent may not dispatch');
+    }
+    document.getElementById('debug-issues').innerHTML = issues.length > 0 ?
+      issues.map(function(i) { return '<div>' + i + '</div>'; }).join('') : '';
+  }
+
+  // Device enumeration and selection
+  async function enumerateDevices() {
+    try {
+      // Request permissions first to get device labels
+      try {
+        await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+      } catch(permErr) {
+        // May not have camera/mic, try audio only
+        try {
+          await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch(e) { /* ignore */ }
+      }
+
+      var devices = await navigator.mediaDevices.enumerateDevices();
+
+      // Preserve current selections (only if user has made a selection)
+      var currentMic = micSelectEl.value;
+      var currentSpeaker = speakerSelectEl.value;
+      var currentCam = camSelectEl.value;
+      var isFirstEnum = micSelectEl.options.length <= 1;
+
+      // Clear existing options (keep default)
+      micSelectEl.innerHTML = '<option value="">Default Microphone</option>';
+      speakerSelectEl.innerHTML = '<option value="">Default Speaker</option>';
+      camSelectEl.innerHTML = '<option value="">Default Camera</option>';
+
+      var micCount = 0, speakerCount = 0, camCount = 0;
+      var builtInMic = null, builtInSpeaker = null, builtInCam = null;
+
+      devices.forEach(function(device) {
+        var option = document.createElement('option');
+        option.value = device.deviceId;
+        var label = device.label || (device.kind + ' ' + device.deviceId.substring(0, 8));
+        option.text = label;
+
+        // Check if this is a built-in device (case-insensitive)
+        var isBuiltIn = label.toLowerCase().indexOf('built-in') !== -1;
+
+        if (device.kind === 'audioinput') {
+          micSelectEl.appendChild(option);
+          if (isBuiltIn && !builtInMic) builtInMic = device.deviceId;
+          micCount++;
+        } else if (device.kind === 'audiooutput') {
+          speakerSelectEl.appendChild(option);
+          if (isBuiltIn && !builtInSpeaker) builtInSpeaker = device.deviceId;
+          speakerCount++;
+        } else if (device.kind === 'videoinput') {
+          camSelectEl.appendChild(option);
+          if (isBuiltIn && !builtInCam) builtInCam = device.deviceId;
+          camCount++;
+        }
+      });
+
+      // Auto-select built-in devices on first enumeration, otherwise restore user selection
+      if (isFirstEnum) {
+        if (builtInMic) {
+          micSelectEl.value = builtInMic;
+          log('Auto-selected built-in microphone');
+        }
+        if (builtInSpeaker) {
+          speakerSelectEl.value = builtInSpeaker;
+          selectedSpeakerId = builtInSpeaker;
+          log('Auto-selected built-in speaker');
+        }
+        if (builtInCam) {
+          camSelectEl.value = builtInCam;
+          log('Auto-selected built-in camera');
+        }
+      } else {
+        // Restore user selections if still available
+        if (currentMic) micSelectEl.value = currentMic;
+        if (currentSpeaker) speakerSelectEl.value = currentSpeaker;
+        if (currentCam) camSelectEl.value = currentCam;
+      }
+
+      log('Devices: ' + micCount + ' mics, ' + speakerCount + ' speakers, ' + camCount + ' cameras');
+
+      // Check if speaker selection is supported
+      if (!('setSinkId' in HTMLAudioElement.prototype)) {
+        speakerSelectEl.disabled = true;
+        speakerSelectEl.title = 'Speaker selection not supported in this browser';
+        log('Note: Speaker selection not supported in this browser');
+      }
+    } catch(e) {
+      log('Device enumeration error: ' + e.message);
+      Marvain.showToast('error', 'Device Error', 'Could not enumerate devices: ' + e.message);
+    }
+  }
+
+  async function changeMicrophone(deviceId) {
+    if (!room) return;
+    try {
+      await room.switchActiveDevice('audioinput', deviceId || 'default');
+      log('Switched microphone: ' + (deviceId || 'default'));
+    } catch(e) {
+      log('Microphone switch error: ' + e.message);
+      Marvain.showToast('error', 'Microphone Error', e.message);
+    }
+  }
+
+  async function changeCamera(deviceId) {
+    if (!room) return;
+    try {
+      await room.switchActiveDevice('videoinput', deviceId || 'default');
+      log('Switched camera: ' + (deviceId || 'default'));
+      // Re-attach local video preview if camera is enabled
+      if (room.localParticipant.isCameraEnabled) {
+        var camPub = room.localParticipant.getTrackPublication('camera');
+        if (camPub && camPub.track) {
+          localVideoEl.innerHTML = '';
+          var vid = document.createElement('video');
+          vid.autoplay = true;
+          vid.playsInline = true;
+          vid.muted = true;
+          vid.className = 'lk-local-video';
+          camPub.track.attach(vid);
+          localVideoEl.appendChild(vid);
+        }
+      }
+    } catch(e) {
+      log('Camera switch error: ' + e.message);
+      Marvain.showToast('error', 'Camera Error', e.message);
+    }
+  }
+
+  async function changeSpeaker(deviceId) {
+    selectedSpeakerId = deviceId;
+    try {
+      // Set sink ID on all remote audio elements
+      var audioElements = remoteMediaEl.querySelectorAll('audio');
+      var count = 0;
+      for (var i = 0; i < audioElements.length; i++) {
+        if (typeof audioElements[i].setSinkId !== 'undefined') {
+          await audioElements[i].setSinkId(deviceId || '');
+          count++;
+        }
+      }
+      log('Switched speaker to: ' + (deviceId || 'default') + ' (' + count + ' audio elements updated)');
+    } catch(e) {
+      log('Speaker switch error: ' + e.message);
+      Marvain.showToast('error', 'Speaker Error', e.message);
+    }
+  }
+
+  // Apply speaker to newly added audio elements
+  function applySelectedSpeaker(audioElement) {
+    if (selectedSpeakerId && typeof audioElement.setSinkId !== 'undefined') {
+      audioElement.setSinkId(selectedSpeakerId).catch(function(e) {
+        log('Failed to set speaker on new audio: ' + e.message);
+      });
+    }
+  }
+
+  // Audio level monitoring
+  function startAudioLevelMonitoring() {
+    if (audioLevelInterval) return;
+    audioLevelInterval = setInterval(updateAudioLevels, 50);
+  }
+
+  function stopAudioLevelMonitoring() {
+    if (audioLevelInterval) {
+      clearInterval(audioLevelInterval);
+      audioLevelInterval = null;
+    }
+    micLevelEl.style.width = '0%';
+    speakerLevelEl.style.width = '0%';
+  }
+
+  function updateAudioLevels() {
+    // Update local mic level using participant.audioLevel (LiveKit API)
+    if (room && room.localParticipant && room.localParticipant.isMicrophoneEnabled) {
+      // audioLevel is on the Participant object, not the track
+      var level = room.localParticipant.audioLevel || 0;
+      micLevelEl.style.width = Math.min(level * 100, 100) + '%';
+    } else {
+      micLevelEl.style.width = '0%';
+    }
+
+    // Update remote audio level (aggregate from all remote participants)
+    var maxRemoteLevel = 0;
+    var anyRemoteSpeaking = false;
+    if (room) {
+      room.remoteParticipants.forEach(function(p) {
+        // audioLevel is on the Participant object (0.0 to 1.0)
+        var level = p.audioLevel || 0;
+        maxRemoteLevel = Math.max(maxRemoteLevel, level);
+        // Also check isSpeaking property for more reliable detection
+        if (p.isSpeaking) {
+          anyRemoteSpeaking = true;
+        }
+      });
+    }
+    speakerLevelEl.style.width = Math.min(maxRemoteLevel * 100, 100) + '%';
+
+    // Update status icons based on activity (use isSpeaking or audio level threshold)
+    updateAudioStatusIcons(anyRemoteSpeaking || maxRemoteLevel > 0.01);
+  }
+
+  function updateAudioStatusIcons(hasRemoteAudio) {
+    if (room && room.localParticipant && room.localParticipant.isMicrophoneEnabled) {
+      micStatusIcon.className = 'fas fa-microphone text-success';
+      micStatusText.textContent = 'Mic Active';
+    } else {
+      micStatusIcon.className = 'fas fa-microphone-slash text-muted';
+      micStatusText.textContent = 'Mic Off';
+    }
+
+    if (hasRemoteAudio) {
+      speakerStatusIcon.className = 'fas fa-volume-up text-success';
+      speakerStatusText.textContent = 'Receiving Audio';
+    } else if (room && room.remoteParticipants.size > 0) {
+      speakerStatusIcon.className = 'fas fa-volume-down text-muted';
+      speakerStatusText.textContent = 'Waiting...';
+    } else {
+      speakerStatusIcon.className = 'fas fa-volume-mute text-muted';
+      speakerStatusText.textContent = 'No Audio';
+    }
+  }
+
+  // Transcript handling
+  function addTranscriptEntry(speaker, text, isFinal) {
+    // Clear placeholder on first entry
+    if (transcriptContainer.querySelector('em.text-muted')) {
+      transcriptContainer.innerHTML = '';
+    }
+
+    // Check if we should update the last entry (for interim results)
+    var lastEntry = transcriptContainer.lastElementChild;
+    if (lastEntry && lastEntry.dataset.speaker === speaker && !lastEntry.dataset.final) {
+      lastEntry.querySelector('.transcript-text').textContent = text;
+      if (isFinal) {
+        lastEntry.dataset.final = 'true';
+        lastEntry.classList.remove('transcript-interim');
+      }
+    } else {
+      var div = document.createElement('div');
+      div.className = 'transcript-entry' + (isFinal ? '' : ' transcript-interim');
+      div.dataset.speaker = speaker;
+      div.dataset.final = isFinal ? 'true' : 'false';
+      var isAgent = speaker.startsWith('agent-') || speaker.startsWith('device:');
+      var icon = isAgent ? '<i class="fas fa-robot"></i>' : '<i class="fas fa-user"></i>';
+      div.innerHTML = '<small class="text-muted">' + icon + ' ' + escapeHtml(speaker) + '</small> <span class="transcript-text">' + escapeHtml(text) + '</span>';
+      div.style.cssText = 'padding: 4px 0; border-bottom: 1px solid var(--color-gray-700);' + (isFinal ? '' : ' opacity: 0.7; font-style: italic;');
+      transcriptContainer.appendChild(div);
+    }
+    transcriptContainer.scrollTop = transcriptContainer.scrollHeight;
+
+    // Update transcript status
+    transcriptStatus.textContent = isFinal ? 'Active' : 'Listening...';
+    transcriptStatus.className = 'badge ' + (isFinal ? 'badge-success' : 'badge-warning');
+  }
+
+  function updateConnectionStatus(state, roomName) {
+    if (state === 'connected') {
+      connectionBadge.className = 'badge badge-success';
+      statusText.textContent = 'Connected';
+      roomNameEl.textContent = roomName ? '• Room: ' + roomName : '';
+      mediaHint.style.display = 'none';
+    } else if (state === 'connecting') {
+      connectionBadge.className = 'badge badge-warning';
+      statusText.textContent = 'Connecting...';
+      roomNameEl.textContent = '';
+    } else {
+      connectionBadge.className = 'badge badge-info';
+      statusText.textContent = 'Not Connected';
+      roomNameEl.textContent = '';
+      mediaHint.style.display = '';
+    }
+  }
+
+  function updateParticipantsList() {
+    if (!room) { participantsEl.innerHTML = '<em class="text-muted">Not connected</em>'; return; }
+    var items = [];
+    // Local participant
+    var lp = room.localParticipant;
+    var lpAudio = lp.isMicrophoneEnabled ? '<i class="fas fa-microphone text-success"></i>' : '<i class="fas fa-microphone-slash text-muted"></i>';
+    var lpVideo = lp.isCameraEnabled ? '<i class="fas fa-video text-success"></i>' : '<i class="fas fa-video-slash text-muted"></i>';
+    items.push('<li class="lk-participant-item"><strong>' + escapeHtml(lp.identity) + '</strong> <span class="badge badge-info">you</span> ' + lpAudio + ' ' + lpVideo + '</li>');
+    // Remote participants
+    room.remoteParticipants.forEach(function(p) {
+      var pAudio = '<i class="fas fa-microphone-slash text-muted"></i>';
+      var pVideo = '<i class="fas fa-video-slash text-muted"></i>';
+      p.trackPublications.forEach(function(pub) {
+        if (pub.kind === 'audio' && pub.isSubscribed) pAudio = '<i class="fas fa-volume-up text-success"></i>';
+        if (pub.kind === 'video' && pub.isSubscribed) pVideo = '<i class="fas fa-video text-success"></i>';
+      });
+      var state = p.connectionQuality || 'unknown';
+      var isAgent = p.identity.startsWith('agent-') || p.identity.startsWith('device:');
+      var icon = isAgent ? '<i class="fas fa-robot"></i> ' : '<i class="fas fa-user"></i> ';
+      items.push('<li class="lk-participant-item">' + icon + escapeHtml(p.identity) + ' ' + pAudio + ' ' + pVideo + ' <small class="text-muted">(' + state + ')</small></li>');
+    });
+    participantsEl.innerHTML = items.length ? '<ul class="lk-participant-list">' + items.join('') + '</ul>' : '<em class="text-muted">No participants</em>';
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function attachRemoteTrack(track, participant) {
+    var el;
+    if (track.kind === 'video') {
+      el = document.createElement('video');
+      el.autoplay = true;
+      el.playsInline = true;
+      el.className = 'lk-remote-video';
+    } else if (track.kind === 'audio') {
+      el = document.createElement('audio');
+      el.autoplay = true;
+      // Apply selected speaker to new audio element
+      applySelectedSpeaker(el);
+    }
+    if (el) {
+      el.id = 'track-' + track.sid;
+      el.setAttribute('data-participant', participant.identity);
+      track.attach(el);
+      remoteMediaEl.appendChild(el);
+      log('Attached ' + track.kind + ' from ' + participant.identity);
+    }
+  }
+
+  function detachRemoteTrack(track) {
+    var el = document.getElementById('track-' + track.sid);
+    if (el) {
+      track.detach(el);
+      el.remove();
+    }
+  }
+
+  function setupRoomEvents() {
+    room.on('participantConnected', function(p) {
+      log('Participant joined: ' + p.identity);
+      var isAgent = p.identity.startsWith('agent-') || p.identity.startsWith('device:');
+      debugLog('Participant Joined', p.identity + (isAgent ? ' [AGENT]' : ''));
+      updateParticipantsList();
+      updateDebugPanel();
+      Marvain.showToast('info', 'Participant Joined', p.identity);
+    });
+    room.on('participantDisconnected', function(p) {
+      log('Participant left: ' + p.identity);
+      debugLog('Participant Left', p.identity);
+      remoteMediaEl.querySelectorAll('[data-participant="' + p.identity + '"]').forEach(function(el) { el.remove(); });
+      updateParticipantsList();
+      updateDebugPanel();
+      Marvain.showToast('info', 'Participant Left', p.identity);
+    });
+    room.on('trackSubscribed', function(track, pub, participant) {
+      log('Track subscribed: ' + track.kind + ' from ' + participant.identity);
+      attachRemoteTrack(track, participant);
+      updateParticipantsList();
+    });
+    room.on('trackUnsubscribed', function(track, pub, participant) {
+      log('Track unsubscribed: ' + track.kind + ' from ' + participant.identity);
+      detachRemoteTrack(track);
+      updateParticipantsList();
+    });
+    room.on('trackMuted', function(pub, participant) {
+      log('Track muted: ' + pub.kind + ' from ' + participant.identity);
+      updateParticipantsList();
+    });
+    room.on('trackUnmuted', function(pub, participant) {
+      log('Track unmuted: ' + pub.kind + ' from ' + participant.identity);
+      updateParticipantsList();
+    });
+    // Active speakers changed - more responsive than polling audioLevel
+    room.on('activeSpeakersChanged', function(speakers) {
+      var hasRemoteSpeaker = speakers.some(function(s) {
+        return s !== room.localParticipant;
+      });
+      if (hasRemoteSpeaker) {
+        speakerStatusIcon.className = 'fas fa-volume-up text-success';
+        speakerStatusText.textContent = 'Agent Speaking';
+      }
+    });
+    room.on('disconnected', function() {
+      log('Disconnected from room');
+      updateConnectionStatus('disconnected');
+      updateParticipantsList();
+      updateMediaButtons();
+      stopAudioLevelMonitoring();
+      transcriptStatus.textContent = 'Disconnected';
+      transcriptStatus.className = 'badge badge-info';
+      Marvain.showToast('warning', 'Disconnected', 'You have left the room');
+    });
+    room.on('dataReceived', function(payload, participant) {
+      try {
+        var msg = JSON.parse(new TextDecoder().decode(payload));
+        var sender = participant ? participant.identity : 'unknown';
+        if (msg.type === 'chat') {
+          addChatMessage(sender, msg.text, msg.ts);
+        } else if (msg.type === 'transcript') {
+          // Handle transcript messages from agents
+          addTranscriptEntry(sender, msg.text, msg.final !== false);
+        } else if (msg.type === 'transcription') {
+          // Alternative format for transcription
+          addTranscriptEntry(sender, msg.text || msg.transcript, msg.is_final !== false);
+        }
+      } catch(e) {
+        // Try to handle as plain text transcript
+        try {
+          var text = new TextDecoder().decode(payload);
+          if (text && participant) {
+            addTranscriptEntry(participant.identity, text, true);
+          }
+        } catch(e2) { /* ignore */ }
+      }
+    });
+
+    // Start audio level monitoring
+    startAudioLevelMonitoring();
+
+    // Register text stream handler for transcriptions (modern LiveKit API)
+    // AgentSession automatically sends transcriptions via 'lk.transcription' topic
+    if (room.registerTextStreamHandler) {
+      room.registerTextStreamHandler('lk.transcription', async function(reader, participantInfo) {
+        try {
+          var message = await reader.readAll();
+          var sender = participantInfo ? participantInfo.identity : 'agent';
+          var isFinal = reader.info && reader.info.attributes && reader.info.attributes['lk.transcription_final'] === 'true';
+
+          // Update transcript status
+          transcriptStatus.textContent = 'Receiving';
+          transcriptStatus.className = 'badge badge-success';
+
+          // Add or update transcript entry
+          addTranscriptEntry(sender, message, isFinal);
+
+          log('Transcript from ' + sender + ': ' + message.substring(0, 50) + (message.length > 50 ? '...' : ''));
+        } catch(e) {
+          console.error('Error processing text stream:', e);
+        }
+      });
+      log('Registered text stream handler for transcriptions');
+    }
+  }
+
+  function addChatMessage(sender, text, ts) {
+    // Clear placeholder on first message
+    if (!chatInitialized) {
+      chatMessagesEl.innerHTML = '';
+      chatInitialized = true;
+    }
+    var time = ts ? new Date(ts).toLocaleTimeString() : new Date().toLocaleTimeString();
+    var isMe = sender === myIdentity;
+    var div = document.createElement('div');
+    div.className = 'lk-chat-message' + (isMe ? ' lk-chat-mine' : '');
+    div.innerHTML = '<small class="text-muted">[' + escapeHtml(time) + '] <strong>' + escapeHtml(sender) + '</strong></small><br>' + escapeHtml(text);
+    chatMessagesEl.appendChild(div);
+    chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+  }
+
+  function sendChatMessage() {
+    var text = (chatInputEl.value || '').trim();
+    if (!text || !room) return;
+    var msg = { type: 'chat', text: text, ts: Date.now() };
+    var data = new TextEncoder().encode(JSON.stringify(msg));
+    room.localParticipant.publishData(data, { reliable: true });
+    addChatMessage(myIdentity, text, msg.ts);
+    chatInputEl.value = '';
+  }
+
+  async function join() {
+    var spaceId = (selectEl.value || '').trim();
+    if (!spaceId) {
+      Marvain.showToast('warning', 'No Space Selected', 'Please select a space to join');
+      return;
+    }
+
+    // Reset debug state for new join
+    debugState.tokenRequestTime = Date.now();
+    debugState.tokenData = null;
+    debugState.roomCreatedTime = null;
+    debugState.agentDetectedTime = null;
+    debugState.deletionStatus = null;
+    debugState.events = [];
+    debugLog('Join Requested', 'space_id=' + spaceId);
+
+    log('Requesting token...');
+    updateConnectionStatus('connecting');
+    try {
+      var resp = await fetch(tokenUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ space_id: spaceId }) });
+      if (!resp.ok) {
+        log('Token request failed: ' + resp.status);
+        debugLog('Token Request Failed', 'HTTP ' + resp.status);
+        updateConnectionStatus('disconnected');
+        Marvain.showToast('error', 'Connection Failed', 'Could not get room token');
+        return;
+      }
+      var data = await resp.json();
+      debugState.tokenData = data;
+      debugLog('Token Received', 'room=' + data.room);
+
+      // Parse JWT to extract grants
+      var decoded = decodeJWT(data.token);
+      if (decoded) {
+        var grants = [];
+        if (decoded.video) {
+          if (decoded.video.roomJoin) grants.push('roomJoin');
+          if (decoded.video.roomCreate) grants.push('roomCreate');
+          if (decoded.video.canPublish) grants.push('canPublish');
+          if (decoded.video.canSubscribe) grants.push('canSubscribe');
+          if (decoded.video.canPublishData) grants.push('canPublishData');
+        }
+        var expiresAt = new Date(decoded.exp * 1000).toLocaleTimeString();
+        document.getElementById('debug-token-requested').textContent = new Date(debugState.tokenRequestTime).toLocaleTimeString();
+        document.getElementById('debug-token-expires').textContent = expiresAt;
+        document.getElementById('debug-token-grants').textContent = grants.length > 0 ? grants.join(', ') : 'none';
+      }
+
+      log('Connecting to ' + data.url + '...');
+      debugLog('Connecting', 'url=' + data.url.substring(0, 40) + '...');
+      var lk = window.LivekitClient || window.livekit || window.LiveKit;
+      if (!lk || !lk.Room) {
+        log('LiveKit client not loaded');
+        debugLog('Error', 'LiveKit client not loaded');
+        updateConnectionStatus('disconnected');
+        Marvain.showToast('error', 'Error', 'LiveKit client library not loaded');
+        return;
+      }
+      room = new lk.Room();
+      debugState.roomCreatedTime = Date.now();
+      setupRoomEvents();
+      await room.connect(data.url, data.token);
+      myIdentity = data.identity;
+      log('Connected! room=' + data.room + ' identity=' + data.identity);
+      debugLog('Connected', 'room=' + data.room);
+      updateConnectionStatus('connected', data.room);
+      updateParticipantsList();
+      updateMediaButtons();
+      updateDebugPanel();
+      Marvain.showToast('success', 'Connected', 'Joined room: ' + data.room);
+      // Subscribe to existing remote tracks
+      room.remoteParticipants.forEach(function(p) {
+        p.trackPublications.forEach(function(pub) {
+          if (pub.isSubscribed && pub.track) {
+            attachRemoteTrack(pub.track, p);
+          }
+        });
+      });
+    } catch(e) {
+      log('Join error: ' + e);
+      debugLog('Join Error', e.message || String(e));
+      updateConnectionStatus('disconnected');
+      Marvain.showToast('error', 'Connection Error', e.message || 'Failed to join room');
+    }
+  }
+
+  async function leave() {
+    if (localVideoTrack) { localVideoTrack.stop(); localVideoTrack = null; }
+    if (localAudioTrack) { localAudioTrack.stop(); localAudioTrack = null; }
+    localVideoEl.innerHTML = '<span class="text-muted">Camera off</span>';
+    remoteMediaEl.innerHTML = '';
+    if (room) { try { await room.disconnect(); } catch(e) {} room = null; }
+    log('Left room');
+    debugLog('Left Room', 'disconnected');
+    updateConnectionStatus('disconnected');
+    updateParticipantsList();
+    updateMediaButtons();
+    updateDebugPanel();
+    stopAudioLevelMonitoring();
+    // Reset transcript status
+    transcriptStatus.textContent = 'Waiting';
+    transcriptStatus.className = 'badge badge-info';
+  }
+
+  function updateMediaButtons() {
+    var connected = room && room.state === 'connected';
+    document.getElementById('btn-mic').disabled = !connected;
+    document.getElementById('btn-cam').disabled = !connected;
+    document.getElementById('btn-send-chat').disabled = !connected;
+    if (connected) {
+      var micBtn = document.getElementById('btn-mic');
+      var camBtn = document.getElementById('btn-cam');
+      if (room.localParticipant.isMicrophoneEnabled) {
+        micBtn.innerHTML = '<i class="fas fa-microphone"></i> Mic On';
+        micBtn.classList.add('btn-success');
+        micBtn.classList.remove('btn-outline');
+      } else {
+        micBtn.innerHTML = '<i class="fas fa-microphone-slash"></i> Mic Off';
+        micBtn.classList.remove('btn-success');
+        micBtn.classList.add('btn-outline');
+      }
+      if (room.localParticipant.isCameraEnabled) {
+        camBtn.innerHTML = '<i class="fas fa-video"></i> Cam On';
+        camBtn.classList.add('btn-success');
+        camBtn.classList.remove('btn-outline');
+      } else {
+        camBtn.innerHTML = '<i class="fas fa-video-slash"></i> Cam Off';
+        camBtn.classList.remove('btn-success');
+        camBtn.classList.add('btn-outline');
+      }
+    } else {
+      document.getElementById('btn-mic').innerHTML = '<i class="fas fa-microphone-slash"></i> Mic Off';
+      document.getElementById('btn-cam').innerHTML = '<i class="fas fa-video-slash"></i> Cam Off';
+    }
+  }
+
+  async function toggleMic() {
+    if (!room) return;
+    try {
+      await room.localParticipant.setMicrophoneEnabled(!room.localParticipant.isMicrophoneEnabled);
+      log('Microphone ' + (room.localParticipant.isMicrophoneEnabled ? 'enabled' : 'disabled'));
+      updateMediaButtons();
+      updateParticipantsList();
+      updateAudioStatusIcons(false);
+    } catch(e) {
+      log('Mic error: ' + e.message);
+      Marvain.showToast('error', 'Microphone Error', e.message);
+    }
+  }
+
+  async function toggleCam() {
+    if (!room) return;
+    try {
+      var wasEnabled = room.localParticipant.isCameraEnabled;
+      await room.localParticipant.setCameraEnabled(!wasEnabled);
+      log('Camera ' + (room.localParticipant.isCameraEnabled ? 'enabled' : 'disabled'));
+      updateMediaButtons();
+      updateParticipantsList();
+      // Attach/detach local video preview
+      if (room.localParticipant.isCameraEnabled) {
+        var camPub = room.localParticipant.getTrackPublication('camera');
+        if (camPub && camPub.track) {
+          var vid = document.createElement('video');
+          vid.autoplay = true;
+          vid.playsInline = true;
+          vid.muted = true;
+          vid.className = 'lk-local-video';
+          camPub.track.attach(vid);
+          localVideoEl.innerHTML = '';
+          localVideoEl.appendChild(vid);
+        }
+      } else {
+        localVideoEl.innerHTML = '<span class="text-muted">Camera off</span>';
+      }
+    } catch(e) {
+      log('Camera error: ' + e.message);
+      Marvain.showToast('error', 'Camera Error', e.message);
+    }
+  }
+
+  // Event listeners
+  document.getElementById('btn-join').addEventListener('click', function() { join(); });
+  document.getElementById('btn-leave').addEventListener('click', function() { leave(); });
+  document.getElementById('btn-mic').addEventListener('click', function() { toggleMic(); });
+  document.getElementById('btn-cam').addEventListener('click', function() { toggleCam(); });
+  document.getElementById('btn-send-chat').addEventListener('click', sendChatMessage);
+  chatInputEl.addEventListener('keypress', function(e) { if (e.key === 'Enter') sendChatMessage(); });
+
+  // Device selection event listeners
+  micSelectEl.addEventListener('change', function() { changeMicrophone(this.value); });
+  speakerSelectEl.addEventListener('change', function() { changeSpeaker(this.value); });
+  camSelectEl.addEventListener('change', function() { changeCamera(this.value); });
+  document.getElementById('btn-refresh-devices').addEventListener('click', function() {
+    enumerateDevices();
+    Marvain.showToast('info', 'Devices', 'Device list refreshed');
+  });
+
+  // Initial state
+  updateMediaButtons();
+  updateParticipantsList();
+  updateConnectionStatus('disconnected');
+  updateDebugPanel();
+
+  // Periodic debug panel updates (every 500ms while connected)
+  setInterval(function() {
+    if (room && room.state === 'connected') {
+      updateDebugPanel();
+    }
+  }, 500);
+
+  // Enumerate devices on page load
+  enumerateDevices();
+})();
+</script>
+{% endblock %}
+

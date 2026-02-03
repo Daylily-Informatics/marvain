@@ -1,0 +1,88 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PlannerOutput",
+  "description": "Schema for validating planner LLM output",
+  "type": "object",
+  "properties": {
+    "episodic": {
+      "type": "array",
+      "description": "Episodic memories - contextual, time-bound observations",
+      "items": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "The memory content"
+          },
+          "participants": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Person IDs or names involved"
+          }
+        },
+        "required": ["content"],
+        "additionalProperties": false
+      },
+      "default": []
+    },
+    "semantic": {
+      "type": "array",
+      "description": "Semantic memories - generalized facts, cross-context",
+      "items": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "The memory content"
+          },
+          "participants": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Person IDs or names involved"
+          }
+        },
+        "required": ["content"],
+        "additionalProperties": false
+      },
+      "default": []
+    },
+    "actions": {
+      "type": "array",
+      "description": "Proposed actions for the agent to execute",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Action type identifier (e.g., send_message, create_memory)"
+          },
+          "payload": {
+            "type": "object",
+            "description": "Action-specific parameters"
+          },
+          "required_scopes": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Scopes required to execute this action"
+          },
+          "auto_approve": {
+            "type": "boolean",
+            "description": "If true, action is auto-approved for execution",
+            "default": false
+          }
+        },
+        "required": ["kind"],
+        "additionalProperties": false
+      },
+      "default": []
+    }
+  },
+  "additionalProperties": false
+}
+

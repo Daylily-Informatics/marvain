@@ -43,6 +43,8 @@ class HubConfig:
     # LiveKit settings
     livekit_url: str | None
     livekit_secret_arn: str | None
+    # WebSocket API settings
+    ws_api_url: str | None  # WebSocket API Gateway URL for real-time updates
 
     @property
     def cognito_issuer(self) -> str | None:
@@ -127,4 +129,6 @@ def load_config() -> HubConfig:
         # LiveKit settings
         livekit_url=os.getenv("LIVEKIT_URL"),
         livekit_secret_arn=os.getenv("LIVEKIT_SECRET_ARN"),
+        # WebSocket API settings
+        ws_api_url=os.getenv("WS_API_URL"),
     )

@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+
+{% block title %}Profile - Marvain{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title"><i class="fas fa-user-circle"></i> Profile</h1>
+    <p class="text-muted">Your account information</p>
+  </div>
+  <div class="page-actions">
+    <a href="{{ url_for('gui_home') }}" class="btn btn-outline">
+      <i class="fas fa-arrow-left"></i> Back to Home
+    </a>
+  </div>
+</div>
+
+<!-- Profile Card -->
+<div class="card">
+  <div class="card-header">
+    <h3 class="card-title"><i class="fas fa-id-card"></i> Account Details</h3>
+  </div>
+  <div class="card-body">
+    <div class="profile-info">
+      <div class="profile-row">
+        <span class="profile-label">User ID</span>
+        <code class="profile-value">{{ user.user_id }}</code>
+      </div>
+      <div class="profile-row">
+        <span class="profile-label">Email</span>
+        <code class="profile-value">{{ user.email or 'Not set' }}</code>
+      </div>
+      {% if user.cognito_sub %}
+      <div class="profile-row">
+        <span class="profile-label">Cognito Subject</span>
+        <code class="profile-value">{{ user.cognito_sub }}</code>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- Agent Memberships -->
+{% if agents %}
+<div class="card" style="margin-top: var(--spacing-lg);">
+  <div class="card-header">
+    <h3 class="card-title"><i class="fas fa-robot"></i> Agent Memberships</h3>
+  </div>
+  <div class="card-body">
+    <div class="table-container">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Agent</th>
+            <th>Role</th>
+            <th>Relationship</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for agent in agents %}
+          <tr>
+            <td>
+              <a href="{{ url_for('gui_agent_detail', agent_id=agent.agent_id) }}">
+                {{ agent.name }}
+              </a>
+            </td>
+            <td><span class="badge badge-info">{{ agent.role }}</span></td>
+            <td>{{ agent.relationship_label or '-' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- Session Actions -->
+<div class="card" style="margin-top: var(--spacing-lg);">
+  <div class="card-header">
+    <h3 class="card-title"><i class="fas fa-cog"></i> Session</h3>
+  </div>
+  <div class="card-body">
+    <div style="display: flex; gap: var(--spacing-md); flex-wrap: wrap;">
+      <a href="{{ url_for('logout') }}" class="btn btn-outline">
+        <i class="fas fa-sign-out-alt"></i> Logout
+      </a>
+    </div>
+  </div>
+</div>
+
+<style>
+.profile-info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+.profile-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-lg);
+  padding: var(--spacing-sm) 0;
+  border-bottom: 1px solid var(--color-gray-600);
+}
+.profile-row:last-child {
+  border-bottom: none;
+}
+.profile-label {
+  min-width: 150px;
+  font-weight: 500;
+  color: var(--color-gray-300);
+}
+.profile-value {
+  flex: 1;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.9rem;
+  background: var(--color-gray-700);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-sm);
+}
+</style>
+{% endblock %}
+

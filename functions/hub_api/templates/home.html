@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+
+{% block title %}Home - Marvain{% endblock %}
+
+{% block content %}
+<div class="mb-lg">
+  <h1>Welcome{% if user.email %}, {{ user.email.split('@')[0] }}{% endif %}</h1>
+  <p class="text-muted">Your Marvain hub at a glance</p>
+</div>
+
+<!-- Quick Stats -->
+<div class="grid grid-4 mb-lg">
+  <a href="{{ url_for('gui_remotes') }}" class="stat-card">
+    <div class="card-icon {% if remotes_online > 0 %}success{% else %}warning{% endif %}">
+      <i class="fas fa-satellite-dish"></i>
+    </div>
+    <div class="stat-content">
+      <div class="stat-value">{{ remotes_online }}/{{ remotes_total }}</div>
+      <div class="stat-label">Remotes Online</div>
+    </div>
+  </a>
+  
+  <a href="{{ url_for('gui_agents') }}" class="stat-card">
+    <div class="card-icon highlight">
+      <i class="fas fa-robot"></i>
+    </div>
+    <div class="stat-content">
+      <div class="stat-value">{{ agents_count }}</div>
+      <div class="stat-label">Agents</div>
+    </div>
+  </a>
+  
+  <a href="{{ url_for('gui_spaces') }}" class="stat-card">
+    <div class="card-icon info">
+      <i class="fas fa-door-open"></i>
+    </div>
+    <div class="stat-content">
+      <div class="stat-value">{{ spaces_count }}</div>
+      <div class="stat-label">Spaces</div>
+    </div>
+  </a>
+  
+  <a href="{{ url_for('gui_actions') }}" class="stat-card">
+    <div class="card-icon {% if pending_actions > 0 %}warning{% else %}success{% endif %}">
+      <i class="fas fa-tasks"></i>
+    </div>
+    <div class="stat-content">
+      <div class="stat-value">{{ pending_actions }}</div>
+      <div class="stat-label">Pending Actions</div>
+    </div>
+  </a>
+</div>
+
+<!-- Two Column Layout -->
+<div class="grid grid-2">
+  <!-- Remotes Status -->
+  <div class="card">
+    <div class="card-header">
+      <h3 class="card-title"><i class="fas fa-network-wired"></i> Remote Satellites</h3>
+      <a href="{{ url_for('gui_remotes') }}" class="btn btn-outline btn-sm">View All</a>
+    </div>
+    <div class="card-body">
+      {% if remotes %}
+        <div style="display: flex; flex-direction: column; gap: var(--spacing-sm);">
+          {% for remote in remotes[:5] %}
+          <div style="display: flex; align-items: center; justify-content: space-between; padding: var(--spacing-sm); background: var(--color-gray-700); border-radius: var(--radius-sm);">
+            <div style="display: flex; align-items: center; gap: var(--spacing-sm);">
+              <span class="status-dot {{ remote.status }}"></span>
+              <span>{{ remote.name }}</span>
+              <code class="text-xs text-muted">{{ remote.address }}</code>
+            </div>
+            <span class="badge badge-{% if remote.status == 'online' %}success{% elif remote.status == 'hibernate' %}warning{% else %}error{% endif %}">
+              {{ remote.status }}
+            </span>
+          </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="empty-state">
+          <div class="empty-state-icon"><i class="fas fa-satellite"></i></div>
+          <p>No remotes connected yet</p>
+          <a href="{{ url_for('gui_remotes') }}" class="btn btn-primary btn-sm">Add Remote</a>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+  
+  <!-- Your Agents -->
+  <div class="card">
+    <div class="card-header">
+      <h3 class="card-title"><i class="fas fa-robot"></i> Your Agents</h3>
+      <a href="{{ url_for('gui_agents') }}" class="btn btn-outline btn-sm">View All</a>
+    </div>
+    <div class="card-body">
+      {% if agents %}
+        <div style="display: flex; flex-direction: column; gap: var(--spacing-sm);">
+          {% for agent in agents[:5] %}
+          <a href="{{ url_for('gui_agent_detail', agent_id=agent.agent_id) }}" 
+             style="display: flex; align-items: center; justify-content: space-between; padding: var(--spacing-sm); background: var(--color-gray-700); border-radius: var(--radius-sm); text-decoration: none; color: inherit;">
+            <div style="display: flex; align-items: center; gap: var(--spacing-sm);">
+              <i class="fas fa-robot" style="color: var(--color-highlight);"></i>
+              <span>{{ agent.name }}</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: var(--spacing-sm);">
+              <span class="badge badge-info">{{ agent.role }}</span>
+              {% if agent.disabled %}
+                <span class="badge badge-error">Disabled</span>
+              {% endif %}
+            </div>
+          </a>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="empty-state">
+          <div class="empty-state-icon"><i class="fas fa-robot"></i></div>
+          <p>No agents available</p>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- Quick Actions -->
+<div class="card" style="margin-top: var(--spacing-lg);">
+  <div class="card-header">
+    <h3 class="card-title"><i class="fas fa-bolt"></i> Quick Actions</h3>
+  </div>
+  <div class="card-body">
+    <div style="display: flex; gap: var(--spacing-md); flex-wrap: wrap;">
+      <a href="{{ url_for('gui_remotes') }}?action=add" class="btn btn-outline">
+        <i class="fas fa-plus"></i> Add Remote
+      </a>
+      <a href="{{ url_for('gui_livekit_test') }}" class="btn btn-outline">
+        <i class="fas fa-video"></i> LiveKit Test
+      </a>
+      <a href="{{ url_for('gui_actions') }}" class="btn btn-outline">
+        <i class="fas fa-check-circle"></i> Review Actions
+      </a>
+      <a href="{{ url_for('gui_events') }}" class="btn btn-outline">
+        <i class="fas fa-stream"></i> Event Stream
+      </a>
+      <a href="{{ url_for('gui_memories') }}" class="btn btn-outline">
+        <i class="fas fa-brain"></i> Memories
+      </a>
+      <a href="{{ url_for('gui_audit') }}" class="btn btn-outline">
+        <i class="fas fa-shield-alt"></i> Audit Log
+      </a>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
