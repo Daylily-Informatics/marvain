@@ -148,26 +148,229 @@
     {% endif %}
   </div>
 </div>
+<!-- Add Member Modal -->
+<div class="modal" id="add-member-modal">
+  <div class="modal-backdrop" onclick="Marvain.hideModal('add-member-modal')"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 class="modal-title"><i class="fas fa-user-plus"></i> Add Member</h3>
+      <button type="button" class="modal-close" onclick="Marvain.hideModal('add-member-modal')">&times;</button>
+    </div>
+    <form id="add-member-form" onsubmit="submitAddMember(event)">
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="member-email">Select User</label>
+          <select id="member-email" name="email" class="form-control" required>
+            <option value="">Loading users...</option>
+          </select>
+          <small class="form-help">Only users with Cognito accounts can be added</small>
+        </div>
+        <div class="form-group">
+          <label>Role</label>
+          <div class="role-options">
+            <label class="role-option">
+              <input type="radio" name="role" value="member" checked>
+              <span class="role-card">
+                <i class="fas fa-user"></i>
+                <strong>Member</strong>
+                <small>Can view and interact with the agent</small>
+              </span>
+            </label>
+            <label class="role-option">
+              <input type="radio" name="role" value="admin">
+              <span class="role-card">
+                <i class="fas fa-user-shield"></i>
+                <strong>Admin</strong>
+                <small>Can manage members and settings</small>
+              </span>
+            </label>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" onclick="Marvain.hideModal('add-member-modal')">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="add-member-submit">
+          <i class="fas fa-user-plus"></i> Add Member
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<style>
+.role-options {
+  display: flex;
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+.role-option {
+  flex: 1;
+  cursor: pointer;
+}
+.role-option input[type="radio"] {
+  display: none;
+}
+.role-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1rem;
+  border: 2px solid var(--color-gray-600);
+  border-radius: var(--radius-md);
+  text-align: center;
+  transition: all 0.2s ease;
+}
+.role-card i {
+  font-size: 1.5rem;
+  margin-bottom: 0.5rem;
+  color: var(--color-gray-400);
+}
+.role-card strong {
+  display: block;
+  margin-bottom: 0.25rem;
+}
+.role-card small {
+  color: var(--color-gray-400);
+  font-size: 0.75rem;
+}
+.role-option input[type="radio"]:checked + .role-card {
+  border-color: var(--color-highlight);
+  background: rgba(99, 102, 241, 0.1);
+}
+.role-option input[type="radio"]:checked + .role-card i {
+  color: var(--color-highlight);
+}
+.role-option:hover .role-card {
+  border-color: var(--color-gray-500);
+}
+</style>
 {% endblock %}
 
 {% block extra_js %}
 <script>
+var AGENT_ID = '{{ agent.agent_id }}';
+var EXISTING_MEMBERS = [{% for m in members %}'{{ m.email or "" }}'{% if not loop.last %}, {% endif %}{% endfor %}];
+var cognitoUsers = [];
+
 function editAgent() {
   Marvain.showToast('info', 'Coming Soon', 'Agent editing will be available soon');
 }
 
-function changeMemberRole(userId) {
-  Marvain.showToast('info', 'Coming Soon', 'Role change will be available soon');
+async function loadCognitoUsers() {
+  try {
+    var resp = await fetch('/api/cognito/users');
+    if (!resp.ok) throw new Error('Failed to load users');
+    cognitoUsers = await resp.json();
+    updateUserDropdown();
+  } catch (e) {
+    console.error('Failed to load Cognito users:', e);
+  }
 }
 
-function removeMember(userId) {
-  if (!confirm('Remove this member from the agent?')) return;
-  Marvain.showToast('info', 'Coming Soon', 'Member removal will be available soon');
+function updateUserDropdown() {
+  var select = document.getElementById('member-email');
+  select.innerHTML = '<option value="">-- Select a user --</option>';
+
+  // Filter out existing members
+  var available = cognitoUsers.filter(function(u) {
+    return !EXISTING_MEMBERS.includes(u.email);
+  });
+
+  if (available.length === 0) {
+    select.innerHTML = '<option value="">No available users to add</option>';
+    return;
+  }
+
+  available.forEach(function(u) {
+    var opt = document.createElement('option');
+    opt.value = u.email;
+    opt.textContent = u.email + (u.status !== 'CONFIRMED' ? ' (' + u.status + ')' : '');
+    select.appendChild(opt);
+  });
+}
+
+async function changeMemberRole(userId) {
+  var roles = ['member', 'admin'];
+  var newRole = prompt('Enter new role (member, admin):');
+  if (!newRole) return;
+  newRole = newRole.trim().toLowerCase();
+  if (!roles.includes(newRole)) {
+    Marvain.showToast('error', 'Invalid Role', 'Role must be: member or admin');
+    return;
+  }
+  try {
+    var resp = await fetch('/api/agents/' + AGENT_ID + '/memberships/' + encodeURIComponent(userId), {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({role: newRole})
+    });
+    if (!resp.ok) {
+      var err = await resp.json().catch(function() { return {detail: resp.statusText}; });
+      throw new Error(err.detail || 'Failed to update role');
+    }
+    Marvain.showToast('success', 'Role Updated', 'Member role changed to ' + newRole);
+    setTimeout(function() { location.reload(); }, 1000);
+  } catch (e) {
+    Marvain.showToast('error', 'Error', e.message);
+  }
+}
+
+async function removeMember(userId) {
+  if (!confirm('Remove this member from the agent? This action cannot be undone.')) return;
+  try {
+    var resp = await fetch('/api/agents/' + AGENT_ID + '/memberships/' + encodeURIComponent(userId), {
+      method: 'DELETE'
+    });
+    if (!resp.ok) {
+      var err = await resp.json().catch(function() { return {detail: resp.statusText}; });
+      throw new Error(err.detail || 'Failed to remove member');
+    }
+    Marvain.showToast('success', 'Member Removed', 'The member has been removed from this agent');
+    setTimeout(function() { location.reload(); }, 1000);
+  } catch (e) {
+    Marvain.showToast('error', 'Error', e.message);
+  }
 }
 
 Marvain.showAddMemberModal = function() {
-  Marvain.showToast('info', 'Coming Soon', 'Add member will be available soon');
+  loadCognitoUsers();
+  Marvain.showModal('add-member-modal');
 };
+
+async function submitAddMember(event) {
+  event.preventDefault();
+  var form = event.target;
+  var email = form.email.value;
+  var role = form.role.value;
+
+  if (!email) {
+    Marvain.showToast('error', 'Error', 'Please select a user');
+    return;
+  }
+
+  var submitBtn = document.getElementById('add-member-submit');
+  submitBtn.disabled = true;
+  submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Adding...';
+
+  try {
+    var resp = await fetch('/api/agents/' + AGENT_ID + '/memberships', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({email: email, role: role})
+    });
+    if (!resp.ok) {
+      var err = await resp.json().catch(function() { return {detail: resp.statusText}; });
+      throw new Error(err.detail || 'Failed to add member');
+    }
+    Marvain.showToast('success', 'Member Added', email + ' has been added as ' + role);
+    Marvain.hideModal('add-member-modal');
+    setTimeout(function() { location.reload(); }, 1000);
+  } catch (e) {
+    Marvain.showToast('error', 'Error', e.message);
+    submitBtn.disabled = false;
+    submitBtn.innerHTML = '<i class="fas fa-user-plus"></i> Add Member';
+  }
+}
 </script>
 {% endblock %}
 

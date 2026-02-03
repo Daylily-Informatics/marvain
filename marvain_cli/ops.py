@@ -1541,6 +1541,8 @@ def gui_start(
     # Local development settings
     env["ENVIRONMENT"] = "local"
     env["LOG_LEVEL"] = env.get("LOG_LEVEL", "DEBUG")
+    # Tell the app whether HTTPS is enabled (for SameSite cookie settings)
+    env["HTTPS_ENABLED"] = "true" if https else "false"
     # For local dev, use a static session secret (Lambda uses SESSION_SECRET_ARN)
     if "SESSION_SECRET_KEY" not in env:
         env["SESSION_SECRET_KEY"] = "local-dev-session-secret-key-change-in-production-123456"
@@ -1652,6 +1654,391 @@ def gui_logs(
     if not log_file.exists():
         _eprint(f"No log file found at {log_file}")
         _eprint("The GUI server may not have been started with 'marvain gui start'.")
+        return 1
+
+    if follow:
+        _eprint(f"Following logs from {log_file} (Ctrl+C to stop)...")
+        cmd = ["tail", "-f", str(log_file)]
+    else:
+        cmd = ["tail", "-n", str(lines), str(log_file)]
+
+    return subprocess.call(cmd)
+
+
+# -----------------------------------------------------------------------------
+# Agent Worker Management
+# -----------------------------------------------------------------------------
+
+AGENT_DEFAULT_PORT = 8089  # LiveKit agents default health port
+
+def _get_agent_pid_file() -> Path:
+    return Path.cwd() / ".marvain-agent.pid"
+
+
+def _get_agent_log_file() -> Path:
+    return Path.cwd() / ".marvain-agent.log"
+
+
+def _fetch_secret_json(secret_arn: str, profile: str, region: str) -> dict[str, Any]:
+    """Fetch a secret from AWS Secrets Manager."""
+    import boto3
+    session = boto3.Session(profile_name=profile, region_name=region)
+    client = session.client("secretsmanager")
+    resp = client.get_secret_value(SecretId=secret_arn)
+    import json as json_mod
+    return json_mod.loads(resp.get("SecretString", "{}"))
+
+
+def agent_start(
+    ctx: Ctx,
+    *,
+    dry_run: bool,
+    foreground: bool = False,
+) -> int:
+    """Start the agent worker.
+
+    The agent worker connects to LiveKit Cloud and handles voice sessions.
+    Credentials are loaded from AWS Secrets Manager using ARNs in marvain-config.yaml.
+    """
+    rc = _conda_preflight(enforce=not dry_run)
+    if rc != 0:
+        return rc
+
+    repo_root = Path(__file__).parent.parent
+    agent_worker_dir = repo_root / "apps" / "agent_worker"
+
+    if not agent_worker_dir.exists():
+        _eprint(f"ERROR: Agent worker directory not found: {agent_worker_dir}")
+        return 1
+
+    # Get resources from marvain-config.yaml
+    resources = ctx.cfg.get("envs", {}).get(ctx.env.env, {}).get("resources", {})
+    sam_params = ctx.cfg.get("envs", {}).get(ctx.env.env, {}).get("sam", {}).get("parameter_overrides", {})
+
+    # Get LiveKit URL
+    livekit_url = resources.get("LiveKitUrl") or sam_params.get("LiveKitUrl")
+    if not livekit_url:
+        _eprint("ERROR: LiveKitUrl not found in config resources or sam.parameter_overrides")
+        _eprint("Run 'marvain monitor outputs --write-config' to populate resources.")
+        return 2
+
+    # Get secret ARNs
+    livekit_secret_arn = resources.get("LiveKitSecretArn")
+    openai_secret_arn = resources.get("OpenAISecretArn")
+
+    if not livekit_secret_arn:
+        _eprint("ERROR: LiveKitSecretArn not found in config resources")
+        _eprint("Run 'marvain monitor outputs --write-config' to populate resources.")
+        return 2
+
+    if not openai_secret_arn:
+        _eprint("ERROR: OpenAISecretArn not found in config resources")
+        _eprint("Run 'marvain monitor outputs --write-config' to populate resources.")
+        return 2
+
+    _eprint(f"Loading credentials from AWS Secrets Manager...")
+
+    if dry_run:
+        _eprint(f"[dry-run] Would fetch LiveKit secret from: {livekit_secret_arn}")
+        _eprint(f"[dry-run] Would fetch OpenAI secret from: {openai_secret_arn}")
+        _eprint(f"[dry-run] Would start agent worker in {agent_worker_dir}")
+        return 0
+
+    # Fetch secrets
+    try:
+        livekit_secret = _fetch_secret_json(livekit_secret_arn, ctx.env.aws_profile, ctx.env.aws_region)
+        livekit_api_key = livekit_secret.get("api_key", "")
+        livekit_api_secret = livekit_secret.get("api_secret", "")
+        if not livekit_api_key or not livekit_api_secret:
+            _eprint("ERROR: LiveKit secret missing api_key or api_secret")
+            return 3
+    except Exception as e:
+        _eprint(f"ERROR: Failed to fetch LiveKit secret: {e}")
+        return 3
+
+    try:
+        openai_secret = _fetch_secret_json(openai_secret_arn, ctx.env.aws_profile, ctx.env.aws_region)
+        openai_api_key = openai_secret.get("api_key", "")
+        if not openai_api_key or openai_api_key == "REPLACE_ME":
+            _eprint("ERROR: OpenAI secret missing api_key or has placeholder value")
+            return 3
+    except Exception as e:
+        _eprint(f"ERROR: Failed to fetch OpenAI secret: {e}")
+        return 3
+
+    _eprint(f"  LiveKit URL: {livekit_url}")
+    _eprint(f"  LiveKit API Key: {livekit_api_key[:8]}...")
+    _eprint(f"  OpenAI API Key: {openai_api_key[:12]}...")
+
+    # Build command
+    cmd = ["python", "worker.py", "dev"]
+
+    # Build environment
+    env = os.environ.copy()
+    env["LIVEKIT_URL"] = livekit_url
+    env["LIVEKIT_API_KEY"] = livekit_api_key
+    env["LIVEKIT_API_SECRET"] = livekit_api_secret
+    env["OPENAI_API_KEY"] = openai_api_key
+    env["AWS_PROFILE"] = ctx.env.aws_profile
+    env["AWS_REGION"] = ctx.env.aws_region
+    env["AWS_DEFAULT_REGION"] = ctx.env.aws_region
+
+    # Optional: Hub API base for transcript ingestion
+    hub_api_base = resources.get("HubRestApiBase")
+    if hub_api_base:
+        env["HUB_API_BASE"] = hub_api_base
+
+    # Optional: Device token for Hub auth
+    bootstrap = ctx.cfg.get("envs", {}).get(ctx.env.env, {}).get("bootstrap", {})
+    device_token = bootstrap.get("device_token")
+    space_id = bootstrap.get("space_id")
+    if device_token:
+        env["HUB_DEVICE_TOKEN"] = device_token
+    if space_id:
+        env["SPACE_ID"] = space_id
+
+    _eprint(f"Starting agent worker...")
+    _eprint(f"Using config: {ctx.config_path} (env: {ctx.env.env})")
+
+    if foreground:
+        _eprint(f"$ cd {agent_worker_dir} && {' '.join(cmd)}")
+        _eprint("Press Ctrl+C to stop.")
+        return subprocess.call(cmd, cwd=str(agent_worker_dir), env=env)
+    else:
+        # Run in background
+        log_file = _get_agent_log_file()
+        _eprint(f"Logs: {log_file}")
+        _eprint(f"$ cd {agent_worker_dir} && {' '.join(cmd)} > {log_file} 2>&1 &")
+
+        with open(log_file, "w") as lf:
+            # Use DEVNULL for stdin to prevent "Bad file descriptor" errors
+            # when LiveKit agents framework spawns subprocesses for jobs.
+            # The framework expects valid file descriptors for stdin/stdout/stderr.
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(agent_worker_dir),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=lf,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+
+        # Write PID file
+        pid_file = _get_agent_pid_file()
+        pid_file.write_text(str(proc.pid))
+
+        _eprint(f"Agent worker started (PID {proc.pid})")
+        _eprint(f"  Logs: tail -f {log_file}")
+        _eprint(f"  Stop: marvain agent stop")
+        return 0
+
+
+def agent_stop(
+    ctx: Ctx,
+    *,
+    dry_run: bool,
+    force: bool = False,
+) -> int:
+    """Stop the agent worker."""
+    _ = ctx  # Unused but kept for consistency
+
+    if dry_run:
+        _eprint("[dry-run] Would stop agent worker")
+        return 0
+
+    pid_file = _get_agent_pid_file()
+    if not pid_file.exists():
+        _eprint("Agent worker is not running (no PID file found).")
+        return 0
+
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (ValueError, OSError):
+        _eprint("Invalid PID file. Removing.")
+        pid_file.unlink(missing_ok=True)
+        return 0
+
+    if not _is_process_running(pid):
+        _eprint("Agent worker is not running (stale PID file).")
+        pid_file.unlink(missing_ok=True)
+        return 0
+
+    _eprint(f"Stopping agent worker (PID {pid})...")
+    if _kill_process(pid, force=force):
+        pid_file.unlink(missing_ok=True)
+        _eprint("Agent worker stopped.")
+        return 0
+    else:
+        _eprint(f"ERROR: Failed to stop process {pid}")
+        return 1
+
+
+def agent_status(
+    ctx: Ctx,
+    *,
+    dry_run: bool,
+) -> int:
+    """Check the status of the agent worker."""
+    _ = ctx  # Unused but kept for consistency
+
+    if dry_run:
+        _eprint("[dry-run] Would check agent worker status")
+        return 0
+
+    pid_file = _get_agent_pid_file()
+    if not pid_file.exists():
+        _eprint("Agent worker is STOPPED (no PID file)")
+        return 1
+
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (ValueError, OSError):
+        _eprint("Agent worker is STOPPED (invalid PID file)")
+        pid_file.unlink(missing_ok=True)
+        return 1
+
+    if _is_process_running(pid):
+        start_time = _get_process_start_time(pid)
+        _eprint("Agent worker is RUNNING")
+        _eprint(f"  PID: {pid}")
+        if start_time:
+            _eprint(f"  Started: {start_time}")
+        _eprint(f"  PID file: {pid_file}")
+        _eprint(f"  Logs: {_get_agent_log_file()}")
+        return 0
+    else:
+        _eprint("Agent worker is STOPPED (stale PID file)")
+        pid_file.unlink(missing_ok=True)
+        return 1
+
+
+def agent_restart(
+    ctx: Ctx,
+    *,
+    dry_run: bool,
+    foreground: bool = False,
+) -> int:
+    """Restart the agent worker (stop then start)."""
+    if dry_run:
+        _eprint("[dry-run] Would restart agent worker")
+        return 0
+
+    _eprint("Stopping existing agent worker...")
+    agent_stop(ctx, dry_run=False, force=False)
+
+    import time
+    time.sleep(1)
+
+    _eprint("")
+    return agent_start(ctx, dry_run=False, foreground=foreground)
+
+
+def agent_rebuild(
+    ctx: Ctx,
+    *,
+    dry_run: bool,
+    foreground: bool = False,
+) -> int:
+    """Nuclear reset: stop agent, clear all LiveKit rooms, restart agent.
+
+    This is a debugging command that:
+    1. Stops the agent worker
+    2. Clears all LiveKit rooms (to reset any stuck agent sessions)
+    3. Waits for LiveKit Cloud to propagate the deletions
+    4. Restarts the agent worker with a clean state
+
+    Use this when agent dispatch is failing, potentially due to hitting
+    the 5 concurrent agent session limit on the free LiveKit Build plan.
+    """
+    if dry_run:
+        _eprint("[dry-run] Would rebuild agent worker:")
+        _eprint("[dry-run]   1. Stop agent worker")
+        _eprint("[dry-run]   2. Clear all LiveKit rooms")
+        _eprint("[dry-run]   3. Wait for propagation")
+        _eprint("[dry-run]   4. Start agent worker")
+        return 0
+
+    _eprint("🔄 Rebuilding agent worker (nuclear reset)...")
+    _eprint("")
+
+    # Step 1: Stop the agent worker
+    _eprint("1️⃣ Stopping agent worker...")
+    agent_stop(ctx, dry_run=False, force=False)
+    _eprint("")
+
+    # Step 2: Clear all LiveKit rooms
+    _eprint("2️⃣ Clearing all LiveKit rooms...")
+    try:
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        # Run the clear_livekit_rooms.py script
+        script_path = Path.cwd() / "clear_livekit_rooms.py"
+        if not script_path.exists():
+            _eprint("⚠️  clear_livekit_rooms.py not found, skipping room clearing")
+        else:
+            result = subprocess.run([
+                sys.executable, str(script_path)
+            ], capture_output=True, text=True)
+
+            if result.returncode == 0:
+                _eprint("✅ LiveKit rooms cleared successfully")
+                if result.stdout.strip():
+                    _eprint(f"   Output: {result.stdout.strip()}")
+            else:
+                _eprint(f"⚠️  Room clearing failed (exit code {result.returncode})")
+                if result.stderr.strip():
+                    _eprint(f"   Error: {result.stderr.strip()}")
+    except Exception as e:
+        _eprint(f"⚠️  Error clearing rooms: {e}")
+
+    _eprint("")
+
+    # Step 3: Wait for propagation
+    _eprint("3️⃣ Waiting for LiveKit Cloud propagation...")
+    import time
+    time.sleep(3)  # Give LiveKit Cloud time to propagate room deletions
+    _eprint("")
+
+    # Step 4: Start the agent worker
+    _eprint("4️⃣ Starting agent worker...")
+    result = agent_start(ctx, dry_run=False, foreground=foreground)
+
+    if result == 0:
+        _eprint("")
+        _eprint("🎉 Agent worker rebuild complete!")
+        _eprint("   The agent should now be in a clean state for testing.")
+    else:
+        _eprint("")
+        _eprint("❌ Agent worker failed to start after rebuild")
+
+    return result
+
+
+def agent_logs(
+    ctx: Ctx,
+    *,
+    dry_run: bool,
+    follow: bool = False,
+    lines: int = 50,
+) -> int:
+    """Show agent worker logs."""
+    _ = ctx  # Unused but kept for consistency
+
+    log_file = _get_agent_log_file()
+
+    if dry_run:
+        if follow:
+            _eprint(f"[dry-run] Would run: tail -f {log_file}")
+        else:
+            _eprint(f"[dry-run] Would run: tail -n {lines} {log_file}")
+        return 0
+
+    if not log_file.exists():
+        _eprint(f"No log file found at {log_file}")
+        _eprint("The agent worker may not have been started with 'marvain agent start'.")
         return 1
 
     if follow:

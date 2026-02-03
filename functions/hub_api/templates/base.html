@@ -4,7 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}Marvain{% endblock %}</title>
-  
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', path='favicon.svg') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', path='favicon.svg') }}">
+
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -25,7 +29,7 @@
   <!-- Header -->
   <header class="header">
     <a href="{{ url_for('gui_home') }}" class="header-logo">
-      <i class="fas fa-satellite-dish"></i>
+      <img src="{{ url_for('static', path='favicon.svg') }}" alt="Marvain" class="header-logo-icon">
       <span>Marvain</span>
     </a>
     

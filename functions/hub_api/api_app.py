@@ -294,78 +294,6 @@ def _space_agent_id(*, space_id: str) -> str | None:
     return str(v) if v else None
 
 
-async def _delete_room_if_exists(*, url: str, api_key: str, api_secret: str, room: str) -> bool:
-    """Delete the LiveKit room if it exists, forcing a fresh room creation on join.
-
-    LiveKit Cloud dispatches agents when rooms are CREATED, not when participants join
-    existing rooms. By deleting any existing room before the user joins, we guarantee a
-    fresh room will be created, which triggers a new agent dispatch.
-
-    LiveKit room deletion also appears to be eventually consistent. If we delete and
-    immediately mint a token and the user joins, they may still join the *old*
-    (not-yet-fully-deleted) room, which prevents a new-room creation event and therefore
-    prevents a fresh agent dispatch.
-
-    To mitigate: after a successful delete, poll until the room no longer appears in
-    list_rooms() (bounded by a short timeout).
-
-    Returns True if a room was deleted, False if no room existed.
-    """
-    import asyncio
-    import time
-
-    wait_s = float(os.getenv("LIVEKIT_ROOM_DELETE_WAIT_SECONDS", "2.0"))
-    poll_s = float(os.getenv("LIVEKIT_ROOM_DELETE_POLL_INTERVAL_SECONDS", "0.2"))
-
-    try:
-        from livekit import api
-
-        lk = api.LiveKitAPI(url=url, api_key=api_key, api_secret=api_secret)
-        try:
-            rooms_resp = await lk.room.list_rooms(api.ListRoomsRequest(names=[room]))
-            if not rooms_resp.rooms:
-                logger.debug(f"Room '{room}' does not exist, will be created fresh on join")
-                return False
-
-            logger.info(f"Deleting existing room '{room}' to force fresh agent dispatch")
-            await lk.room.delete_room(api.DeleteRoomRequest(room=room))
-            logger.info(f"Room '{room}' deleted successfully")
-
-            # Poll for deletion propagation.
-            start = time.monotonic()
-            deadline = start + wait_s
-            polls = 0
-            while True:
-                polls += 1
-                rooms_resp = await lk.room.list_rooms(api.ListRoomsRequest(names=[room]))
-                if not rooms_resp.rooms:
-                    elapsed = time.monotonic() - start
-                    logger.info(
-                        f"Room '{room}' deletion confirmed (propagated) after {elapsed:.2f}s ({polls} polls)"
-                    )
-                    break
-                if time.monotonic() >= deadline:
-                    elapsed = time.monotonic() - start
-                    logger.warning(
-                        f"Room '{room}' still present after delete (waited {elapsed:.2f}s / {wait_s}s; {polls} polls); "
-                        "rejoin may connect to old room and skip agent dispatch"
-                    )
-                    break
-                if poll_s:
-                    await asyncio.sleep(poll_s)
-                else:
-                    await asyncio.sleep(0)
-
-            return True
-        finally:
-            await lk.aclose()
-    except Exception as e:
-        # Don't fail the token mint if deletion fails - log and continue.
-        # The room might not exist or there could be a transient error.
-        logger.warning(f"Failed to delete room '{room}': {e}")
-        return False
-
-
 async def _mint_livekit_token_for_user(*, user: AuthenticatedUser, space_id: str) -> LiveKitTokenOut:
     """Mint a LiveKit token with a unique room name per session.
 
@@ -377,6 +305,11 @@ async def _mint_livekit_token_for_user(*, user: AuthenticatedUser, space_id: str
     Room names are unique per session: "{space_id}:{session_id}". This guarantees
     every join creates a NEW room, triggering reliable agent dispatch. The space_id
     is passed to the agent via metadata so it can persist transcripts correctly.
+
+    Room cleanup: LiveKit Cloud automatically garbage collects empty rooms shortly
+    after all participants leave. We don't need to manually delete rooms because
+    each join uses a unique room name, avoiding the eventual consistency issues
+    that plagued the previous room-deletion approach.
     """
     agent_id = _space_agent_id(space_id=space_id)
     if not agent_id:
