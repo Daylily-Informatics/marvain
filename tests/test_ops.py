@@ -394,5 +394,100 @@ class TestGuiLifecycle(unittest.TestCase):
         self.assertEqual(GUI_LOG_FILENAME, ".marvain-gui.log")
 
 
+class TestDeviceDetection(unittest.TestCase):
+    """Tests for USB and direct-attach device detection."""
+
+    def test_detect_local_devices_returns_list(self) -> None:
+        """detect_local_devices should return a list."""
+        from marvain_cli.ops import detect_local_devices
+
+        devices = detect_local_devices()
+        self.assertIsInstance(devices, list)
+
+    def test_detected_device_has_required_fields(self) -> None:
+        """DetectedDevice should have all required fields."""
+        from marvain_cli.ops import DetectedDevice
+
+        device = DetectedDevice(
+            device_type="video",
+            name="Test Camera",
+            path="/dev/video0",
+            connection_type="usb",
+        )
+        self.assertEqual(device.device_type, "video")
+        self.assertEqual(device.name, "Test Camera")
+        self.assertEqual(device.path, "/dev/video0")
+        self.assertEqual(device.connection_type, "usb")
+        self.assertIsNone(device.vendor_id)
+        self.assertIsNone(device.product_id)
+        self.assertIsNone(device.serial)
+
+    def test_list_detected_devices_filters_by_type(self) -> None:
+        """list_detected_devices should filter by device_type."""
+        from marvain_cli.ops import list_detected_devices
+
+        # Get all devices
+        all_devices = list_detected_devices()
+
+        # Filter by video
+        video_devices = list_detected_devices(device_type="video")
+        for d in video_devices:
+            self.assertEqual(d["device_type"], "video")
+
+        # Filter by audio_input
+        audio_devices = list_detected_devices(device_type="audio_input")
+        for d in audio_devices:
+            self.assertEqual(d["device_type"], "audio_input")
+
+    def test_list_detected_devices_filters_by_connection(self) -> None:
+        """list_detected_devices should filter by connection_type."""
+        from marvain_cli.ops import list_detected_devices
+
+        # Filter by usb
+        usb_devices = list_detected_devices(connection_type="usb")
+        for d in usb_devices:
+            self.assertEqual(d["connection_type"], "usb")
+
+        # Filter by direct
+        direct_devices = list_detected_devices(connection_type="direct")
+        for d in direct_devices:
+            self.assertEqual(d["connection_type"], "direct")
+
+    def test_list_detected_devices_returns_dicts(self) -> None:
+        """list_detected_devices should return list of dicts with expected keys."""
+        from marvain_cli.ops import list_detected_devices
+
+        devices = list_detected_devices()
+        for d in devices:
+            self.assertIsInstance(d, dict)
+            self.assertIn("device_type", d)
+            self.assertIn("name", d)
+            self.assertIn("path", d)
+            self.assertIn("connection_type", d)
+
+    def test_detect_serial_ports_finds_patterns(self) -> None:
+        """_detect_serial_ports should check common serial port patterns."""
+        from marvain_cli.ops import _detect_serial_ports
+
+        # This test just verifies the function runs without error
+        # Actual detection depends on hardware
+        ports = _detect_serial_ports()
+        self.assertIsInstance(ports, list)
+
+    def test_detect_video_devices_runs_without_error(self) -> None:
+        """_detect_video_devices should run without error."""
+        from marvain_cli.ops import _detect_video_devices
+
+        devices = _detect_video_devices()
+        self.assertIsInstance(devices, list)
+
+    def test_detect_audio_devices_runs_without_error(self) -> None:
+        """_detect_audio_devices should run without error."""
+        from marvain_cli.ops import _detect_audio_devices
+
+        devices = _detect_audio_devices()
+        self.assertIsInstance(devices, list)
+
+
 if __name__ == "__main__":
     unittest.main()
