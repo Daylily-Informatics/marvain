@@ -51,7 +51,7 @@ async def clear_all_rooms():
         return 1
 
     print(f"LiveKit URL: {livekit_url}")
-    print(f"API Key: {livekit_api_key[:10]}...")
+    print("API Key: ******* (loaded from secrets)")
     print()
 
     # Connect to LiveKit
