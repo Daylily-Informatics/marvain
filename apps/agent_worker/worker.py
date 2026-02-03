@@ -289,8 +289,17 @@ async def forge_agent(ctx: agents.JobContext):
             logger.warning(f"Failed to process data channel message: {e}")
 
     async def _handle_typed_message(text: str, sender: str) -> None:
-        """Process a typed chat message and generate a response."""
+        """Process a typed chat message and generate a response.
+
+        Interrupts any ongoing speech before responding to avoid overlapping voices.
+        """
         try:
+            # Interrupt any ongoing speech to avoid overlapping voices
+            session.interrupt()
+
+            # Small delay to let the interruption take effect
+            await asyncio.sleep(0.1)
+
             # Use generate_reply to have the agent respond to the typed text
             # The agent will speak the response aloud
             await session.generate_reply(
