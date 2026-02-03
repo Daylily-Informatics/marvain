@@ -26,14 +26,19 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from agent_hub.audit import append_audit_entry
 from agent_hub.auth import (
+    AuthenticatedAgent,
     AuthenticatedDevice,
     AuthenticatedUser,
+    authenticate_agent_token,
     authenticate_device,
     authenticate_user_access_token,
+    create_agent_token,
     ensure_user_row,
     generate_device_token,
     hash_token,
+    list_agent_tokens,
     lookup_cognito_user_by_email,
+    revoke_agent_token,
 )
 from agent_hub.config import load_config
 from agent_hub.memberships import (
@@ -640,4 +645,169 @@ def presign_upload(body: PresignIn, device: AuthenticatedDevice = Depends(get_de
         ExpiresIn=900,
     )
     return {"upload_url": url, "bucket": _cfg.artifact_bucket, "key": key}
+
+
+# -----------------------------------------------------------------------------
+# Agent-to-Agent Token Management
+# -----------------------------------------------------------------------------
+
+
+class CreateAgentTokenIn(BaseModel):
+    """Request body for creating an agent token."""
+
+    name: str = Field(default="agent-token", description="Human-readable name for the token")
+    target_agent_id: str | None = Field(default=None, description="If set, only this agent can use the token")
+    scopes: list[str] = Field(default_factory=list, description="Permission scopes granted to token holder")
+    allowed_spaces: list[str] | None = Field(default=None, description="If set, token only valid for these spaces")
+    expires_at: str | None = Field(default=None, description="ISO timestamp when token expires")
+
+
+class CreateAgentTokenOut(BaseModel):
+    """Response for creating an agent token."""
+
+    token_id: str
+    token: str  # Plaintext token - only returned once!
+    name: str
+    scopes: list[str]
+
+
+class AgentTokenOut(BaseModel):
+    """Agent token metadata (excludes plaintext token)."""
+
+    token_id: str
+    target_agent_id: str | None
+    name: str | None
+    scopes: list[str]
+    allowed_spaces: list[str] | None
+    expires_at: str | None
+    revoked_at: str | None
+    last_used_at: str | None
+    created_at: str | None
+    is_active: bool
+
+
+@api_app.post("/v1/agents/{agent_id}/tokens", response_model=CreateAgentTokenOut)
+def create_agent_token_endpoint(
+    agent_id: str,
+    body: CreateAgentTokenIn,
+    user: AuthenticatedUser = Depends(get_user),
+) -> CreateAgentTokenOut:
+    """Create a new agent-to-agent authentication token.
+
+    Requires admin role on the agent. The plaintext token is only returned once.
+    """
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+
+    if is_agent_disabled(_get_db(), agent_id):
+        raise HTTPException(status_code=403, detail="Agent is disabled")
+
+    token_id, plaintext_token = create_agent_token(
+        _get_db(),
+        issuer_agent_id=agent_id,
+        target_agent_id=body.target_agent_id,
+        name=body.name,
+        scopes=body.scopes,
+        allowed_spaces=body.allowed_spaces,
+        expires_at=body.expires_at,
+        created_by_user_id=user.user_id,
+    )
+
+    if _cfg.audit_bucket:
+        append_audit_entry(
+            _get_db(),
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
+            entry_type="agent_token_created",
+            entry={
+                "token_id": token_id,
+                "name": body.name,
+                "scopes": body.scopes,
+                "target_agent_id": body.target_agent_id,
+                "created_by_user_id": user.user_id,
+            },
+        )
+
+    return CreateAgentTokenOut(
+        token_id=token_id,
+        token=plaintext_token,
+        name=body.name,
+        scopes=body.scopes,
+    )
+
+
+@api_app.get("/v1/agents/{agent_id}/tokens", response_model=list[AgentTokenOut])
+def list_agent_tokens_endpoint(
+    agent_id: str,
+    user: AuthenticatedUser = Depends(get_user),
+) -> list[AgentTokenOut]:
+    """List all tokens issued by an agent.
+
+    Requires member role or higher on the agent.
+    """
+    _require_agent_role(user=user, agent_id=agent_id, required_role="member")
+
+    tokens = list_agent_tokens(_get_db(), issuer_agent_id=agent_id)
+
+    return [
+        AgentTokenOut(
+            token_id=t["token_id"],
+            target_agent_id=t.get("target_agent_id"),
+            name=t.get("name"),
+            scopes=t.get("scopes", []),
+            allowed_spaces=t.get("allowed_spaces"),
+            expires_at=t.get("expires_at"),
+            revoked_at=t.get("revoked_at"),
+            last_used_at=t.get("last_used_at"),
+            created_at=t.get("created_at"),
+            is_active=t.get("is_active", False),
+        )
+        for t in tokens
+    ]
+
+
+@api_app.delete("/v1/agents/{agent_id}/tokens/{token_id}")
+def revoke_agent_token_endpoint(
+    agent_id: str,
+    token_id: str,
+    user: AuthenticatedUser = Depends(get_user),
+) -> dict[str, Any]:
+    """Revoke an agent token.
+
+    Requires admin role on the agent.
+    """
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+
+    success = revoke_agent_token(_get_db(), token_id=token_id)
+
+    if not success:
+        raise HTTPException(status_code=404, detail="Token not found or already revoked")
+
+    if _cfg.audit_bucket:
+        append_audit_entry(
+            _get_db(),
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
+            entry_type="agent_token_revoked",
+            entry={
+                "token_id": token_id,
+                "revoked_by_user_id": user.user_id,
+            },
+        )
+
+    return {"ok": True, "token_id": token_id, "revoked": True}
+
+
+def get_agent(request: Request) -> AuthenticatedAgent:
+    """Dependency to authenticate agent-to-agent requests.
+
+    Expects Authorization: Bearer <agent_token>
+    """
+    auth = request.headers.get("authorization") or request.headers.get("Authorization")
+    if not auth or not auth.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    token = auth.split(" ", 1)[1].strip()
+    agent = authenticate_agent_token(_get_db(), token)
+    if not agent:
+        raise HTTPException(status_code=401, detail="Invalid or expired agent token")
+    return agent
 
