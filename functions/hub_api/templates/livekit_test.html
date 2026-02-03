@@ -960,12 +960,30 @@ python worker.py dev
 
   function sendChatMessage() {
     var text = (chatInputEl.value || '').trim();
-    if (!text || !room) return;
-    var msg = { type: 'chat', text: text, ts: Date.now() };
-    var data = new TextEncoder().encode(JSON.stringify(msg));
-    room.localParticipant.publishData(data, { reliable: true });
-    addChatMessage(myIdentity, text, msg.ts);
-    chatInputEl.value = '';
+    if (!text) {
+      return;
+    }
+    if (!room) {
+      Marvain.showToast('warning', 'Not Connected', 'Please join a room first');
+      log('Cannot send message: not connected to a room');
+      return;
+    }
+    if (room.state !== 'connected') {
+      Marvain.showToast('warning', 'Not Connected', 'Room state: ' + room.state);
+      log('Cannot send message: room state is ' + room.state);
+      return;
+    }
+    try {
+      var msg = { type: 'chat', text: text, ts: Date.now() };
+      var data = new TextEncoder().encode(JSON.stringify(msg));
+      room.localParticipant.publishData(data, { reliable: true });
+      addChatMessage(myIdentity, text, msg.ts);
+      chatInputEl.value = '';
+      log('Sent chat message: ' + text.substring(0, 30) + (text.length > 30 ? '...' : ''));
+    } catch (e) {
+      Marvain.showToast('error', 'Send Failed', e.message);
+      log('Failed to send message: ' + e.message);
+    }
   }
 
   async function join() {
