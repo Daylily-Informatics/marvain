@@ -2139,6 +2139,68 @@ def api_delete_memory(request: Request, memory_id: str) -> dict:
     return {"message": "Memory deleted", "memory_id": memory_id}
 
 
+@app.get("/api/memories/{memory_id}", name="api_get_memory")
+def api_get_memory(request: Request, memory_id: str) -> dict:
+    """Get memory details."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Get the memory and check permission (member role sufficient for viewing)
+    rows = db.query("""
+        SELECT m.memory_id::TEXT as memory_id, m.agent_id::TEXT as agent_id,
+               m.space_id::TEXT as space_id, m.tier, m.content,
+               m.participants::TEXT as participants,
+               m.provenance::TEXT as provenance,
+               m.retention::TEXT as retention,
+               m.created_at::TEXT as created_at,
+               a.name as agent_name, s.name as space_name
+        FROM memories m
+        INNER JOIN agents a ON m.agent_id = a.agent_id
+        LEFT JOIN spaces s ON m.space_id = s.space_id
+        INNER JOIN agent_memberships mb ON m.agent_id = mb.agent_id
+        WHERE m.memory_id = :memory_id::uuid
+          AND mb.user_id = :user_id::uuid
+          AND mb.role IN ('member', 'admin', 'owner')
+          AND mb.revoked_at IS NULL
+    """, {"memory_id": memory_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Memory not found or permission denied")
+
+    row = rows[0]
+
+    # Parse JSON fields
+    try:
+        participants = json.loads(row.get("participants") or "[]")
+    except Exception:
+        participants = []
+    try:
+        provenance = json.loads(row.get("provenance") or "{}")
+    except Exception:
+        provenance = {}
+    try:
+        retention = json.loads(row.get("retention") or "{}")
+    except Exception:
+        retention = {}
+
+    return {
+        "memory_id": row["memory_id"],
+        "agent_id": row["agent_id"],
+        "agent_name": row.get("agent_name", ""),
+        "space_id": row.get("space_id"),
+        "space_name": row.get("space_name"),
+        "tier": row["tier"],
+        "content": row["content"],
+        "participants": participants,
+        "provenance": provenance,
+        "retention": retention,
+        "created_at": row["created_at"],
+    }
+
+
 def _get_file_icon(filename: str) -> str:
     """Get Font Awesome icon class for a file type."""
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""

@@ -52,6 +52,7 @@ from agent_hub.memberships import (
     update_membership,
 )
 from agent_hub.livekit_tokens import mint_livekit_join_token
+from agent_hub.openai_http import call_embeddings
 from agent_hub.policy import is_agent_disabled, is_privacy_mode
 from agent_hub.rds_data import RdsData, RdsDataEnv
 from agent_hub.secrets import get_secret_json
@@ -636,6 +637,195 @@ def delete_memory(memory_id: str, device: AuthenticatedDevice = Depends(get_devi
         append_audit_entry(_get_db(), bucket=_cfg.audit_bucket, agent_id=device.agent_id,
                            entry_type="memory_deleted", entry={"memory_id": memory_id})
     return {"deleted": True, "memory_id": memory_id}
+
+
+# -----------------------------------------------------------------------------
+# Memory Recall Endpoint (Semantic Search)
+# -----------------------------------------------------------------------------
+
+
+class RecallIn(BaseModel):
+    """Request body for semantic memory recall."""
+    agent_id: str
+    space_id: str | None = None
+    query: str = Field(..., min_length=1, max_length=2000)
+    k: int = Field(default=8, ge=1, le=50)
+    tiers: list[str] | None = None
+
+
+class RecallMemoryOut(BaseModel):
+    """A single recalled memory."""
+    memory_id: str
+    tier: str
+    content: str
+    created_at: str
+    distance: float
+
+
+class RecallOut(BaseModel):
+    """Response for memory recall."""
+    memories: list[RecallMemoryOut]
+
+
+@api_app.post("/v1/recall", response_model=RecallOut)
+def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_device)) -> RecallOut:
+    """Semantic memory search using pgvector embeddings.
+
+    Searches memories for the agent using cosine similarity on embeddings.
+    Returns the k most relevant memories ordered by distance.
+    """
+    require_scope(device, "memories:read")
+
+    # Verify device belongs to requested agent
+    if device.agent_id != body.agent_id:
+        raise HTTPException(status_code=403, detail="Cannot recall memories for a different agent")
+
+    # Check OpenAI configuration
+    if not _cfg.openai_secret_arn:
+        raise HTTPException(status_code=503, detail="Embedding service not configured")
+
+    # Generate query embedding
+    try:
+        embed_model = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+        query_embedding = call_embeddings(
+            openai_secret_arn=_cfg.openai_secret_arn,
+            model=embed_model,
+            text=body.query,
+        )
+        emb_str = "[" + ",".join(f"{x:.6f}" for x in query_embedding) + "]"
+    except Exception as e:
+        logger.error("Failed to generate query embedding: %s", e)
+        raise HTTPException(status_code=503, detail="Failed to generate query embedding")
+
+    # Build query with optional tier and space filters
+    tier_clause = ""
+    params: dict[str, Any] = {
+        "agent_id": body.agent_id,
+        "q": emb_str,
+        "limit": body.k,
+    }
+
+    if body.tiers:
+        tier_clause = "AND tier = ANY(:tiers)"
+        params["tiers"] = body.tiers
+
+    space_clause = ""
+    if body.space_id:
+        space_clause = "AND (space_id = :space_id::uuid OR space_id IS NULL)"
+        params["space_id"] = body.space_id
+
+    # Query with pgvector cosine distance
+    rows = _get_db().query(
+        f"""
+        SELECT memory_id::TEXT as memory_id,
+               tier,
+               content,
+               created_at::TEXT as created_at,
+               (embedding <=> CAST(:q AS vector))::DOUBLE PRECISION as distance
+        FROM memories
+        WHERE agent_id = :agent_id::uuid
+          AND embedding IS NOT NULL
+          {tier_clause}
+          {space_clause}
+        ORDER BY embedding <=> CAST(:q AS vector)
+        LIMIT :limit
+        """,
+        params,
+    )
+
+    memories = [
+        RecallMemoryOut(
+            memory_id=r["memory_id"],
+            tier=r["tier"],
+            content=r["content"],
+            created_at=r["created_at"],
+            distance=float(r.get("distance", 0.0)),
+        )
+        for r in rows
+    ]
+
+    return RecallOut(memories=memories)
+
+
+# -----------------------------------------------------------------------------
+# Space Events Endpoint
+# -----------------------------------------------------------------------------
+
+
+class SpaceEventOut(BaseModel):
+    """A single event in a space."""
+    event_id: str
+    type: str
+    person_id: str | None
+    payload: dict[str, Any]
+    created_at: str
+
+
+class SpaceEventsOut(BaseModel):
+    """Response for space events."""
+    events: list[SpaceEventOut]
+
+
+@api_app.get("/v1/spaces/{space_id}/events", response_model=SpaceEventsOut)
+def get_space_events(
+    space_id: str,
+    limit: int = 50,
+    device: AuthenticatedDevice = Depends(get_device),
+) -> SpaceEventsOut:
+    """Get recent events for a space.
+
+    Returns events in reverse chronological order (newest first).
+    Used for context hydration when an agent joins a space.
+    """
+    require_scope(device, "events:read")
+
+    # Verify space belongs to device's agent
+    rows = _get_db().query(
+        "SELECT agent_id::TEXT as agent_id FROM spaces WHERE space_id = :space_id::uuid",
+        {"space_id": space_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Space not found")
+
+    if rows[0]["agent_id"] != device.agent_id:
+        raise HTTPException(status_code=403, detail="Space belongs to a different agent")
+
+    # Check privacy mode
+    if is_privacy_mode(_get_db(), space_id):
+        return SpaceEventsOut(events=[])
+
+    limit = max(1, min(200, limit))
+
+    event_rows = _get_db().query(
+        """
+        SELECT event_id::TEXT as event_id,
+               type,
+               person_id::TEXT as person_id,
+               payload::TEXT as payload_json,
+               created_at::TEXT as created_at
+        FROM events
+        WHERE space_id = :space_id::uuid
+        ORDER BY created_at DESC
+        LIMIT :limit
+        """,
+        {"space_id": space_id, "limit": limit},
+    )
+
+    events = []
+    for r in event_rows:
+        try:
+            payload = json.loads(r.get("payload_json") or "{}")
+        except Exception:
+            payload = {}
+        events.append(SpaceEventOut(
+            event_id=r["event_id"],
+            type=r["type"],
+            person_id=r.get("person_id"),
+            payload=payload,
+            created_at=r["created_at"],
+        ))
+
+    return SpaceEventsOut(events=events)
 
 
 @api_app.post("/v1/artifacts/presign")
