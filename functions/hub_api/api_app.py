@@ -52,6 +52,7 @@ from agent_hub.memberships import (
     update_membership,
 )
 from agent_hub.livekit_tokens import mint_livekit_join_token
+from agent_hub.broadcast import broadcast_event
 from agent_hub.openai_http import call_embeddings
 from agent_hub.policy import is_agent_disabled, is_privacy_mode
 from agent_hub.rds_data import RdsData, RdsDataEnv
@@ -612,6 +613,25 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
     if _cfg.audit_bucket:
         append_audit_entry(_get_db(), bucket=_cfg.audit_bucket, agent_id=device.agent_id,
                            entry_type="event_ingested", entry={"event_id": event_id, "type": body.type, "space_id": body.space_id, "queued": queued})
+
+    # Broadcast to subscribed WebSocket clients
+    try:
+        broadcast_event(
+            event_type="events.new",
+            agent_id=device.agent_id,
+            space_id=body.space_id,
+            payload={
+                "event": {
+                    "event_id": event_id,
+                    "type": body.type,
+                    "payload": body.payload,
+                    "person_id": body.person_id,
+                }
+            },
+        )
+    except Exception as e:
+        logger.warning("Failed to broadcast event: %s", e)
+
     return IngestEventOut(event_id=event_id, queued=queued)
 
 
@@ -892,6 +912,20 @@ def device_heartbeat(body: HeartbeatIn | None = None, device: AuthenticatedDevic
         {"device_id": device.device_id},
     )
     ts = rows[0]["last_heartbeat_at"] if rows else "unknown"
+
+    # Broadcast presence update to subscribed clients
+    try:
+        broadcast_event(
+            event_type="presence.updated",
+            agent_id=device.agent_id,
+            payload={
+                "device_id": device.device_id,
+                "status": "online",
+                "last_heartbeat_at": ts,
+            },
+        )
+    except Exception as e:
+        logger.warning("Failed to broadcast presence: %s", e)
 
     return HeartbeatOut(ok=True, device_id=device.device_id, last_heartbeat_at=ts)
 

@@ -6,6 +6,7 @@ import os
 from typing import Any
 
 from agent_hub.audit import append_audit_entry
+from agent_hub.broadcast import broadcast_event
 from agent_hub.config import load_config
 from agent_hub.policy import is_agent_disabled
 from agent_hub.rds_data import RdsData, RdsDataEnv
@@ -143,6 +144,22 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
                 entry_type="action_executed",
                 entry={"action_id": action_id, "kind": kind, "result": result, "status": new_status},
             )
+
+        # Broadcast action completion to subscribed clients
+        try:
+            broadcast_event(
+                event_type="actions.updated",
+                agent_id=agent_id,
+                space_id=action.get("space_id"),
+                payload={
+                    "action_id": action_id,
+                    "kind": kind,
+                    "status": new_status,
+                    "has_result": tool_result.ok,
+                },
+            )
+        except Exception as e:
+            logger.warning("Failed to broadcast action update: %s", e)
 
         processed += 1
 
