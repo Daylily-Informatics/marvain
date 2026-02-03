@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+
+{% block title %}{{ agent.name }} - Marvain{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <nav class="breadcrumb">
+      <a href="/agents">Agents</a> / <span>{{ agent.name }}</span>
+    </nav>
+    <h1 class="page-title"><i class="fas fa-robot"></i> {{ agent.name }}</h1>
+  </div>
+  <div class="page-actions">
+    {% if agent.role in ['owner', 'admin'] %}
+    <button type="button" class="btn btn-outline" onclick="editAgent()">
+      <i class="fas fa-edit"></i> Edit
+    </button>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Agent Overview -->
+<div class="grid grid-2 mb-lg">
+  <div class="card">
+    <div class="card-header">
+      <h3 class="card-title">Agent Details</h3>
+    </div>
+    <div class="card-body">
+      <div class="detail-row">
+        <span class="detail-label">Agent ID</span>
+        <code class="detail-value">{{ agent.agent_id }}</code>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Name</span>
+        <span class="detail-value">{{ agent.name }}</span>
+      </div>
+      <div class="detail-row">
+        <span class="detail-label">Your Role</span>
+        <span class="badge badge-{{ 'success' if agent.role == 'owner' else 'info' if agent.role == 'admin' else 'warning' }}">
+          {{ agent.role|title }}
+        </span>
+      </div>
+      {% if agent.relationship_label %}
+      <div class="detail-row">
+        <span class="detail-label">Relationship</span>
+        <span class="detail-value">{{ agent.relationship_label }}</span>
+      </div>
+      {% endif %}
+      <div class="detail-row">
+        <span class="detail-label">Status</span>
+        <span class="detail-value">
+          {% if agent.disabled %}
+          <span class="status-dot offline"></span> Disabled
+          {% else %}
+          <span class="status-dot online"></span> Active
+          {% endif %}
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h3 class="card-title">Quick Actions</h3>
+    </div>
+    <div class="card-body">
+      <div class="quick-actions-grid">
+        <a href="/spaces?agent_id={{ agent.agent_id }}" class="quick-action">
+          <i class="fas fa-layer-group"></i>
+          <span>View Spaces</span>
+        </a>
+        <a href="/devices?agent_id={{ agent.agent_id }}" class="quick-action">
+          <i class="fas fa-mobile-alt"></i>
+          <span>View Devices</span>
+        </a>
+        <a href="/remotes?agent_id={{ agent.agent_id }}" class="quick-action">
+          <i class="fas fa-satellite-dish"></i>
+          <span>View Remotes</span>
+        </a>
+        <a href="/memories?agent_id={{ agent.agent_id }}" class="quick-action">
+          <i class="fas fa-brain"></i>
+          <span>View Memories</span>
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Members Section -->
+<div class="card" id="members">
+  <div class="card-header">
+    <h3 class="card-title"><i class="fas fa-users"></i> Members</h3>
+    {% if agent.role in ['owner', 'admin'] %}
+    <div class="card-actions">
+      <button type="button" class="btn btn-primary btn-sm" onclick="Marvain.showAddMemberModal()">
+        <i class="fas fa-user-plus"></i> Add Member
+      </button>
+    </div>
+    {% endif %}
+  </div>
+  <div class="card-body">
+    {% if members %}
+    <div class="table-container">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>User</th>
+            <th>Role</th>
+            <th>Added</th>
+            {% if agent.role in ['owner', 'admin'] %}
+            <th>Actions</th>
+            {% endif %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for member in members %}
+          <tr>
+            <td>
+              <div class="member-info">
+                <span class="member-email">{{ member.email or member.user_id }}</span>
+              </div>
+            </td>
+            <td>
+              <span class="badge badge-{{ 'success' if member.role == 'owner' else 'info' if member.role == 'admin' else 'warning' }}">
+                {{ member.role|title }}
+              </span>
+            </td>
+            <td>{{ member.created_at or 'N/A' }}</td>
+            {% if agent.role in ['owner', 'admin'] %}
+            <td>
+              {% if member.role != 'owner' %}
+              <button class="btn btn-sm btn-outline" onclick="changeMemberRole('{{ member.user_id }}')">
+                <i class="fas fa-exchange-alt"></i>
+              </button>
+              <button class="btn btn-sm btn-outline" onclick="removeMember('{{ member.user_id }}')">
+                <i class="fas fa-user-minus"></i>
+              </button>
+              {% endif %}
+            </td>
+            {% endif %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="text-muted">No other members yet.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function editAgent() {
+  Marvain.showToast('info', 'Coming Soon', 'Agent editing will be available soon');
+}
+
+function changeMemberRole(userId) {
+  Marvain.showToast('info', 'Coming Soon', 'Role change will be available soon');
+}
+
+function removeMember(userId) {
+  if (!confirm('Remove this member from the agent?')) return;
+  Marvain.showToast('info', 'Coming Soon', 'Member removal will be available soon');
+}
+
+Marvain.showAddMemberModal = function() {
+  Marvain.showToast('info', 'Coming Soon', 'Add member will be available soon');
+};
+</script>
+{% endblock %}
+

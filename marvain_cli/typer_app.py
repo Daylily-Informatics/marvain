@@ -315,7 +315,7 @@ def run(argv: list[str]) -> int:
         port: int = typer.Option(GUI_DEFAULT_PORT, "--port", help="Port to bind to"),
         reload: bool = typer.Option(True, "--reload/--no-reload", help="Enable auto-reload"),
         foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground (blocking)"),
-        https: bool = typer.Option(False, "--https", help="Enable HTTPS (requires --cert and --key)"),
+        https: bool = typer.Option(True, "--https/--no-https", help="Enable HTTPS (default: on, uses mkcert if no cert/key provided)"),
         cert: str = typer.Option(None, "--cert", help="Path to SSL certificate file (PEM format)"),
         key: str = typer.Option(None, "--key", help="Path to SSL private key file (PEM format)"),
         dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
@@ -344,7 +344,7 @@ def run(argv: list[str]) -> int:
         port: int = typer.Option(GUI_DEFAULT_PORT, "--port", help="Port to bind to"),
         reload: bool = typer.Option(True, "--reload/--no-reload", help="Enable auto-reload"),
         foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground (blocking)"),
-        https: bool = typer.Option(False, "--https", help="Enable HTTPS (requires --cert and --key)"),
+        https: bool = typer.Option(True, "--https/--no-https", help="Enable HTTPS (default: on, uses mkcert if no cert/key provided)"),
         cert: str = typer.Option(None, "--cert", help="Path to SSL certificate file (PEM format)"),
         key: str = typer.Option(None, "--key", help="Path to SSL private key file (PEM format)"),
         dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
@@ -586,6 +586,120 @@ def run(argv: list[str]) -> int:
             agent_id=agent_id,
             name=name,
             scopes=(scopes if scopes else None),
+            access_token=access_token,
+            hub_rest_api_base=hub_rest_api_base,
+            dry_run=dr,
+        )
+        if not dr:
+            typer.echo(json.dumps(data, indent=2, sort_keys=True))
+        raise typer.Exit(code=0)
+
+    # ---- members (agent memberships via Hub API) ----
+    members_app = typer.Typer(help="Agent membership management (Hub API)")
+    app.add_typer(members_app, name="members")
+
+    @members_app.command("invite")
+    def members_invite(
+        ctx: typer.Context,
+        email: str = typer.Option(..., "--email", help="Email of the user to invite"),
+        agent_id: str = typer.Option(..., "--agent-id", help="Agent ID to add the user to"),
+        role: str = typer.Option("member", "--role", help="Role: owner, admin, member, guest, blocked"),
+        relationship_label: str | None = typer.Option(None, "--relationship-label", help="Relationship label (e.g. 'father', 'friend')"),
+        access_token: str | None = typer.Option(None, "--access-token", help="Cognito access token"),
+        hub_rest_api_base: str | None = typer.Option(None, "--hub-rest-api-base"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        """Invite a user to an agent with specified role."""
+        import json
+
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        data = hub_grant_membership(
+            c,
+            agent_id=agent_id,
+            email=email,
+            role=role,
+            relationship_label=relationship_label,
+            access_token=access_token,
+            hub_rest_api_base=hub_rest_api_base,
+            dry_run=dr,
+        )
+        if not dr:
+            typer.echo(json.dumps(data, indent=2, sort_keys=True))
+        raise typer.Exit(code=0)
+
+    @members_app.command("list")
+    def members_list(
+        ctx: typer.Context,
+        agent_id: str = typer.Option(..., "--agent-id", help="Agent ID to list members for"),
+        access_token: str | None = typer.Option(None, "--access-token", help="Cognito access token"),
+        hub_rest_api_base: str | None = typer.Option(None, "--hub-rest-api-base"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        """List users (members) of an agent."""
+        import json
+
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        data = hub_list_memberships(
+            c,
+            agent_id=agent_id,
+            access_token=access_token,
+            hub_rest_api_base=hub_rest_api_base,
+            dry_run=dr,
+        )
+        if not dr:
+            typer.echo(json.dumps(data, indent=2, sort_keys=True))
+        raise typer.Exit(code=0)
+
+    @members_app.command("update")
+    def members_update(
+        ctx: typer.Context,
+        agent_id: str = typer.Option(..., "--agent-id", help="Agent ID"),
+        user_id: str = typer.Option(..., "--user-id", help="User ID to update"),
+        role: str = typer.Option(..., "--role", help="New role: owner, admin, member, guest, blocked"),
+        relationship_label: str | None = typer.Option(None, "--relationship-label", help="Relationship label (e.g. 'father', 'friend')"),
+        access_token: str | None = typer.Option(None, "--access-token", help="Cognito access token"),
+        hub_rest_api_base: str | None = typer.Option(None, "--hub-rest-api-base"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        """Update a user's role or relationship in an agent."""
+        import json
+
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        data = hub_update_membership(
+            c,
+            agent_id=agent_id,
+            user_id=user_id,
+            role=role,
+            relationship_label=relationship_label,
+            access_token=access_token,
+            hub_rest_api_base=hub_rest_api_base,
+            dry_run=dr,
+        )
+        if not dr:
+            typer.echo(json.dumps(data, indent=2, sort_keys=True))
+        raise typer.Exit(code=0)
+
+    @members_app.command("revoke")
+    def members_revoke(
+        ctx: typer.Context,
+        agent_id: str = typer.Option(..., "--agent-id", help="Agent ID"),
+        user_id: str = typer.Option(..., "--user-id", help="User ID to revoke"),
+        access_token: str | None = typer.Option(None, "--access-token", help="Cognito access token"),
+        hub_rest_api_base: str | None = typer.Option(None, "--hub-rest-api-base"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        """Revoke a user's membership from an agent."""
+        import json
+
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        data = hub_revoke_membership(
+            c,
+            agent_id=agent_id,
+            user_id=user_id,
             access_token=access_token,
             hub_rest_api_base=hub_rest_api_base,
             dry_run=dr,

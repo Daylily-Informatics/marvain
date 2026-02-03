@@ -77,13 +77,17 @@ def _get_session_secret() -> str:
 
 # Add SessionMiddleware (needed for API routes that use sessions)
 _session_secret = _get_session_secret()
+# Use SameSite=none for OAuth flows (Cognito redirect requires cross-site cookie)
+# This requires https_only=True, which is fine since we default to HTTPS
+_is_https = os.getenv("HTTPS_ENABLED", "true").lower() in ("true", "1", "yes")
+_is_local = os.getenv("ENVIRONMENT", "").lower() in ("local", "dev", "test")
 api_app.add_middleware(
     SessionMiddleware,
     secret_key=_session_secret,
     session_cookie="marvain_session",
     max_age=3600 * 8,
-    same_site="lax",
-    https_only=os.getenv("ENVIRONMENT", "").lower() not in ("local", "dev", "test"),
+    same_site="none" if _is_https else "lax",
+    https_only=_is_https or not _is_local,
 )
 
 # Lazy-load clients
@@ -204,6 +208,11 @@ class MeOut(BaseModel):
     email: str | None = None
 
 
+class CreateAgentIn(BaseModel):
+    name: str
+    relationship_label: str | None = None
+
+
 class AgentOut(BaseModel):
     agent_id: str
     name: str
@@ -285,15 +294,102 @@ def _space_agent_id(*, space_id: str) -> str | None:
     return str(v) if v else None
 
 
-def _mint_livekit_token_for_user(*, user: AuthenticatedUser, space_id: str) -> LiveKitTokenOut:
+async def _delete_room_if_exists(*, url: str, api_key: str, api_secret: str, room: str) -> bool:
+    """Delete the LiveKit room if it exists, forcing a fresh room creation on join.
+
+    LiveKit Cloud dispatches agents when rooms are CREATED, not when participants join
+    existing rooms. By deleting any existing room before the user joins, we guarantee a
+    fresh room will be created, which triggers a new agent dispatch.
+
+    LiveKit room deletion also appears to be eventually consistent. If we delete and
+    immediately mint a token and the user joins, they may still join the *old*
+    (not-yet-fully-deleted) room, which prevents a new-room creation event and therefore
+    prevents a fresh agent dispatch.
+
+    To mitigate: after a successful delete, poll until the room no longer appears in
+    list_rooms() (bounded by a short timeout).
+
+    Returns True if a room was deleted, False if no room existed.
+    """
+    import asyncio
+    import time
+
+    wait_s = float(os.getenv("LIVEKIT_ROOM_DELETE_WAIT_SECONDS", "2.0"))
+    poll_s = float(os.getenv("LIVEKIT_ROOM_DELETE_POLL_INTERVAL_SECONDS", "0.2"))
+
+    try:
+        from livekit import api
+
+        lk = api.LiveKitAPI(url=url, api_key=api_key, api_secret=api_secret)
+        try:
+            rooms_resp = await lk.room.list_rooms(api.ListRoomsRequest(names=[room]))
+            if not rooms_resp.rooms:
+                logger.debug(f"Room '{room}' does not exist, will be created fresh on join")
+                return False
+
+            logger.info(f"Deleting existing room '{room}' to force fresh agent dispatch")
+            await lk.room.delete_room(api.DeleteRoomRequest(room=room))
+            logger.info(f"Room '{room}' deleted successfully")
+
+            # Poll for deletion propagation.
+            start = time.monotonic()
+            deadline = start + wait_s
+            polls = 0
+            while True:
+                polls += 1
+                rooms_resp = await lk.room.list_rooms(api.ListRoomsRequest(names=[room]))
+                if not rooms_resp.rooms:
+                    elapsed = time.monotonic() - start
+                    logger.info(
+                        f"Room '{room}' deletion confirmed (propagated) after {elapsed:.2f}s ({polls} polls)"
+                    )
+                    break
+                if time.monotonic() >= deadline:
+                    elapsed = time.monotonic() - start
+                    logger.warning(
+                        f"Room '{room}' still present after delete (waited {elapsed:.2f}s / {wait_s}s; {polls} polls); "
+                        "rejoin may connect to old room and skip agent dispatch"
+                    )
+                    break
+                if poll_s:
+                    await asyncio.sleep(poll_s)
+                else:
+                    await asyncio.sleep(0)
+
+            return True
+        finally:
+            await lk.aclose()
+    except Exception as e:
+        # Don't fail the token mint if deletion fails - log and continue.
+        # The room might not exist or there could be a transient error.
+        logger.warning(f"Failed to delete room '{room}': {e}")
+        return False
+
+
+async def _mint_livekit_token_for_user(*, user: AuthenticatedUser, space_id: str) -> LiveKitTokenOut:
+    """Mint a LiveKit token with a unique room name per session.
+
+    Architecture:
+    - LiveKit "room" = ephemeral media session (unique per join)
+    - Marvain "space" = persistent conversation context (stored in Hub database)
+    - One space can have many sequential rooms over time
+
+    Room names are unique per session: "{space_id}:{session_id}". This guarantees
+    every join creates a NEW room, triggering reliable agent dispatch. The space_id
+    is passed to the agent via metadata so it can persist transcripts correctly.
+    """
     agent_id = _space_agent_id(space_id=space_id)
     if not agent_id:
         raise HTTPException(status_code=404, detail="Space not found")
     if not check_agent_permission(_get_db(), agent_id=agent_id, user_id=user.user_id, required_role="member"):
         raise HTTPException(status_code=403, detail="Forbidden")
     url, api_key, api_secret = _require_livekit_config()
+
+    # Generate a unique room name for this session - guarantees room creation event
+    room_session_id = uuid.uuid4().hex[:12]
+    room = f"{space_id}:{room_session_id}"
+
     identity = f"user:{user.user_id}"
-    room = str(space_id)
     token = mint_livekit_join_token(
         api_key=api_key,
         api_secret=api_secret,
@@ -301,6 +397,10 @@ def _mint_livekit_token_for_user(*, user: AuthenticatedUser, space_id: str) -> L
         room=room,
         name=(user.email or user.user_id),
         ttl_seconds=3600,
+        agent_metadata={
+            "space_id": str(space_id),
+            "room_session_id": room_session_id,
+        },
     )
     return LiveKitTokenOut(url=url, token=token, room=room, identity=identity)
 
@@ -336,10 +436,49 @@ def agents(user: AuthenticatedUser = Depends(get_user)) -> dict[str, list[AgentO
     }
 
 
+@api_app.post("/v1/agents", response_model=AgentOut)
+def create_agent(body: CreateAgentIn, user: AuthenticatedUser = Depends(get_user)) -> AgentOut:
+    """Create a new agent and make the creating user the owner."""
+    agent_id = str(uuid.uuid4())
+    tx = _get_db().begin()
+    try:
+        _get_db().execute(
+            "INSERT INTO agents(agent_id, name, disabled) VALUES (:agent_id::uuid, :name, false)",
+            {"agent_id": agent_id, "name": body.name},
+            transaction_id=tx,
+        )
+        _get_db().execute(
+            """
+            INSERT INTO agent_memberships (agent_id, user_id, role, relationship_label)
+            VALUES (:agent_id::uuid, :user_id::uuid, 'owner', :relationship_label)
+            """,
+            {"agent_id": agent_id, "user_id": user.user_id, "relationship_label": body.relationship_label},
+            transaction_id=tx,
+        )
+        _get_db().commit(tx)
+    except Exception:
+        _get_db().rollback(tx)
+        raise
+
+    if _cfg.audit_bucket:
+        append_audit_entry(
+            _get_db(), bucket=_cfg.audit_bucket, agent_id=agent_id,
+            entry_type="agent_created", entry={"user_id": user.user_id, "name": body.name},
+        )
+
+    return AgentOut(
+        agent_id=agent_id,
+        name=body.name,
+        role="owner",
+        relationship_label=body.relationship_label,
+        disabled=False,
+    )
+
+
 @api_app.post("/v1/livekit/token", response_model=LiveKitTokenOut)
-def livekit_token(body: LiveKitTokenIn, user: AuthenticatedUser = Depends(get_user)) -> LiveKitTokenOut:
+async def livekit_token(body: LiveKitTokenIn, user: AuthenticatedUser = Depends(get_user)) -> LiveKitTokenOut:
     """Mint a short-lived LiveKit token for a user to join the room for a space."""
-    return _mint_livekit_token_for_user(user=user, space_id=body.space_id)
+    return await _mint_livekit_token_for_user(user=user, space_id=body.space_id)
 
 
 @api_app.post("/v1/agents/{agent_id}/claim_owner")

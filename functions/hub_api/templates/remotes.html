@@ -1,0 +1,394 @@
+{% extends "base.html" %}
+
+{% block title %}Remotes - Marvain{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title"><i class="fas fa-satellite-dish"></i> Remote Satellites</h1>
+    <p class="text-muted">Connected devices and services that marvain can control</p>
+  </div>
+  <div class="page-actions">
+    <button type="button" class="btn btn-outline" onclick="pingAllRemotes()" title="Ping all remotes">
+      <i class="fas fa-broadcast-tower"></i> Ping All
+    </button>
+    <button type="button" class="btn btn-primary" onclick="Marvain.showAddRemoteModal()">
+      <i class="fas fa-plus"></i> Add Remote
+    </button>
+  </div>
+</div>
+
+<!-- Status Summary -->
+<div class="grid grid-4 mb-lg">
+  <div class="stat-card">
+    <div class="card-icon success"><i class="fas fa-check-circle"></i></div>
+    <div class="stat-content">
+      <div class="stat-value">{{ online_count }}</div>
+      <div class="stat-label">Online</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="card-icon warning"><i class="fas fa-moon"></i></div>
+    <div class="stat-content">
+      <div class="stat-value">{{ hibernate_count }}</div>
+      <div class="stat-label">Hibernating</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="card-icon error"><i class="fas fa-times-circle"></i></div>
+    <div class="stat-content">
+      <div class="stat-value">{{ offline_count }}</div>
+      <div class="stat-label">Offline</div>
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="card-icon info"><i class="fas fa-network-wired"></i></div>
+    <div class="stat-content">
+      <div class="stat-value">{{ total_count }}</div>
+      <div class="stat-label">Total</div>
+    </div>
+  </div>
+</div>
+
+<!-- Filter Bar -->
+<div class="card mb-md">
+  <div class="filter-bar">
+    <div class="filter-group">
+      <label for="status-filter">Status</label>
+      <select id="status-filter" onchange="filterRemotes()">
+        <option value="">All</option>
+        <option value="online">Online</option>
+        <option value="hibernate">Hibernating</option>
+        <option value="offline">Offline</option>
+      </select>
+    </div>
+    <div class="filter-group">
+      <label for="type-filter">Connection Type</label>
+      <select id="type-filter" onchange="filterRemotes()">
+        <option value="">All</option>
+        <option value="network">Network (IP/WiFi)</option>
+        <option value="usb">USB</option>
+        <option value="direct">Direct Attached</option>
+      </select>
+    </div>
+    <div class="filter-group flex-grow">
+      <label for="search-filter">Search</label>
+      <input type="text" id="search-filter" placeholder="Search by name or address..." oninput="filterRemotes()">
+    </div>
+  </div>
+</div>
+
+<!-- Remotes Table -->
+<div class="card">
+  <div class="card-header">
+    <h3 class="card-title">All Remotes</h3>
+  </div>
+  <div class="card-body">
+    {% if remotes %}
+    <div class="table-container">
+      <table class="table" id="remotes-table">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Name</th>
+            <th>Address</th>
+            <th>Type</th>
+            <th>Agent</th>
+            <th>Last Seen</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for remote in remotes %}
+          <tr data-remote-id="{{ remote.remote_id }}" data-status="{{ remote.status }}" data-type="{{ remote.connection_type }}" data-name="{{ remote.name|lower }}" data-address="{{ remote.address|lower }}">
+            <td>
+              <span class="status-dot {{ remote.status }}" title="{{ remote.status|title }}"></span>
+              <span class="status-text">{{ remote.status|title }}</span>
+            </td>
+            <td>
+              <strong>{{ remote.name }}</strong>
+              {% if remote.capabilities %}
+              <br><small class="text-muted">{{ remote.capabilities|join(', ') }}</small>
+              {% endif %}
+            </td>
+            <td><code>{{ remote.address }}</code></td>
+            <td>
+              <span class="badge badge-info">
+                {% if remote.connection_type == 'network' %}<i class="fas fa-wifi"></i>{% elif remote.connection_type == 'usb' %}<i class="fas fa-usb"></i>{% else %}<i class="fas fa-plug"></i>{% endif %}
+                {{ remote.connection_type|title }}
+              </span>
+            </td>
+            <td>{{ remote.agent_name or 'N/A' }}</td>
+            <td>
+              {% if remote.last_seen %}
+              <span class="last-seen" title="{{ remote.last_seen }}">{{ remote.last_seen_relative }}</span>
+              {% else %}
+              <span class="last-seen text-muted">Never</span>
+              {% endif %}
+            </td>
+            <td>
+              <button class="btn btn-sm btn-outline ping-btn" onclick="pingRemote('{{ remote.remote_id }}')" title="Ping">
+                <i class="fas fa-wifi"></i>
+              </button>
+              <button class="btn btn-sm btn-outline" onclick="editRemote('{{ remote.remote_id }}')" title="Edit">
+                <i class="fas fa-edit"></i>
+              </button>
+              <button class="btn btn-sm btn-outline btn-error" onclick="confirmDeleteRemote('{{ remote.remote_id }}', '{{ remote.name }}')" title="Delete">
+                <i class="fas fa-trash"></i>
+              </button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <i class="fas fa-satellite-dish"></i>
+      <h3>No Remotes Registered</h3>
+      <p>Add your first remote satellite to get started.</p>
+      <button class="btn btn-primary" onclick="Marvain.showAddRemoteModal()">
+        <i class="fas fa-plus"></i> Add Remote
+      </button>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Add Remote Modal -->
+<div id="add-remote-modal" class="modal" style="display:none;">
+  <div class="modal-backdrop" onclick="Marvain.hideModal('add-remote-modal')"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3><i class="fas fa-plus"></i> Add Remote</h3>
+      <button type="button" class="btn-close" onclick="Marvain.hideModal('add-remote-modal')">&times;</button>
+    </div>
+    <form id="add-remote-form" onsubmit="submitAddRemote(event)">
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="remote-name">Name *</label>
+          <input type="text" id="remote-name" name="name" required placeholder="Living Room Camera">
+        </div>
+        <div class="form-group">
+          <label for="remote-address">Address *</label>
+          <input type="text" id="remote-address" name="address" required placeholder="192.168.1.100 or /dev/video0">
+        </div>
+        <div class="form-group">
+          <label for="remote-type">Connection Type *</label>
+          <select id="remote-type" name="connection_type" required>
+            <option value="network">Network (IP/WiFi)</option>
+            <option value="usb">USB</option>
+            <option value="direct">Direct Attached</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="remote-agent">Agent *</label>
+          <select id="remote-agent" name="agent_id" required>
+            {% for agent in agents %}
+            <option value="{{ agent.agent_id }}">{{ agent.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" onclick="Marvain.hideModal('add-remote-modal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add Remote</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Status refresh interval (30 seconds)
+const STATUS_REFRESH_INTERVAL = 30000;
+let statusRefreshTimer = null;
+
+function filterRemotes() {
+  const statusFilter = document.getElementById('status-filter').value.toLowerCase();
+  const typeFilter = document.getElementById('type-filter').value.toLowerCase();
+  const searchFilter = document.getElementById('search-filter').value.toLowerCase();
+
+  document.querySelectorAll('#remotes-table tbody tr').forEach(row => {
+    const status = row.dataset.status;
+    const type = row.dataset.type;
+    const name = row.dataset.name;
+    const address = row.dataset.address;
+
+    const matchesStatus = !statusFilter || status === statusFilter;
+    const matchesType = !typeFilter || type === typeFilter;
+    const matchesSearch = !searchFilter || name.includes(searchFilter) || address.includes(searchFilter);
+
+    row.style.display = matchesStatus && matchesType && matchesSearch ? '' : 'none';
+  });
+}
+
+function updateRemoteStatus(remoteId, status, lastPing) {
+  // Update the table row
+  const row = document.querySelector(`tr[data-remote-id="${remoteId}"]`);
+  if (row) {
+    row.dataset.status = status;
+    const statusCell = row.querySelector('.status-dot');
+    if (statusCell) {
+      statusCell.className = 'status-dot ' + status;
+      statusCell.title = status.charAt(0).toUpperCase() + status.slice(1);
+    }
+    const lastSeenCell = row.querySelector('.last-seen');
+    if (lastSeenCell && lastPing) {
+      lastSeenCell.textContent = Marvain.relativeTime(lastPing);
+    }
+  }
+}
+
+function updateStatusCounts(counts) {
+  const onlineEl = document.querySelector('.stat-card .success + .stat-content .stat-value');
+  const hibernateEl = document.querySelector('.stat-card .warning + .stat-content .stat-value');
+  const offlineEl = document.querySelector('.stat-card .error + .stat-content .stat-value');
+  const totalEl = document.querySelector('.stat-card .info + .stat-content .stat-value');
+
+  if (onlineEl) onlineEl.textContent = counts.online_count;
+  if (hibernateEl) hibernateEl.textContent = counts.hibernate_count;
+  if (offlineEl) offlineEl.textContent = counts.offline_count;
+  if (totalEl) totalEl.textContent = counts.total_count;
+}
+
+function refreshAllStatuses() {
+  Marvain.api('/api/remotes/status')
+    .then(data => {
+      data.remotes.forEach(remote => {
+        updateRemoteStatus(remote.remote_id, remote.status, remote.last_seen);
+      });
+      updateStatusCounts(data);
+    })
+    .catch(err => {
+      console.warn('Failed to refresh statuses:', err);
+    });
+}
+
+function pingRemote(remoteId) {
+  const row = document.querySelector(`tr[data-remote-id="${remoteId}"]`);
+  const pingBtn = row ? row.querySelector('.ping-btn') : null;
+  if (pingBtn) {
+    pingBtn.disabled = true;
+    pingBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+  }
+
+  Marvain.api('/api/remotes/' + remoteId + '/ping', { method: 'POST' })
+    .then(data => {
+      updateRemoteStatus(remoteId, data.status, data.last_ping);
+      const statusText = data.is_online ? 'Online' : 'Offline';
+      Marvain.showToast(data.is_online ? 'success' : 'warning', 'Ping Complete',
+        `Remote is ${statusText}`);
+      refreshAllStatuses();  // Refresh counts
+    })
+    .catch(err => {
+      Marvain.showToast('error', 'Ping Failed', err.message);
+    })
+    .finally(() => {
+      if (pingBtn) {
+        pingBtn.disabled = false;
+        pingBtn.innerHTML = '<i class="fas fa-wifi"></i>';
+      }
+    });
+}
+
+function pingAllRemotes() {
+  const rows = document.querySelectorAll('#remotes-table tbody tr');
+  if (rows.length === 0) {
+    Marvain.showToast('info', 'No Remotes', 'Add some remotes first');
+    return;
+  }
+
+  Marvain.showLoading('Pinging all remotes...');
+  const remoteIds = Array.from(rows).map(row => row.dataset.remoteId).filter(Boolean);
+
+  Promise.all(remoteIds.map(id =>
+    Marvain.api('/api/remotes/' + id + '/ping', { method: 'POST' })
+      .then(data => ({ id, ...data }))
+      .catch(err => ({ id, error: err.message }))
+  )).then(results => {
+    Marvain.hideLoading();
+    const online = results.filter(r => r.is_online).length;
+    const failed = results.filter(r => r.error).length;
+    Marvain.showToast('success', 'Ping Complete',
+      `${online} online, ${results.length - online - failed} offline` +
+      (failed ? `, ${failed} failed` : ''));
+    refreshAllStatuses();
+  });
+}
+
+function confirmDeleteRemote(remoteId, name) {
+  if (confirm('Delete remote "' + name + '"? This cannot be undone.')) {
+    deleteRemote(remoteId);
+  }
+}
+
+function deleteRemote(remoteId) {
+  Marvain.showLoading('Deleting remote...');
+  Marvain.api('/api/remotes/' + remoteId, { method: 'DELETE' })
+    .then(() => {
+      Marvain.hideLoading();
+      Marvain.showToast('success', 'Deleted', 'Remote deleted successfully');
+      location.reload();
+    })
+    .catch(err => {
+      Marvain.hideLoading();
+      Marvain.showToast('error', 'Delete Failed', err.message);
+    });
+}
+
+function editRemote(remoteId) {
+  Marvain.showToast('info', 'Coming Soon', 'Edit functionality will be added');
+}
+
+function submitAddRemote(event) {
+  event.preventDefault();
+  const form = event.target;
+  const data = {
+    name: form.name.value,
+    address: form.address.value,
+    connection_type: form.connection_type.value,
+    agent_id: form.agent_id.value
+  };
+
+  Marvain.showLoading('Adding remote...');
+  Marvain.api('/api/remotes', { method: 'POST', body: JSON.stringify(data), headers: {'Content-Type': 'application/json'} })
+    .then(() => {
+      Marvain.hideLoading();
+      Marvain.showToast('success', 'Added', 'Remote added successfully');
+      Marvain.hideModal('add-remote-modal');
+      location.reload();
+    })
+    .catch(err => {
+      Marvain.hideLoading();
+      Marvain.showToast('error', 'Add Failed', err.message);
+    });
+}
+
+// Extend Marvain with modal functions
+Marvain.showAddRemoteModal = function() {
+  document.getElementById('add-remote-modal').style.display = 'flex';
+};
+
+Marvain.hideModal = function(id) {
+  document.getElementById(id).style.display = 'none';
+};
+
+// Start auto-refresh on page load
+document.addEventListener('DOMContentLoaded', function() {
+  statusRefreshTimer = setInterval(refreshAllStatuses, STATUS_REFRESH_INTERVAL);
+});
+
+// Stop refresh when page is hidden
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden) {
+    if (statusRefreshTimer) clearInterval(statusRefreshTimer);
+  } else {
+    refreshAllStatuses();
+    statusRefreshTimer = setInterval(refreshAllStatuses, STATUS_REFRESH_INTERVAL);
+  }
+});
+</script>
+{% endblock %}
+

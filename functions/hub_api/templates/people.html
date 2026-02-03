@@ -1,0 +1,322 @@
+{% extends "base.html" %}
+
+{% block title %}People & Consent - Marvain{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title"><i class="fas fa-users"></i> People & Consent</h1>
+    <p class="text-muted">Manage people and their consent grants</p>
+  </div>
+  <div class="page-actions">
+    <button type="button" class="btn btn-primary" onclick="Marvain.showModal('create-person-modal')">
+      <i class="fas fa-plus"></i> Add Person
+    </button>
+  </div>
+</div>
+
+<!-- Filter Bar -->
+<div class="filter-bar mb-lg">
+  <div class="filter-group">
+    <label for="agent-filter">Agent</label>
+    <select id="agent-filter" onchange="filterPeople()">
+      <option value="">All Agents</option>
+      {% for agent in agents %}
+      <option value="{{ agent.agent_id }}">{{ agent.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="filter-group">
+    <label for="consent-filter">Consent Status</label>
+    <select id="consent-filter" onchange="filterPeople()">
+      <option value="">All</option>
+      <option value="has-consent">Has Active Consent</option>
+      <option value="no-consent">No Active Consent</option>
+    </select>
+  </div>
+  <div class="filter-group flex-grow">
+    <label for="search-filter">Search</label>
+    <input type="text" id="search-filter" placeholder="Search people..." oninput="filterPeople()">
+  </div>
+</div>
+
+<!-- People Grid -->
+<div class="grid grid-3" id="people-grid">
+  {% if people %}
+  {% for person in people %}
+  <div class="person-card card" data-agent="{{ person.agent_id }}" data-consent="{{ 'has-consent' if person.active_consents else 'no-consent' }}" data-name="{{ person.display_name|lower }}">
+    <div class="card-body">
+      <div class="person-header">
+        <div class="person-avatar">
+          <i class="fas fa-user"></i>
+        </div>
+        <div class="person-info">
+          <h4 class="person-name">{{ person.display_name }}</h4>
+          <span class="text-muted">{{ person.agent_name }}</span>
+        </div>
+      </div>
+      <div class="person-details">
+        <div class="detail-row">
+          <span class="detail-label">Person ID</span>
+          <code class="detail-value">{{ person.person_id[:8] }}...</code>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Created</span>
+          <span class="detail-value">{{ person.created_at_relative or 'Unknown' }}</span>
+        </div>
+      </div>
+      <div class="consent-badges">
+        {% if person.voice_consent %}
+        <span class="consent-badge consent-active" title="Voice consent until {{ person.voice_consent }}">
+          <i class="fas fa-microphone"></i> Voice
+        </span>
+        {% else %}
+        <span class="consent-badge consent-none" title="No voice consent">
+          <i class="fas fa-microphone-slash"></i> Voice
+        </span>
+        {% endif %}
+        {% if person.face_consent %}
+        <span class="consent-badge consent-active" title="Face consent until {{ person.face_consent }}">
+          <i class="fas fa-camera"></i> Face
+        </span>
+        {% else %}
+        <span class="consent-badge consent-none" title="No face consent">
+          <i class="fas fa-camera"></i> Face
+        </span>
+        {% endif %}
+        {% if person.recording_consent %}
+        <span class="consent-badge consent-active" title="Recording consent until {{ person.recording_consent }}">
+          <i class="fas fa-record-vinyl"></i> Record
+        </span>
+        {% else %}
+        <span class="consent-badge consent-none" title="No recording consent">
+          <i class="fas fa-record-vinyl"></i> Record
+        </span>
+        {% endif %}
+      </div>
+      <div class="person-actions">
+        <button class="btn btn-sm btn-outline" onclick="editPerson('{{ person.person_id }}')">
+          <i class="fas fa-edit"></i> Edit
+        </button>
+        <button class="btn btn-sm btn-primary" onclick="manageConsent('{{ person.person_id }}', '{{ person.display_name }}')">
+          <i class="fas fa-shield-alt"></i> Consent
+        </button>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+  {% else %}
+  <div class="empty-state" style="grid-column: 1 / -1;">
+    <i class="fas fa-users fa-3x"></i>
+    <h3>No People Registered</h3>
+    <p>Add people to manage their consent for voice, face, and recording.</p>
+    <button type="button" class="btn btn-primary" onclick="Marvain.showModal('create-person-modal')">
+      <i class="fas fa-plus"></i> Add Person
+    </button>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Add Person Modal -->
+<div id="create-person-modal" class="modal" style="display: none;">
+  <div class="modal-backdrop" onclick="Marvain.hideModal('create-person-modal')"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>Add New Person</h3>
+      <button type="button" class="btn btn-sm" onclick="Marvain.hideModal('create-person-modal')">
+        <i class="fas fa-times"></i>
+      </button>
+    </div>
+    <form onsubmit="submitCreatePerson(event)">
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="person-agent">Agent *</label>
+          <select id="person-agent" name="agent_id" required>
+            {% for agent in agents %}
+            {% if agent.role in ['owner', 'admin'] %}
+            <option value="{{ agent.agent_id }}">{{ agent.name }}</option>
+            {% endif %}
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="person-name">Display Name *</label>
+          <input type="text" id="person-name" name="display_name" required placeholder="John Doe">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" onclick="Marvain.hideModal('create-person-modal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add Person</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Manage Consent Modal -->
+<div id="consent-modal" class="modal" style="display: none;">
+  <div class="modal-backdrop" onclick="Marvain.hideModal('consent-modal')"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>Manage Consent for <span id="consent-person-name"></span></h3>
+      <button type="button" class="btn btn-sm" onclick="Marvain.hideModal('consent-modal')">
+        <i class="fas fa-times"></i>
+      </button>
+    </div>
+    <form onsubmit="submitConsent(event)">
+      <input type="hidden" id="consent-person-id" name="person_id">
+      <div class="modal-body">
+        <p class="text-muted mb-md">Grant or revoke consent for different types of data collection.</p>
+        <div class="consent-options">
+          <div class="consent-option">
+            <label class="consent-toggle">
+              <input type="checkbox" id="consent-voice" name="voice">
+              <span class="consent-toggle-label">
+                <i class="fas fa-microphone"></i> Voice Recording
+              </span>
+            </label>
+            <div class="consent-expiry">
+              <label for="consent-voice-expiry">Expires</label>
+              <input type="date" id="consent-voice-expiry" name="voice_expiry">
+            </div>
+          </div>
+          <div class="consent-option">
+            <label class="consent-toggle">
+              <input type="checkbox" id="consent-face" name="face">
+              <span class="consent-toggle-label">
+                <i class="fas fa-camera"></i> Face Recognition
+              </span>
+            </label>
+            <div class="consent-expiry">
+              <label for="consent-face-expiry">Expires</label>
+              <input type="date" id="consent-face-expiry" name="face_expiry">
+            </div>
+          </div>
+          <div class="consent-option">
+            <label class="consent-toggle">
+              <input type="checkbox" id="consent-recording" name="recording">
+              <span class="consent-toggle-label">
+                <i class="fas fa-record-vinyl"></i> General Recording
+              </span>
+            </label>
+            <div class="consent-expiry">
+              <label for="consent-recording-expiry">Expires</label>
+              <input type="date" id="consent-recording-expiry" name="recording_expiry">
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" onclick="Marvain.hideModal('consent-modal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Consent</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function filterPeople() {
+  const agent = document.getElementById('agent-filter').value;
+  const consent = document.getElementById('consent-filter').value;
+  const search = document.getElementById('search-filter').value.toLowerCase();
+
+  document.querySelectorAll('.person-card').forEach(card => {
+    const matchAgent = !agent || card.dataset.agent === agent;
+    const matchConsent = !consent || card.dataset.consent === consent;
+    const matchSearch = !search || card.dataset.name.includes(search);
+    card.style.display = matchAgent && matchConsent && matchSearch ? '' : 'none';
+  });
+}
+
+function editPerson(personId) {
+  Marvain.showToast('info', 'Coming Soon', 'Edit person functionality will be available soon.');
+}
+
+function manageConsent(personId, displayName) {
+  document.getElementById('consent-person-id').value = personId;
+  document.getElementById('consent-person-name').textContent = displayName;
+  // Reset form
+  document.getElementById('consent-voice').checked = false;
+  document.getElementById('consent-face').checked = false;
+  document.getElementById('consent-recording').checked = false;
+  document.getElementById('consent-voice-expiry').value = '';
+  document.getElementById('consent-face-expiry').value = '';
+  document.getElementById('consent-recording-expiry').value = '';
+  Marvain.showModal('consent-modal');
+}
+
+async function submitCreatePerson(event) {
+  event.preventDefault();
+  const form = event.target;
+  const formData = new FormData(form);
+
+  const data = {
+    agent_id: formData.get('agent_id'),
+    display_name: formData.get('display_name')
+  };
+
+  try {
+    Marvain.showLoading('Adding person...');
+    const response = await fetch('/api/people', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data)
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to add person');
+    }
+
+    Marvain.hideLoading();
+    Marvain.hideModal('create-person-modal');
+    Marvain.showToast('success', 'Success', 'Person added successfully');
+    setTimeout(() => location.reload(), 1000);
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+}
+
+async function submitConsent(event) {
+  event.preventDefault();
+  const form = event.target;
+  const personId = document.getElementById('consent-person-id').value;
+
+  const consents = [];
+  if (document.getElementById('consent-voice').checked) {
+    consents.push({type: 'voice', expires_at: document.getElementById('consent-voice-expiry').value || null});
+  }
+  if (document.getElementById('consent-face').checked) {
+    consents.push({type: 'face', expires_at: document.getElementById('consent-face-expiry').value || null});
+  }
+  if (document.getElementById('consent-recording').checked) {
+    consents.push({type: 'recording', expires_at: document.getElementById('consent-recording-expiry').value || null});
+  }
+
+  try {
+    Marvain.showLoading('Saving consent...');
+    const response = await fetch(`/api/people/${personId}/consent`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({consents: consents})
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to save consent');
+    }
+
+    Marvain.hideLoading();
+    Marvain.hideModal('consent-modal');
+    Marvain.showToast('success', 'Success', 'Consent saved successfully');
+    setTimeout(() => location.reload(), 1000);
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+}
+</script>
+{% endblock %}
+
