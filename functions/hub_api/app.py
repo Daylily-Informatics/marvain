@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import html
+import json
 import logging
 import os
 import uuid
@@ -25,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.responses import Response
 
-from agent_hub.auth import AuthenticatedUser, ensure_user_row
+from agent_hub.auth import AuthenticatedUser, ensure_user_row, generate_device_token, hash_token
 from agent_hub.cognito import (
     CognitoAuthError,
     CognitoUserInfo,
@@ -418,25 +419,37 @@ def gui_home(request: Request) -> Response:
     # Get spaces for user
     spaces = list_spaces_for_user(db, user_id=user.user_id)
 
-    # Get remotes (satellites) - query from database
+    # Get remotes (satellites) - devices with metadata.is_remote = true
+    # A remote is "online" if it has a recent heartbeat (within 60 seconds)
     remotes = []
     remotes_online = 0
     try:
         rows = db.query("""
-            SELECT r.remote_id, r.name, r.address, r.connection_type, r.status, r.last_seen
-            FROM remotes r
-            INNER JOIN agent_memberships m ON r.agent_id = m.agent_id
-            WHERE m.user_id = :user_id AND m.revoked_at IS NULL
-            ORDER BY r.status = 'online' DESC, r.name ASC
+            SELECT d.device_id as remote_id, d.name,
+                   d.metadata->>'address' as address,
+                   d.metadata->>'connection_type' as connection_type,
+                   CASE
+                       WHEN d.last_heartbeat_at > now() - interval '60 seconds' THEN 'online'
+                       WHEN d.last_heartbeat_at > now() - interval '5 minutes' THEN 'hibernate'
+                       ELSE 'offline'
+                   END as status,
+                   d.last_seen
+            FROM devices d
+            INNER JOIN agent_memberships m ON d.agent_id = m.agent_id
+            WHERE m.user_id = :user_id
+              AND m.revoked_at IS NULL
+              AND d.revoked_at IS NULL
+              AND (d.metadata->>'is_remote')::boolean = true
+            ORDER BY d.last_heartbeat_at DESC NULLS LAST, d.name ASC
             LIMIT 10
         """, {"user_id": str(user.user_id)})
         for row in rows:
             remote = {
                 "remote_id": str(row.get("remote_id", "")),
                 "name": row.get("name", "Unknown"),
-                "address": row.get("address", ""),
-                "connection_type": row.get("connection_type", "network"),
-                "status": row.get("status", "offline"),
+                "address": row.get("address") or "",
+                "connection_type": row.get("connection_type") or "network",
+                "status": row.get("status") or "offline",
             }
             remotes.append(remote)
             if remote["status"] == "online":
@@ -492,17 +505,28 @@ def gui_remotes(request: Request) -> Response:
 
     db = _get_db()
 
-    # Get all remotes for user's agents
+    # Get all remotes for user's agents (devices with is_remote = true)
     remotes = []
     try:
         rows = db.query("""
-            SELECT r.remote_id, r.name, r.address, r.connection_type, r.capabilities,
-                   r.status, r.last_ping, r.last_seen, a.name as agent_name
-            FROM remotes r
-            INNER JOIN agents a ON r.agent_id = a.agent_id
-            INNER JOIN agent_memberships m ON r.agent_id = m.agent_id
-            WHERE m.user_id = :user_id AND m.revoked_at IS NULL
-            ORDER BY r.status = 'online' DESC, r.status = 'hibernate' DESC, r.name ASC
+            SELECT d.device_id as remote_id, d.name,
+                   d.metadata->>'address' as address,
+                   d.metadata->>'connection_type' as connection_type,
+                   d.capabilities,
+                   CASE
+                       WHEN d.last_heartbeat_at > now() - interval '60 seconds' THEN 'online'
+                       WHEN d.last_heartbeat_at > now() - interval '5 minutes' THEN 'hibernate'
+                       ELSE 'offline'
+                   END as status,
+                   d.last_heartbeat_at as last_ping, d.last_seen, a.name as agent_name
+            FROM devices d
+            INNER JOIN agents a ON d.agent_id = a.agent_id
+            INNER JOIN agent_memberships m ON d.agent_id = m.agent_id
+            WHERE m.user_id = :user_id
+              AND m.revoked_at IS NULL
+              AND d.revoked_at IS NULL
+              AND (d.metadata->>'is_remote')::boolean = true
+            ORDER BY d.last_heartbeat_at DESC NULLS LAST, d.name ASC
         """, {"user_id": str(user.user_id)})
         for row in rows:
             # Parse capabilities JSON if present
@@ -540,10 +564,10 @@ def gui_remotes(request: Request) -> Response:
             remotes.append({
                 "remote_id": str(row.get("remote_id", "")),
                 "name": row.get("name", "Unknown"),
-                "address": row.get("address", ""),
-                "connection_type": row.get("connection_type", "network"),
+                "address": row.get("address") or "",
+                "connection_type": row.get("connection_type") or "network",
                 "capabilities": caps,
-                "status": row.get("status", "offline"),
+                "status": row.get("status") or "offline",
                 "last_seen": str(last_seen) if last_seen else None,
                 "last_seen_relative": last_seen_relative,
                 "agent_name": row.get("agent_name", ""),
@@ -597,11 +621,12 @@ class RemoteResponse(BaseModel):
     connection_type: str
     status: str
     agent_id: str
+    device_token: str | None = None  # Returned on creation only
 
 
 @app.post("/api/remotes", name="api_create_remote")
 def api_create_remote(request: Request, body: RemoteCreate) -> RemoteResponse:
-    """Create a new remote satellite."""
+    """Create a new remote satellite (as a device with is_remote=true)."""
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -616,30 +641,41 @@ def api_create_remote(request: Request, body: RemoteCreate) -> RemoteResponse:
     if body.connection_type not in ("network", "usb", "direct"):
         raise HTTPException(status_code=400, detail="Invalid connection_type")
 
-    # Create the remote
-    remote_id = str(uuid.uuid4())
+    # Create the remote as a device
+    device_id = str(uuid.uuid4())
+    token = generate_device_token()
+    token_hash_val = hash_token(token)
+    metadata = {
+        "is_remote": True,
+        "address": body.address,
+        "connection_type": body.connection_type,
+    }
+    scopes = ["events:write", "presence:write", "memories:read"]
+
     try:
         db.execute("""
-            INSERT INTO remotes (remote_id, agent_id, name, address, connection_type, status)
-            VALUES (:remote_id::uuid, :agent_id::uuid, :name, :address, :connection_type, 'offline')
+            INSERT INTO devices (device_id, agent_id, name, token_hash, metadata, scopes, capabilities)
+            VALUES (:device_id::uuid, :agent_id::uuid, :name, :token_hash, :metadata::jsonb, :scopes::jsonb, '{}'::jsonb)
         """, {
-            "remote_id": remote_id,
+            "device_id": device_id,
             "agent_id": body.agent_id,
             "name": body.name,
-            "address": body.address,
-            "connection_type": body.connection_type,
+            "token_hash": token_hash_val,
+            "metadata": json.dumps(metadata),
+            "scopes": json.dumps(scopes),
         })
     except Exception as e:
-        logger.error(f"Failed to create remote: {e}")
+        logger.error(f"Failed to create remote device: {e}")
         raise HTTPException(status_code=500, detail="Failed to create remote")
 
     return RemoteResponse(
-        remote_id=remote_id,
+        remote_id=device_id,
         name=body.name,
         address=body.address,
         connection_type=body.connection_type,
         status="offline",
         agent_id=body.agent_id,
+        device_token=token,  # Only returned on creation!
     )
 
 
@@ -709,19 +745,30 @@ def _ping_remote_address(address: str, connection_type: str, timeout: float = 2.
 
 @app.post("/api/remotes/{remote_id}/ping", name="api_ping_remote")
 def api_ping_remote(request: Request, remote_id: str) -> dict:
-    """Ping a remote to check its status."""
+    """Ping a remote device to check its status."""
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     db = _get_db()
 
-    # Get the remote and check permission
+    # Get the remote device and check permission
     rows = db.query("""
-        SELECT r.remote_id, r.agent_id, r.address, r.connection_type, r.status
-        FROM remotes r
-        INNER JOIN agent_memberships m ON r.agent_id = m.agent_id
-        WHERE r.remote_id = :remote_id::uuid AND m.user_id = :user_id::uuid AND m.revoked_at IS NULL
+        SELECT d.device_id as remote_id, d.agent_id,
+               d.metadata->>'address' as address,
+               d.metadata->>'connection_type' as connection_type,
+               CASE
+                   WHEN d.last_heartbeat_at > now() - interval '60 seconds' THEN 'online'
+                   WHEN d.last_heartbeat_at > now() - interval '5 minutes' THEN 'hibernate'
+                   ELSE 'offline'
+               END as status
+        FROM devices d
+        INNER JOIN agent_memberships m ON d.agent_id = m.agent_id
+        WHERE d.device_id = :remote_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.revoked_at IS NULL
+          AND d.revoked_at IS NULL
+          AND (d.metadata->>'is_remote')::boolean = true
     """, {"remote_id": remote_id, "user_id": str(user.user_id)})
 
     if not rows:
@@ -732,30 +779,16 @@ def api_ping_remote(request: Request, remote_id: str) -> dict:
     now = datetime.now(timezone.utc)
 
     # Actually ping the remote based on connection_type
-    is_online, new_status = _ping_remote_address(
-        remote["address"],
-        remote["connection_type"]
-    )
+    address = remote.get("address") or ""
+    connection_type = remote.get("connection_type") or "network"
+    is_online, new_status = _ping_remote_address(address, connection_type)
 
-    # Update status and timestamps
+    # Update last_seen timestamp if online (heartbeat is managed by the device itself)
     try:
-        update_params = {
-            "remote_id": remote_id,
-            "now": now.isoformat(),
-            "status": new_status,
-        }
         if is_online:
             db.execute("""
-                UPDATE remotes
-                SET last_ping = :now, last_seen = :now, status = :status
-                WHERE remote_id = :remote_id::uuid
-            """, update_params)
-        else:
-            db.execute("""
-                UPDATE remotes
-                SET last_ping = :now, status = :status
-                WHERE remote_id = :remote_id::uuid
-            """, update_params)
+                UPDATE devices SET last_seen = :now WHERE device_id = :device_id::uuid
+            """, {"device_id": remote_id, "now": now.isoformat()})
     except Exception as e:
         logger.warning(f"Failed to update remote status: {e}")
 
@@ -769,19 +802,28 @@ def api_ping_remote(request: Request, remote_id: str) -> dict:
 
 @app.get("/api/remotes/status", name="api_remotes_status")
 def api_remotes_status(request: Request) -> dict:
-    """Get status of all remotes for the current user."""
+    """Get status of all remote devices for the current user."""
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     db = _get_db()
 
-    # Get all remotes for user
+    # Get all remote devices for user
     rows = db.query("""
-        SELECT r.remote_id, r.name, r.status, r.last_ping, r.last_seen
-        FROM remotes r
-        INNER JOIN agent_memberships m ON r.agent_id = m.agent_id
-        WHERE m.user_id = :user_id::uuid AND m.revoked_at IS NULL
+        SELECT d.device_id as remote_id, d.name,
+               CASE
+                   WHEN d.last_heartbeat_at > now() - interval '60 seconds' THEN 'online'
+                   WHEN d.last_heartbeat_at > now() - interval '5 minutes' THEN 'hibernate'
+                   ELSE 'offline'
+               END as status,
+               d.last_heartbeat_at as last_ping, d.last_seen
+        FROM devices d
+        INNER JOIN agent_memberships m ON d.agent_id = m.agent_id
+        WHERE m.user_id = :user_id::uuid
+          AND m.revoked_at IS NULL
+          AND d.revoked_at IS NULL
+          AND (d.metadata->>'is_remote')::boolean = true
     """, {"user_id": str(user.user_id)})
 
     remotes = []
@@ -805,28 +847,34 @@ def api_remotes_status(request: Request) -> dict:
 
 @app.delete("/api/remotes/{remote_id}", name="api_delete_remote")
 def api_delete_remote(request: Request, remote_id: str) -> dict:
-    """Delete a remote."""
+    """Delete (revoke) a remote device."""
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     db = _get_db()
 
-    # Get the remote and check permission (require admin)
+    # Get the remote device and check permission (require admin)
     rows = db.query("""
-        SELECT r.remote_id, r.agent_id
-        FROM remotes r
-        INNER JOIN agent_memberships m ON r.agent_id = m.agent_id
-        WHERE r.remote_id = :remote_id::uuid AND m.user_id = :user_id::uuid AND m.role IN ('admin', 'owner') AND m.revoked_at IS NULL
+        SELECT d.device_id as remote_id, d.agent_id
+        FROM devices d
+        INNER JOIN agent_memberships m ON d.agent_id = m.agent_id
+        WHERE d.device_id = :remote_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.role IN ('admin', 'owner')
+          AND m.revoked_at IS NULL
+          AND d.revoked_at IS NULL
+          AND (d.metadata->>'is_remote')::boolean = true
     """, {"remote_id": remote_id, "user_id": str(user.user_id)})
 
     if not rows:
         raise HTTPException(status_code=404, detail="Remote not found or permission denied")
 
     try:
+        # Soft-delete by setting revoked_at
         db.execute("""
-            DELETE FROM remotes WHERE remote_id = :remote_id::uuid
-        """, {"remote_id": remote_id})
+            UPDATE devices SET revoked_at = now() WHERE device_id = :device_id::uuid
+        """, {"device_id": remote_id})
     except Exception as e:
         logger.error(f"Failed to delete remote: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete remote")
