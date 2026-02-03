@@ -102,14 +102,15 @@ def _handle_action_decision(event, connection_id: str, table, conn_item: dict, a
     new_status = "approved" if approve else "rejected"
 
     if approve:
-        # Approve: update status and queue for execution
+        # Approve: update status with approver info and queue for execution
         _get_db().execute(
             """
             UPDATE actions
-            SET status = 'approved', updated_at = now()
+            SET status = 'approved', updated_at = now(),
+                approved_by = :user_id::uuid, approved_at = now()
             WHERE action_id = :action_id::uuid
             """,
-            {"action_id": action_id},
+            {"action_id": action_id, "user_id": user_id},
         )
 
         # Queue for execution

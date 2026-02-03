@@ -114,15 +114,25 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
         result: dict[str, Any] = tool_result.to_dict()
         result["kind"] = kind
 
-        # Mark executed or failed based on result
+        # Mark executed or failed based on result, and persist result/error
         new_status = "executed" if tool_result.ok else "failed"
         _db.execute(
             """
             UPDATE actions
-            SET status=:status, updated_at=now(), executed_at=now()
+            SET status = :status,
+                updated_at = now(),
+                executed_at = now(),
+                completed_at = now(),
+                result = :result::jsonb,
+                error = :error
             WHERE action_id = :action_id::uuid
             """,
-            {"action_id": action_id, "status": new_status},
+            {
+                "action_id": action_id,
+                "status": new_status,
+                "result": json.dumps(tool_result.data) if tool_result.ok else None,
+                "error": tool_result.error if not tool_result.ok else None,
+            },
         )
 
         if _cfg.audit_bucket:

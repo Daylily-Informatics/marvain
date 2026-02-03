@@ -1848,8 +1848,11 @@ def api_approve_action(request: Request, action_id: str) -> dict:
 
     try:
         db.execute("""
-            UPDATE actions SET status = 'approved', updated_at = now() WHERE action_id = :action_id::uuid
-        """, {"action_id": action_id})
+            UPDATE actions
+            SET status = 'approved', updated_at = now(),
+                approved_by = :user_id::uuid, approved_at = now()
+            WHERE action_id = :action_id::uuid
+        """, {"action_id": action_id, "user_id": str(user.user_id)})
     except Exception as e:
         logger.error(f"Failed to approve action: {e}")
         raise HTTPException(status_code=500, detail="Failed to approve action")
