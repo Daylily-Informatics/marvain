@@ -174,3 +174,151 @@ class TestUnknownMessageType:
 
         assert result is None
 
+    def test_empty_message_returns_none(self):
+        """Empty message should return None."""
+        msg = {}
+        result = _run_async(handle_command(msg))
+
+        assert result is None
+
+    def test_message_without_type_returns_none(self):
+        """Message without type field should return None."""
+        msg = {"data": "test", "payload": {}}
+        result = _run_async(handle_command(msg))
+
+        assert result is None
+
+
+class TestActionErrorHandling:
+    """Tests for action error handling."""
+
+    def test_action_with_exception_returns_error(self):
+        """Action that raises exception should return error status."""
+        # Register a failing action temporarily
+        original_actions = _daemon_module.DEVICE_ACTIONS.copy()
+
+        def _failing_action(payload):
+            raise ValueError("Test error")
+
+        _daemon_module.DEVICE_ACTIONS["failing"] = _failing_action
+
+        try:
+            msg = {"type": "cmd.run_action", "kind": "failing", "payload": {}}
+            result = _run_async(handle_command(msg))
+
+            assert result is not None
+            assert result["action"] == "action_result"
+            assert result["kind"] == "failing"
+            assert result["status"] == "error"
+            assert "Test error" in result["error"]
+        finally:
+            _daemon_module.DEVICE_ACTIONS.clear()
+            _daemon_module.DEVICE_ACTIONS.update(original_actions)
+
+    def test_action_with_complex_payload(self):
+        """Action should handle complex nested payloads."""
+        complex_payload = {
+            "nested": {"deep": {"value": 123}},
+            "list": [1, 2, 3],
+            "unicode": "日本語テスト",
+        }
+        msg = {"type": "cmd.run_action", "kind": "echo", "payload": complex_payload}
+        result = _run_async(handle_command(msg))
+
+        assert result is not None
+        assert result["status"] == "success"
+        assert result["result"]["echoed"] == complex_payload
+
+
+class TestConfigEdgeCases:
+    """Tests for config command edge cases."""
+
+    def test_config_with_empty_config(self):
+        """Config command with empty config should still acknowledge."""
+        msg = {"type": "cmd.config", "config": {}}
+        result = _run_async(handle_command(msg))
+
+        assert result is not None
+        assert result["action"] == "config_ack"
+        assert result["status"] == "applied"
+        assert result["config_keys"] == []
+
+    def test_config_overwrites_existing_keys(self):
+        """Config command should overwrite existing keys."""
+        _device_config.clear()
+
+        # Set initial value
+        msg1 = {"type": "cmd.config", "config": {"key": "value1"}}
+        _run_async(handle_command(msg1))
+
+        # Overwrite
+        msg2 = {"type": "cmd.config", "config": {"key": "value2"}}
+        _run_async(handle_command(msg2))
+
+        config = get_device_config()
+        assert config["key"] == "value2"
+
+    def test_config_with_none_values(self):
+        """Config command should handle None values."""
+        _device_config.clear()
+
+        msg = {"type": "cmd.config", "config": {"nullable": None, "valid": "value"}}
+        result = _run_async(handle_command(msg))
+
+        assert result is not None
+        assert result["status"] == "applied"
+        config = get_device_config()
+        assert config["nullable"] is None
+        assert config["valid"] == "value"
+
+
+class TestActionPayloadVariations:
+    """Tests for various action payload formats."""
+
+    def test_ping_ignores_payload(self):
+        """Ping action should work regardless of payload content."""
+        msg = {"type": "cmd.run_action", "kind": "ping", "payload": {"ignored": "data"}}
+        result = _run_async(handle_command(msg))
+
+        assert result is not None
+        assert result["status"] == "success"
+        assert result["result"]["status"] == "ok"
+
+    def test_status_returns_disk_info(self):
+        """Status action should return disk usage information."""
+        msg = {"type": "cmd.run_action", "kind": "status", "payload": {}}
+        result = _run_async(handle_command(msg))
+
+        assert result is not None
+        assert result["status"] == "success"
+        # Verify disk info is present and reasonable
+        assert result["result"]["disk_total_gb"] > 0
+        assert result["result"]["disk_free_gb"] >= 0
+        assert 0 <= result["result"]["disk_used_percent"] <= 100
+
+    def test_echo_with_empty_payload(self):
+        """Echo action should handle empty payload."""
+        msg = {"type": "cmd.run_action", "kind": "echo", "payload": {}}
+        result = _run_async(handle_command(msg))
+
+        assert result is not None
+        assert result["status"] == "success"
+        assert result["result"]["echoed"] == {}
+
+    def test_missing_kind_field(self):
+        """run_action without kind should return unsupported."""
+        msg = {"type": "cmd.run_action", "payload": {}}
+        result = _run_async(handle_command(msg))
+
+        assert result is not None
+        assert result["status"] == "unsupported"
+        assert result["kind"] == ""
+
+    def test_missing_payload_field(self):
+        """run_action without payload should use empty dict."""
+        msg = {"type": "cmd.run_action", "kind": "ping"}
+        result = _run_async(handle_command(msg))
+
+        assert result is not None
+        assert result["status"] == "success"
+
