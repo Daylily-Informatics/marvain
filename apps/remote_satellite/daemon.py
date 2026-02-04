@@ -35,15 +35,81 @@ logging.basicConfig(
 logger = logging.getLogger("marvain-satellite")
 
 
+# -----------------------------------------------------------------------------
+# Device Action Registry
+# -----------------------------------------------------------------------------
+
+import platform
+import time as time_module
+
+
+def _action_ping(payload: dict[str, Any]) -> dict[str, Any]:
+    """Respond to ping with basic device info."""
+    return {
+        "status": "ok",
+        "timestamp": time_module.time(),
+        "platform": platform.system(),
+        "hostname": platform.node(),
+    }
+
+
+def _action_status(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return device status information."""
+    import shutil
+
+    disk = shutil.disk_usage("/")
+    return {
+        "platform": platform.system(),
+        "platform_version": platform.version(),
+        "hostname": platform.node(),
+        "python_version": platform.python_version(),
+        "uptime_seconds": time_module.time(),  # Placeholder - real uptime requires OS-specific calls
+        "disk_total_gb": round(disk.total / (1024**3), 2),
+        "disk_free_gb": round(disk.free / (1024**3), 2),
+        "disk_used_percent": round((disk.used / disk.total) * 100, 1),
+    }
+
+
+def _action_echo(payload: dict[str, Any]) -> dict[str, Any]:
+    """Echo back the payload for testing."""
+    return {"echoed": payload, "timestamp": time_module.time()}
+
+
+# Registry of supported device actions
+DEVICE_ACTIONS: dict[str, Any] = {
+    "ping": _action_ping,
+    "status": _action_status,
+    "echo": _action_echo,
+}
+
+
+# -----------------------------------------------------------------------------
+# Configuration State
+# -----------------------------------------------------------------------------
+
+_device_config: dict[str, Any] = {}
+
+
+def get_device_config() -> dict[str, Any]:
+    """Get the current device configuration."""
+    return _device_config.copy()
+
+
+# -----------------------------------------------------------------------------
+# Command Handler
+# -----------------------------------------------------------------------------
+
+
 async def handle_command(msg: dict[str, Any]) -> dict[str, Any] | None:
     """Handle incoming device commands.
 
-    This is where you'd add device-specific functionality like:
-    - Camera control
-    - Audio playback
-    - Sensor reading
-    - Local tool execution
+    Supports:
+    - cmd.run_action: Execute device-local actions (ping, status, echo, etc.)
+    - cmd.config: Apply configuration updates
+
+    Add custom device-specific functionality by extending DEVICE_ACTIONS.
     """
+    global _device_config
     msg_type = msg.get("type", "")
 
     if msg_type == "cmd.run_action":
@@ -51,20 +117,44 @@ async def handle_command(msg: dict[str, Any]) -> dict[str, Any] | None:
         payload = msg.get("payload", {})
         logger.info("Received run_action command: kind=%s", kind)
 
-        # TODO: Implement device-local action execution
-        # For now, just acknowledge receipt
-        return {
-            "action": "action_result",
-            "kind": kind,
-            "status": "not_implemented",
-            "message": f"Action kind '{kind}' not implemented on this device",
-        }
+        if kind in DEVICE_ACTIONS:
+            try:
+                handler = DEVICE_ACTIONS[kind]
+                result = handler(payload)
+                return {
+                    "action": "action_result",
+                    "kind": kind,
+                    "status": "success",
+                    "result": result,
+                }
+            except Exception as e:
+                logger.exception("Error executing action %s", kind)
+                return {
+                    "action": "action_result",
+                    "kind": kind,
+                    "status": "error",
+                    "error": str(e),
+                }
+        else:
+            return {
+                "action": "action_result",
+                "kind": kind,
+                "status": "unsupported",
+                "message": f"Action kind '{kind}' not supported. Supported: {list(DEVICE_ACTIONS.keys())}",
+            }
 
     elif msg_type == "cmd.config":
         config_data = msg.get("config", {})
         logger.info("Received config update: %s", config_data)
-        # TODO: Apply configuration changes
-        return None
+
+        # Merge new config with existing config
+        _device_config.update(config_data)
+
+        return {
+            "action": "config_ack",
+            "status": "applied",
+            "config_keys": list(config_data.keys()),
+        }
 
     return None
 

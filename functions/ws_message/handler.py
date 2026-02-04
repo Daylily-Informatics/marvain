@@ -55,6 +55,69 @@ def _send(event, connection_id: str, payload: dict):
     _mgmt_api(event).post_to_connection(ConnectionId=connection_id, Data=data)
 
 
+def _get_device_connections(table, target_device_id: str) -> list[str]:
+    """Find all WebSocket connection IDs for a specific device.
+
+    Returns list of connection_ids where device_id matches and status is authenticated.
+    """
+    try:
+        # Scan for connections with matching device_id
+        # Note: For scale, consider adding a GSI on device_id
+        response = table.scan(
+            FilterExpression="device_id = :did AND #s = :status",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":did": target_device_id,
+                ":status": "authenticated",
+            },
+        )
+        return [item["connection_id"] for item in response.get("Items", [])]
+    except Exception as e:
+        logger.warning("Failed to query connections for device %s: %s", target_device_id, e)
+        return []
+
+
+def _send_to_device(event, table, target_device_id: str, message: dict) -> tuple[int, int]:
+    """Send a message to all WebSocket connections for a device.
+
+    Returns (sent_count, stale_count).
+    """
+    from botocore.exceptions import ClientError
+
+    connection_ids = _get_device_connections(table, target_device_id)
+    if not connection_ids:
+        return (0, 0)
+
+    mgmt_api = _mgmt_api(event)
+    data = json.dumps(message).encode("utf-8")
+
+    sent_count = 0
+    stale_connections = []
+
+    for conn_id in connection_ids:
+        try:
+            mgmt_api.post_to_connection(ConnectionId=conn_id, Data=data)
+            sent_count += 1
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code == "GoneException":
+                stale_connections.append(conn_id)
+            else:
+                logger.warning("Failed to send to device connection %s: %s", conn_id, e)
+        except Exception as e:
+            logger.warning("Failed to send to device connection %s: %s", conn_id, e)
+
+    # Clean up stale connections
+    for conn_id in stale_connections:
+        try:
+            table.delete_item(Key={"connection_id": conn_id})
+            logger.debug("Cleaned up stale connection: %s", conn_id)
+        except Exception:
+            pass
+
+    return (sent_count, len(stale_connections))
+
+
 def _handle_action_decision(event, connection_id: str, table, conn_item: dict, action_id: str, approve: bool, reason: str = ""):
     """Handle approve or reject action decision."""
     action_type = "approve_action" if approve else "reject_action"
@@ -345,13 +408,22 @@ def handler(event, context):
                 _send(event, connection_id, {"type": "cmd.ping", "ok": False, "error": "permission_denied"})
                 return {"statusCode": 200, "body": "ok"}
 
-        # TODO: In Phase 5, broadcast cmd.ping to the target device via WebSocket
-        # For now, just acknowledge the command was received
+        # Broadcast cmd.ping to the target device via WebSocket
+        sent_at = int(time.time() * 1000)
+        device_message = {
+            "type": "cmd.ping",
+            "from_connection_id": connection_id,
+            "sent_at": sent_at,
+        }
+        sent_count, stale_count = _send_to_device(event, table, target_device_id, device_message)
+
         _send(event, connection_id, {
             "type": "cmd.ping",
             "ok": True,
             "target_device_id": target_device_id,
-            "sent_at": int(time.time() * 1000),
+            "sent_at": sent_at,
+            "device_connections": sent_count,
+            "device_online": sent_count > 0,
         })
         return {"statusCode": 200, "body": "ok"}
 
@@ -394,13 +466,33 @@ def handler(event, context):
             _send(event, connection_id, {"type": "cmd.run_action", "ok": False, "error": "user_only"})
             return {"statusCode": 200, "body": "ok"}
 
-        # TODO: In Phase 5, broadcast cmd.run_action to the target device via WebSocket
+        # Broadcast cmd.run_action to the target device via WebSocket
+        sent_at = int(time.time() * 1000)
+        device_message = {
+            "type": "cmd.run_action",
+            "from_connection_id": connection_id,
+            "kind": action_kind,
+            "payload": action_payload,
+            "sent_at": sent_at,
+        }
+        sent_count, stale_count = _send_to_device(event, table, target_device_id, device_message)
+
+        if sent_count == 0:
+            _send(event, connection_id, {
+                "type": "cmd.run_action",
+                "ok": False,
+                "error": "device_not_connected",
+                "target_device_id": target_device_id,
+            })
+            return {"statusCode": 200, "body": "ok"}
+
         _send(event, connection_id, {
             "type": "cmd.run_action",
             "ok": True,
             "target_device_id": target_device_id,
             "kind": action_kind,
-            "sent_at": int(time.time() * 1000),
+            "sent_at": sent_at,
+            "device_connections": sent_count,
         })
         return {"statusCode": 200, "body": "ok"}
 
@@ -430,12 +522,31 @@ def handler(event, context):
             _send(event, connection_id, {"type": "cmd.config", "ok": False, "error": "user_only"})
             return {"statusCode": 200, "body": "ok"}
 
-        # TODO: In Phase 5, broadcast cmd.config to the target device via WebSocket
+        # Broadcast cmd.config to the target device via WebSocket
+        sent_at = int(time.time() * 1000)
+        device_message = {
+            "type": "cmd.config",
+            "from_connection_id": connection_id,
+            "config": config_data,
+            "sent_at": sent_at,
+        }
+        sent_count, stale_count = _send_to_device(event, table, target_device_id, device_message)
+
+        if sent_count == 0:
+            _send(event, connection_id, {
+                "type": "cmd.config",
+                "ok": False,
+                "error": "device_not_connected",
+                "target_device_id": target_device_id,
+            })
+            return {"statusCode": 200, "body": "ok"}
+
         _send(event, connection_id, {
             "type": "cmd.config",
             "ok": True,
             "target_device_id": target_device_id,
-            "sent_at": int(time.time() * 1000),
+            "sent_at": sent_at,
+            "device_connections": sent_count,
         })
         return {"statusCode": 200, "body": "ok"}
 
