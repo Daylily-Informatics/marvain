@@ -232,6 +232,74 @@ class TestDeviceRevocation(unittest.TestCase):
         mock_db.execute.assert_called_once()
 
 
+class TestDeviceDeletion(unittest.TestCase):
+    """Tests for device deletion."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_hub_api_app_module()
+        from fastapi.testclient import TestClient
+        cls._TestClient = TestClient
+        cls._orig_gui_get_user = cls.mod._gui_get_user
+        cls._orig_get_db = cls.mod._get_db
+
+    def setUp(self) -> None:
+        self.client = self.__class__._TestClient(self.mod.app)
+        self.mod._gui_get_user = self.__class__._orig_gui_get_user
+        self.mod._get_db = self.__class__._orig_get_db
+
+    def tearDown(self) -> None:
+        self.mod._gui_get_user = self.__class__._orig_gui_get_user
+        self.mod._get_db = self.__class__._orig_get_db
+
+    def test_delete_device_requires_authentication(self) -> None:
+        """Device deletion should require authentication."""
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.post("/api/devices/device-123/delete")
+
+        self.assertEqual(r.status_code, 401)
+
+    def test_delete_device_not_found_or_no_permission(self) -> None:
+        """Deleting non-existent device or without permission should return 404."""
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(
+                user_id="u1", cognito_sub="sub-1", email="u1@example.com"
+            )
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[])
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post("/api/devices/device-123/delete")
+
+        self.assertEqual(r.status_code, 404)
+
+    def test_delete_device_success(self) -> None:
+        """Successful device deletion should remove the device."""
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(
+                user_id="u1", cognito_sub="sub-1", email="u1@example.com"
+            )
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[{"agent_id": "agent-1", "device_id": "device-123"}])
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post("/api/devices/device-123/delete")
+
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertIn("message", data)
+        self.assertEqual(data["device_id"], "device-123")
+        # Verify execute was called to delete the device
+        mock_db.execute.assert_called_once()
+        # Verify it was a DELETE statement
+        call_args = mock_db.execute.call_args
+        self.assertIn("DELETE FROM devices", call_args[0][0])
+
+
 class TestDevicesPage(unittest.TestCase):
     """Tests for devices page rendering."""
 
