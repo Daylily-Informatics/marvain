@@ -96,6 +96,7 @@ def _get_ws_context(request: Request) -> dict[str, str | None]:
     """
     ws_url = _cfg.ws_api_url
     access_token = request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE)
+    logger.debug(f"_get_ws_context: ws_url={ws_url}, access_token present={bool(access_token)}, length={len(access_token) if access_token else 0}")
     return {
         "ws_url": ws_url,
         "access_token": access_token if ws_url else None,
@@ -317,6 +318,7 @@ async def gui_auth_callback(
         # Exchange code for tokens
         tokens = await exchange_code_for_tokens(_cfg, code)
         id_token = tokens.get("id_token")
+        access_token = tokens.get("access_token")
 
         if not id_token:
             return _gui_error_page(
@@ -347,10 +349,28 @@ async def gui_auth_callback(
         })
 
         logger.info(f"User {cognito_user.email} ({cognito_user.sub}) logged in")
+        logger.info(f"Access token received: {bool(access_token)}, length: {len(access_token) if access_token else 0}")
 
         # Redirect to the next URL or home
         next_url = request.session.pop("oauth_next", None) or "/"
-        return RedirectResponse(url=_gui_path(request, next_url), status_code=302)
+        resp = RedirectResponse(url=_gui_path(request, next_url), status_code=302)
+
+        # Store access token in cookie for WebSocket authentication
+        if access_token:
+            logger.info(f"Setting access token cookie, secure={_cookie_secure(request)}")
+            resp.set_cookie(
+                key=_GUI_ACCESS_TOKEN_COOKIE,
+                value=access_token,
+                httponly=True,
+                secure=_cookie_secure(request),
+                samesite="lax",
+                max_age=3600,  # 1 hour (Cognito access token default expiry)
+                path="/",
+            )
+        else:
+            logger.warning("No access token received from Cognito!")
+
+        return resp
 
     except CognitoAuthError as e:
         logger.error(f"Cognito auth error: {e}")
@@ -1062,15 +1082,45 @@ def api_revoke_device(request: Request, device_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Device not found or permission denied")
 
     try:
-        from datetime import datetime, timezone
         db.execute("""
-            UPDATE devices SET revoked_at = :now WHERE device_id = :device_id::uuid
-        """, {"device_id": device_id, "now": datetime.now(timezone.utc)})
+            UPDATE devices SET revoked_at = NOW() WHERE device_id = :device_id::uuid
+        """, {"device_id": device_id})
     except Exception as e:
         logger.error(f"Failed to revoke device: {e}")
         raise HTTPException(status_code=500, detail="Failed to revoke device")
 
     return {"message": "Device revoked", "device_id": device_id}
+
+
+@app.post("/api/devices/{device_id}/delete", name="api_delete_device")
+def api_delete_device(request: Request, device_id: str) -> dict:
+    """Delete a device permanently."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Get the device and check permission (require admin/owner)
+    rows = db.query("""
+        SELECT d.device_id, d.agent_id
+        FROM devices d
+        INNER JOIN agent_memberships m ON d.agent_id = m.agent_id
+        WHERE d.device_id = :device_id::uuid AND m.user_id = :user_id::uuid AND m.role IN ('admin', 'owner') AND m.revoked_at IS NULL
+    """, {"device_id": device_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Device not found or permission denied")
+
+    try:
+        db.execute("""
+            DELETE FROM devices WHERE device_id = :device_id::uuid
+        """, {"device_id": device_id})
+    except Exception as e:
+        logger.error(f"Failed to delete device: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete device")
+
+    return {"message": "Device deleted", "device_id": device_id}
 
 
 # ---------------------------------------------------------------------------
@@ -1489,6 +1539,76 @@ def gui_devices(request: Request) -> Response:
         "active_page": "devices",
         "devices": devices_data,
         "agents": agents_data,
+        **_get_ws_context(request),
+    })
+
+
+@app.get("/devices/{device_id}", name="gui_device_detail")
+def gui_device_detail(request: Request, device_id: str) -> Response:
+    """Device detail page - view a specific device."""
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path=f"/devices/{device_id}")
+
+    db = _get_db()
+
+    # Get device with permission check
+    rows = db.query("""
+        SELECT d.device_id::TEXT, d.agent_id::TEXT, d.name, d.scopes,
+               d.revoked_at, d.created_at, d.last_seen, d.last_heartbeat_at,
+               a.name as agent_name,
+               CASE
+                   WHEN d.last_heartbeat_at > now() - interval '60 seconds' THEN true
+                   ELSE false
+               END as is_online
+        FROM devices d
+        JOIN agents a ON a.agent_id = d.agent_id
+        JOIN agent_memberships m ON d.agent_id = m.agent_id
+        WHERE d.device_id = :device_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.revoked_at IS NULL
+    """, {"device_id": device_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    row = rows[0]
+
+    # Parse scopes
+    scopes = row.get("scopes") or []
+    if isinstance(scopes, str):
+        import json as json_module
+        try:
+            scopes = json_module.loads(scopes)
+        except Exception:
+            scopes = []
+
+    # Format timestamps
+    created_at = row.get("created_at")
+    if created_at:
+        created_at = str(created_at)[:19] if hasattr(created_at, "isoformat") else str(created_at)[:19]
+
+    last_seen = row.get("last_seen")
+    if last_seen:
+        last_seen = str(last_seen)[:19] if hasattr(last_seen, "isoformat") else str(last_seen)[:19]
+
+    device_data = {
+        "device_id": str(row.get("device_id", "")),
+        "agent_id": str(row.get("agent_id", "")),
+        "agent_name": row.get("agent_name", ""),
+        "name": row.get("name") or "Unnamed Device",
+        "scopes": scopes,
+        "revoked": row.get("revoked_at") is not None,
+        "created_at": created_at,
+        "last_seen": last_seen,
+        "is_online": bool(row.get("is_online")),
+    }
+
+    return templates.TemplateResponse(request, "device_detail.html", {
+        "user": {"email": user.email, "user_id": str(user.user_id)},
+        "stage": _cfg.stage,
+        "active_page": "devices",
+        "device": device_data,
         **_get_ws_context(request),
     })
 

@@ -617,6 +617,10 @@ Resources:
               Action:
                 - execute-api:ManageConnections
               Resource: "*"
+            - Effect: Allow
+              Action:
+                - cognito-idp:GetUser
+              Resource: !GetAtt CognitoUserPool.Arn
 
   WsConnectIntegration:
     Type: AWS::ApiGatewayV2::Integration
@@ -745,6 +749,7 @@ Resources:
         - openid
         - email
         - profile
+        - aws.cognito.signin.user.admin
       CallbackURLs:
         # GUI runs locally only - no deployed GUI endpoint
         - http://localhost:8084/auth/callback

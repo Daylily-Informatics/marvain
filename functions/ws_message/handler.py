@@ -242,8 +242,11 @@ def handler(event, context):
         # v1: accept Cognito access_token (preferred) for human users.
         if access_token:
             try:
+                logger.info(f"[hello] Attempting to authenticate access_token, length={len(access_token)}")
                 user = authenticate_user_access_token(_get_db(), access_token)
-            except PermissionError:
+                logger.info(f"[hello] Authentication successful for user_id={user.user_id}")
+            except PermissionError as e:
+                logger.error(f"[hello] Authentication failed: {e}")
                 _send(event, connection_id, {"type": "hello", "ok": False, "error": "invalid_access_token"})
                 return {"statusCode": 200, "body": "ok"}
 

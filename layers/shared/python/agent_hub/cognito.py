@@ -94,7 +94,7 @@ def build_login_url(cfg: HubConfig, state: str | None = None) -> str:
     params = {
         "client_id": cfg.cognito_user_pool_client_id,
         "response_type": "code",
-        "scope": "openid email profile",
+        "scope": "openid email profile aws.cognito.signin.user.admin",
         "redirect_uri": cfg.cognito_redirect_uri,
     }
     if state:

@@ -204,6 +204,7 @@
     wsReconnectAttempts: 0,
     wsMaxReconnectAttempts: 5,
     wsReconnectDelay: 1000,
+    wsAuthenticated: false,
 
     /**
      * Connect to WebSocket server
@@ -220,17 +221,33 @@
       this.ws = new WebSocket(url);
 
       this.ws.onopen = () => {
-        console.log('[Marvain] WebSocket connected');
+        console.log('[Marvain] WebSocket connected, sending hello...');
         this.wsReconnectAttempts = 0;
         // Send hello message with access token
+        // Note: We emit 'connected' only after receiving a successful hello response
         this.wsSend({ action: 'hello', access_token: accessToken });
-        this._wsEmit('connected');
       };
 
       this.ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
           console.log('[Marvain] WebSocket message:', msg);
+
+          // Handle hello response specially - only emit 'connected' after successful auth
+          if (msg.type === 'hello') {
+            if (msg.ok) {
+              console.log('[Marvain] Authenticated successfully');
+              this.wsAuthenticated = true;
+              this._wsEmit('connected');
+            } else {
+              console.error('[Marvain] Authentication failed:', msg.error);
+              this._wsEmit('auth_failed', msg);
+              // Close connection on auth failure
+              this.ws.close();
+              return;
+            }
+          }
+
           this._wsEmit('message', msg);
           // Emit specific action type (for request/response messages)
           if (msg.action) {
@@ -239,8 +256,10 @@
           // Emit specific type (for broadcast messages)
           if (msg.type) {
             this._wsEmit(msg.type, msg);
-            // Also emit category-level events for page refresh
-            this._handleBroadcast(msg);
+            // Also emit category-level events for page refresh (skip hello and error types)
+            if (msg.type !== 'hello' && msg.type !== 'error') {
+              this._handleBroadcast(msg);
+            }
           }
         } catch (e) {
           console.error('[Marvain] WebSocket parse error:', e);
