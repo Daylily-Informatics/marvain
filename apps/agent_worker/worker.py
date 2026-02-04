@@ -397,6 +397,8 @@ async def forge_agent(ctx: agents.JobContext):
         """Process a typed chat message and generate a response.
 
         Interrupts any ongoing speech before responding to avoid overlapping voices.
+        Uses user_input parameter to properly inject the message into the conversation
+        history, so the agent responds to the typed message (not the last voice input).
         """
         try:
             # Interrupt any ongoing speech to avoid overlapping voices
@@ -405,11 +407,10 @@ async def forge_agent(ctx: agents.JobContext):
             # Small delay to let the interruption take effect
             await asyncio.sleep(0.1)
 
-            # Use generate_reply to have the agent respond to the typed text
-            # The agent will speak the response aloud
-            await session.generate_reply(
-                instructions=f"The user '{sender}' typed this message (not spoken): {text}\n\nRespond naturally as if they had said it aloud."
-            )
+            # Use generate_reply with user_input to inject the typed message
+            # into the conversation as a proper user turn. This ensures the agent
+            # responds to this message, not the last voice input.
+            await session.generate_reply(user_input=text)
         except Exception as e:
             logger.warning(f"Failed to generate reply for typed message: {e}")
 

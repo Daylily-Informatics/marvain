@@ -137,12 +137,13 @@ def get_registry() -> ToolRegistry:
 
 def _register_default_tools(registry: ToolRegistry) -> None:
     """Register the default set of tools."""
-    from . import send_message, create_memory, http_request, device_command
+    from . import send_message, create_memory, http_request, device_command, shell_command
 
     send_message.register(registry)
     create_memory.register(registry)
     http_request.register(registry)
     device_command.register(registry)
+    shell_command.register(registry)
 
 
 def execute_tool(name: str, payload: dict[str, Any], ctx: ToolContext) -> ToolResult:

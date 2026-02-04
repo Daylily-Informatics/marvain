@@ -1,7 +1,10 @@
-"""http_request tool - Makes authenticated HTTP requests.
+"""http_request tool - Makes HTTP requests to external services.
 
-This tool allows the agent to make HTTP requests to approved hosts,
-enabling integrations with external services.
+This tool allows the agent to make HTTP requests to any HTTP/HTTPS URL,
+enabling integrations with external services and APIs.
+
+Note: URL allowlist restrictions have been removed to enable full
+flexibility for agent actions. The tool can now access any URL.
 """
 from __future__ import annotations
 
@@ -25,10 +28,10 @@ DEFAULT_TIMEOUT = 10
 
 def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
     """Execute the http_request tool.
-    
+
     Payload:
         method: HTTP method (GET, POST, PUT, PATCH, DELETE)
-        url: The URL to request
+        url: The URL to request (any HTTP/HTTPS URL allowed)
         headers: Dict of headers (optional)
         body: Request body for POST/PUT/PATCH (optional)
         timeout: Request timeout in seconds (optional, default 10)
@@ -38,28 +41,27 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
     headers = payload.get("headers", {})
     body = payload.get("body")
     timeout = int(payload.get("timeout", DEFAULT_TIMEOUT))
-    
+
     # Validate method
     allowed_methods = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"}
     if method not in allowed_methods:
         return ToolResult(ok=False, error=f"invalid_method: {method}")
-    
+
     # Validate URL
     if not url:
         return ToolResult(ok=False, error="missing_url")
-    
+
     try:
         parsed = urlparse(url)
     except Exception:
         return ToolResult(ok=False, error="invalid_url")
-    
+
     if parsed.scheme not in ("http", "https"):
         return ToolResult(ok=False, error=f"invalid_scheme: {parsed.scheme}")
-    
-    # Check host allowlist
-    host = parsed.netloc.split(":")[0].lower()
-    if ctx.allowed_http_hosts and host not in ctx.allowed_http_hosts:
-        return ToolResult(ok=False, error=f"host_not_allowed: {host}")
+
+    # Note: URL allowlist removed - all HTTP/HTTPS URLs are now allowed
+    # This enables full flexibility for agent actions while still
+    # requiring the http:request scope for access control
     
     # Validate headers
     if not isinstance(headers, dict):
@@ -132,6 +134,6 @@ def register(registry: ToolRegistry) -> None:
         TOOL_NAME,
         required_scopes=REQUIRED_SCOPES,
         handler=_handler,
-        description="Make HTTP requests to approved external services",
+        description="Make HTTP/HTTPS requests to any external URL",
     )
 

@@ -62,6 +62,113 @@ from api_app import (
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
+
+# -----------------------------
+# Startup Configuration Validation
+# -----------------------------
+
+class ConfigurationError(Exception):
+    """Raised when critical configuration is missing or invalid."""
+    pass
+
+
+def _is_placeholder(value: str | None) -> bool:
+    """Check if a value is a placeholder or empty."""
+    if not value:
+        return True
+    v = str(value).strip().upper()
+    return v in ("", "REPLACE_ME", "CHANGEME", "TODO", "XXX", "YOUR_KEY_HERE", "YOUR_SECRET_HERE")
+
+
+def _validate_critical_secrets(cfg) -> list[str]:
+    """Validate all critical secrets at startup.
+
+    Returns a list of configuration errors. Empty list means all valid.
+    """
+    errors: list[str] = []
+
+    # 1. Cognito Configuration
+    if not cfg.cognito_user_pool_id:
+        errors.append("COGNITO_USER_POOL_ID not set")
+    if not cfg.cognito_user_pool_client_id:
+        errors.append("COGNITO_APP_CLIENT_ID not set")
+    if not cfg.cognito_domain:
+        errors.append("COGNITO_DOMAIN not set")
+
+    # 2. Database Configuration (required for any operation)
+    if not cfg.db_resource_arn:
+        errors.append("DB_RESOURCE_ARN not set")
+    if not cfg.db_secret_arn:
+        errors.append("DB_SECRET_ARN not set")
+
+    # 3. LiveKit Configuration (required for voice/video features)
+    if not cfg.livekit_url:
+        errors.append("LIVEKIT_URL not set")
+    if not cfg.livekit_secret_arn:
+        errors.append("LIVEKIT_SECRET_ARN not set")
+    else:
+        try:
+            # Clear cache to get fresh value
+            get_secret_json.cache_clear()
+            lk_secret = get_secret_json(cfg.livekit_secret_arn)
+            lk_api_key = lk_secret.get("api_key", "")
+            lk_api_secret = lk_secret.get("api_secret", "")
+            if _is_placeholder(lk_api_key):
+                errors.append("LiveKit api_key is a placeholder (REPLACE_ME). Update secret in AWS Secrets Manager.")
+            if _is_placeholder(lk_api_secret):
+                errors.append("LiveKit api_secret is a placeholder (REPLACE_ME). Update secret in AWS Secrets Manager.")
+        except Exception as e:
+            errors.append(f"Failed to read LiveKit secret: {e}")
+
+    # 4. OpenAI Configuration (required for embeddings/AI features)
+    if cfg.openai_secret_arn:
+        try:
+            # Clear cache to get fresh value
+            get_secret_json.cache_clear()
+            openai_secret = get_secret_json(cfg.openai_secret_arn)
+            openai_api_key = openai_secret.get("api_key", "")
+            if _is_placeholder(openai_api_key):
+                errors.append("OpenAI api_key is a placeholder (REPLACE_ME). Update secret in AWS Secrets Manager.")
+        except Exception as e:
+            errors.append(f"Failed to read OpenAI secret: {e}")
+
+    # 5. Session Secret (required for secure sessions)
+    if not cfg.session_secret_key and not cfg.session_secret_arn:
+        errors.append("SESSION_SECRET_KEY or SESSION_SECRET_ARN not set - sessions will use random key (not persistent)")
+
+    return errors
+
+
+def validate_configuration_or_fail():
+    """Validate all critical configuration and fail hard if any issues.
+
+    This is called at startup to ensure the GUI won't run with misconfigured secrets.
+    """
+    cfg = get_config()
+    errors = _validate_critical_secrets(cfg)
+
+    if errors:
+        error_msg = "\n".join(f"  - {e}" for e in errors)
+        full_msg = f"""
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                    CRITICAL CONFIGURATION ERROR                               ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║ The GUI cannot start because critical secrets are missing or invalid.        ║
+║                                                                              ║
+║ Fix the following issues:                                                    ║
+{chr(10).join(f'║ • {e[:72]:<72}║' for e in errors)}
+║                                                                              ║
+║ To update secrets in AWS Secrets Manager:                                    ║
+║   aws secretsmanager put-secret-value --secret-id <ARN> \\                   ║
+║       --secret-string '{{"api_key":"<YOUR_KEY>"}}'                            ║
+║                                                                              ║
+║ For LiveKit credentials, check: ~/.livekit/cli-config.yaml                   ║
+║ For OpenAI credentials, set your API key from platform.openai.com            ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+"""
+        logger.critical(full_msg)
+        raise ConfigurationError(f"Critical configuration errors:\n{error_msg}")
+
 # Use the API app as the base - all API routes are already defined
 app = api_app
 
@@ -77,6 +184,22 @@ app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 # Setup Jinja2 templates
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+
+
+# -----------------------------
+# Startup Event - Validate Configuration
+# -----------------------------
+
+@app.on_event("startup")
+async def startup_validate_configuration():
+    """Validate critical configuration on startup.
+
+    This runs when the GUI server starts and will raise an exception
+    (crashing the server) if critical secrets are missing or invalid.
+    """
+    logger.info("Validating critical configuration...")
+    validate_configuration_or_fail()
+    logger.info("Configuration validation passed - all critical secrets are set")
 
 
 # -----------------------------
@@ -902,6 +1025,123 @@ def api_delete_remote(request: Request, remote_id: str) -> dict:
     return {"message": "Remote deleted", "remote_id": remote_id}
 
 
+class RemoteUpdate(BaseModel):
+    name: str | None = None
+    address: str | None = None
+
+
+@app.patch("/api/remotes/{remote_id}", name="api_update_remote")
+def api_update_remote(request: Request, remote_id: str, body: RemoteUpdate) -> dict:
+    """Update a remote device's name or connection address."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Check user has admin permission on the remote's agent
+    rows = db.query("""
+        SELECT d.device_id, d.name, d.metadata::TEXT as metadata
+        FROM devices d
+        INNER JOIN agent_memberships m ON d.agent_id = m.agent_id
+        WHERE d.device_id = :remote_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.role IN ('admin', 'owner')
+          AND m.revoked_at IS NULL
+          AND d.revoked_at IS NULL
+          AND (d.metadata->>'is_remote')::boolean = true
+    """, {"remote_id": remote_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Remote not found or permission denied")
+
+    row = rows[0]
+
+    # Parse current metadata
+    try:
+        current_metadata = json.loads(row.get("metadata") or "{}")
+    except Exception:
+        current_metadata = {}
+
+    # Build the update query dynamically
+    updates = []
+    params = {"remote_id": remote_id}
+
+    if body.name is not None:
+        if len(body.name.strip()) == 0:
+            raise HTTPException(status_code=400, detail="Name cannot be empty")
+        updates.append("name = :name")
+        params["name"] = body.name.strip()
+
+    if body.address is not None:
+        # Update address in metadata
+        current_metadata["address"] = body.address.strip()
+        updates.append("metadata = :metadata::jsonb")
+        params["metadata"] = json.dumps(current_metadata)
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    try:
+        db.execute(f"""
+            UPDATE devices SET {', '.join(updates)} WHERE device_id = :remote_id::uuid
+        """, params)
+    except Exception as e:
+        logger.error(f"Failed to update remote: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update remote")
+
+    return {"message": "Remote updated", "remote_id": remote_id}
+
+
+@app.get("/api/remotes/{remote_id}", name="api_get_remote")
+def api_get_remote(request: Request, remote_id: str) -> dict:
+    """Get remote device details."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    rows = db.query("""
+        SELECT d.device_id::TEXT as remote_id, d.agent_id::TEXT as agent_id,
+               d.name, d.status, d.metadata::TEXT as metadata,
+               d.created_at::TEXT as created_at, d.last_seen_at::TEXT as last_seen_at,
+               a.name as agent_name
+        FROM devices d
+        INNER JOIN agents a ON d.agent_id = a.agent_id
+        INNER JOIN agent_memberships m ON d.agent_id = m.agent_id
+        WHERE d.device_id = :remote_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.role IN ('member', 'admin', 'owner')
+          AND m.revoked_at IS NULL
+          AND d.revoked_at IS NULL
+          AND (d.metadata->>'is_remote')::boolean = true
+    """, {"remote_id": remote_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Remote not found or permission denied")
+
+    row = rows[0]
+
+    # Parse metadata
+    try:
+        metadata = json.loads(row.get("metadata") or "{}")
+    except Exception:
+        metadata = {}
+
+    return {
+        "remote_id": row["remote_id"],
+        "agent_id": row["agent_id"],
+        "agent_name": row.get("agent_name", ""),
+        "name": row["name"],
+        "status": row["status"],
+        "address": metadata.get("address", ""),
+        "connection_type": metadata.get("connection_type", ""),
+        "created_at": row["created_at"],
+        "last_seen_at": row.get("last_seen_at"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Spaces API endpoints
 # ---------------------------------------------------------------------------
@@ -993,6 +1233,98 @@ def api_delete_space(request: Request, space_id: str) -> dict:
         raise HTTPException(status_code=500, detail="Failed to delete space")
 
     return {"message": "Space deleted", "space_id": space_id, "name": space_name}
+
+
+class SpaceUpdate(BaseModel):
+    name: str | None = None
+    privacy_mode: bool | None = None
+
+
+@app.patch("/api/spaces/{space_id}", name="api_update_space")
+def api_update_space(request: Request, space_id: str, body: SpaceUpdate) -> dict:
+    """Update a space's name or privacy mode."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Check user has admin permission on the space's agent
+    rows = db.query("""
+        SELECT s.space_id, s.name, s.privacy_mode
+        FROM spaces s
+        INNER JOIN agent_memberships m ON s.agent_id = m.agent_id
+        WHERE s.space_id = :space_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.role IN ('admin', 'owner')
+          AND m.revoked_at IS NULL
+    """, {"space_id": space_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Space not found or permission denied")
+
+    # Build the update query dynamically
+    updates = []
+    params = {"space_id": space_id}
+
+    if body.name is not None:
+        if len(body.name.strip()) == 0:
+            raise HTTPException(status_code=400, detail="Name cannot be empty")
+        updates.append("name = :name")
+        params["name"] = body.name.strip()
+
+    if body.privacy_mode is not None:
+        updates.append("privacy_mode = :privacy_mode")
+        params["privacy_mode"] = body.privacy_mode
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    try:
+        db.execute(f"""
+            UPDATE spaces SET {', '.join(updates)} WHERE space_id = :space_id::uuid
+        """, params)
+    except Exception as e:
+        logger.error(f"Failed to update space: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update space")
+
+    return {"message": "Space updated", "space_id": space_id}
+
+
+@app.get("/api/spaces/{space_id}", name="api_get_space")
+def api_get_space(request: Request, space_id: str) -> dict:
+    """Get space details."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    rows = db.query("""
+        SELECT s.space_id::TEXT as space_id, s.agent_id::TEXT as agent_id,
+               s.name, s.privacy_mode, s.created_at::TEXT as created_at,
+               a.name as agent_name
+        FROM spaces s
+        INNER JOIN agents a ON s.agent_id = a.agent_id
+        INNER JOIN agent_memberships m ON s.agent_id = m.agent_id
+        WHERE s.space_id = :space_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.role IN ('member', 'admin', 'owner')
+          AND m.revoked_at IS NULL
+    """, {"space_id": space_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Space not found or permission denied")
+
+    row = rows[0]
+    return {
+        "space_id": row["space_id"],
+        "agent_id": row["agent_id"],
+        "agent_name": row.get("agent_name", ""),
+        "name": row["name"],
+        "privacy_mode": row["privacy_mode"],
+        "created_at": row["created_at"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1194,6 +1526,87 @@ def api_create_agent(request: Request, body: AgentCreate) -> AgentResponse:
         relationship_label=body.relationship_label,
         disabled=False,
     )
+
+
+class AgentUpdate(BaseModel):
+    name: str | None = None
+    disabled: bool | None = None
+
+
+@app.patch("/api/agents/{agent_id}", name="api_update_agent")
+def api_update_agent(request: Request, agent_id: str, body: AgentUpdate) -> dict:
+    """Update an agent's name or disabled status."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Check user has admin or owner permission
+    if not check_agent_permission(db, user_id=user.user_id, agent_id=agent_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Requires admin permission on the agent")
+
+    # Build the update query dynamically
+    updates = []
+    params = {"agent_id": agent_id}
+
+    if body.name is not None:
+        if len(body.name.strip()) == 0:
+            raise HTTPException(status_code=400, detail="Name cannot be empty")
+        updates.append("name = :name")
+        params["name"] = body.name.strip()
+
+    if body.disabled is not None:
+        updates.append("disabled = :disabled")
+        params["disabled"] = body.disabled
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    try:
+        db.execute(f"""
+            UPDATE agents SET {', '.join(updates)} WHERE agent_id = :agent_id::uuid
+        """, params)
+    except Exception as e:
+        logger.error(f"Failed to update agent: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update agent")
+
+    return {"message": "Agent updated", "agent_id": agent_id}
+
+
+@app.get("/api/agents/{agent_id}", name="api_get_agent")
+def api_get_agent(request: Request, agent_id: str) -> dict:
+    """Get agent details."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    rows = db.query("""
+        SELECT a.agent_id::TEXT as agent_id, a.name, a.disabled,
+               a.created_at::TEXT as created_at,
+               mb.role, mb.relationship_label
+        FROM agents a
+        INNER JOIN agent_memberships mb ON a.agent_id = mb.agent_id
+        WHERE a.agent_id = :agent_id::uuid
+          AND mb.user_id = :user_id::uuid
+          AND mb.role IN ('member', 'admin', 'owner')
+          AND mb.revoked_at IS NULL
+    """, {"agent_id": agent_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Agent not found or permission denied")
+
+    row = rows[0]
+    return {
+        "agent_id": row["agent_id"],
+        "name": row["name"],
+        "disabled": row["disabled"],
+        "role": row["role"],
+        "relationship_label": row.get("relationship_label"),
+        "created_at": row["created_at"],
+    }
 
 
 # ----- Membership Management API Endpoints -----
@@ -1735,6 +2148,78 @@ def api_update_consent(request: Request, person_id: str, body: ConsentUpdate) ->
     return {"message": "Consent updated", "person_id": person_id}
 
 
+class PersonUpdate(BaseModel):
+    display_name: str = Field(..., min_length=1, max_length=255)
+
+
+@app.patch("/api/people/{person_id}", name="api_update_person")
+def api_update_person(request: Request, person_id: str, body: PersonUpdate) -> dict:
+    """Update a person's display name."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Check the person exists and user has admin permission on the agent
+    rows = db.query("""
+        SELECT p.person_id, p.agent_id, p.display_name
+        FROM people p
+        INNER JOIN agent_memberships mb ON p.agent_id = mb.agent_id
+        WHERE p.person_id = :person_id::uuid
+          AND mb.user_id = :user_id::uuid
+          AND mb.role IN ('admin', 'owner')
+          AND mb.revoked_at IS NULL
+    """, {"person_id": person_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Person not found or permission denied")
+
+    try:
+        db.execute("""
+            UPDATE people SET display_name = :display_name WHERE person_id = :person_id::uuid
+        """, {"person_id": person_id, "display_name": body.display_name})
+    except Exception as e:
+        logger.error(f"Failed to update person: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update person")
+
+    return {"message": "Person updated", "person_id": person_id, "display_name": body.display_name}
+
+
+@app.get("/api/people/{person_id}", name="api_get_person")
+def api_get_person(request: Request, person_id: str) -> dict:
+    """Get a person's details."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    rows = db.query("""
+        SELECT p.person_id::TEXT as person_id, p.agent_id::TEXT as agent_id,
+               p.display_name, p.created_at::TEXT as created_at, a.name as agent_name
+        FROM people p
+        INNER JOIN agents a ON p.agent_id = a.agent_id
+        INNER JOIN agent_memberships mb ON p.agent_id = mb.agent_id
+        WHERE p.person_id = :person_id::uuid
+          AND mb.user_id = :user_id::uuid
+          AND mb.role IN ('member', 'admin', 'owner')
+          AND mb.revoked_at IS NULL
+    """, {"person_id": person_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Person not found or permission denied")
+
+    row = rows[0]
+    return {
+        "person_id": row["person_id"],
+        "agent_id": row["agent_id"],
+        "agent_name": row.get("agent_name", ""),
+        "display_name": row["display_name"],
+        "created_at": row["created_at"],
+    }
+
+
 @app.get("/people", name="gui_people")
 def gui_people(request: Request) -> Response:
     """People & consent management."""
@@ -1926,6 +2411,17 @@ def gui_actions(request: Request) -> Response:
         for a in agents
     ]
 
+    # Build spaces by agent for the create modal
+    spaces_by_agent: dict = {}
+    for space in spaces:
+        agent_id = str(space.agent_id)
+        if agent_id not in spaces_by_agent:
+            spaces_by_agent[agent_id] = []
+        spaces_by_agent[agent_id].append({
+            "space_id": str(space.space_id),
+            "name": space.name,
+        })
+
     return templates.TemplateResponse(request, "actions.html", {
         "user": {"email": user.email, "user_id": str(user.user_id)},
         "stage": _cfg.stage,
@@ -1934,12 +2430,82 @@ def gui_actions(request: Request) -> Response:
         "status_counts": status_counts,
         "action_kinds": sorted(action_kinds_set),
         "agents": agents_data,
+        "spaces_by_agent": spaces_by_agent,
         **_get_ws_context(request),
     })
 
 
 class ActionApproveReject(BaseModel):
     reason: str | None = None
+
+
+@app.get("/api/actions/{action_id}", name="api_get_action")
+def api_get_action(request: Request, action_id: str) -> dict:
+    """Get action details."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Get the action and check permission (member role sufficient for viewing)
+    rows = db.query("""
+        SELECT ac.action_id::TEXT as action_id, ac.agent_id::TEXT as agent_id,
+               ac.space_id::TEXT as space_id, ac.kind, ac.payload::TEXT as payload,
+               ac.required_scopes::TEXT as required_scopes, ac.status,
+               ac.created_at::TEXT as created_at, ac.updated_at::TEXT as updated_at,
+               ac.executed_at::TEXT as executed_at, ac.approved_by::TEXT as approved_by,
+               ac.approved_at::TEXT as approved_at, ac.result::TEXT as result,
+               ac.error, ac.completed_at::TEXT as completed_at,
+               a.name as agent_name, s.name as space_name
+        FROM actions ac
+        INNER JOIN agents a ON ac.agent_id = a.agent_id
+        LEFT JOIN spaces s ON ac.space_id = s.space_id
+        INNER JOIN agent_memberships mb ON ac.agent_id = mb.agent_id
+        WHERE ac.action_id = :action_id::uuid
+          AND mb.user_id = :user_id::uuid
+          AND mb.role IN ('member', 'admin', 'owner')
+          AND mb.revoked_at IS NULL
+    """, {"action_id": action_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Action not found or permission denied")
+
+    row = rows[0]
+
+    # Parse JSON fields
+    try:
+        payload = json.loads(row.get("payload") or "{}")
+    except Exception:
+        payload = {}
+    try:
+        required_scopes = json.loads(row.get("required_scopes") or "[]")
+    except Exception:
+        required_scopes = []
+    try:
+        result = json.loads(row.get("result") or "null")
+    except Exception:
+        result = row.get("result")
+
+    return {
+        "action_id": row["action_id"],
+        "agent_id": row["agent_id"],
+        "agent_name": row.get("agent_name", ""),
+        "space_id": row.get("space_id"),
+        "space_name": row.get("space_name"),
+        "kind": row["kind"],
+        "payload": payload,
+        "required_scopes": required_scopes,
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "updated_at": row.get("updated_at"),
+        "executed_at": row.get("executed_at"),
+        "approved_by": row.get("approved_by"),
+        "approved_at": row.get("approved_at"),
+        "result": result,
+        "error": row.get("error"),
+        "completed_at": row.get("completed_at"),
+    }
 
 
 @app.post("/api/actions/{action_id}/approve", name="api_approve_action")
@@ -2013,6 +2579,133 @@ def api_reject_action(request: Request, action_id: str, body: ActionApproveRejec
         raise HTTPException(status_code=500, detail="Failed to reject action")
 
     return {"message": "Action rejected", "action_id": action_id, "status": "rejected"}
+
+
+class ActionCreate(BaseModel):
+    agent_id: str
+    space_id: str | None = None
+    kind: str
+    payload: dict
+    required_scopes: list[str] = []
+    auto_approve: bool = False
+
+
+@app.post("/api/actions", name="api_create_action")
+def api_create_action(request: Request, body: ActionCreate) -> dict:
+    """Create a new action manually."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Check user has admin permission on the agent
+    if not check_agent_permission(db, user_id=user.user_id, agent_id=body.agent_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Requires admin permission on the agent")
+
+    # Validate kind
+    valid_kinds = ["send_message", "create_memory", "http_request", "device_command", "shell_command"]
+    if body.kind not in valid_kinds:
+        raise HTTPException(status_code=400, detail=f"Invalid action kind. Valid kinds: {valid_kinds}")
+
+    # If space_id provided, verify it belongs to the agent
+    if body.space_id:
+        space_rows = db.query("""
+            SELECT space_id FROM spaces WHERE space_id = :space_id::uuid AND agent_id = :agent_id::uuid
+        """, {"space_id": body.space_id, "agent_id": body.agent_id})
+        if not space_rows:
+            raise HTTPException(status_code=400, detail="Space not found or does not belong to agent")
+
+    import json
+
+    action_id = str(uuid.uuid4())
+    status = "approved" if body.auto_approve else "proposed"
+
+    try:
+        db.execute("""
+            INSERT INTO actions (action_id, agent_id, space_id, kind, payload, required_scopes, status)
+            VALUES (:action_id::uuid, :agent_id::uuid, :space_id::uuid, :kind, :payload::jsonb, :scopes::jsonb, :status)
+        """, {
+            "action_id": action_id,
+            "agent_id": body.agent_id,
+            "space_id": body.space_id,
+            "kind": body.kind,
+            "payload": json.dumps(body.payload),
+            "scopes": json.dumps(body.required_scopes),
+            "status": status,
+        })
+
+        # If auto-approved, update with approver info
+        if body.auto_approve:
+            db.execute("""
+                UPDATE actions SET approved_by = :user_id::uuid, approved_at = now() WHERE action_id = :action_id::uuid
+            """, {"action_id": action_id, "user_id": str(user.user_id)})
+
+    except Exception as e:
+        logger.error(f"Failed to create action: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create action")
+
+    return {
+        "message": "Action created",
+        "action_id": action_id,
+        "status": status,
+        "auto_approved": body.auto_approve,
+    }
+
+
+@app.get("/api/events/{event_id}", name="api_get_event")
+def api_get_event(request: Request, event_id: str) -> dict:
+    """Get event details."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    rows = db.query("""
+        SELECT e.event_id::TEXT as event_id, e.agent_id::TEXT as agent_id,
+               e.space_id::TEXT as space_id, e.device_id::TEXT as device_id,
+               e.person_id::TEXT as person_id, e.type, e.payload::TEXT as payload,
+               e.created_at::TEXT as created_at,
+               a.name as agent_name, s.name as space_name,
+               d.name as device_name, p.display_name as person_name
+        FROM events e
+        INNER JOIN agents a ON e.agent_id = a.agent_id
+        LEFT JOIN spaces s ON e.space_id = s.space_id
+        LEFT JOIN devices d ON e.device_id = d.device_id
+        LEFT JOIN people p ON e.person_id = p.person_id
+        INNER JOIN agent_memberships mb ON e.agent_id = mb.agent_id
+        WHERE e.event_id = :event_id::uuid
+          AND mb.user_id = :user_id::uuid
+          AND mb.role IN ('member', 'admin', 'owner')
+          AND mb.revoked_at IS NULL
+    """, {"event_id": event_id, "user_id": str(user.user_id)})
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Event not found or permission denied")
+
+    row = rows[0]
+
+    # Parse JSON payload
+    try:
+        payload = json.loads(row.get("payload") or "{}")
+    except Exception:
+        payload = {}
+
+    return {
+        "event_id": row["event_id"],
+        "agent_id": row["agent_id"],
+        "agent_name": row.get("agent_name", ""),
+        "space_id": row.get("space_id"),
+        "space_name": row.get("space_name"),
+        "device_id": row.get("device_id"),
+        "device_name": row.get("device_name"),
+        "person_id": row.get("person_id"),
+        "person_name": row.get("person_name"),
+        "type": row["type"],
+        "payload": payload,
+        "created_at": row["created_at"],
+    }
 
 
 @app.get("/events", name="gui_events")

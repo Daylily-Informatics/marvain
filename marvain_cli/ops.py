@@ -1085,7 +1085,7 @@ def gui_run(
 # GUI Lifecycle Management
 # -----------------------------------------------------------------------------
 
-GUI_DEFAULT_HOST = "127.0.0.1"
+GUI_DEFAULT_HOST = "localhost"
 GUI_DEFAULT_PORT = 8084
 GUI_PID_FILENAME = ".marvain-gui.pid"
 GUI_LOG_FILENAME = ".marvain-gui.log"
