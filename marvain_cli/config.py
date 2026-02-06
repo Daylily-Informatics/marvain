@@ -90,11 +90,7 @@ def resolve_env(
     region_override: str | None,
     stack_override: str | None,
 ) -> ResolvedEnv:
-    env_name = (
-        env
-        or os.getenv("MARVAIN_ENV")
-        or str(cfg.get("default_env") or "dev")
-    )
+    env_name = env or os.getenv("MARVAIN_ENV") or str(cfg.get("default_env") or "dev")
     envs = cfg.get("envs") or {}
     if not isinstance(envs, dict):
         raise ConfigError("config.envs must be a mapping")
@@ -102,12 +98,7 @@ def resolve_env(
     if not isinstance(env_cfg, dict):
         raise ConfigError(f"env '{env_name}' not found (or not a mapping)")
 
-    aws_profile = (
-        profile_override
-        or env_cfg.get("aws_profile")
-        or os.getenv("AWS_PROFILE")
-        or ""
-    )
+    aws_profile = profile_override or env_cfg.get("aws_profile") or os.getenv("AWS_PROFILE") or ""
     if not aws_profile or aws_profile == "default":
         raise ConfigError(
             "AWS profile is required and may not be 'default'. "
@@ -115,23 +106,16 @@ def resolve_env(
         )
 
     aws_region = (
-        region_override
-        or env_cfg.get("aws_region")
-        or os.getenv("AWS_REGION")
-        or os.getenv("AWS_DEFAULT_REGION")
-        or ""
+        region_override or env_cfg.get("aws_region") or os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or ""
     )
     if not aws_region:
         raise ConfigError(
-            "AWS region is required. Set envs.<env>.aws_region, or pass --region, "
-            "or set AWS_REGION/AWS_DEFAULT_REGION."
+            "AWS region is required. Set envs.<env>.aws_region, or pass --region, or set AWS_REGION/AWS_DEFAULT_REGION."
         )
 
     stack_name = stack_override or env_cfg.get("stack_name") or ""
     if not stack_name:
-        raise ConfigError(
-            "stack_name is required. Set envs.<env>.stack_name or pass --stack."
-        )
+        raise ConfigError("stack_name is required. Set envs.<env>.stack_name or pass --stack.")
 
     return ResolvedEnv(
         env=env_name,
@@ -157,19 +141,19 @@ def render_config_yaml(*, env: str, aws_profile: str, aws_region: str, stack_nam
         f"default_env: {env}\n\n"
         "envs:\n"
         f"  {env}:\n"
-        f"    aws_profile: \"{aws_profile}\"\n"
-        f"    aws_region: \"{aws_region}\"\n"
-        f"    stack_name: \"{stack_name}\"\n"
+        f'    aws_profile: "{aws_profile}"\n'
+        f'    aws_region: "{aws_region}"\n'
+        f'    stack_name: "{stack_name}"\n'
         "    sam:\n"
-        "      template: \"template.yaml\"\n"
+        '      template: "template.yaml"\n'
         "      capabilities:\n"
-        "        - \"CAPABILITY_IAM\"\n"
+        '        - "CAPABILITY_IAM"\n'
         "      parameter_overrides:\n"
-        f"        StageName: \"{env}\"\n"
-        "        DbName: \"agenthub\"\n"
-        "        AuroraMinACU: \"0.5\"\n"
-        "        AuroraMaxACU: \"2\"\n"
-        "        PlannerModel: \"gpt-4.1-mini\"\n"
+        f'        StageName: "{env}"\n'
+        '        DbName: "agenthub"\n'
+        '        AuroraMinACU: "0.5"\n'
+        '        AuroraMaxACU: "2"\n'
+        '        PlannerModel: "gpt-4.1-mini"\n'
         "    resources: {}\n"
         "    bootstrap:\n"
         "      agent_id: null\n"

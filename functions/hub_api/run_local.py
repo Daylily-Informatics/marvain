@@ -30,7 +30,7 @@ if not os.getenv("AWS_REGION"):
     os.environ["AWS_REGION"] = "us-east-1"
 
 # Now import and run uvicorn
-import uvicorn
+import uvicorn  # noqa: E402
 
 if __name__ == "__main__":
     uvicorn.run(
@@ -40,4 +40,3 @@ if __name__ == "__main__":
         reload=False,
         log_level="debug",
     )
-

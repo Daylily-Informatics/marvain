@@ -30,7 +30,9 @@ def _get_api_key(openai_secret_arn: str) -> str:
     return str(key)
 
 
-def _http_json_raw(method: str, url: str, payload: dict[str, Any], *, api_key: str, timeout_s: int = 30) -> dict[str, Any]:
+def _http_json_raw(
+    method: str, url: str, payload: dict[str, Any], *, api_key: str, timeout_s: int = 30
+) -> dict[str, Any]:
     """Make HTTP request without retry logic."""
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=body, method=method)

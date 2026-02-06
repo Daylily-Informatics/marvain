@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
-import logging
 
 import boto3
-
 from agent_hub.audit import append_audit_entry
 from agent_hub.auth import authenticate_device, authenticate_user_access_token
 from agent_hub.config import load_config
-from agent_hub.memberships import list_agents_for_user, check_agent_permission
+from agent_hub.memberships import check_agent_permission, list_agents_for_user
 from agent_hub.rds_data import RdsData, RdsDataEnv
 
 logger = logging.getLogger()
@@ -18,6 +17,7 @@ logger.setLevel(logging.INFO)
 
 _TABLE = os.getenv("WS_TABLE")
 _ACTION_QUEUE_URL = os.getenv("ACTION_QUEUE_URL")
+_WS_AUTH_TTL = int(os.getenv("WS_AUTH_TTL_SECONDS", "3600"))
 _dynamo = boto3.resource("dynamodb")
 _sqs = boto3.client("sqs")
 
@@ -28,11 +28,13 @@ _cfg = None
 def _get_db() -> RdsData:
     global _db
     if _db is None:
-        _db = RdsData(RdsDataEnv(
-            resource_arn=os.environ["DB_RESOURCE_ARN"],
-            secret_arn=os.environ["DB_SECRET_ARN"],
-            database=os.environ["DB_NAME"],
-        ))
+        _db = RdsData(
+            RdsDataEnv(
+                resource_arn=os.environ["DB_RESOURCE_ARN"],
+                secret_arn=os.environ["DB_SECRET_ARN"],
+                database=os.environ["DB_NAME"],
+            )
+        )
     return _db
 
 
@@ -58,13 +60,17 @@ def _send(event, connection_id: str, payload: dict):
 def _get_device_connections(table, target_device_id: str) -> list[str]:
     """Find all WebSocket connection IDs for a specific device.
 
+    Uses the ``device_id_index`` GSI for efficient lookup instead of a
+    full table scan.  Falls back to a scan if the GSI query fails (e.g.
+    index not yet provisioned).
+
     Returns list of connection_ids where device_id matches and status is authenticated.
     """
     try:
-        # Scan for connections with matching device_id
-        # Note: For scale, consider adding a GSI on device_id
-        response = table.scan(
-            FilterExpression="device_id = :did AND #s = :status",
+        response = table.query(
+            IndexName="device_id_index",
+            KeyConditionExpression="device_id = :did",
+            FilterExpression="#s = :status",
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={
                 ":did": target_device_id,
@@ -73,8 +79,20 @@ def _get_device_connections(table, target_device_id: str) -> list[str]:
         )
         return [item["connection_id"] for item in response.get("Items", [])]
     except Exception as e:
-        logger.warning("Failed to query connections for device %s: %s", target_device_id, e)
-        return []
+        logger.warning("GSI query failed for device %s, falling back to scan: %s", target_device_id, e)
+        try:
+            response = table.scan(
+                FilterExpression="device_id = :did AND #s = :status",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={
+                    ":did": target_device_id,
+                    ":status": "authenticated",
+                },
+            )
+            return [item["connection_id"] for item in response.get("Items", [])]
+        except Exception as e2:
+            logger.warning("Scan fallback also failed for device %s: %s", target_device_id, e2)
+            return []
 
 
 def _send_to_device(event, table, target_device_id: str, message: dict) -> tuple[int, int]:
@@ -118,7 +136,9 @@ def _send_to_device(event, table, target_device_id: str, message: dict) -> tuple
     return (sent_count, len(stale_connections))
 
 
-def _handle_action_decision(event, connection_id: str, table, conn_item: dict, action_id: str, approve: bool, reason: str = ""):
+def _handle_action_decision(
+    event, connection_id: str, table, conn_item: dict, action_id: str, approve: bool, reason: str = ""
+):
     """Handle approve or reject action decision."""
     action_type = "approve_action" if approve else "reject_action"
 
@@ -154,12 +174,16 @@ def _handle_action_decision(event, connection_id: str, table, conn_item: dict, a
 
     # Only proposed actions can be approved/rejected
     if current_status != "proposed":
-        _send(event, connection_id, {
-            "type": action_type,
-            "ok": False,
-            "error": "invalid_status",
-            "current_status": current_status,
-        })
+        _send(
+            event,
+            connection_id,
+            {
+                "type": action_type,
+                "ok": False,
+                "error": "invalid_status",
+                "current_status": current_status,
+            },
+        )
         return {"statusCode": 200, "body": "ok"}
 
     new_status = "approved" if approve else "rejected"
@@ -234,7 +258,6 @@ def handler(event, context):
     action = msg.get("action") or ""
     table = _dynamo.Table(_TABLE)
 
-
     if action == "hello":
         access_token = str(msg.get("access_token") or "").strip()
         device_token = str(msg.get("device_token") or "").strip()
@@ -262,6 +285,7 @@ def handler(event, context):
                 for a in agents
             ]
 
+            now_ts = int(time.time())
             expr_names = {"#s": "status"}
             expr_values = {
                 ":s": "authenticated",
@@ -269,6 +293,8 @@ def handler(event, context):
                 ":uid": user.user_id,
                 ":cs": user.cognito_sub,
                 ":ag": agents_out,
+                ":aat": now_ts,
+                ":ttl": now_ts + _WS_AUTH_TTL,
             }
             set_parts = [
                 "#s=:s",
@@ -276,6 +302,8 @@ def handler(event, context):
                 "user_id=:uid",
                 "cognito_sub=:cs",
                 "agents=:ag",
+                "authenticated_at=:aat",
+                "ttl=:ttl",
             ]
             remove_parts = ["agent_id", "device_id", "scopes"]
             if user.email:
@@ -327,19 +355,23 @@ def handler(event, context):
             {"device_id": dev.device_id},
         )
 
+        dev_now_ts = int(time.time())
         table.update_item(
             Key={"connection_id": connection_id},
             UpdateExpression=(
-                "SET #s=:s, principal_type=:pt, agent_id=:a, device_id=:d, scopes=:sc "
+                "SET #s=:s, principal_type=:pt, agent_id=:a, device_id=:d, scopes=:sc, "
+                "authenticated_at=:aat, #ttl=:ttl "
                 "REMOVE user_id, cognito_sub, email, agents"
             ),
-            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeNames={"#s": "status", "#ttl": "ttl"},
             ExpressionAttributeValues={
                 ":s": "authenticated",
                 ":pt": "device",
                 ":a": dev.agent_id,
                 ":d": dev.device_id,
                 ":sc": dev.scopes,
+                ":aat": dev_now_ts,
+                ":ttl": dev_now_ts + _WS_AUTH_TTL,
             },
         )
 
@@ -361,6 +393,28 @@ def handler(event, context):
     conn_item = table.get_item(Key={"connection_id": connection_id}).get("Item", {})
     if conn_item.get("status") != "authenticated":
         _send(event, connection_id, {"type": "error", "error": "not_authenticated", "action": action})
+        return {"statusCode": 200, "body": "ok"}
+
+    # Check auth expiry — require re-authentication if TTL exceeded
+    auth_at = conn_item.get("authenticated_at")
+    if auth_at is not None and int(time.time()) - int(auth_at) > _WS_AUTH_TTL:
+        # Mark connection as expired so DynamoDB TTL can clean it up
+        table.update_item(
+            Key={"connection_id": connection_id},
+            UpdateExpression="SET #s = :s",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":s": "expired"},
+        )
+        _send(
+            event,
+            connection_id,
+            {
+                "type": "error",
+                "error": "auth_expired",
+                "message": "Session expired. Send hello with a fresh token to re-authenticate.",
+                "action": action,
+            },
+        )
         return {"statusCode": 200, "body": "ok"}
 
     principal_type = conn_item.get("principal_type")
@@ -420,26 +474,34 @@ def handler(event, context):
         }
         sent_count, stale_count = _send_to_device(event, table, target_device_id, device_message)
 
-        _send(event, connection_id, {
-            "type": "cmd.ping",
-            "ok": True,
-            "target_device_id": target_device_id,
-            "sent_at": sent_at,
-            "device_connections": sent_count,
-            "device_online": sent_count > 0,
-        })
+        _send(
+            event,
+            connection_id,
+            {
+                "type": "cmd.ping",
+                "ok": True,
+                "target_device_id": target_device_id,
+                "sent_at": sent_at,
+                "device_connections": sent_count,
+                "device_online": sent_count > 0,
+            },
+        )
         return {"statusCode": 200, "body": "ok"}
 
     # cmd.pong - response to cmd.ping (device -> hub)
     if action == "cmd.pong":
         original_sent_at = msg.get("original_sent_at")
-        _send(event, connection_id, {
-            "type": "cmd.pong",
-            "ok": True,
-            "device_id": conn_item.get("device_id"),
-            "received_at": int(time.time() * 1000),
-            "original_sent_at": original_sent_at,
-        })
+        _send(
+            event,
+            connection_id,
+            {
+                "type": "cmd.pong",
+                "ok": True,
+                "device_id": conn_item.get("device_id"),
+                "received_at": int(time.time() * 1000),
+                "original_sent_at": original_sent_at,
+            },
+        )
         return {"statusCode": 200, "body": "ok"}
 
     # cmd.run_action - request a device to execute an action
@@ -449,7 +511,11 @@ def handler(event, context):
         action_payload = msg.get("payload") or {}
 
         if not target_device_id or not action_kind:
-            _send(event, connection_id, {"type": "cmd.run_action", "ok": False, "error": "missing_target_device_id_or_kind"})
+            _send(
+                event,
+                connection_id,
+                {"type": "cmd.run_action", "ok": False, "error": "missing_target_device_id_or_kind"},
+            )
             return {"statusCode": 200, "body": "ok"}
 
         # Permission check: user needs admin on the device's agent
@@ -481,22 +547,30 @@ def handler(event, context):
         sent_count, stale_count = _send_to_device(event, table, target_device_id, device_message)
 
         if sent_count == 0:
-            _send(event, connection_id, {
-                "type": "cmd.run_action",
-                "ok": False,
-                "error": "device_not_connected",
-                "target_device_id": target_device_id,
-            })
+            _send(
+                event,
+                connection_id,
+                {
+                    "type": "cmd.run_action",
+                    "ok": False,
+                    "error": "device_not_connected",
+                    "target_device_id": target_device_id,
+                },
+            )
             return {"statusCode": 200, "body": "ok"}
 
-        _send(event, connection_id, {
-            "type": "cmd.run_action",
-            "ok": True,
-            "target_device_id": target_device_id,
-            "kind": action_kind,
-            "sent_at": sent_at,
-            "device_connections": sent_count,
-        })
+        _send(
+            event,
+            connection_id,
+            {
+                "type": "cmd.run_action",
+                "ok": True,
+                "target_device_id": target_device_id,
+                "kind": action_kind,
+                "sent_at": sent_at,
+                "device_connections": sent_count,
+            },
+        )
         return {"statusCode": 200, "body": "ok"}
 
     # cmd.config - send configuration update to a device
@@ -536,21 +610,29 @@ def handler(event, context):
         sent_count, stale_count = _send_to_device(event, table, target_device_id, device_message)
 
         if sent_count == 0:
-            _send(event, connection_id, {
-                "type": "cmd.config",
-                "ok": False,
-                "error": "device_not_connected",
-                "target_device_id": target_device_id,
-            })
+            _send(
+                event,
+                connection_id,
+                {
+                    "type": "cmd.config",
+                    "ok": False,
+                    "error": "device_not_connected",
+                    "target_device_id": target_device_id,
+                },
+            )
             return {"statusCode": 200, "body": "ok"}
 
-        _send(event, connection_id, {
-            "type": "cmd.config",
-            "ok": True,
-            "target_device_id": target_device_id,
-            "sent_at": sent_at,
-            "device_connections": sent_count,
-        })
+        _send(
+            event,
+            connection_id,
+            {
+                "type": "cmd.config",
+                "ok": True,
+                "target_device_id": target_device_id,
+                "sent_at": sent_at,
+                "device_connections": sent_count,
+            },
+        )
         return {"statusCode": 200, "body": "ok"}
 
     # -------------------------------------------------------------------------
@@ -657,11 +739,15 @@ def handler(event, context):
                 ExpressionAttributeValues={":subs": subscriptions},
             )
 
-        _send(event, connection_id, {
-            "type": "subscribe_presence",
-            "ok": True,
-            "subscription": sub_key,
-        })
+        _send(
+            event,
+            connection_id,
+            {
+                "type": "subscribe_presence",
+                "ok": True,
+                "subscription": sub_key,
+            },
+        )
         return {"statusCode": 200, "body": "ok"}
 
     # -------------------------------------------------------------------------
@@ -698,14 +784,18 @@ def handler(event, context):
                 ExpressionAttributeValues={":subs": subscriptions},
             )
 
-        _send(event, connection_id, {
-            "type": "subscribe_events",
-            "ok": True,
-            "subscription": sub_key,
-            "agent_id": agent_id,
-            "space_id": space_id or None,
-            "event_types": event_types if event_types else None,
-        })
+        _send(
+            event,
+            connection_id,
+            {
+                "type": "subscribe_events",
+                "ok": True,
+                "subscription": sub_key,
+                "agent_id": agent_id,
+                "space_id": space_id or None,
+                "event_types": event_types if event_types else None,
+            },
+        )
         return {"statusCode": 200, "body": "ok"}
 
     # Default: unknown action

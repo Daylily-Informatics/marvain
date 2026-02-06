@@ -5,7 +5,6 @@ from typing import Any
 
 from agent_hub.rds_data import RdsData
 
-
 ALLOWED_ROLES: set[str] = {"owner", "admin", "member", "guest", "blocked"}
 ROLE_RANK: dict[str, int] = {
     # blocked means "no access" even if the numeric rank is low.
@@ -305,4 +304,3 @@ def claim_first_owner(db: RdsData, *, agent_id: str, user_id: str, relationship_
         except Exception:
             pass
         raise
-

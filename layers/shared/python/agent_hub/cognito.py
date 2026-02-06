@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 class CognitoAuthError(Exception):
     """Raised when Cognito authentication fails."""
+
     pass
 
 
@@ -251,9 +252,7 @@ def extract_cognito_groups(claims: dict[str, Any]) -> list[str]:
     return []
 
 
-async def get_user_info_from_tokens(
-    cfg: HubConfig, id_token: str, access_token: str | None = None
-) -> CognitoUserInfo:
+async def get_user_info_from_tokens(cfg: HubConfig, id_token: str, access_token: str | None = None) -> CognitoUserInfo:
     """Extract complete user information from Cognito tokens.
 
     Validates the ID token, extracts user claims, maps Cognito groups
@@ -292,9 +291,7 @@ async def get_user_info_from_tokens(
     # Deduplicate roles
     roles = list(dict.fromkeys(roles))
 
-    logger.info(
-        f"Cognito login for {email} ({sub}), groups={cognito_groups}, roles={roles}"
-    )
+    logger.info(f"Cognito login for {email} ({sub}), groups={cognito_groups}, roles={roles}")
 
     return CognitoUserInfo(
         sub=sub,
@@ -304,4 +301,3 @@ async def get_user_info_from_tokens(
         roles=roles,
         email_verified=email_verified,
     )
-

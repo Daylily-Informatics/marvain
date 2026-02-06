@@ -13,11 +13,16 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
-from typing import Any, Iterable
+from typing import Any, Iterable, TextIO
 
-from marvain_cli.config import ConfigError, ResolvedEnv, find_config_path, load_config_dict, resolve_env, save_config_dict
-
+from marvain_cli.config import (
+    ConfigError,
+    ResolvedEnv,
+    find_config_path,
+    load_config_dict,
+    resolve_env,
+    save_config_dict,
+)
 
 MARVAIN_CONDA_ENV_NAME = "marvain"
 MARVAIN_CONDA_ENV_FILE = "config/marvain_conda.yaml"
@@ -276,9 +281,7 @@ def resolve_stack_output(ctx: Ctx, *, key: str, dry_run: bool) -> str:
     if isinstance(v, str) and v:
         return v
     if dry_run:
-        raise ConfigError(
-            f"Missing stack output '{key}' in config. Run: marvain monitor outputs --write-config"
-        )
+        raise ConfigError(f"Missing stack output '{key}' in config. Run: marvain monitor outputs --write-config")
     outs = aws_stack_outputs(ctx, dry_run=False)
     v2 = outs.get(key)
     if isinstance(v2, str) and v2:
@@ -538,7 +541,9 @@ def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool, no_confirm: bool = Fals
     elif "LiveKitUrl" not in param_overrides:
         _eprint("ERROR: LIVEKIT_URL environment variable is not set and LiveKitUrl is not in parameter_overrides.")
         _eprint("Please set LIVEKIT_URL or add LiveKitUrl to your marvain config.")
-        _eprint("Hint: export LIVEKIT_URL=<your-livekit-url> or add LiveKitUrl to sam.parameter_overrides in marvain-config.yaml")
+        _eprint(
+            "Hint: export LIVEKIT_URL=<your-livekit-url> or add LiveKitUrl to sam.parameter_overrides in marvain-config.yaml"
+        )
         return 1
 
     # Always build before deploy so Lambda functions include vendored dependencies.
@@ -784,16 +789,12 @@ def _pretty_print_status(result: dict[str, Any]) -> None:
     # Status color indicators
     if not exists:
         status_indicator = "⚪"  # Not deployed
-        status_color = ""
     elif "COMPLETE" in status_val and "ROLLBACK" not in status_val:
         status_indicator = "🟢"  # Healthy
-        status_color = ""
     elif "IN_PROGRESS" in status_val:
         status_indicator = "🟡"  # In progress
-        status_color = ""
     else:
         status_indicator = "🔴"  # Error/rollback
-        status_color = ""
 
     print(f"\n{status_indicator} Stack: {stack}")
     print(f"   Status: {status_val if exists else 'NOT DEPLOYED'}")
@@ -1144,6 +1145,7 @@ def _get_pid_on_port(port: int) -> int | None:
             for line in result.stdout.split("\n"):
                 if f":{port}" in line and "pid=" in line:
                     import re
+
                     match = re.search(r"pid=(\d+)", line)
                     if match:
                         return int(match.group(1))
@@ -1165,11 +1167,13 @@ def _is_process_running(pid: int) -> bool:
 def _kill_process(pid: int, force: bool = False) -> bool:
     """Kill a process by PID. Returns True if successful."""
     import signal
+
     sig = signal.SIGKILL if force else signal.SIGTERM
     try:
         os.kill(pid, sig)
         # Wait a bit for the process to terminate
         import time
+
         for _ in range(10):
             time.sleep(0.1)
             if not _is_process_running(pid):
@@ -1250,7 +1254,7 @@ def gui_status(
     # Determine actual status
     if pid_from_file and _is_process_running(pid_from_file):
         start_time = _get_process_start_time(pid_from_file)
-        _eprint(f"GUI server is RUNNING")
+        _eprint("GUI server is RUNNING")
         _eprint(f"  PID: {pid_from_file}")
         _eprint(f"  Port: {port}")
         if start_time:
@@ -1260,12 +1264,12 @@ def gui_status(
     elif port_in_use and pid_on_port:
         # Port is in use but not by our tracked process
         start_time = _get_process_start_time(pid_on_port)
-        _eprint(f"GUI server is RUNNING (untracked)")
+        _eprint("GUI server is RUNNING (untracked)")
         _eprint(f"  PID: {pid_on_port}")
         _eprint(f"  Port: {port}")
         if start_time:
             _eprint(f"  Started: {start_time}")
-        _eprint(f"  Note: Process not started via 'marvain gui start'")
+        _eprint("  Note: Process not started via 'marvain gui start'")
         # Clean up stale PID file if it exists
         if pid_from_file:
             _remove_pid_file()
@@ -1275,7 +1279,7 @@ def gui_status(
         _eprint(f"  Run: lsof -ti:{port} | xargs kill -9")
         return 1
     else:
-        _eprint(f"GUI server is STOPPED")
+        _eprint("GUI server is STOPPED")
         _eprint(f"  Port: {port}")
         # Clean up stale PID file
         if pid_from_file:
@@ -1373,9 +1377,13 @@ def _ensure_mkcert_certs(dry_run: bool = False) -> tuple[Path, Path] | None:
     _eprint(f"Generating mkcert certificates in {certs_dir}...")
     cmd = [
         mkcert_path,
-        "-cert-file", str(cert_path),
-        "-key-file", str(key_path),
-        "localhost", "127.0.0.1", "::1",
+        "-cert-file",
+        str(cert_path),
+        "-key-file",
+        str(key_path),
+        "localhost",
+        "127.0.0.1",
+        "::1",
     ]
     _eprint(f"$ {' '.join(cmd)}")
 
@@ -1529,7 +1537,7 @@ def gui_start(
         lk_url = sam_params.get("LiveKitUrl", "")
         if lk_url:
             env["LIVEKIT_URL"] = str(lk_url)
-            _eprint(f"NOTE: Using LiveKitUrl from sam.parameter_overrides (redeploy stack for proper output)")
+            _eprint("NOTE: Using LiveKitUrl from sam.parameter_overrides (redeploy stack for proper output)")
 
     # Set Cognito redirect URI dynamically based on http/https
     env["COGNITO_REDIRECT_URI"] = redirect_uri
@@ -1582,7 +1590,7 @@ def gui_start(
         _eprint(f"GUI server started (PID {proc.pid})")
         _eprint(f"  URL: {scheme}://{host}:{port}")
         _eprint(f"  Logs: tail -f {log_file}")
-        _eprint(f"  Stop: marvain gui stop")
+        _eprint("  Stop: marvain gui stop")
         return 0
 
 
@@ -1609,6 +1617,7 @@ def gui_restart(
 
     # Wait a moment for port to be released
     import time
+
     for _ in range(10):
         if not _is_port_in_use(port, host):
             break
@@ -1673,6 +1682,7 @@ def gui_logs(
 
 AGENT_DEFAULT_PORT = 8089  # LiveKit agents default health port
 
+
 def _get_agent_pid_file() -> Path:
     return Path.cwd() / ".marvain-agent.pid"
 
@@ -1684,10 +1694,12 @@ def _get_agent_log_file() -> Path:
 def _fetch_secret_json(secret_arn: str, profile: str, region: str) -> dict[str, Any]:
     """Fetch a secret from AWS Secrets Manager."""
     import boto3
+
     session = boto3.Session(profile_name=profile, region_name=region)
     client = session.client("secretsmanager")
     resp = client.get_secret_value(SecretId=secret_arn)
     import json as json_mod
+
     return json_mod.loads(resp.get("SecretString", "{}"))
 
 
@@ -1738,7 +1750,7 @@ def agent_start(
         _eprint("Run 'marvain monitor outputs --write-config' to populate resources.")
         return 2
 
-    _eprint(f"Loading credentials from AWS Secrets Manager...")
+    _eprint("Loading credentials from AWS Secrets Manager...")
 
     if dry_run:
         _eprint(f"[dry-run] Would fetch LiveKit secret from: {livekit_secret_arn}")
@@ -1799,7 +1811,7 @@ def agent_start(
     if space_id:
         env["SPACE_ID"] = space_id
 
-    _eprint(f"Starting agent worker...")
+    _eprint("Starting agent worker...")
     _eprint(f"Using config: {ctx.config_path} (env: {ctx.env.env})")
 
     if foreground:
@@ -1832,7 +1844,7 @@ def agent_start(
 
         _eprint(f"Agent worker started (PID {proc.pid})")
         _eprint(f"  Logs: tail -f {log_file}")
-        _eprint(f"  Stop: marvain agent stop")
+        _eprint("  Stop: marvain agent stop")
         return 0
 
 
@@ -1930,6 +1942,7 @@ def agent_restart(
     agent_stop(ctx, dry_run=False, force=False)
 
     import time
+
     time.sleep(1)
 
     _eprint("")
@@ -1981,9 +1994,7 @@ def agent_rebuild(
         if not script_path.exists():
             _eprint("⚠️  clear_livekit_rooms.py not found, skipping room clearing")
         else:
-            result = subprocess.run([
-                sys.executable, str(script_path)
-            ], capture_output=True, text=True)
+            result = subprocess.run([sys.executable, str(script_path)], capture_output=True, text=True)
 
             if result.returncode == 0:
                 _eprint("✅ LiveKit rooms cleared successfully")
@@ -2001,6 +2012,7 @@ def agent_rebuild(
     # Step 3: Wait for propagation
     _eprint("3️⃣ Waiting for LiveKit Cloud propagation...")
     import time
+
     time.sleep(3)  # Give LiveKit Cloud time to propagate room deletions
     _eprint("")
 
@@ -2258,7 +2270,19 @@ def bootstrap(
     )
     device_id = _first_cell_as_string(dev_res)
 
-    print(json.dumps({"agent_id": agent_id, "space_id": space_id, "device_id": device_id, "device_name": d_name, "device_token": token}, indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "agent_id": agent_id,
+                "space_id": space_id,
+                "device_id": device_id,
+                "device_name": d_name,
+                "device_token": token,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
 
     if not dry_run:
         env_cfg["bootstrap"] = {
@@ -2320,11 +2344,7 @@ def cognito_admin_create_user(ctx: Ctx, *, email: str, dry_run: bool = False) ->
     """
 
     pool_id = _get_user_pool_id(ctx)
-    _eprint(
-        "aws cognito-idp admin-create-user "
-        f"--user-pool-id {pool_id} "
-        f"--username {email}"
-    )
+    _eprint(f"aws cognito-idp admin-create-user --user-pool-id {pool_id} --username {email}")
     if dry_run:
         return {}
 
@@ -2340,11 +2360,7 @@ def cognito_admin_delete_user(ctx: Ctx, *, email: str, dry_run: bool = False) ->
     """
 
     pool_id = _get_user_pool_id(ctx)
-    _eprint(
-        "aws cognito-idp admin-delete-user "
-        f"--user-pool-id {pool_id} "
-        f"--username {email}"
-    )
+    _eprint(f"aws cognito-idp admin-delete-user --user-pool-id {pool_id} --username {email}")
     if dry_run:
         return 0
 
@@ -2399,7 +2415,9 @@ def cognito_set_password(
 
     _eprint(f"Setting password for user: {email}")
     if dry_run:
-        _eprint(f"[DRY RUN] cognito-idp.admin_set_user_password(UserPoolId={pool_id}, Username={email}, Permanent={permanent})")
+        _eprint(
+            f"[DRY RUN] cognito-idp.admin_set_user_password(UserPoolId={pool_id}, Username={email}, Permanent={permanent})"
+        )
         return
 
     client = _get_cognito_client(ctx)
@@ -2663,7 +2681,9 @@ def _detect_audio_devices() -> list[DetectedDevice]:
                     for item in items:
                         name = item.get("_name", "Unknown Audio Device")
                         # Determine if input or output
-                        dev_type = "audio_input" if "input" in name.lower() or "microphone" in name.lower() else "audio_output"
+                        dev_type = (
+                            "audio_input" if "input" in name.lower() or "microphone" in name.lower() else "audio_output"
+                        )
                         # macOS uses CoreAudio, no /dev path
                         path = f"coreaudio:{name}"
                         conn_type = "usb" if "usb" in name.lower() else "direct"
@@ -2797,14 +2817,16 @@ def list_detected_devices(
     # Convert to dicts
     result = []
     for d in devices:
-        result.append({
-            "device_type": d.device_type,
-            "name": d.name,
-            "path": d.path,
-            "connection_type": d.connection_type,
-            "vendor_id": d.vendor_id,
-            "product_id": d.product_id,
-            "serial": d.serial,
-        })
+        result.append(
+            {
+                "device_type": d.device_type,
+                "name": d.name,
+                "path": d.path,
+                "connection_type": d.connection_type,
+                "vendor_id": d.vendor_id,
+                "product_id": d.product_id,
+                "serial": d.serial,
+            }
+        )
 
     return result

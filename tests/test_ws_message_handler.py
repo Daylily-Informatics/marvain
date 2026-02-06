@@ -120,6 +120,12 @@ class TestWsMessageHelloAuth(unittest.TestCase):
         self.assertEqual(self.sent[-1]["payload"]["principal_type"], "user")
         self.assertEqual(self.sent[-1]["payload"]["user_id"], "u1")
 
+        # Verify authenticated_at and ttl are stored (R7 auth timeout)
+        self.assertIn(":aat", vals)
+        self.assertIn(":ttl", vals)
+        self.assertIsInstance(vals[":aat"], int)
+        self.assertGreater(vals[":ttl"], vals[":aat"])
+
     def test_hello_access_token_invalid_sends_error(self) -> None:
         self.mod.authenticate_user_access_token = mock.Mock(side_effect=PermissionError("bad token"))
 

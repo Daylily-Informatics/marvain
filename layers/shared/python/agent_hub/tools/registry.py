@@ -7,6 +7,7 @@ Each tool:
 3. Executes the action
 4. Returns a structured result
 """
+
 from __future__ import annotations
 
 import logging
@@ -22,10 +23,11 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ToolResult:
     """Result from tool execution."""
+
     ok: bool
     data: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
-    
+
     def to_dict(self) -> dict[str, Any]:
         result = {"ok": self.ok}
         if self.ok:
@@ -38,6 +40,7 @@ class ToolResult:
 @dataclass
 class ToolSpec:
     """Specification for a registered tool."""
+
     name: str
     required_scopes: list[str]
     handler: Callable[[dict[str, Any], "ToolContext"], ToolResult]
@@ -47,6 +50,7 @@ class ToolSpec:
 @dataclass
 class ToolContext:
     """Context passed to tool handlers during execution."""
+
     db: "RdsData"
     agent_id: str
     space_id: str | None
@@ -60,10 +64,10 @@ class ToolContext:
 
 class ToolRegistry:
     """Registry of available tools."""
-    
+
     def __init__(self) -> None:
         self._tools: dict[str, ToolSpec] = {}
-    
+
     def register(
         self,
         name: str,
@@ -80,41 +84,41 @@ class ToolRegistry:
             description=description,
         )
         logger.debug("Registered tool: %s", name)
-    
+
     def get(self, name: str) -> ToolSpec | None:
         """Get a tool by name."""
         return self._tools.get(name)
-    
+
     def list_tools(self) -> list[str]:
         """List all registered tool names."""
         return list(self._tools.keys())
-    
+
     def check_scopes(self, name: str, granted_scopes: list[str]) -> bool:
         """Check if granted scopes satisfy tool requirements.
-        
+
         Returns True if all required scopes are in granted_scopes.
         """
         tool = self._tools.get(name)
         if not tool:
             return False
-        
+
         granted_set = set(granted_scopes)
         for required in tool.required_scopes:
             if required not in granted_set:
                 return False
         return True
-    
+
     def execute(self, name: str, payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
         """Execute a tool by name with payload and context."""
         tool = self._tools.get(name)
         if not tool:
             return ToolResult(ok=False, error=f"unknown_tool: {name}")
-        
+
         # Check scopes
         if not self.check_scopes(name, ctx.device_scopes):
             missing = set(tool.required_scopes) - set(ctx.device_scopes)
             return ToolResult(ok=False, error=f"missing_scopes: {', '.join(missing)}")
-        
+
         try:
             return tool.handler(payload, ctx)
         except Exception as e:
@@ -137,7 +141,7 @@ def get_registry() -> ToolRegistry:
 
 def _register_default_tools(registry: ToolRegistry) -> None:
     """Register the default set of tools."""
-    from . import send_message, create_memory, http_request, device_command, shell_command
+    from . import create_memory, device_command, http_request, send_message, shell_command
 
     send_message.register(registry)
     create_memory.register(registry)
@@ -149,4 +153,3 @@ def _register_default_tools(registry: ToolRegistry) -> None:
 def execute_tool(name: str, payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
     """Execute a tool by name using the global registry."""
     return get_registry().execute(name, payload, ctx)
-

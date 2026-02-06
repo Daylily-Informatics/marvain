@@ -5,6 +5,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 from pathlib import Path
 
 from marvain_cli import __version__
@@ -24,7 +25,6 @@ from marvain_cli.ops import (
     doctor,
     gui_logs,
     gui_restart,
-    gui_run,
     gui_start,
     gui_status,
     gui_stop,
@@ -149,7 +149,9 @@ def run(argv: list[str]) -> int:
     gui_start_p.add_argument("--reload", action="store_true")
     gui_start_p.add_argument("--no-reload", action="store_true")
     gui_start_p.add_argument("--foreground", "-f", action="store_true", help="Run in foreground (blocking)")
-    gui_start_p.add_argument("--https", action="store_true", default=True, help="Enable HTTPS (default: on, uses mkcert if no cert/key)")
+    gui_start_p.add_argument(
+        "--https", action="store_true", default=True, help="Enable HTTPS (default: on, uses mkcert if no cert/key)"
+    )
     gui_start_p.add_argument("--no-https", action="store_true", help="Disable HTTPS, use HTTP instead")
     gui_start_p.add_argument("--cert", type=str, help="Path to SSL certificate file (PEM format)")
     gui_start_p.add_argument("--key", type=str, help="Path to SSL private key file (PEM format)")
@@ -166,7 +168,9 @@ def run(argv: list[str]) -> int:
     gui_restart_p.add_argument("--reload", action="store_true")
     gui_restart_p.add_argument("--no-reload", action="store_true")
     gui_restart_p.add_argument("--foreground", "-f", action="store_true", help="Run in foreground (blocking)")
-    gui_restart_p.add_argument("--https", action="store_true", default=True, help="Enable HTTPS (default: on, uses mkcert if no cert/key)")
+    gui_restart_p.add_argument(
+        "--https", action="store_true", default=True, help="Enable HTTPS (default: on, uses mkcert if no cert/key)"
+    )
     gui_restart_p.add_argument("--no-https", action="store_true", help="Disable HTTPS, use HTTP instead")
     gui_restart_p.add_argument("--cert", type=str, help="Path to SSL certificate file (PEM format)")
     gui_restart_p.add_argument("--key", type=str, help="Path to SSL private key file (PEM format)")
@@ -267,7 +271,9 @@ def run(argv: list[str]) -> int:
     d_register.add_argument("--dry-run", action="store_true")
 
     d_detect = devices_sub.add_parser("detect", help="Detect USB and direct-attach devices")
-    d_detect.add_argument("--type", "-t", dest="device_type", default=None, help="Filter: video, audio_input, audio_output, serial")
+    d_detect.add_argument(
+        "--type", "-t", dest="device_type", default=None, help="Filter: video, audio_input, audio_output, serial"
+    )
     d_detect.add_argument("--connection", "-c", dest="connection_type", default=None, help="Filter: usb, direct")
     d_detect.add_argument("--format", "-f", dest="output_format", default="table", help="Output: table, json")
 
@@ -678,7 +684,6 @@ def run(argv: list[str]) -> int:
     except subprocess.CalledProcessError as e:
         print(f"ERROR: command failed ({e.returncode}): {e.cmd}", file=os.sys.stderr)
         return e.returncode
-
 
 
 def run_tests(*, dry_run: bool) -> int:

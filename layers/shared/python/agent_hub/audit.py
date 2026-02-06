@@ -4,7 +4,6 @@ import datetime as dt
 import hashlib
 import json
 import logging
-import os
 import uuid
 from typing import Any, Mapping
 
@@ -23,7 +22,9 @@ def _sha256_hex(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 
-def append_audit_entry(db: RdsData, *, bucket: str, agent_id: str, entry_type: str, entry: Mapping[str, Any]) -> dict[str, Any]:
+def append_audit_entry(
+    db: RdsData, *, bucket: str, agent_id: str, entry_type: str, entry: Mapping[str, Any]
+) -> dict[str, Any]:
     """Append an audit entry to the WORM bucket.
 
     We keep a lightweight hash chain in Postgres (`audit_state`) so you can verify

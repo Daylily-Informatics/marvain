@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import importlib.util
 import dataclasses
+import importlib.util
 import os
 import sys
 import unittest
@@ -85,6 +85,64 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         )
 
         self.assertEqual(r.status_code, 409)
+
+    def test_update_agent_name(self) -> None:
+        """PATCH /v1/agents/{id} should update the agent name."""
+        self.mod.check_agent_permission = mock.Mock(return_value=True)
+        fake_db = mock.Mock()
+        fake_db.query.return_value = [
+            {"name": "New Name", "disabled": False, "role": "admin", "relationship_label": None}
+        ]
+        self.mod._db = fake_db
+
+        r = self.client.patch(
+            "/v1/agents/a1",
+            headers={"Authorization": "Bearer tok"},
+            json={"name": "New Name"},
+        )
+
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["agent_id"], "a1")
+        self.assertEqual(body["name"], "New Name")
+        self.assertFalse(body["disabled"])
+        fake_db.execute.assert_called_once()
+
+    def test_update_agent_empty_name_rejected(self) -> None:
+        """PATCH /v1/agents/{id} with empty name should return 400."""
+        self.mod.check_agent_permission = mock.Mock(return_value=True)
+
+        r = self.client.patch(
+            "/v1/agents/a1",
+            headers={"Authorization": "Bearer tok"},
+            json={"name": "   "},
+        )
+
+        self.assertEqual(r.status_code, 400)
+
+    def test_update_agent_no_fields_rejected(self) -> None:
+        """PATCH /v1/agents/{id} with no fields should return 400."""
+        self.mod.check_agent_permission = mock.Mock(return_value=True)
+
+        r = self.client.patch(
+            "/v1/agents/a1",
+            headers={"Authorization": "Bearer tok"},
+            json={},
+        )
+
+        self.assertEqual(r.status_code, 400)
+
+    def test_update_agent_requires_admin(self) -> None:
+        """PATCH /v1/agents/{id} should reject non-admin users."""
+        self.mod.check_agent_permission = mock.Mock(return_value=False)
+
+        r = self.client.patch(
+            "/v1/agents/a1",
+            headers={"Authorization": "Bearer tok"},
+            json={"name": "Nope"},
+        )
+
+        self.assertEqual(r.status_code, 403)
 
     def test_list_memberships_forbidden_without_membership(self) -> None:
         self.mod.check_agent_permission = mock.Mock(return_value=False)
@@ -183,9 +241,7 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
 
     def test_create_agent_requires_authentication(self) -> None:
         """Test POST /v1/agents returns 401 without auth."""
-        self.mod.authenticate_user_access_token = mock.Mock(
-            side_effect=PermissionError("Invalid token")
-        )
+        self.mod.authenticate_user_access_token = mock.Mock(side_effect=PermissionError("Invalid token"))
 
         r = self.client.post(
             "/v1/agents",

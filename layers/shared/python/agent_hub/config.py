@@ -116,9 +116,7 @@ def load_config() -> HubConfig:
         cognito_region=os.getenv("COGNITO_REGION", "us-east-1"),
         cognito_user_pool_id=os.getenv("COGNITO_USER_POOL_ID"),
         # Prefer Daylily-Ursa naming, but keep backward-compat.
-        cognito_user_pool_client_id=(
-            os.getenv("COGNITO_APP_CLIENT_ID") or os.getenv("COGNITO_USER_POOL_CLIENT_ID")
-        ),
+        cognito_user_pool_client_id=(os.getenv("COGNITO_APP_CLIENT_ID") or os.getenv("COGNITO_USER_POOL_CLIENT_ID")),
         cognito_user_pool_client_secret=os.getenv("COGNITO_APP_CLIENT_SECRET"),
         cognito_domain=os.getenv("COGNITO_DOMAIN"),
         cognito_redirect_uri=os.getenv("COGNITO_REDIRECT_URI"),

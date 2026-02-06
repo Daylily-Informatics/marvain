@@ -8,7 +8,6 @@ import uuid
 from typing import Any
 
 import boto3
-
 from agent_hub.audit import append_audit_entry
 from agent_hub.broadcast import broadcast_event
 from agent_hub.config import load_config
@@ -132,7 +131,9 @@ def _vector_recall(agent_id: str, query_text: str) -> list[dict[str, Any]]:
     return rows
 
 
-def _insert_memory(*, agent_id: str, space_id: str | None, tier: str, content: str, participants: list[str], provenance: dict[str, Any]) -> str:
+def _insert_memory(
+    *, agent_id: str, space_id: str | None, tier: str, content: str, participants: list[str], provenance: dict[str, Any]
+) -> str:
     memory_id = str(uuid.uuid4())
 
     embedding = None

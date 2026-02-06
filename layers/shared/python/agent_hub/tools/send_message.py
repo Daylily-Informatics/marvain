@@ -3,12 +3,13 @@
 This tool broadcasts a message to subscribed WebSocket connections
 for real-time notification to connected clients.
 """
+
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from .registry import ToolRegistry, ToolResult, ToolContext
+from .registry import ToolContext, ToolRegistry, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ REQUIRED_SCOPES = ["message:send"]
 
 def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
     """Execute the send_message tool.
-    
+
     Payload:
         recipient_type: "space" | "connection" | "user"
         recipient_id: The ID of the recipient (space_id, connection_id, or user_id)
@@ -29,21 +30,21 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
     recipient_id = str(payload.get("recipient_id", "")).strip()
     message_type = str(payload.get("message_type", "notification")).strip()
     content = payload.get("content")
-    
+
     if not recipient_type:
         return ToolResult(ok=False, error="missing_recipient_type")
     if not recipient_id:
         return ToolResult(ok=False, error="missing_recipient_id")
     if content is None:
         return ToolResult(ok=False, error="missing_content")
-    
+
     if recipient_type not in ("space", "connection", "user"):
         return ToolResult(ok=False, error=f"invalid_recipient_type: {recipient_type}")
-    
+
     if ctx.broadcast_fn is None:
         logger.warning("send_message: no broadcast_fn configured")
         return ToolResult(ok=False, error="broadcast_not_configured")
-    
+
     # Build the message payload
     message_payload = {
         "type": "message",
@@ -54,12 +55,12 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
     }
     if ctx.space_id:
         message_payload["space_id"] = ctx.space_id
-    
+
     try:
         # Broadcast to the recipient
         broadcast_key = f"{recipient_type}:{recipient_id}"
         ctx.broadcast_fn(broadcast_key, message_payload)
-        
+
         # Also record in events table for persistence
         ctx.db.execute(
             """
@@ -78,9 +79,9 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
                 },
             },
         )
-        
+
         return ToolResult(ok=True, data={"delivered": True, "recipient": broadcast_key})
-        
+
     except Exception as e:
         logger.exception("send_message failed")
         return ToolResult(ok=False, error=f"broadcast_failed: {str(e)}")
@@ -94,4 +95,3 @@ def register(registry: ToolRegistry) -> None:
         handler=_handler,
         description="Send a message to WebSocket connections for real-time notifications",
     )
-

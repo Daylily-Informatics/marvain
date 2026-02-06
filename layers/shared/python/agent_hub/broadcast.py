@@ -13,6 +13,7 @@ Usage:
         payload={"event_id": "...", "type": "transcript_chunk", ...},
     )
 """
+
 from __future__ import annotations
 
 import json
@@ -41,7 +42,7 @@ def _get_dynamodb():
 
 def _get_mgmt_api():
     """Get API Gateway Management API client.
-    
+
     Note: In Lambda context, WS_API_ENDPOINT should be set to the WebSocket API endpoint.
     """
     global _mgmt_api
@@ -52,15 +53,15 @@ def _get_mgmt_api():
 
 def _find_subscribed_connections(agent_id: str, space_id: str | None = None) -> list[dict]:
     """Find all connections subscribed to events for this agent/space.
-    
+
     Returns list of connection records that match the subscription pattern.
     Subscription keys are stored as: "events:{agent_id}" or "events:{agent_id}:{space_id}"
     """
     if not _WS_TABLE_NAME:
         return []
-    
+
     table = _get_dynamodb().Table(_WS_TABLE_NAME)
-    
+
     # We need to scan for connections with matching subscriptions
     # This is not ideal for large scale, but sufficient for current usage
     # A GSI on agent_id would improve this
@@ -69,7 +70,7 @@ def _find_subscribed_connections(agent_id: str, space_id: str | None = None) -> 
         patterns = [f"events:{agent_id}"]
         if space_id:
             patterns.append(f"events:{agent_id}:{space_id}")
-        
+
         # Scan for connections with agent_id (filter in Python for subscriptions)
         response = table.scan(
             FilterExpression="agent_id = :aid AND #s = :status",
@@ -79,7 +80,7 @@ def _find_subscribed_connections(agent_id: str, space_id: str | None = None) -> 
                 ":status": "authenticated",
             },
         )
-        
+
         matching = []
         for item in response.get("Items", []):
             subs = item.get("subscriptions") or []
@@ -88,7 +89,7 @@ def _find_subscribed_connections(agent_id: str, space_id: str | None = None) -> 
                 if pattern in subs:
                     matching.append(item)
                     break
-        
+
         return matching
     except Exception as e:
         logger.warning("Failed to query subscribed connections: %s", e)
@@ -103,13 +104,13 @@ def broadcast_event(
     payload: dict[str, Any],
 ) -> int:
     """Broadcast an event to all subscribed WebSocket connections.
-    
+
     Args:
         event_type: Type of event (e.g., "events.new", "actions.updated", "presence.updated")
         agent_id: Agent ID to scope the broadcast
         space_id: Optional space ID for more specific targeting
         payload: Event payload to send
-    
+
     Returns:
         Number of messages successfully sent
     """
@@ -117,11 +118,11 @@ def broadcast_event(
     if not mgmt_api:
         logger.debug("WebSocket broadcast not configured (no WS_API_ENDPOINT)")
         return 0
-    
+
     connections = _find_subscribed_connections(agent_id, space_id)
     if not connections:
         return 0
-    
+
     message = {
         "type": event_type,
         "agent_id": agent_id,
@@ -129,15 +130,15 @@ def broadcast_event(
         **payload,
     }
     data = json.dumps(message).encode("utf-8")
-    
+
     sent_count = 0
     stale_connections = []
-    
+
     for conn in connections:
         connection_id = conn.get("connection_id")
         if not connection_id:
             continue
-        
+
         try:
             mgmt_api.post_to_connection(ConnectionId=connection_id, Data=data)
             sent_count += 1
@@ -150,7 +151,7 @@ def broadcast_event(
                 logger.warning("Failed to send to connection %s: %s", connection_id, e)
         except Exception as e:
             logger.warning("Failed to send to connection %s: %s", connection_id, e)
-    
+
     # Clean up stale connections
     if stale_connections and _WS_TABLE_NAME:
         table = _get_dynamodb().Table(_WS_TABLE_NAME)
@@ -160,7 +161,6 @@ def broadcast_event(
                 logger.debug("Cleaned up stale connection: %s", conn_id)
             except Exception:
                 pass
-    
+
     logger.debug("Broadcast %s to %d/%d connections", event_type, sent_count, len(connections))
     return sent_count
-

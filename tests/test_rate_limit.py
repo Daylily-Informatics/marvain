@@ -1,10 +1,10 @@
 """Tests for rate limiting and retry utilities."""
+
 from __future__ import annotations
 
-import time
-import pytest
 from unittest.mock import patch
 
+import pytest
 from agent_hub.rate_limit import (
     RateLimitError,
     RetryableError,
@@ -113,7 +113,7 @@ class TestExponentialBackoff:
 
         with pytest.raises(RateLimitError):
             always_failing()
-        
+
         assert call_count == 3  # Initial + 2 retries
 
     def test_does_not_retry_non_retryable_errors(self):
@@ -128,7 +128,7 @@ class TestExponentialBackoff:
 
         with pytest.raises(ValueError):
             raises_value_error()
-        
+
         assert call_count == 1
 
     @patch("agent_hub.rate_limit.time.sleep")
@@ -136,7 +136,9 @@ class TestExponentialBackoff:
         """Should increase delay exponentially."""
         call_count = 0
 
-        @exponential_backoff(max_retries=3, base_delay=1.0, max_delay=60.0, jitter=0, retryable_exceptions=(RetryableError,))
+        @exponential_backoff(
+            max_retries=3, base_delay=1.0, max_delay=60.0, jitter=0, retryable_exceptions=(RetryableError,)
+        )
         def always_failing():
             nonlocal call_count
             call_count += 1
@@ -158,7 +160,9 @@ class TestExponentialBackoff:
         """Should cap delay at max_delay."""
         call_count = 0
 
-        @exponential_backoff(max_retries=5, base_delay=10.0, max_delay=15.0, jitter=0, retryable_exceptions=(RetryableError,))
+        @exponential_backoff(
+            max_retries=5, base_delay=10.0, max_delay=15.0, jitter=0, retryable_exceptions=(RetryableError,)
+        )
         def always_failing():
             nonlocal call_count
             call_count += 1
@@ -171,4 +175,3 @@ class TestExponentialBackoff:
         # All delays should be <= max_delay
         for delay in delays:
             assert delay <= 15.0
-

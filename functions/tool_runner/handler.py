@@ -10,8 +10,8 @@ from agent_hub.broadcast import broadcast_event
 from agent_hub.config import load_config
 from agent_hub.policy import is_agent_disabled
 from agent_hub.rds_data import RdsData, RdsDataEnv
-from agent_hub.tools import execute_tool, get_registry
-from agent_hub.tools.registry import ToolContext, ToolResult
+from agent_hub.tools import execute_tool
+from agent_hub.tools.registry import ToolContext
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -21,6 +21,24 @@ _db = RdsData(RdsDataEnv(resource_arn=_cfg.db_resource_arn, secret_arn=_cfg.db_s
 
 # Allowed HTTP hosts for http_request tool (configurable via env)
 _ALLOWED_HTTP_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HTTP_HOSTS", "").split(",") if h.strip()]
+
+
+def _make_broadcast_fn(agent_id: str, space_id: str | None):
+    """Return a broadcast callable matching the ToolContext.broadcast_fn signature.
+
+    The callable accepts ``(broadcast_key: str, payload: dict)`` and delegates
+    to :func:`broadcast_event`.
+    """
+
+    def _broadcast(broadcast_key: str, payload: dict) -> None:
+        broadcast_event(
+            event_type=broadcast_key,
+            agent_id=agent_id,
+            space_id=space_id,
+            payload=payload,
+        )
+
+    return _broadcast
 
 
 def _load_action(action_id: str) -> dict[str, Any] | None:
@@ -106,7 +124,7 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
             space_id=space_id,
             action_id=action_id,
             device_scopes=required_scopes,  # Action's required scopes are pre-approved
-            broadcast_fn=None,  # TODO: wire up WebSocket broadcast when available
+            broadcast_fn=_make_broadcast_fn(agent_id, space_id),
             allowed_http_hosts=_ALLOWED_HTTP_HOSTS,
         )
 

@@ -15,15 +15,21 @@ Or via installed CLI:
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
 import os
+import platform
+import shutil
 import signal
+import subprocess
 import sys
+import time as time_module
+from pathlib import Path
 from typing import Any
 
 import click
 import yaml
-
 from hub_client import HubClient, HubClientConfig
 
 # Configure logging
@@ -38,15 +44,6 @@ logger = logging.getLogger("marvain-satellite")
 # -----------------------------------------------------------------------------
 # Device Action Registry
 # -----------------------------------------------------------------------------
-
-import base64
-import json
-import os
-import platform
-import shutil
-import subprocess
-import time as time_module
-from pathlib import Path
 
 
 def _action_ping(payload: dict[str, Any]) -> dict[str, Any]:
@@ -75,12 +72,46 @@ def _action_echo(payload: dict[str, Any]) -> dict[str, Any]:
 
 # Read-only commands that are safe to execute
 SAFE_SHELL_COMMANDS = {
-    "ls", "cat", "head", "tail", "grep", "find", "wc", "du", "df",
-    "ps", "top", "uptime", "uname", "hostname", "whoami", "id",
-    "pwd", "echo", "date", "which", "whereis", "file", "stat",
-    "env", "printenv", "ifconfig", "ip", "netstat", "ss",
-    "free", "vmstat", "iostat", "lscpu", "lsblk", "lsusb",
-    "ping", "nslookup", "dig", "host", "traceroute",
+    "ls",
+    "cat",
+    "head",
+    "tail",
+    "grep",
+    "find",
+    "wc",
+    "du",
+    "df",
+    "ps",
+    "top",
+    "uptime",
+    "uname",
+    "hostname",
+    "whoami",
+    "id",
+    "pwd",
+    "echo",
+    "date",
+    "which",
+    "whereis",
+    "file",
+    "stat",
+    "env",
+    "printenv",
+    "ifconfig",
+    "ip",
+    "netstat",
+    "ss",
+    "free",
+    "vmstat",
+    "iostat",
+    "lscpu",
+    "lsblk",
+    "lsusb",
+    "ping",
+    "nslookup",
+    "dig",
+    "host",
+    "traceroute",
 }
 
 
@@ -143,6 +174,7 @@ def _action_shell_command(payload: dict[str, Any]) -> dict[str, Any]:
 # HTTP/HTTPS Requests
 # -----------------------------------------------------------------------------
 
+
 def _action_http_request(payload: dict[str, Any]) -> dict[str, Any]:
     """Execute an HTTP/HTTPS request.
 
@@ -153,9 +185,9 @@ def _action_http_request(payload: dict[str, Any]) -> dict[str, Any]:
         body: str|dict - Optional request body
         timeout: int - Request timeout in seconds (default: 30)
     """
-    import urllib.request
     import urllib.error
     import urllib.parse
+    import urllib.request
 
     url = payload.get("url", "").strip()
     method = payload.get("method", "GET").upper()
@@ -222,6 +254,7 @@ def _action_http_request(payload: dict[str, Any]) -> dict[str, Any]:
 # Device Status/Info
 # -----------------------------------------------------------------------------
 
+
 def _get_uptime_seconds() -> float:
     """Get system uptime in seconds."""
     try:
@@ -229,12 +262,10 @@ def _get_uptime_seconds() -> float:
             with open("/proc/uptime") as f:
                 return float(f.read().split()[0])
         elif platform.system() == "Darwin":  # macOS
-            result = subprocess.run(
-                ["sysctl", "-n", "kern.boottime"],
-                capture_output=True, text=True, timeout=5
-            )
+            result = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True, timeout=5)
             # Parse "{ sec = 1234567890, usec = 123456 }"
             import re
+
             match = re.search(r"sec\s*=\s*(\d+)", result.stdout)
             if match:
                 boot_time = int(match.group(1))
@@ -269,13 +300,11 @@ def _get_cpu_usage() -> float:
             if total_diff > 0:
                 return round((1 - idle_diff / total_diff) * 100, 1)
         elif platform.system() == "Darwin":
-            result = subprocess.run(
-                ["top", "-l", "1", "-n", "0"],
-                capture_output=True, text=True, timeout=10
-            )
+            result = subprocess.run(["top", "-l", "1", "-n", "0"], capture_output=True, text=True, timeout=10)
             for line in result.stdout.split("\n"):
                 if "CPU usage" in line:
                     import re
+
                     match = re.search(r"(\d+\.?\d*)%\s*user.*?(\d+\.?\d*)%\s*sys", line)
                     if match:
                         return round(float(match.group(1)) + float(match.group(2)), 1)
@@ -309,10 +338,7 @@ def _get_memory_info() -> dict[str, Any]:
                 "used_percent": round((used / total) * 100, 1) if total > 0 else 0,
             }
         elif platform.system() == "Darwin":
-            result = subprocess.run(
-                ["vm_stat"],
-                capture_output=True, text=True, timeout=5
-            )
+            result = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5)
             page_size = 4096  # Typical macOS page size
             info = {}
             for line in result.stdout.split("\n"):
@@ -349,15 +375,19 @@ def _get_network_interfaces() -> list[dict[str, Any]]:
     interfaces = []
     try:
         import socket
-        hostname = socket.gethostname()
+
+        _hostname = socket.gethostname()  # noqa: F841 — kept for future use
 
         if platform.system() in ("Linux", "Darwin"):
             result = subprocess.run(
                 ["ifconfig"] if platform.system() == "Darwin" else ["ip", "-o", "addr"],
-                capture_output=True, text=True, timeout=5
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             # Simple parsing - just get interface names and IPs
             import re
+
             if platform.system() == "Darwin":
                 current_iface = None
                 for line in result.stdout.split("\n"):
@@ -406,6 +436,7 @@ def _action_device_status(payload: dict[str, Any]) -> dict[str, Any]:
 # Camera Capture
 # -----------------------------------------------------------------------------
 
+
 def _detect_cameras() -> list[dict[str, Any]]:
     """Detect available cameras on the system."""
     cameras = []
@@ -419,16 +450,17 @@ def _detect_cameras() -> list[dict[str, Any]]:
         elif platform.system() == "Darwin":
             # Use system_profiler to list cameras
             result = subprocess.run(
-                ["system_profiler", "SPCameraDataType", "-json"],
-                capture_output=True, text=True, timeout=10
+                ["system_profiler", "SPCameraDataType", "-json"], capture_output=True, text=True, timeout=10
             )
             try:
                 data = json.loads(result.stdout)
                 for cam in data.get("SPCameraDataType", []):
-                    cameras.append({
-                        "name": cam.get("_name", "Unknown"),
-                        "model": cam.get("spcamera_model-id", ""),
-                    })
+                    cameras.append(
+                        {
+                            "name": cam.get("_name", "Unknown"),
+                            "model": cam.get("spcamera_model-id", ""),
+                        }
+                    )
             except json.JSONDecodeError:
                 pass
     except Exception:
@@ -461,23 +493,24 @@ def _action_capture_photo(payload: dict[str, Any]) -> dict[str, Any]:
         if platform.system() == "Darwin":
             # macOS uses avfoundation
             cmd = [
-                "ffmpeg", "-y", "-f", "avfoundation",
-                "-framerate", "30",
-                "-video_size", resolution,
-                "-i", str(device) if isinstance(device, int) else device,
-                "-frames:v", "1",
-                output_path
+                "ffmpeg",
+                "-y",
+                "-f",
+                "avfoundation",
+                "-framerate",
+                "30",
+                "-video_size",
+                resolution,
+                "-i",
+                str(device) if isinstance(device, int) else device,
+                "-frames:v",
+                "1",
+                output_path,
             ]
         else:
             # Linux uses v4l2
             dev = device if isinstance(device, str) else f"/dev/video{device}"
-            cmd = [
-                "ffmpeg", "-y", "-f", "v4l2",
-                "-video_size", resolution,
-                "-i", dev,
-                "-frames:v", "1",
-                output_path
-            ]
+            cmd = ["ffmpeg", "-y", "-f", "v4l2", "-video_size", resolution, "-i", dev, "-frames:v", "1", output_path]
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
@@ -535,23 +568,42 @@ def _action_capture_video(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         if platform.system() == "Darwin":
             cmd = [
-                "ffmpeg", "-y", "-f", "avfoundation",
-                "-framerate", "30",
-                "-video_size", resolution,
-                "-i", str(device) if isinstance(device, int) else device,
-                "-t", str(duration),
-                "-c:v", "libx264", "-preset", "fast",
-                output_path
+                "ffmpeg",
+                "-y",
+                "-f",
+                "avfoundation",
+                "-framerate",
+                "30",
+                "-video_size",
+                resolution,
+                "-i",
+                str(device) if isinstance(device, int) else device,
+                "-t",
+                str(duration),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "fast",
+                output_path,
             ]
         else:
             dev = device if isinstance(device, str) else f"/dev/video{device}"
             cmd = [
-                "ffmpeg", "-y", "-f", "v4l2",
-                "-video_size", resolution,
-                "-i", dev,
-                "-t", str(duration),
-                "-c:v", "libx264", "-preset", "fast",
-                output_path
+                "ffmpeg",
+                "-y",
+                "-f",
+                "v4l2",
+                "-video_size",
+                resolution,
+                "-i",
+                dev,
+                "-t",
+                str(duration),
+                "-c:v",
+                "libx264",
+                "-preset",
+                "fast",
+                output_path,
             ]
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=duration + 30)
@@ -592,6 +644,7 @@ def _action_list_cameras(payload: dict[str, Any]) -> dict[str, Any]:
 # -----------------------------------------------------------------------------
 # File Operations (Read-Only)
 # -----------------------------------------------------------------------------
+
 
 def _action_read_file(payload: dict[str, Any]) -> dict[str, Any]:
     """Read contents of a file.
@@ -681,18 +734,22 @@ def _action_list_directory(payload: dict[str, Any]) -> dict[str, Any]:
 
             try:
                 stat = entry.stat()
-                items.append({
-                    "name": name,
-                    "type": "directory" if entry.is_dir() else "file",
-                    "size_bytes": stat.st_size if entry.is_file() else None,
-                    "modified": stat.st_mtime,
-                })
+                items.append(
+                    {
+                        "name": name,
+                        "type": "directory" if entry.is_dir() else "file",
+                        "size_bytes": stat.st_size if entry.is_file() else None,
+                        "modified": stat.st_mtime,
+                    }
+                )
             except (PermissionError, OSError):
-                items.append({
-                    "name": name,
-                    "type": "unknown",
-                    "error": "permission_denied",
-                })
+                items.append(
+                    {
+                        "name": name,
+                        "type": "unknown",
+                        "error": "permission_denied",
+                    }
+                )
 
         return {
             "status": "success",
@@ -746,6 +803,7 @@ def _action_file_info(payload: dict[str, Any]) -> dict[str, Any]:
         if path.is_file():
             # Try to detect MIME type
             import mimetypes
+
             mime_type, _ = mimetypes.guess_type(str(path))
             info["mime_type"] = mime_type
 
@@ -952,4 +1010,3 @@ def main(
 
 if __name__ == "__main__":
     main()
-
