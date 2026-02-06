@@ -221,6 +221,11 @@ class CreateAgentIn(BaseModel):
     relationship_label: str | None = None
 
 
+class UpdateAgentIn(BaseModel):
+    name: str | None = None
+    disabled: bool | None = None
+
+
 class AgentOut(BaseModel):
     agent_id: str
     name: str
@@ -414,6 +419,55 @@ def create_agent(body: CreateAgentIn, user: AuthenticatedUser = Depends(get_user
         relationship_label=body.relationship_label,
         disabled=False,
     )
+
+
+@api_app.patch("/v1/agents/{agent_id}", response_model=AgentOut)
+def update_agent(agent_id: str, body: UpdateAgentIn, user: AuthenticatedUser = Depends(get_user)) -> AgentOut:
+    """Update an agent's name or disabled status. Requires admin role."""
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+
+    updates: list[str] = []
+    params: dict[str, Any] = {"agent_id": agent_id}
+
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Name cannot be empty")
+        updates.append("name = :name")
+        params["name"] = name
+
+    if body.disabled is not None:
+        updates.append("disabled = :disabled")
+        params["disabled"] = body.disabled
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    _get_db().execute(
+        f"UPDATE agents SET {', '.join(updates)} WHERE agent_id = :agent_id::uuid",
+        params,
+    )
+
+    if _cfg.audit_bucket:
+        append_audit_entry(
+            _get_db(), bucket=_cfg.audit_bucket, agent_id=agent_id,
+            entry_type="agent_updated",
+            entry={"user_id": user.user_id, "name": body.name, "disabled": body.disabled},
+        )
+
+    # Fetch current state to return
+    rows = _get_db().query(
+        """SELECT a.name, a.disabled, am.role, am.relationship_label
+           FROM agents a
+           JOIN agent_memberships am ON a.agent_id = am.agent_id
+           WHERE a.agent_id = :agent_id::uuid AND am.user_id = :user_id::uuid AND am.revoked_at IS NULL""",
+        {"agent_id": agent_id, "user_id": user.user_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    r = rows[0]
+    return AgentOut(agent_id=agent_id, name=r["name"], role=r["role"],
+                    relationship_label=r.get("relationship_label"), disabled=r["disabled"])
 
 
 @api_app.post("/v1/livekit/token", response_model=LiveKitTokenOut)
