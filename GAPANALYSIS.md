@@ -65,23 +65,23 @@ Device command broadcast fully implemented in `ws_message/handler.py`:
 
 ---
 
-## Spec 2: Remotes as Devices
+## Spec 2: Devices (formerly "Remotes as Devices")
 
-### Status: ✅ COMPLETE
+### Status: ✅ COMPLETE — legacy `remotes` table and code fully removed (2026-02-06)
 
 ### Verification
 
 | Requirement | Status | Evidence |
 |-------------|--------|----------|
-| Migrate remotes to devices table | ✅ | Migration 007 with `metadata.is_remote = true` |
-| Create remote satellite daemon | ✅ | `apps/remote_satellite/daemon.py` exists |
+| All satellite functionality uses `devices` table | ✅ | Legacy `remotes` table, SQL, GUI, API, and tests removed |
+| Remote satellite daemon | ✅ | `apps/remote_satellite/daemon.py` authenticates as a device |
 | Daemon sends hello and heartbeat | ✅ | `hub_client.py` implements periodic heartbeat |
 | Daemon responds to `cmd.ping` | ✅ | `hub_client.py` handles ping |
 | Daemon executes actions | ✅ | Full action dispatch in `daemon.py` |
 
 ### ~~GAP-2~~ CLOSED (2026-02-06)
 
-Remote action execution fully implemented in `daemon.py`:
+Device action execution fully implemented in `daemon.py`:
 - `_action_ping()`, `_action_status()`, `_action_echo()` built-in handlers
 - `_action_shell_command()` with SAFE_SHELL_COMMANDS allowlist
 - `_action_device_status()` returns comprehensive system info (disk, memory, uptime)

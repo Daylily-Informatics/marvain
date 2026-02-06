@@ -77,7 +77,7 @@ This audit examined:
 
 | Page | Status | Template | Route | Tests | Notes |
 |------|--------|----------|-------|-------|-------|
-| Dashboard | ✅ FULLY IMPLEMENTED | `home.html` | `gui_home` | 3 | Shows env, agents, remotes, pending actions |
+| Dashboard | ✅ FULLY IMPLEMENTED | `home.html` | `gui_home` | 3 | Shows env, agents, devices, pending actions |
 | Spaces | ✅ FULLY IMPLEMENTED | `spaces.html` | `gui_spaces` | 4 | List/create, privacy mode toggle, LiveKit mapping |
 | Devices | 🚧 PARTIAL | `devices.html` | `gui_devices` | 6 | List/register/revoke works; view details is stub |
 | People & Consent | 🚧 PARTIAL | `people.html` | `gui_people` | 5 | Consent management works; edit person is stub |
@@ -118,8 +118,8 @@ This audit examined:
 | G-14 | Actions dashboard | ✅ | `actions.html` - approve/reject workflow |
 | G-15 | WebSocket presence | ✅ | WS indicator in header, real-time status |
 | G-16 | HTTPS support | ✅ | `--https` flag with mkcert auto-generation |
-| G-17 | Remotes management | ✅ | `remotes.html` - view/add/manage satellites |
-| G-18 | Remote status display | ✅ | Online/offline/hibernate status with ping |
+| G-17 | ~~Remotes management~~ | ❌ REMOVED | Legacy remotes removed — satellites managed via Devices page |
+| G-18 | Device status display | ✅ | Online/offline/hibernate status via device heartbeat |
 
 ### From `.ignore/GUI_IMPLEMENTATION_PLAN_V2.md` Section 7.2 (CLI Commands)
 
@@ -137,52 +137,43 @@ This audit examined:
 ### 1. Dashboard (`/`)
 - **Route Handler**: `gui_home()` (lines 397-474)
 - **Template**: `home.html` (153 lines)
-- **Database Queries**: 
+- **Database Queries**:
   - `list_agents_for_user()` - fetches user's agents
   - `list_spaces_for_user()` - fetches user's spaces
-  - Query for remotes from `remotes` table
   - Query for pending actions count
 - **User Interactions**: Quick stat cards link to respective pages
-- **Error Handling**: Try/except around remote and action queries
+- **Error Handling**: Try/except around action queries
 - **Tests**: `test_home_renders_agents_when_authenticated`, etc.
 
-### 2. Remotes (`/remotes`)
-- **Route Handler**: `gui_remotes()` (lines 483-570)
-- **Template**: `remotes.html` (395 lines)
-- **Database Queries**: Full query for remotes with agent join
-- **User Interactions**: Add modal, ping button, delete button, filter controls
-- **API Endpoints**: `POST /api/remotes`, `POST /api/remotes/{id}/ping`, `DELETE /api/remotes/{id}`
-- **Tests**: 7 tests in `TestRemotesGui`
-
-### 3. Agents (`/agents`, `/agents/{id}`)
+### 2. Agents (`/agents`, `/agents/{id}`)
 - **Route Handlers**: `gui_agents()`, `gui_agent_detail()` 
 - **Templates**: `agents.html`, `agent_detail.html`
 - **Database Queries**: `list_agents_for_user()`, member query with JOIN
 - **User Interactions**: Create agent modal, view members
 - **Tests**: 11 tests in `TestAgentsGui`
 
-### 4. Spaces (`/spaces`)
+### 3. Spaces (`/spaces`)
 - **Route Handler**: `gui_spaces()` (lines 1101-1176)
 - **Template**: `spaces.html`
 - **Database Queries**: `list_spaces_for_user()`, extra query for privacy_mode
 - **User Interactions**: Create space modal, privacy toggle
 - **Tests**: 4 tests in `TestSpacesGui`
 
-### 5. Devices (`/devices`)
+### 4. Devices (`/devices`)
 - **Route Handler**: `gui_devices()` (lines 1180-1257)
 - **Template**: `devices.html`
 - **Database Queries**: Full device query with scopes
 - **User Interactions**: Register device modal, revoke button
 - **Tests**: 6 tests in `TestDevicesGui`
 
-### 6. People & Consent (`/people`)
+### 5. People & Consent (`/people`)
 - **Route Handler**: `gui_people()` (lines 1383-1475)
 - **Template**: `people.html`
 - **Database Queries**: People query + consent_grants query per person
 - **User Interactions**: Add person modal, consent toggle buttons
 - **Tests**: 5 tests in `TestPeopleGui`
 
-### 7. Actions (`/actions`)
+### 6. Actions (`/actions`)
 - **Route Handler**: `gui_actions()` (lines 1479-1582)
 - **Template**: `actions.html`
 - **Database Queries**: Full actions query with status counts
@@ -190,14 +181,14 @@ This audit examined:
 - **API Endpoints**: `POST /api/actions/{id}/approve`, `POST /api/actions/{id}/reject`
 - **Tests**: 5 tests in `TestActionsGui`
 
-### 8. Events (`/events`)
+### 7. Events (`/events`)
 - **Route Handler**: `gui_events()` (lines 1659-1765)
 - **Template**: `events.html`
 - **Database Queries**: Full events query with type categorization
 - **User Interactions**: Filter by space, type, person
 - **Tests**: 2 tests in `TestEventsGui`
 
-### 9. Memories (`/memories`)
+### 8. Memories (`/memories`)
 - **Route Handler**: `gui_memories()` (lines 1768-1869)
 - **Template**: `memories.html`
 - **Database Queries**: Full memories query with tier counts
@@ -205,7 +196,7 @@ This audit examined:
 - **API Endpoint**: `DELETE /api/memories/{id}`
 - **Tests**: 4 tests in `TestMemoriesGui`
 
-### 10. Artifacts (`/artifacts`)
+### 9. Artifacts (`/artifacts`)
 - **Route Handler**: `gui_artifacts()` (lines 1933-2019)
 - **Template**: `artifacts.html`
 - **S3 Integration**: Lists objects, generates presigned download URLs
@@ -213,7 +204,7 @@ This audit examined:
 - **API Endpoint**: `POST /api/artifacts/presign`
 - **Tests**: 4 tests in `TestArtifactsGui`
 
-### 11. Audit Log (`/audit`)
+### 10. Audit Log (`/audit`)
 - **Route Handler**: `gui_audit()` (lines 2056-2150)
 - **Template**: `audit.html`
 - **Database Queries**: Full audit_log query with hash chain data
@@ -222,7 +213,7 @@ This audit examined:
 - **Error Handling**: Chain verification with detailed error messages
 - **Tests**: 4 tests in `TestAuditGui` (`test_audit_renders_when_authenticated`, `test_verify_requires_authentication`, `test_verify_requires_admin_permission`, `test_verify_success_with_empty_chain`)
 
-### 12. LiveKit Test (`/livekit-test`)
+### 11. LiveKit Test (`/livekit-test`)
 - **Route Handler**: `gui_livekit_test()` (lines 2249-2279)
 - **Template**: `livekit_test.html` (876 lines - most complex template)
 - **Database Queries**: `list_spaces_for_user()` for space dropdown
@@ -235,11 +226,11 @@ This audit examined:
   - Text chat input and send
   - Audio level meters (VU meters) for mic and speaker
   - Live transcript display
-  - Participant list with remote video rendering
+  - Participant list with video rendering
 - **LiveKit SDK Integration**: Full livekit-client SDK usage for WebRTC
 - **Tests**: 3 tests in `TestLiveKitTestGui` + 3 tests in base `TestGuiApp`
 
-### 13. Profile (`/profile`)
+### 12. Profile (`/profile`)
 - **Route Handler**: `gui_profile()` (lines 2229-2246)
 - **Template**: Inline HTML (simple page, no dedicated template)
 - **Data Displayed**: User ID, Email
@@ -247,7 +238,7 @@ This audit examined:
 - **Authentication**: Proper redirect to login if not authenticated
 - **Tests**: Covered by session/auth tests
 
-### 14. Authentication Pages
+### 13. Authentication Pages
 - **Login** (`/login`): `login()` (lines 233-265) - Initiates Cognito OAuth flow
 - **Callback** (`/auth/callback`): `auth_callback()` (lines 266-363) - Handles OAuth callback
 - **Logout** (`/logout`): `logout()` (lines 364-396) - Clears session
@@ -262,7 +253,7 @@ The following features were implemented beyond the original specification:
 | Feature | Description | Implementation |
 |---------|-------------|----------------|
 | **WebSocket Connection Indicator** | Real-time connection status in header | `base.html` header, `marvain.js` WebSocket client |
-| **Remotes Management** | Full satellite management (added for G-17, G-18) | `remotes.html`, 7 tests |
+| ~~Remotes Management~~ | _(Removed — satellites now managed via Devices page)_ | — |
 | **Agent Detail Page** | Dedicated page for agent with members tab | `agent_detail.html`, 4 tests |
 | **Device Selection in LiveKit** | Microphone/speaker/camera selection dropdowns | `livekit_test.html` JS |
 | **Audio Level Meters** | VU meters showing mic/speaker activity | `livekit_test.html` JS |
@@ -291,7 +282,7 @@ A comprehensive search for incomplete work markers found:
 | Test Class | Tests | Coverage |
 |------------|-------|----------|
 | `TestGuiApp` | 10 | Auth, home, livekit basics |
-| `TestRemotesGui` | 7 | CRUD, ping, status |
+| ~~`TestRemotesGui`~~ | _(removed)_ | Legacy remotes tests removed |
 | `TestAgentsGui` | 11 | CRUD, detail, members |
 | `TestSpacesGui` | 4 | CRUD, privacy toggle |
 | `TestDevicesGui` | 6 | CRUD, revoke |
@@ -338,7 +329,7 @@ All specified GUI pages and features are fully implemented with:
 **The Marvain GUI implementation is 95% complete.** Core functionality is working, with some detail views and edit features remaining as stubs.
 
 ### Fully Working (10 pages)
-- Dashboard, Spaces, Artifacts, Audit Log, LiveKit Test, Profile, Remotes, Agents list, Login/Logout
+- Dashboard, Spaces, Artifacts, Audit Log, LiveKit Test, Profile, Agents list, Login/Logout
 
 ### Partially Working (4 pages)
 - **Devices**: List/register/revoke ✅, view details ❌
