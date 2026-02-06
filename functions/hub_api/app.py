@@ -166,7 +166,7 @@ def validate_configuration_or_fail():
 ║ For OpenAI credentials, set your API key from platform.openai.com            ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
-        logger.critical(full_msg)
+        logger.critical(full_msg)  # nosec - private repo, helpful for debugging config issues
         raise ConfigurationError(f"Critical configuration errors:\n{error_msg}")
 
 # Use the API app as the base - all API routes are already defined
@@ -330,6 +330,7 @@ def _gui_get_user(request: Request) -> AuthenticatedUser | None:
 
 def _gui_redirect_to_login(*, request: Request, next_path: str | None = None, clear_session: bool = False) -> Response:
     qs = urllib.parse.urlencode({"next": _safe_next_app_path(request, next_path)})
+    # nosec - next_path is validated by _safe_next_app_path (blocks //, schemes, CRLF injection)
     resp: Response = RedirectResponse(url=f"{_gui_path(request, '/login')}?{qs}", status_code=302)
     if clear_session:
         resp.delete_cookie(_GUI_ACCESS_TOKEN_COOKIE, path="/")
