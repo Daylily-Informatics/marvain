@@ -58,13 +58,17 @@ def _send(event, connection_id: str, payload: dict):
 def _get_device_connections(table, target_device_id: str) -> list[str]:
     """Find all WebSocket connection IDs for a specific device.
 
+    Uses the ``device_id_index`` GSI for efficient lookup instead of a
+    full table scan.  Falls back to a scan if the GSI query fails (e.g.
+    index not yet provisioned).
+
     Returns list of connection_ids where device_id matches and status is authenticated.
     """
     try:
-        # Scan for connections with matching device_id
-        # Note: For scale, consider adding a GSI on device_id
-        response = table.scan(
-            FilterExpression="device_id = :did AND #s = :status",
+        response = table.query(
+            IndexName="device_id_index",
+            KeyConditionExpression="device_id = :did",
+            FilterExpression="#s = :status",
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={
                 ":did": target_device_id,
@@ -73,8 +77,20 @@ def _get_device_connections(table, target_device_id: str) -> list[str]:
         )
         return [item["connection_id"] for item in response.get("Items", [])]
     except Exception as e:
-        logger.warning("Failed to query connections for device %s: %s", target_device_id, e)
-        return []
+        logger.warning("GSI query failed for device %s, falling back to scan: %s", target_device_id, e)
+        try:
+            response = table.scan(
+                FilterExpression="device_id = :did AND #s = :status",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={
+                    ":did": target_device_id,
+                    ":status": "authenticated",
+                },
+            )
+            return [item["connection_id"] for item in response.get("Items", [])]
+        except Exception as e2:
+            logger.warning("Scan fallback also failed for device %s: %s", target_device_id, e2)
+            return []
 
 
 def _send_to_device(event, table, target_device_id: str, message: dict) -> tuple[int, int]:

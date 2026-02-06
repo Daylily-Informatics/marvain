@@ -237,9 +237,18 @@ Resources:
       AttributeDefinitions:
         - AttributeName: connection_id
           AttributeType: S
+        - AttributeName: device_id
+          AttributeType: S
       KeySchema:
         - AttributeName: connection_id
           KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: device_id_index
+          KeySchema:
+            - AttributeName: device_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
 
   # -----------------------------
   # Lambda layer

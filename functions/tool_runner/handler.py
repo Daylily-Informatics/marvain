@@ -23,6 +23,24 @@ _db = RdsData(RdsDataEnv(resource_arn=_cfg.db_resource_arn, secret_arn=_cfg.db_s
 _ALLOWED_HTTP_HOSTS = [h.strip() for h in os.getenv("ALLOWED_HTTP_HOSTS", "").split(",") if h.strip()]
 
 
+def _make_broadcast_fn(agent_id: str, space_id: str | None):
+    """Return a broadcast callable matching the ToolContext.broadcast_fn signature.
+
+    The callable accepts ``(broadcast_key: str, payload: dict)`` and delegates
+    to :func:`broadcast_event`.
+    """
+
+    def _broadcast(broadcast_key: str, payload: dict) -> None:
+        broadcast_event(
+            event_type=broadcast_key,
+            agent_id=agent_id,
+            space_id=space_id,
+            payload=payload,
+        )
+
+    return _broadcast
+
+
 def _load_action(action_id: str) -> dict[str, Any] | None:
     rows = _db.query(
         """
@@ -106,7 +124,7 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
             space_id=space_id,
             action_id=action_id,
             device_scopes=required_scopes,  # Action's required scopes are pre-approved
-            broadcast_fn=None,  # TODO: wire up WebSocket broadcast when available
+            broadcast_fn=_make_broadcast_fn(agent_id, space_id),
             allowed_http_hosts=_ALLOWED_HTTP_HOSTS,
         )
 
