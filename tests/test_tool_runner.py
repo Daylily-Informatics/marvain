@@ -244,6 +244,46 @@ class TestHttpRequestTool:
         assert result.ok is False
         assert "host_not_allowed" in result.error
 
+    def test_http_request_blocks_metadata_endpoint(self):
+        """http_request blocks AWS metadata endpoint (SSRF protection)."""
+        from agent_hub.tools.http_request import _handler
+
+        ctx = ToolContext(
+            db=MagicMock(),
+            agent_id="agent-1",
+            space_id=None,
+            action_id="action-1",
+            allowed_http_hosts=[],  # Empty means all public allowed
+        )
+
+        result = _handler({
+            "method": "GET",
+            "url": "http://169.254.169.254/latest/meta-data/",
+        }, ctx)
+
+        assert result.ok is False
+        assert "host_not_allowed" in result.error
+
+    def test_http_request_blocks_localhost(self):
+        """http_request blocks localhost (SSRF protection)."""
+        from agent_hub.tools.http_request import _handler
+
+        ctx = ToolContext(
+            db=MagicMock(),
+            agent_id="agent-1",
+            space_id=None,
+            action_id="action-1",
+            allowed_http_hosts=[],
+        )
+
+        result = _handler({
+            "method": "GET",
+            "url": "http://localhost/secret",
+        }, ctx)
+
+        assert result.ok is False
+        assert "host_not_allowed" in result.error
+
     def test_http_request_invalid_method(self):
         """http_request returns error for invalid method."""
         from agent_hub.tools.http_request import _handler

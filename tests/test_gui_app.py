@@ -44,6 +44,7 @@ def _load_hub_api_app_module():
     # Ensure SessionMiddleware cookies are not marked Secure in tests
     # (httpx TestClient uses http://testserver).
     os.environ.setdefault("ENVIRONMENT", "test")
+    os.environ.setdefault("HTTPS_ENABLED", "false")
     # Make session secret deterministic for stable cookie behavior.
     os.environ.setdefault("SESSION_SECRET_KEY", "test-session-secret")
 

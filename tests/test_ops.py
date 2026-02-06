@@ -388,7 +388,7 @@ class TestGuiLifecycle(unittest.TestCase):
 
     def test_default_constants_have_expected_values(self) -> None:
         """Verify default constants are set correctly."""
-        self.assertEqual(GUI_DEFAULT_HOST, "127.0.0.1")
+        self.assertEqual(GUI_DEFAULT_HOST, "localhost")
         self.assertEqual(GUI_DEFAULT_PORT, 8084)
         self.assertEqual(GUI_PID_FILENAME, ".marvain-gui.pid")
         self.assertEqual(GUI_LOG_FILENAME, ".marvain-gui.log")

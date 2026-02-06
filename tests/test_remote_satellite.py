@@ -94,9 +94,10 @@ class TestDeviceActions:
         assert result["kind"] == "status"
         assert result["status"] == "success"
         assert "result" in result
-        assert "disk_total_gb" in result["result"]
-        assert "disk_free_gb" in result["result"]
-        assert "disk_used_percent" in result["result"]
+        assert "disk" in result["result"]
+        assert result["result"]["disk"]["total_gb"] > 0
+        assert result["result"]["disk"]["free_gb"] >= 0
+        assert 0 <= result["result"]["disk"]["used_percent"] <= 100
         assert "python_version" in result["result"]
 
     def test_handle_echo_action(self):
@@ -292,9 +293,9 @@ class TestActionPayloadVariations:
         assert result is not None
         assert result["status"] == "success"
         # Verify disk info is present and reasonable
-        assert result["result"]["disk_total_gb"] > 0
-        assert result["result"]["disk_free_gb"] >= 0
-        assert 0 <= result["result"]["disk_used_percent"] <= 100
+        assert result["result"]["disk"]["total_gb"] > 0
+        assert result["result"]["disk"]["free_gb"] >= 0
+        assert 0 <= result["result"]["disk"]["used_percent"] <= 100
 
     def test_echo_with_empty_payload(self):
         """Echo action should handle empty payload."""
