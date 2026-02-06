@@ -59,6 +59,7 @@ jobs:
             python-multipart \
             python-dateutil \
             python-jose[cryptography] \
+	            jsonschema \
             itsdangerous \
             websockets \
             python-dotenv \
