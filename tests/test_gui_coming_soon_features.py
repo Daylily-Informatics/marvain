@@ -415,6 +415,5 @@ class TestComingSoonFeatures(unittest.TestCase):
         self.assertEqual(data["privacy_mode"], False)
 
 
-
 if __name__ == "__main__":
     unittest.main()

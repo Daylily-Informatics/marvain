@@ -309,7 +309,6 @@ class TestGuiApp(unittest.TestCase):
         self.assertEqual(body["identity"], "user:u1")
 
 
-
 class TestAgentsGui(unittest.TestCase):
     """Tests for the agents management GUI routes."""
 
