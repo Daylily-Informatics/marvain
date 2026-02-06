@@ -97,7 +97,7 @@ def lookup_cognito_user_by_email(*, user_pool_id: str, email: str) -> tuple[str,
         raise LookupError("user_pool_id is required")
 
     # Escape double-quotes for the Cognito filter string.
-    safe_email = email.replace('"', "\\\"")
+    safe_email = email.replace('"', '\\"')
     client = _boto3_client("cognito-idp")
     resp: Any = client.list_users(
         UserPoolId=user_pool_id,
@@ -170,6 +170,7 @@ def require_scope(device: AuthenticatedDevice, scope: str) -> None:
     """
     if not has_scope(device, scope):
         from fastapi import HTTPException
+
         raise HTTPException(status_code=403, detail=f"Missing required scope: {scope}")
 
 
@@ -430,18 +431,20 @@ def list_agent_tokens(db: RdsData, issuer_agent_id: str) -> list[dict]:
             except Exception:
                 pass
 
-        result.append({
-            "token_id": row["token_id"],
-            "target_agent_id": row.get("target_agent_id"),
-            "name": row.get("name"),
-            "scopes": scopes,
-            "allowed_spaces": allowed_spaces,
-            "expires_at": row.get("expires_at"),
-            "revoked_at": row.get("revoked_at"),
-            "last_used_at": row.get("last_used_at"),
-            "created_at": row.get("created_at"),
-            "is_active": row.get("revoked_at") is None,
-        })
+        result.append(
+            {
+                "token_id": row["token_id"],
+                "target_agent_id": row.get("target_agent_id"),
+                "name": row.get("name"),
+                "scopes": scopes,
+                "allowed_spaces": allowed_spaces,
+                "expires_at": row.get("expires_at"),
+                "revoked_at": row.get("revoked_at"),
+                "last_used_at": row.get("last_used_at"),
+                "created_at": row.get("created_at"),
+                "is_active": row.get("revoked_at") is None,
+            }
+        )
 
     return result
 

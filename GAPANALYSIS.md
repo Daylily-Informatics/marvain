@@ -1,7 +1,7 @@
 # Gap Analysis: ADVANCED_FEATURE_PLAN.md vs Implementation
 
-**Branch:** `feature/advanced-features-spec0-5`  
-**Date:** 2026-02-03  
+**Branch:** `feature/review-fixes-r1-r10`
+**Date:** 2026-02-06 (updated — all gaps closed)
 **Auditor:** Forge (Augment Agent)
 
 ---
@@ -11,13 +11,13 @@
 | Spec | Status | Gaps |
 |------|--------|------|
 | Spec 0 | ✅ COMPLETE | None |
-| Spec 1 | ⚠️ PARTIAL | Device command broadcast not implemented |
-| Spec 2 | ⚠️ PARTIAL | Remote action execution is stub only |
-| Spec 3 | ⚠️ PARTIAL | device_command depends on unimplemented broadcast |
+| Spec 1 | ✅ COMPLETE | GAP-1 closed (2026-02-06) |
+| Spec 2 | ✅ COMPLETE | GAP-2 closed (2026-02-06) |
+| Spec 3 | ✅ COMPLETE | GAP-3 closed (2026-02-06) — depended on GAP-1 |
 | Spec 4 | ✅ COMPLETE | None |
 | Spec 5 | ✅ COMPLETE | None |
 
-**Overall:** 3 specs fully complete, 3 specs have functional gaps requiring follow-up work.
+**Overall:** All 6 specs fully complete. All gaps closed as of 2026-02-06.
 
 ---
 
@@ -42,7 +42,7 @@
 
 ## Spec 1: Devices Fully Functional
 
-### Status: ⚠️ PARTIAL
+### Status: ✅ COMPLETE
 
 ### Verification
 
@@ -52,28 +52,22 @@
 | Scope enforcement on `/v1/*` endpoints | ✅ | 8 calls to `require_scope()` in `api_app.py` |
 | `POST /v1/devices/heartbeat` | ✅ | Lines 882-930 in `api_app.py` |
 | WS hello updates `last_hello_at` | ✅ | Lines 259-262 in `ws_message/handler.py` |
-| Device command channel (`cmd.ping`, `cmd.pong`, etc.) | ⚠️ | **Message types exist but don't broadcast to target device** |
+| Device command channel (`cmd.ping`, `cmd.pong`, etc.) | ✅ | Broadcast via `_send_to_device()` using GSI query |
 
-### Gap Details
+### ~~GAP-1~~ CLOSED (2026-02-06)
 
-**GAP-1: Device Command Broadcast Not Implemented**
-
-Location: `functions/ws_message/handler.py`
-
-The following TODO comments exist:
-- Line 348: `# TODO: In Phase 5, broadcast cmd.ping to the target device via WebSocket`
-- Line 397: `# TODO: In Phase 5, broadcast cmd.run_action to the target device via WebSocket`
-- Line 433: `# TODO: In Phase 5, broadcast cmd.config to the target device via WebSocket`
-
-**Current behavior:** Commands are validated and acknowledged to the sender, but NOT forwarded to the target device.
-
-**Impact:** Remote ping, device commands, and configuration updates are non-functional. The command is accepted but the target device never receives it.
+Device command broadcast fully implemented in `ws_message/handler.py`:
+- `_get_device_connections()` queries DynamoDB GSI `device_id_index` (with scan fallback)
+- `_send_to_device()` broadcasts to all device connections via API Gateway Management API
+- `cmd.ping`, `cmd.run_action`, `cmd.config` all forward to target device
+- Stale connection cleanup on `GoneException`
+- 3 tests per command type (broadcast, not-connected, permissions)
 
 ---
 
 ## Spec 2: Remotes as Devices
 
-### Status: ⚠️ PARTIAL
+### Status: ✅ COMPLETE
 
 ### Verification
 
@@ -83,43 +77,21 @@ The following TODO comments exist:
 | Create remote satellite daemon | ✅ | `apps/remote_satellite/daemon.py` exists |
 | Daemon sends hello and heartbeat | ✅ | `hub_client.py` implements periodic heartbeat |
 | Daemon responds to `cmd.ping` | ✅ | `hub_client.py` handles ping |
-| Daemon executes actions | ⚠️ | **Stub only - returns "not_implemented"** |
+| Daemon executes actions | ✅ | Full action dispatch in `daemon.py` |
 
-### Gap Details
+### ~~GAP-2~~ CLOSED (2026-02-06)
 
-**GAP-2: Remote Action Execution is Stub**
-
-Location: `apps/remote_satellite/daemon.py`, lines 49-61
-
-```python
-if msg_type == "cmd.run_action":
-    kind = msg.get("kind", "")
-    payload = msg.get("payload", {})
-    logger.info("Received run_action command: kind=%s", kind)
-
-    # TODO: Implement device-local action execution
-    # For now, just acknowledge receipt
-    return {
-        "action": "action_result",
-        "kind": kind,
-        "status": "not_implemented",
-        "message": f"Action kind '{kind}' not implemented on this device",
-    }
-```
-
-Also line 66-67:
-```python
-elif msg_type == "cmd.config":
-    # TODO: Apply configuration changes
-```
-
-**Impact:** Remote satellites can connect and report presence, but cannot execute any actual device-local actions.
+Remote action execution fully implemented in `daemon.py`:
+- `_action_ping()`, `_action_status()`, `_action_echo()` built-in handlers
+- `_action_shell_command()` with SAFE_SHELL_COMMANDS allowlist
+- `_action_device_status()` returns comprehensive system info (disk, memory, uptime)
+- `cmd.config` handler applies configuration updates
 
 ---
 
 ## Spec 3: Actions Fully Functional
 
-### Status: ⚠️ PARTIAL
+### Status: ✅ COMPLETE
 
 ### Verification
 
@@ -131,15 +103,12 @@ elif msg_type == "cmd.config":
 | Tool runner persists results | ✅ | `tool_runner/handler.py` lines 120-137 |
 | Tool runner broadcasts completion | ✅ | `tool_runner/handler.py` lines 149-162 |
 | `device_command` tool exists | ✅ | `layers/shared/python/agent_hub/tools/device_command.py` |
-| `device_command` tool works | ⚠️ | **Depends on GAP-1 (command broadcast)** |
+| `device_command` tool works | ✅ | GAP-1 closed — full broadcast chain functional |
 
-### Gap Details
+### ~~GAP-3~~ CLOSED (2026-02-06)
 
-**GAP-3: device_command Tool Depends on Unimplemented Feature**
-
-The `device_command` tool in `tools/device_command.py` sends commands via WebSocket to connected devices. However, since GAP-1 (device command broadcast) is not implemented in the WS message handler, this tool chain is incomplete.
-
-**Current behavior:** The tool can find a device and attempt to send a command, but the device never receives it because the WS handler doesn't forward commands.
+Resolved by closure of GAP-1. The `device_command` tool now has a working broadcast path:
+`device_command` → WS handler `cmd.*` → `_send_to_device()` → target device connection.
 
 ---
 
@@ -203,19 +172,7 @@ The `device_command` tool in `tools/device_command.py` sends commands via WebSoc
 
 ## Recommended Actions
 
-### Priority 1: Close GAP-1 (Device Command Broadcast)
-
-Implement actual broadcast in `ws_message/handler.py`:
-1. Query DynamoDB for WebSocket connections matching `target_device_id`
-2. Send command message via API Gateway Management API
-3. This unblocks GAP-3 (device_command tool)
-
-### Priority 2: Close GAP-2 (Remote Action Execution)
-
-This is lower priority as it's device-specific:
-1. Define a standard set of device actions (ping, status, restart, etc.)
-2. Implement handlers in `daemon.py`
-3. Document how users extend with custom actions
+All gaps are now closed. The following optional enhancements remain:
 
 ### Optional: Agent Archival
 

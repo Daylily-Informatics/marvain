@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
 
 import boto3
 

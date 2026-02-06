@@ -17,16 +17,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import requests
 from typing import TYPE_CHECKING
 
+import requests
 from dotenv import load_dotenv
 from livekit import agents, rtc
-from livekit.agents import AgentServer, AgentSession, Agent, room_io
-from livekit.plugins import openai, noise_cancellation
+from livekit.agents import Agent, AgentServer, AgentSession, room_io
+from livekit.plugins import noise_cancellation, openai
 
 if TYPE_CHECKING:
-    from livekit.agents.llm import ChatContext
+    pass
 
 load_dotenv(os.getenv("ENV_FILE", ".env"))
 
@@ -241,6 +241,7 @@ async def forge_agent(ctx: agents.JobContext):
     # Extract space_id from agent metadata (passed via RoomAgentDispatch in token)
     # Metadata is a JSON string in ctx.job.metadata
     import json as _json
+
     metadata = _json.loads(ctx.job.metadata or "{}")
     space_id = metadata.get("space_id")
     room_session_id = metadata.get("room_session_id", "unknown")
@@ -433,9 +434,7 @@ async def forge_agent(ctx: agents.JobContext):
     )
 
     # Initial greeting
-    await session.generate_reply(
-        instructions="Greet the user and offer your assistance. Start by speaking in English."
-    )
+    await session.generate_reply(instructions="Greet the user and offer your assistance. Start by speaking in English.")
 
 
 if __name__ == "__main__":

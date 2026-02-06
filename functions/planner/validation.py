@@ -1,9 +1,9 @@
 """Planner output validation and schema enforcement."""
+
 from __future__ import annotations
 
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
@@ -27,10 +27,10 @@ def _load_schema() -> dict[str, Any]:
 
 def validate_planner_output(output: dict[str, Any]) -> tuple[bool, str | None]:
     """Validate planner output against the JSON schema.
-    
+
     Args:
         output: The parsed JSON output from the planner LLM.
-        
+
     Returns:
         Tuple of (is_valid, error_message). If valid, error_message is None.
     """
@@ -46,13 +46,13 @@ def validate_planner_output(output: dict[str, Any]) -> tuple[bool, str | None]:
 
 def sanitize_planner_output(output: dict[str, Any]) -> dict[str, Any]:
     """Sanitize and normalize planner output.
-    
+
     Ensures all expected keys exist with proper defaults,
     and removes any unexpected keys.
-    
+
     Args:
         output: The parsed JSON output from the planner LLM.
-        
+
     Returns:
         Sanitized output with guaranteed structure.
     """
@@ -61,7 +61,7 @@ def sanitize_planner_output(output: dict[str, Any]) -> dict[str, Any]:
         "semantic": [],
         "actions": [],
     }
-    
+
     # Process episodic memories
     for item in output.get("episodic") or []:
         if not isinstance(item, dict):
@@ -69,11 +69,13 @@ def sanitize_planner_output(output: dict[str, Any]) -> dict[str, Any]:
         content = str(item.get("content") or "").strip()
         if not content:
             continue
-        sanitized["episodic"].append({
-            "content": content[:4096],  # Enforce max length
-            "participants": [str(p) for p in (item.get("participants") or [])],
-        })
-    
+        sanitized["episodic"].append(
+            {
+                "content": content[:4096],  # Enforce max length
+                "participants": [str(p) for p in (item.get("participants") or [])],
+            }
+        )
+
     # Process semantic memories
     for item in output.get("semantic") or []:
         if not isinstance(item, dict):
@@ -81,11 +83,13 @@ def sanitize_planner_output(output: dict[str, Any]) -> dict[str, Any]:
         content = str(item.get("content") or "").strip()
         if not content:
             continue
-        sanitized["semantic"].append({
-            "content": content[:4096],
-            "participants": [str(p) for p in (item.get("participants") or [])],
-        })
-    
+        sanitized["semantic"].append(
+            {
+                "content": content[:4096],
+                "participants": [str(p) for p in (item.get("participants") or [])],
+            }
+        )
+
     # Process actions
     for item in output.get("actions") or []:
         if not isinstance(item, dict):
@@ -93,12 +97,13 @@ def sanitize_planner_output(output: dict[str, Any]) -> dict[str, Any]:
         kind = str(item.get("kind") or "").strip()
         if not kind:
             continue
-        sanitized["actions"].append({
-            "kind": kind[:128],
-            "payload": item.get("payload") if isinstance(item.get("payload"), dict) else {},
-            "required_scopes": [str(s) for s in (item.get("required_scopes") or [])],
-            "auto_approve": bool(item.get("auto_approve")),
-        })
-    
-    return sanitized
+        sanitized["actions"].append(
+            {
+                "kind": kind[:128],
+                "payload": item.get("payload") if isinstance(item.get("payload"), dict) else {},
+                "required_scopes": [str(s) for s in (item.get("required_scopes") or [])],
+                "auto_approve": bool(item.get("auto_approve")),
+            }
+        )
 
+    return sanitized

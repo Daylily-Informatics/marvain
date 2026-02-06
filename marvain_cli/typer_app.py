@@ -1,12 +1,10 @@
 def run(argv: list[str]) -> int:
     # Import lazily so the repo can run without Typer installed.
     import json
-
-    import typer  # type: ignore
-
+    from subprocess import CalledProcessError
     from typing import NoReturn
 
-    from subprocess import CalledProcessError
+    import typer  # type: ignore
 
     from marvain_cli import __version__
     from marvain_cli.config import ConfigError, find_config_path, render_config_yaml, sanitize_name_for_stack
@@ -209,7 +207,9 @@ def run(argv: list[str]) -> int:
         function: list[str] = typer.Option([], "--function", "-f", help="Function logical id (repeatable)"),
         tail: bool = typer.Option(True, "--tail/--no-tail", help="Tail logs"),
         since: str | None = typer.Option(None, "--since", help="Since (e.g. 10m, 1h)"),
-        output_file: str | None = typer.Option(None, "--output-file", help="Write a copy of logs to this file (append)"),
+        output_file: str | None = typer.Option(
+            None, "--output-file", help="Write a copy of logs to this file (append)"
+        ),
         suppress_sam_warnings: bool = typer.Option(
             False,
             "--suppress-sam-warnings",
@@ -310,9 +310,7 @@ def run(argv: list[str]) -> int:
         if ctx.invoked_subcommand is None:
             c = _load(ctx)
             dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
-            raise typer.Exit(
-                code=gui_start(c, dry_run=dr, host=host, port=port, reload=reload, foreground=foreground)
-            )
+            raise typer.Exit(code=gui_start(c, dry_run=dr, host=host, port=port, reload=reload, foreground=foreground))
 
     @gui_app.command("start", help="Start the local GUI server")
     def gui_start_cmd(
@@ -321,7 +319,9 @@ def run(argv: list[str]) -> int:
         port: int = typer.Option(GUI_DEFAULT_PORT, "--port", help="Port to bind to"),
         reload: bool = typer.Option(True, "--reload/--no-reload", help="Enable auto-reload"),
         foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground (blocking)"),
-        https: bool = typer.Option(True, "--https/--no-https", help="Enable HTTPS (default: on, uses mkcert if no cert/key provided)"),
+        https: bool = typer.Option(
+            True, "--https/--no-https", help="Enable HTTPS (default: on, uses mkcert if no cert/key provided)"
+        ),
         cert: str = typer.Option(None, "--cert", help="Path to SSL certificate file (PEM format)"),
         key: str = typer.Option(None, "--key", help="Path to SSL private key file (PEM format)"),
         dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
@@ -329,7 +329,17 @@ def run(argv: list[str]) -> int:
         c = _load(ctx)
         dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
         raise typer.Exit(
-            code=gui_start(c, dry_run=dr, host=host, port=port, reload=reload, foreground=foreground, https=https, cert=cert, key=key)
+            code=gui_start(
+                c,
+                dry_run=dr,
+                host=host,
+                port=port,
+                reload=reload,
+                foreground=foreground,
+                https=https,
+                cert=cert,
+                key=key,
+            )
         )
 
     @gui_app.command("stop", help="Stop the running GUI server")
@@ -350,7 +360,9 @@ def run(argv: list[str]) -> int:
         port: int = typer.Option(GUI_DEFAULT_PORT, "--port", help="Port to bind to"),
         reload: bool = typer.Option(True, "--reload/--no-reload", help="Enable auto-reload"),
         foreground: bool = typer.Option(False, "--foreground", "-f", help="Run in foreground (blocking)"),
-        https: bool = typer.Option(True, "--https/--no-https", help="Enable HTTPS (default: on, uses mkcert if no cert/key provided)"),
+        https: bool = typer.Option(
+            True, "--https/--no-https", help="Enable HTTPS (default: on, uses mkcert if no cert/key provided)"
+        ),
         cert: str = typer.Option(None, "--cert", help="Path to SSL certificate file (PEM format)"),
         key: str = typer.Option(None, "--key", help="Path to SSL private key file (PEM format)"),
         dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
@@ -358,7 +370,17 @@ def run(argv: list[str]) -> int:
         c = _load(ctx)
         dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
         raise typer.Exit(
-            code=gui_restart(c, dry_run=dr, host=host, port=port, reload=reload, foreground=foreground, https=https, cert=cert, key=key)
+            code=gui_restart(
+                c,
+                dry_run=dr,
+                host=host,
+                port=port,
+                reload=reload,
+                foreground=foreground,
+                https=https,
+                cert=cert,
+                key=key,
+            )
         )
 
     @gui_app.command("status", help="Show GUI server status")
@@ -469,9 +491,7 @@ def run(argv: list[str]) -> int:
         c = _load(ctx)
         dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
         _ = stack_prefix  # Unused
-        raise typer.Exit(
-            code=gui_run(c, dry_run=dr, host=host, port=port, reload=reload, stack_prefix=None)
-        )
+        raise typer.Exit(code=gui_run(c, dry_run=dr, host=host, port=port, reload=reload, stack_prefix=None))
 
     init_app = typer.Typer(help="Initialization helpers")
     app.add_typer(init_app, name="init")
@@ -509,7 +529,6 @@ def run(argv: list[str]) -> int:
             )
         )
 
-
     # ---- members (Hub API) ----
     members_app = typer.Typer(help="Agent membership management (Hub API)")
     app.add_typer(members_app, name="members")
@@ -529,112 +548,6 @@ def run(argv: list[str]) -> int:
         data = hub_claim_first_owner(
             c,
             agent_id=agent_id,
-            access_token=access_token,
-            hub_rest_api_base=hub_rest_api_base,
-            dry_run=dr,
-        )
-        if not dr:
-            typer.echo(json.dumps(data, indent=2, sort_keys=True))
-        raise typer.Exit(code=0)
-
-    @members_app.command("list")
-    def members_list(
-        ctx: typer.Context,
-        agent_id: str = typer.Option(..., "--agent-id"),
-        access_token: str | None = typer.Option(None, "--access-token", help="User access token"),
-        hub_rest_api_base: str | None = typer.Option(None, "--hub-rest-api-base"),
-        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
-    ) -> None:
-        import json
-
-        c = _load(ctx)
-        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
-        data = hub_list_memberships(
-            c,
-            agent_id=agent_id,
-            access_token=access_token,
-            hub_rest_api_base=hub_rest_api_base,
-            dry_run=dr,
-        )
-        if not dr:
-            typer.echo(json.dumps(data, indent=2, sort_keys=True))
-        raise typer.Exit(code=0)
-
-    @members_app.command("grant")
-    def members_grant(
-        ctx: typer.Context,
-        agent_id: str = typer.Option(..., "--agent-id"),
-        email: str = typer.Option(..., "--email"),
-        role: str = typer.Option(..., "--role"),
-        relationship_label: str | None = typer.Option(None, "--relationship-label"),
-        access_token: str | None = typer.Option(None, "--access-token", help="Cognito access token"),
-        hub_rest_api_base: str | None = typer.Option(None, "--hub-rest-api-base"),
-        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
-    ) -> None:
-        import json
-
-        c = _load(ctx)
-        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
-        data = hub_grant_membership(
-            c,
-            agent_id=agent_id,
-            email=email,
-            role=role,
-            relationship_label=relationship_label,
-            access_token=access_token,
-            hub_rest_api_base=hub_rest_api_base,
-            dry_run=dr,
-        )
-        if not dr:
-            typer.echo(json.dumps(data, indent=2, sort_keys=True))
-        raise typer.Exit(code=0)
-
-    @members_app.command("update")
-    def members_update(
-        ctx: typer.Context,
-        agent_id: str = typer.Option(..., "--agent-id"),
-        user_id: str = typer.Option(..., "--user-id"),
-        role: str = typer.Option(..., "--role"),
-        relationship_label: str | None = typer.Option(None, "--relationship-label"),
-        access_token: str | None = typer.Option(None, "--access-token", help="Cognito access token"),
-        hub_rest_api_base: str | None = typer.Option(None, "--hub-rest-api-base"),
-        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
-    ) -> None:
-        import json
-
-        c = _load(ctx)
-        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
-        data = hub_update_membership(
-            c,
-            agent_id=agent_id,
-            user_id=user_id,
-            role=role,
-            relationship_label=relationship_label,
-            access_token=access_token,
-            hub_rest_api_base=hub_rest_api_base,
-            dry_run=dr,
-        )
-        if not dr:
-            typer.echo(json.dumps(data, indent=2, sort_keys=True))
-        raise typer.Exit(code=0)
-
-    @members_app.command("revoke")
-    def members_revoke(
-        ctx: typer.Context,
-        agent_id: str = typer.Option(..., "--agent-id"),
-        user_id: str = typer.Option(..., "--user-id"),
-        access_token: str | None = typer.Option(None, "--access-token", help="Cognito access token"),
-        hub_rest_api_base: str | None = typer.Option(None, "--hub-rest-api-base"),
-        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
-    ) -> None:
-        import json
-
-        c = _load(ctx)
-        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
-        data = hub_revoke_membership(
-            c,
-            agent_id=agent_id,
-            user_id=user_id,
             access_token=access_token,
             hub_rest_api_base=hub_rest_api_base,
             dry_run=dr,
@@ -676,8 +589,12 @@ def run(argv: list[str]) -> int:
 
     @devices_app.command("detect")
     def devices_detect(
-        device_type: str | None = typer.Option(None, "--type", "-t", help="Filter by type: video, audio_input, audio_output, serial"),
-        connection_type: str | None = typer.Option(None, "--connection", "-c", help="Filter by connection: usb, direct"),
+        device_type: str | None = typer.Option(
+            None, "--type", "-t", help="Filter by type: video, audio_input, audio_output, serial"
+        ),
+        connection_type: str | None = typer.Option(
+            None, "--connection", "-c", help="Filter by connection: usb, direct"
+        ),
         output_format: str = typer.Option("table", "--format", "-f", help="Output format: table, json"),
     ) -> None:
         """Detect USB and direct-attach devices on the local machine.
@@ -689,6 +606,7 @@ def run(argv: list[str]) -> int:
         - Serial ports (USB-to-serial adapters)
         """
         import json
+
         from marvain_cli.ops import list_detected_devices
 
         devices = list_detected_devices(
@@ -727,7 +645,9 @@ def run(argv: list[str]) -> int:
         email: str = typer.Option(..., "--email", help="Email of the user to invite"),
         agent_id: str = typer.Option(..., "--agent-id", help="Agent ID to add the user to"),
         role: str = typer.Option("member", "--role", help="Role: owner, admin, member, guest, blocked"),
-        relationship_label: str | None = typer.Option(None, "--relationship-label", help="Relationship label (e.g. 'father', 'friend')"),
+        relationship_label: str | None = typer.Option(
+            None, "--relationship-label", help="Relationship label (e.g. 'father', 'friend')"
+        ),
         access_token: str | None = typer.Option(None, "--access-token", help="Cognito access token"),
         hub_rest_api_base: str | None = typer.Option(None, "--hub-rest-api-base"),
         dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
@@ -781,7 +701,9 @@ def run(argv: list[str]) -> int:
         agent_id: str = typer.Option(..., "--agent-id", help="Agent ID"),
         user_id: str = typer.Option(..., "--user-id", help="User ID to update"),
         role: str = typer.Option(..., "--role", help="New role: owner, admin, member, guest, blocked"),
-        relationship_label: str | None = typer.Option(None, "--relationship-label", help="Relationship label (e.g. 'father', 'friend')"),
+        relationship_label: str | None = typer.Option(
+            None, "--relationship-label", help="Relationship label (e.g. 'father', 'friend')"
+        ),
         access_token: str | None = typer.Option(None, "--access-token", help="Cognito access token"),
         hub_rest_api_base: str | None = typer.Option(None, "--hub-rest-api-base"),
         dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
@@ -839,7 +761,12 @@ def run(argv: list[str]) -> int:
     def _cognito_create_user(
         ctx: typer.Context,
         email: str = typer.Argument(..., help="Email address for the new user"),
-        password: str = typer.Option(None, "--password", "-p", help="Set permanent password (if not provided, user will need to set on first login)"),
+        password: str = typer.Option(
+            None,
+            "--password",
+            "-p",
+            help="Set permanent password (if not provided, user will need to set on first login)",
+        ),
         dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
     ) -> None:
         """Create a new Cognito user."""

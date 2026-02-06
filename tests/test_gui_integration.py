@@ -13,6 +13,7 @@ To run authenticated tests, set environment variables:
 """
 
 import os
+
 import pytest
 import requests
 import urllib3
@@ -43,10 +44,7 @@ def is_server_running() -> bool:
 
 
 # Skip all tests if server not running
-pytestmark = pytest.mark.skipif(
-    not is_server_running(),
-    reason="GUI server not running. Start with: marvain gui start"
-)
+pytestmark = pytest.mark.skipif(not is_server_running(), reason="GUI server not running. Start with: marvain gui start")
 
 
 class TestPublicEndpoints:
@@ -261,4 +259,3 @@ class TestAPIEndpointsNoAuth:
         """POST /v1/admin/bootstrap requires admin key."""
         r = requests.post(f"{BASE_URL}/v1/admin/bootstrap", json={}, verify=False)
         assert r.status_code in (401, 403)
-

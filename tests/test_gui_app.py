@@ -44,6 +44,7 @@ def _load_hub_api_app_module():
     # Ensure SessionMiddleware cookies are not marked Secure in tests
     # (httpx TestClient uses http://testserver).
     os.environ.setdefault("ENVIRONMENT", "test")
+    os.environ.setdefault("HTTPS_ENABLED", "false")
     # Make session secret deterministic for stable cookie behavior.
     os.environ.setdefault("SESSION_SECRET_KEY", "test-session-secret")
 
@@ -194,8 +195,12 @@ class TestGuiApp(unittest.TestCase):
         )
         self.mod.list_agents_for_user = mock.Mock(
             return_value=[
-                types.SimpleNamespace(agent_id="a1", name="Agent One", role="owner", relationship_label=None, disabled=False),
-                types.SimpleNamespace(agent_id="a2", name="Agent Two", role="member", relationship_label=None, disabled=True),
+                types.SimpleNamespace(
+                    agent_id="a1", name="Agent One", role="owner", relationship_label=None, disabled=False
+                ),
+                types.SimpleNamespace(
+                    agent_id="a2", name="Agent Two", role="member", relationship_label=None, disabled=True
+                ),
             ]
         )
         self.mod.list_spaces_for_user = mock.Mock(return_value=[])
@@ -239,9 +244,11 @@ class TestGuiApp(unittest.TestCase):
             return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
         )
         # Mock list_spaces_for_user to return test spaces
-        self.mod.list_spaces_for_user = mock.Mock(return_value=[
-            self.mod.SpaceInfo(space_id="sp-1", name="home", agent_id="ag-1", agent_name="Forge"),
-        ])
+        self.mod.list_spaces_for_user = mock.Mock(
+            return_value=[
+                self.mod.SpaceInfo(space_id="sp-1", name="home", agent_id="ag-1", agent_name="Forge"),
+            ]
+        )
 
         r = self.client.get("/livekit-test")
         self.assertEqual(r.status_code, 200)
@@ -260,9 +267,11 @@ class TestGuiApp(unittest.TestCase):
         )
         # Mock list_spaces_for_user with a malicious space_id
         space_id = "</script><img src=x onerror=alert(1)>"
-        self.mod.list_spaces_for_user = mock.Mock(return_value=[
-            self.mod.SpaceInfo(space_id=space_id, name="evil", agent_id="ag-1", agent_name="Forge"),
-        ])
+        self.mod.list_spaces_for_user = mock.Mock(
+            return_value=[
+                self.mod.SpaceInfo(space_id=space_id, name="evil", agent_id="ag-1", agent_name="Forge"),
+            ]
+        )
 
         r = self.client.get("/livekit-test", params={"space_id": space_id})
         self.assertEqual(r.status_code, 200)
@@ -334,25 +343,29 @@ class TestRemotesGui(unittest.TestCase):
         )
         self.mod.list_agents_for_user = mock.Mock(
             return_value=[
-                types.SimpleNamespace(agent_id="a1", name="Agent One", role="owner", relationship_label=None, disabled=False),
+                types.SimpleNamespace(
+                    agent_id="a1", name="Agent One", role="owner", relationship_label=None, disabled=False
+                ),
             ]
         )
 
         # Mock the database object
         mock_db = mock.Mock()
-        mock_db.query = mock.Mock(return_value=[
-            {
-                "remote_id": "r1",
-                "name": "Camera 1",
-                "address": "192.168.1.100",
-                "connection_type": "network",
-                "capabilities": ["video", "audio"],
-                "status": "online",
-                "last_ping": None,
-                "last_seen": None,
-                "agent_name": "Agent One",
-            }
-        ])
+        mock_db.query = mock.Mock(
+            return_value=[
+                {
+                    "remote_id": "r1",
+                    "name": "Camera 1",
+                    "address": "192.168.1.100",
+                    "connection_type": "network",
+                    "capabilities": ["video", "audio"],
+                    "status": "online",
+                    "last_ping": None,
+                    "last_seen": None,
+                    "agent_name": "Agent One",
+                }
+            ]
+        )
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
         r = self.client.get("/remotes")
@@ -364,12 +377,15 @@ class TestRemotesGui(unittest.TestCase):
     def test_create_remote_requires_authentication(self) -> None:
         self.mod._gui_get_user = mock.Mock(return_value=None)
 
-        r = self.client.post("/api/remotes", json={
-            "name": "Test Remote",
-            "address": "192.168.1.200",
-            "connection_type": "network",
-            "agent_id": "a1",
-        })
+        r = self.client.post(
+            "/api/remotes",
+            json={
+                "name": "Test Remote",
+                "address": "192.168.1.200",
+                "connection_type": "network",
+                "agent_id": "a1",
+            },
+        )
         self.assertEqual(r.status_code, 401)
 
     def test_create_remote_success(self) -> None:
@@ -382,12 +398,15 @@ class TestRemotesGui(unittest.TestCase):
         mock_db.execute = mock.Mock(return_value=None)
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
-        r = self.client.post("/api/remotes", json={
-            "name": "Test Remote",
-            "address": "192.168.1.200",
-            "connection_type": "network",
-            "agent_id": "a1",
-        })
+        r = self.client.post(
+            "/api/remotes",
+            json={
+                "name": "Test Remote",
+                "address": "192.168.1.200",
+                "connection_type": "network",
+                "agent_id": "a1",
+            },
+        )
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertEqual(body["name"], "Test Remote")
@@ -420,13 +439,17 @@ class TestRemotesGui(unittest.TestCase):
 
         # Mock database
         mock_db = mock.Mock()
-        mock_db.query = mock.Mock(return_value=[{
-            "remote_id": "r1",
-            "agent_id": "a1",
-            "address": "192.168.1.100",
-            "connection_type": "network",
-            "status": "offline",
-        }])
+        mock_db.query = mock.Mock(
+            return_value=[
+                {
+                    "remote_id": "r1",
+                    "agent_id": "a1",
+                    "address": "192.168.1.100",
+                    "connection_type": "network",
+                    "status": "offline",
+                }
+            ]
+        )
         mock_db.execute = mock.Mock()
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
@@ -448,10 +471,12 @@ class TestRemotesGui(unittest.TestCase):
 
         # Mock database
         mock_db = mock.Mock()
-        mock_db.query = mock.Mock(return_value=[
-            {"remote_id": "r1", "name": "Remote 1", "status": "online", "last_ping": None, "last_seen": None},
-            {"remote_id": "r2", "name": "Remote 2", "status": "offline", "last_ping": None, "last_seen": None},
-        ])
+        mock_db.query = mock.Mock(
+            return_value=[
+                {"remote_id": "r1", "name": "Remote 1", "status": "online", "last_ping": None, "last_seen": None},
+                {"remote_id": "r2", "name": "Remote 2", "status": "offline", "last_ping": None, "last_seen": None},
+            ]
+        )
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
         r = self.client.get("/api/remotes/status")
@@ -529,10 +554,24 @@ class TestAgentsGui(unittest.TestCase):
 
         # Mock database for members query
         mock_db = mock.Mock()
-        mock_db.query = mock.Mock(return_value=[
-            {"user_id": "u1", "role": "admin", "relationship_label": "Work Helper", "email": "user@example.com", "created_at": "2025-01-01"},
-            {"user_id": "u2", "role": "member", "relationship_label": None, "email": "member@example.com", "created_at": "2025-01-02"},
-        ])
+        mock_db.query = mock.Mock(
+            return_value=[
+                {
+                    "user_id": "u1",
+                    "role": "admin",
+                    "relationship_label": "Work Helper",
+                    "email": "user@example.com",
+                    "created_at": "2025-01-01",
+                },
+                {
+                    "user_id": "u2",
+                    "role": "member",
+                    "relationship_label": None,
+                    "email": "member@example.com",
+                    "created_at": "2025-01-02",
+                },
+            ]
+        )
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
         r = self.client.get("/agents/a1")
@@ -578,10 +617,24 @@ class TestAgentsGui(unittest.TestCase):
         self.mod.list_agents_for_user = mock.Mock(return_value=[mock_agent])
 
         mock_db = mock.Mock()
-        mock_db.query = mock.Mock(return_value=[
-            {"user_id": "u1", "role": "owner", "relationship_label": "My Assistant", "email": "owner@example.com", "created_at": "2025-01-01"},
-            {"user_id": "u2", "role": "admin", "relationship_label": "Work Partner", "email": "admin@example.com", "created_at": "2025-01-02"},
-        ])
+        mock_db.query = mock.Mock(
+            return_value=[
+                {
+                    "user_id": "u1",
+                    "role": "owner",
+                    "relationship_label": "My Assistant",
+                    "email": "owner@example.com",
+                    "created_at": "2025-01-01",
+                },
+                {
+                    "user_id": "u2",
+                    "role": "admin",
+                    "relationship_label": "Work Partner",
+                    "email": "admin@example.com",
+                    "created_at": "2025-01-02",
+                },
+            ]
+        )
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
         r = self.client.get("/agents/a1")
@@ -737,11 +790,7 @@ class TestSpacesGui(unittest.TestCase):
     def test_create_space_requires_authentication(self) -> None:
         self.mod._gui_get_user = mock.Mock(return_value=None)
 
-        r = self.client.post("/api/spaces", json={
-            "agent_id": "agent-1",
-            "name": "Test Space",
-            "privacy_mode": False
-        })
+        r = self.client.post("/api/spaces", json={"agent_id": "agent-1", "name": "Test Space", "privacy_mode": False})
 
         self.assertEqual(r.status_code, 401)
 
@@ -753,11 +802,7 @@ class TestSpacesGui(unittest.TestCase):
         self.mod._get_db = mock.Mock(return_value=mock_db)
         self.mod.check_agent_permission = mock.Mock(return_value=False)
 
-        r = self.client.post("/api/spaces", json={
-            "agent_id": "agent-1",
-            "name": "Test Space",
-            "privacy_mode": False
-        })
+        r = self.client.post("/api/spaces", json={"agent_id": "agent-1", "name": "Test Space", "privacy_mode": False})
 
         self.assertEqual(r.status_code, 403)
 
@@ -770,11 +815,7 @@ class TestSpacesGui(unittest.TestCase):
         self.mod._get_db = mock.Mock(return_value=mock_db)
         self.mod.check_agent_permission = mock.Mock(return_value=True)
 
-        r = self.client.post("/api/spaces", json={
-            "agent_id": "agent-1",
-            "name": "Test Space",
-            "privacy_mode": True
-        })
+        r = self.client.post("/api/spaces", json={"agent_id": "agent-1", "name": "Test Space", "privacy_mode": True})
 
         self.assertEqual(r.status_code, 200)
         data = r.json()
@@ -830,11 +871,9 @@ class TestDevicesGui(unittest.TestCase):
     def test_create_device_requires_authentication(self) -> None:
         self.mod._gui_get_user = mock.Mock(return_value=None)
 
-        r = self.client.post("/api/devices", json={
-            "agent_id": "agent-1",
-            "name": "Test Device",
-            "scopes": ["events:read"]
-        })
+        r = self.client.post(
+            "/api/devices", json={"agent_id": "agent-1", "name": "Test Device", "scopes": ["events:read"]}
+        )
 
         self.assertEqual(r.status_code, 401)
 
@@ -846,11 +885,9 @@ class TestDevicesGui(unittest.TestCase):
         self.mod._get_db = mock.Mock(return_value=mock_db)
         self.mod.check_agent_permission = mock.Mock(return_value=False)
 
-        r = self.client.post("/api/devices", json={
-            "agent_id": "agent-1",
-            "name": "Test Device",
-            "scopes": ["events:read"]
-        })
+        r = self.client.post(
+            "/api/devices", json={"agent_id": "agent-1", "name": "Test Device", "scopes": ["events:read"]}
+        )
 
         self.assertEqual(r.status_code, 403)
 
@@ -863,11 +900,10 @@ class TestDevicesGui(unittest.TestCase):
         self.mod._get_db = mock.Mock(return_value=mock_db)
         self.mod.check_agent_permission = mock.Mock(return_value=True)
 
-        r = self.client.post("/api/devices", json={
-            "agent_id": "agent-1",
-            "name": "Test Device",
-            "scopes": ["events:read", "presence:write"]
-        })
+        r = self.client.post(
+            "/api/devices",
+            json={"agent_id": "agent-1", "name": "Test Device", "scopes": ["events:read", "presence:write"]},
+        )
 
         self.assertEqual(r.status_code, 200)
         data = r.json()
@@ -948,10 +984,7 @@ class TestPeopleGui(unittest.TestCase):
     def test_create_person_requires_authentication(self) -> None:
         self.mod._gui_get_user = mock.Mock(return_value=None)
 
-        r = self.client.post("/api/people", json={
-            "agent_id": "agent-1",
-            "display_name": "John Doe"
-        })
+        r = self.client.post("/api/people", json={"agent_id": "agent-1", "display_name": "John Doe"})
 
         self.assertEqual(r.status_code, 401)
 
@@ -963,10 +996,7 @@ class TestPeopleGui(unittest.TestCase):
         self.mod._get_db = mock.Mock(return_value=mock_db)
         self.mod.check_agent_permission = mock.Mock(return_value=False)
 
-        r = self.client.post("/api/people", json={
-            "agent_id": "agent-1",
-            "display_name": "John Doe"
-        })
+        r = self.client.post("/api/people", json={"agent_id": "agent-1", "display_name": "John Doe"})
 
         self.assertEqual(r.status_code, 403)
 
@@ -979,10 +1009,7 @@ class TestPeopleGui(unittest.TestCase):
         self.mod._get_db = mock.Mock(return_value=mock_db)
         self.mod.check_agent_permission = mock.Mock(return_value=True)
 
-        r = self.client.post("/api/people", json={
-            "agent_id": "agent-1",
-            "display_name": "John Doe"
-        })
+        r = self.client.post("/api/people", json={"agent_id": "agent-1", "display_name": "John Doe"})
 
         self.assertEqual(r.status_code, 200)
         data = r.json()
@@ -993,9 +1020,7 @@ class TestPeopleGui(unittest.TestCase):
     def test_update_consent_requires_authentication(self) -> None:
         self.mod._gui_get_user = mock.Mock(return_value=None)
 
-        r = self.client.post("/api/people/person-1/consent", json={
-            "consents": [{"type": "voice", "expires_at": None}]
-        })
+        r = self.client.post("/api/people/person-1/consent", json={"consents": [{"type": "voice", "expires_at": None}]})
 
         self.assertEqual(r.status_code, 401)
 
@@ -1008,9 +1033,7 @@ class TestPeopleGui(unittest.TestCase):
         mock_db.execute = mock.Mock()
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
-        r = self.client.post("/api/people/person-1/consent", json={
-            "consents": [{"type": "voice", "expires_at": None}]
-        })
+        r = self.client.post("/api/people/person-1/consent", json={"consents": [{"type": "voice", "expires_at": None}]})
 
         self.assertEqual(r.status_code, 200)
         data = r.json()
@@ -1283,9 +1306,9 @@ class TestArtifactsGui(unittest.TestCase):
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
         # Mock list_agents_for_user
-        self.mod.list_agents_for_user = mock.Mock(return_value=[
-            mock.Mock(agent_id="agent-1", name="Agent 1", role="owner")
-        ])
+        self.mod.list_agents_for_user = mock.Mock(
+            return_value=[mock.Mock(agent_id="agent-1", name="Agent 1", role="owner")]
+        )
 
         # Mock S3 client with empty artifacts
         mock_s3 = mock.Mock()
@@ -1372,9 +1395,9 @@ class TestAuditGui(unittest.TestCase):
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
         # Mock list_agents_for_user
-        self.mod.list_agents_for_user = mock.Mock(return_value=[
-            mock.Mock(agent_id="agent-1", name="Agent 1", role="owner")
-        ])
+        self.mod.list_agents_for_user = mock.Mock(
+            return_value=[mock.Mock(agent_id="agent-1", name="Agent 1", role="owner")]
+        )
 
         # Mock S3 client with empty audit entries
         mock_s3 = mock.Mock()
@@ -1402,9 +1425,9 @@ class TestAuditGui(unittest.TestCase):
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
         # Mock list_agents_for_user with only guest role
-        self.mod.list_agents_for_user = mock.Mock(return_value=[
-            mock.Mock(agent_id="agent-1", name="Agent 1", role="guest")
-        ])
+        self.mod.list_agents_for_user = mock.Mock(
+            return_value=[mock.Mock(agent_id="agent-1", name="Agent 1", role="guest")]
+        )
 
         r = self.client.post("/api/audit/verify")
         self.assertEqual(r.status_code, 403)
@@ -1416,9 +1439,9 @@ class TestAuditGui(unittest.TestCase):
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
         # Mock list_agents_for_user with admin role
-        self.mod.list_agents_for_user = mock.Mock(return_value=[
-            mock.Mock(agent_id="agent-1", name="Agent 1", role="admin")
-        ])
+        self.mod.list_agents_for_user = mock.Mock(
+            return_value=[mock.Mock(agent_id="agent-1", name="Agent 1", role="admin")]
+        )
 
         # Mock S3 client with empty audit entries
         mock_s3 = mock.Mock()
@@ -1471,10 +1494,12 @@ class TestLiveKitTestGui(unittest.TestCase):
         mock_db = mock.Mock()
         self.mod._get_db = mock.Mock(return_value=mock_db)
         # Mock list_spaces_for_user to return some spaces
-        self.mod.list_spaces_for_user = mock.Mock(return_value=[
-            mock.Mock(space_id="space-1", name="Test Space", agent_name="Test Agent"),
-            mock.Mock(space_id="space-2", name="Another Space", agent_name="Another Agent"),
-        ])
+        self.mod.list_spaces_for_user = mock.Mock(
+            return_value=[
+                mock.Mock(space_id="space-1", name="Test Space", agent_name="Test Agent"),
+                mock.Mock(space_id="space-2", name="Another Space", agent_name="Another Agent"),
+            ]
+        )
         self.mod._cfg = mock.Mock(stage="dev", ws_api_url=None)
 
         r = self.client.get("/livekit-test", cookies={"marvain_access_token": "test-token"})
@@ -1499,10 +1524,12 @@ class TestLiveKitTestGui(unittest.TestCase):
         self.mod._gui_get_user = mock.Mock(return_value=mock.Mock(user_id="user-1", email="test@example.com"))
         mock_db = mock.Mock()
         self.mod._get_db = mock.Mock(return_value=mock_db)
-        self.mod.list_spaces_for_user = mock.Mock(return_value=[
-            mock.Mock(space_id="space-1", name="Test Space", agent_name="Test Agent"),
-            mock.Mock(space_id="space-2", name="Another Space", agent_name="Another Agent"),
-        ])
+        self.mod.list_spaces_for_user = mock.Mock(
+            return_value=[
+                mock.Mock(space_id="space-1", name="Test Space", agent_name="Test Agent"),
+                mock.Mock(space_id="space-2", name="Another Space", agent_name="Another Agent"),
+            ]
+        )
         self.mod._cfg = mock.Mock(stage="dev", ws_api_url=None)
 
         r = self.client.get("/livekit-test?space_id=space-1", cookies={"marvain_access_token": "test-token"})
@@ -1615,15 +1642,15 @@ class TestProfileGui(unittest.TestCase):
 
     def test_profile_renders_when_authenticated(self) -> None:
         self.mod._gui_get_user = mock.Mock(
-            return_value=self.mod.AuthenticatedUser(
-                user_id="u1", cognito_sub="sub-1", email="user@example.com"
-            )
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
         )
         mock_db = mock.Mock()
         self.mod._get_db = mock.Mock(return_value=mock_db)
-        self.mod.list_agents_for_user = mock.Mock(return_value=[
-            mock.Mock(agent_id="agent-1", name="Test Agent", role="owner", relationship_label="self"),
-        ])
+        self.mod.list_agents_for_user = mock.Mock(
+            return_value=[
+                mock.Mock(agent_id="agent-1", name="Test Agent", role="owner", relationship_label="self"),
+            ]
+        )
         self.mod._cfg = mock.Mock(stage="dev", ws_api_url=None)
 
         r = self.client.get("/profile", cookies={"marvain_access_token": "test-token"})
@@ -1636,16 +1663,16 @@ class TestProfileGui(unittest.TestCase):
 
     def test_profile_shows_agent_memberships(self) -> None:
         self.mod._gui_get_user = mock.Mock(
-            return_value=self.mod.AuthenticatedUser(
-                user_id="u1", cognito_sub="sub-1", email="user@example.com"
-            )
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
         )
         mock_db = mock.Mock()
         self.mod._get_db = mock.Mock(return_value=mock_db)
-        self.mod.list_agents_for_user = mock.Mock(return_value=[
-            mock.Mock(agent_id="agent-1", name="Agent One", role="owner", relationship_label="self"),
-            mock.Mock(agent_id="agent-2", name="Agent Two", role="member", relationship_label="friend"),
-        ])
+        self.mod.list_agents_for_user = mock.Mock(
+            return_value=[
+                mock.Mock(agent_id="agent-1", name="Agent One", role="owner", relationship_label="self"),
+                mock.Mock(agent_id="agent-2", name="Agent Two", role="member", relationship_label="friend"),
+            ]
+        )
         self.mod._cfg = mock.Mock(stage="dev", ws_api_url=None)
 
         r = self.client.get("/profile", cookies={"marvain_access_token": "test-token"})
@@ -1738,9 +1765,7 @@ class TestLiveKitTokenExpiration(unittest.TestCase):
     def test_livekit_token_returns_token_for_authenticated_user(self) -> None:
         """Token endpoint should return a token for authenticated users."""
         self.mod._gui_get_user = mock.Mock(
-            return_value=self.mod.AuthenticatedUser(
-                user_id="u1", cognito_sub="sub-1", email="user@example.com"
-            )
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
         )
         # _mint_livekit_token_for_user is now async, so mock with AsyncMock
         expected_response = self.mod.LiveKitTokenOut(
@@ -1765,9 +1790,7 @@ class TestLiveKitTokenExpiration(unittest.TestCase):
     def test_livekit_test_page_has_token_refresh_capability(self) -> None:
         """LiveKit test page should have ability to request new tokens."""
         self.mod._gui_get_user = mock.Mock(
-            return_value=self.mod.AuthenticatedUser(
-                user_id="u1", cognito_sub="sub-1", email="user@example.com"
-            )
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
         )
         mock_db = mock.Mock()
         self.mod._get_db = mock.Mock(return_value=mock_db)

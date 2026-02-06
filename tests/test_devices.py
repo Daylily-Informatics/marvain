@@ -6,6 +6,7 @@ These tests cover:
 - Device listing and filtering
 - Device command tool
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -66,6 +67,7 @@ class TestDeviceRegistration(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.mod = _load_hub_api_app_module()
         from fastapi.testclient import TestClient
+
         cls._TestClient = TestClient
         cls._orig_gui_get_user = cls.mod._gui_get_user
         cls._orig_get_db = cls.mod._get_db
@@ -97,9 +99,7 @@ class TestDeviceRegistration(unittest.TestCase):
     def test_register_device_requires_admin_permission(self) -> None:
         """Device registration should require admin permission on agent."""
         self.mod._gui_get_user = mock.Mock(
-            return_value=self.mod.AuthenticatedUser(
-                user_id="u1", cognito_sub="sub-1", email="u1@example.com"
-            )
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
         )
         mock_db = mock.Mock()
         self.mod._get_db = mock.Mock(return_value=mock_db)
@@ -116,9 +116,7 @@ class TestDeviceRegistration(unittest.TestCase):
     def test_register_device_success(self) -> None:
         """Successful device registration should return device_id and token."""
         self.mod._gui_get_user = mock.Mock(
-            return_value=self.mod.AuthenticatedUser(
-                user_id="u1", cognito_sub="sub-1", email="u1@example.com"
-            )
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
         )
         mock_db = mock.Mock()
         mock_db.execute = mock.Mock()
@@ -142,14 +140,14 @@ class TestDeviceRegistration(unittest.TestCase):
     def test_register_device_stores_token_hash(self) -> None:
         """Device registration should store hashed token, not plaintext."""
         self.mod._gui_get_user = mock.Mock(
-            return_value=self.mod.AuthenticatedUser(
-                user_id="u1", cognito_sub="sub-1", email="u1@example.com"
-            )
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
         )
         mock_db = mock.Mock()
         captured_params = {}
+
         def capture_execute(sql, params):
             captured_params.update(params)
+
         mock_db.execute = capture_execute
         self.mod._get_db = mock.Mock(return_value=mock_db)
         self.mod.check_agent_permission = mock.Mock(return_value=True)
@@ -172,6 +170,7 @@ class TestDeviceRevocation(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.mod = _load_hub_api_app_module()
         from fastapi.testclient import TestClient
+
         cls._TestClient = TestClient
         cls._orig_gui_get_user = cls.mod._gui_get_user
         cls._orig_get_db = cls.mod._get_db
@@ -196,9 +195,7 @@ class TestDeviceRevocation(unittest.TestCase):
     def test_revoke_device_not_found_or_no_permission(self) -> None:
         """Revoking non-existent device or without permission should return 404."""
         self.mod._gui_get_user = mock.Mock(
-            return_value=self.mod.AuthenticatedUser(
-                user_id="u1", cognito_sub="sub-1", email="u1@example.com"
-            )
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
         )
         mock_db = mock.Mock()
         # Query returns empty when device not found OR user lacks admin/owner role
@@ -212,9 +209,7 @@ class TestDeviceRevocation(unittest.TestCase):
     def test_revoke_device_success(self) -> None:
         """Successful device revocation should update revoked_at."""
         self.mod._gui_get_user = mock.Mock(
-            return_value=self.mod.AuthenticatedUser(
-                user_id="u1", cognito_sub="sub-1", email="u1@example.com"
-            )
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
         )
         mock_db = mock.Mock()
         # Query returns device when user has admin/owner permission
@@ -239,6 +234,7 @@ class TestDeviceDeletion(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.mod = _load_hub_api_app_module()
         from fastapi.testclient import TestClient
+
         cls._TestClient = TestClient
         cls._orig_gui_get_user = cls.mod._gui_get_user
         cls._orig_get_db = cls.mod._get_db
@@ -263,9 +259,7 @@ class TestDeviceDeletion(unittest.TestCase):
     def test_delete_device_not_found_or_no_permission(self) -> None:
         """Deleting non-existent device or without permission should return 404."""
         self.mod._gui_get_user = mock.Mock(
-            return_value=self.mod.AuthenticatedUser(
-                user_id="u1", cognito_sub="sub-1", email="u1@example.com"
-            )
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
         )
         mock_db = mock.Mock()
         mock_db.query = mock.Mock(return_value=[])
@@ -278,9 +272,7 @@ class TestDeviceDeletion(unittest.TestCase):
     def test_delete_device_success(self) -> None:
         """Successful device deletion should remove the device."""
         self.mod._gui_get_user = mock.Mock(
-            return_value=self.mod.AuthenticatedUser(
-                user_id="u1", cognito_sub="sub-1", email="u1@example.com"
-            )
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
         )
         mock_db = mock.Mock()
         mock_db.query = mock.Mock(return_value=[{"agent_id": "agent-1", "device_id": "device-123"}])
@@ -307,6 +299,7 @@ class TestDevicesPage(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.mod = _load_hub_api_app_module()
         from fastapi.testclient import TestClient
+
         cls._TestClient = TestClient
         cls._orig_gui_get_user = cls.mod._gui_get_user
         cls._orig_get_db = cls.mod._get_db
@@ -338,26 +331,26 @@ class TestDevicesPage(unittest.TestCase):
     def test_devices_page_renders_with_devices(self) -> None:
         """Devices page should render device list."""
         self.mod._gui_get_user = mock.Mock(
-            return_value=self.mod.AuthenticatedUser(
-                user_id="u1", cognito_sub="sub-1", email="u1@example.com"
-            )
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
         )
         mock_db = mock.Mock()
-        mock_db.query = mock.Mock(return_value=[
-            {
-                "device_id": "dev-1",
-                "agent_id": "agent-1",
-                "agent_name": "Test Agent",
-                "name": "Kitchen Speaker",
-                "scopes": ["events:write", "presence:write"],
-                "last_seen": None,
-                "revoked_at": None,
-            }
-        ])
+        mock_db.query = mock.Mock(
+            return_value=[
+                {
+                    "device_id": "dev-1",
+                    "agent_id": "agent-1",
+                    "agent_name": "Test Agent",
+                    "name": "Kitchen Speaker",
+                    "scopes": ["events:write", "presence:write"],
+                    "last_seen": None,
+                    "revoked_at": None,
+                }
+            ]
+        )
         self.mod._get_db = mock.Mock(return_value=mock_db)
-        self.mod.list_agents_for_user = mock.Mock(return_value=[
-            types.SimpleNamespace(agent_id="agent-1", name="Test Agent", role="owner")
-        ])
+        self.mod.list_agents_for_user = mock.Mock(
+            return_value=[types.SimpleNamespace(agent_id="agent-1", name="Test Agent", role="owner")]
+        )
         self.mod._cfg = mock.Mock(stage="dev", ws_api_url=None)
 
         r = self.client.get("/devices")
@@ -370,9 +363,7 @@ class TestDevicesPage(unittest.TestCase):
     def test_devices_page_shows_empty_state(self) -> None:
         """Devices page should show empty state when no devices."""
         self.mod._gui_get_user = mock.Mock(
-            return_value=self.mod.AuthenticatedUser(
-                user_id="u1", cognito_sub="sub-1", email="u1@example.com"
-            )
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
         )
         mock_db = mock.Mock()
         mock_db.query = mock.Mock(return_value=[])
@@ -388,22 +379,22 @@ class TestDevicesPage(unittest.TestCase):
     def test_devices_page_shows_revoked_badge(self) -> None:
         """Devices page should show revoked badge for revoked devices."""
         self.mod._gui_get_user = mock.Mock(
-            return_value=self.mod.AuthenticatedUser(
-                user_id="u1", cognito_sub="sub-1", email="u1@example.com"
-            )
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
         )
         mock_db = mock.Mock()
-        mock_db.query = mock.Mock(return_value=[
-            {
-                "device_id": "dev-1",
-                "agent_id": "agent-1",
-                "agent_name": "Test Agent",
-                "name": "Old Device",
-                "scopes": [],
-                "last_seen": None,
-                "revoked_at": "2026-01-01T00:00:00Z",
-            }
-        ])
+        mock_db.query = mock.Mock(
+            return_value=[
+                {
+                    "device_id": "dev-1",
+                    "agent_id": "agent-1",
+                    "agent_name": "Test Agent",
+                    "name": "Old Device",
+                    "scopes": [],
+                    "last_seen": None,
+                    "revoked_at": "2026-01-01T00:00:00Z",
+                }
+            ]
+        )
         self.mod._get_db = mock.Mock(return_value=mock_db)
         self.mod.list_agents_for_user = mock.Mock(return_value=[])
         self.mod._cfg = mock.Mock(stage="dev", ws_api_url=None)
@@ -412,4 +403,3 @@ class TestDevicesPage(unittest.TestCase):
 
         self.assertEqual(r.status_code, 200)
         self.assertIn("Revoked", r.text)
-

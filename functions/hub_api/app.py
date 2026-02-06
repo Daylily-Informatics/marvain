@@ -6,6 +6,7 @@ This module is for LOCAL DEVELOPMENT ONLY. It includes:
 
 For Lambda deployment, use api_app.py instead (via lambda_handler.py).
 """
+
 from __future__ import annotations
 
 import base64
@@ -13,51 +14,55 @@ import html
 import json
 import logging
 import os
-import uuid
-from pathlib import Path
 import secrets
 import urllib.parse
+import uuid
+from pathlib import Path
 from typing import Optional
 
-from fastapi import HTTPException, Request
-from pydantic import BaseModel, Field
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from starlette.responses import Response
-
-from agent_hub.auth import AuthenticatedUser, ensure_user_row, generate_device_token, hash_token
+from agent_hub.auth import (
+    AuthenticatedUser,
+    ensure_user_row,
+    generate_device_token,
+    hash_token,
+    lookup_cognito_user_by_email,
+)
 from agent_hub.cognito import (
     CognitoAuthError,
-    CognitoUserInfo,
+    CognitoUserInfo,  # noqa: F401 — used via module attr in tests
     build_login_url,
     build_logout_url,
     exchange_code_for_tokens,
     get_user_info_from_tokens,
 )
+from agent_hub.livekit_tokens import mint_livekit_join_token  # noqa: F401 — used via module attr in tests
 from agent_hub.memberships import (
+    SpaceInfo,  # noqa: F401 — used via module attr in tests
     check_agent_permission,
     grant_membership,
     list_agents_for_user,
     list_spaces_for_user,
     revoke_membership,
-    SpaceInfo,
     update_membership,
 )
-from agent_hub.auth import ensure_user_row, lookup_cognito_user_by_email
-from agent_hub.livekit_tokens import mint_livekit_join_token
 from agent_hub.secrets import get_secret_json
 
 # Import the API app and its shared state
 from api_app import (
-    api_app,
-    _get_db,
-    _get_s3,
-    get_config,
     LiveKitTokenIn,
     LiveKitTokenOut,
+    _get_db,
+    _get_s3,
     _mint_livekit_token_for_user,
+    api_app,
+    get_config,
 )
+from fastapi import HTTPException, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
+from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -67,8 +72,10 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 # Startup Configuration Validation
 # -----------------------------
 
+
 class ConfigurationError(Exception):
     """Raised when critical configuration is missing or invalid."""
+
     pass
 
 
@@ -134,7 +141,9 @@ def _validate_critical_secrets(cfg) -> list[str]:
 
     # 5. Session Secret (required for secure sessions)
     if not cfg.session_secret_key and not cfg.session_secret_arn:
-        errors.append("SESSION_SECRET_KEY or SESSION_SECRET_ARN not set - sessions will use random key (not persistent)")
+        errors.append(
+            "SESSION_SECRET_KEY or SESSION_SECRET_ARN not set - sessions will use random key (not persistent)"
+        )
 
     return errors
 
@@ -156,7 +165,7 @@ def validate_configuration_or_fail():
 ║ The GUI cannot start because critical secrets are missing or invalid.        ║
 ║                                                                              ║
 ║ Fix the following issues:                                                    ║
-{chr(10).join(f'║ • {e[:72]:<72}║' for e in errors)}
+{chr(10).join(f"║ • {e[:72]:<72}║" for e in errors)}
 ║                                                                              ║
 ║ To update secrets in AWS Secrets Manager:                                    ║
 ║   aws secretsmanager put-secret-value --secret-id <ARN> \\                   ║
@@ -168,6 +177,7 @@ def validate_configuration_or_fail():
 """
         logger.critical(full_msg)  # nosec - private repo, helpful for debugging config issues
         raise ConfigurationError(f"Critical configuration errors:\n{error_msg}")
+
 
 # Use the API app as the base - all API routes are already defined
 app = api_app
@@ -189,6 +199,7 @@ templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 # -----------------------------
 # Startup Event - Validate Configuration
 # -----------------------------
+
 
 @app.on_event("startup")
 async def startup_validate_configuration():
@@ -219,7 +230,9 @@ def _get_ws_context(request: Request) -> dict[str, str | None]:
     """
     ws_url = _cfg.ws_api_url
     access_token = request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE)
-    logger.debug(f"_get_ws_context: ws_url={ws_url}, access_token present={bool(access_token)}, length={len(access_token) if access_token else 0}")
+    logger.debug(
+        f"_get_ws_context: ws_url={ws_url}, access_token present={bool(access_token)}, length={len(access_token) if access_token else 0}"
+    )
     return {
         "ws_url": ws_url,
         "access_token": access_token if ws_url else None,
@@ -354,11 +367,7 @@ def _gui_html_page(*, title: str, body_html: str) -> HTMLResponse:
 
 def _gui_error_page(*, request: Request, title: str, message: str, status_code: int = 400) -> HTMLResponse:
     login_href = html.escape(_gui_path(request, "/login"))
-    body = (
-        f"<h1>{html.escape(title)}</h1>"
-        f"<p>{html.escape(message)}</p>"
-        f"<p><a href='{login_href}'>Log in</a></p>"
-    )
+    body = f"<h1>{html.escape(title)}</h1><p>{html.escape(message)}</p><p><a href='{login_href}'>Log in</a></p>"
     resp = _gui_html_page(title=title, body_html=body)
     resp.status_code = status_code
     return resp
@@ -463,14 +472,16 @@ async def gui_auth_callback(
         )
 
         # Create session
-        request.session.update({
-            "user_sub": cognito_user.sub,
-            "user_id": user_id,
-            "email": cognito_user.email,
-            "name": cognito_user.name,
-            "roles": cognito_user.roles,
-            "cognito_groups": cognito_user.cognito_groups,
-        })
+        request.session.update(
+            {
+                "user_sub": cognito_user.sub,
+                "user_id": user_id,
+                "email": cognito_user.email,
+                "name": cognito_user.name,
+                "roles": cognito_user.roles,
+                "cognito_groups": cognito_user.cognito_groups,
+            }
+        )
 
         logger.info(f"User {cognito_user.email} ({cognito_user.sub}) logged in")
         logger.info(f"Access token received: {bool(access_token)}, length: {len(access_token) if access_token else 0}")
@@ -504,7 +515,7 @@ async def gui_auth_callback(
             message=str(e),
             status_code=401,
         )
-    except Exception as e:
+    except Exception:
         logger.exception("Unexpected error during OAuth callback")
         return _gui_error_page(
             request=request,
@@ -553,7 +564,9 @@ def gui_home(request: Request) -> Response:
     user = _gui_get_user(request)
     if not user:
         clear = bool(str(request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or "").strip())
-        return _gui_redirect_to_login(request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear)
+        return _gui_redirect_to_login(
+            request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear
+        )
 
     db = _get_db()
 
@@ -568,7 +581,8 @@ def gui_home(request: Request) -> Response:
     remotes = []
     remotes_online = 0
     try:
-        rows = db.query("""
+        rows = db.query(
+            """
             SELECT d.device_id as remote_id, d.name,
                    d.metadata->>'address' as address,
                    d.metadata->>'connection_type' as connection_type,
@@ -586,7 +600,9 @@ def gui_home(request: Request) -> Response:
               AND (d.metadata->>'is_remote')::boolean = true
             ORDER BY d.last_heartbeat_at DESC NULLS LAST, d.name ASC
             LIMIT 10
-        """, {"user_id": str(user.user_id)})
+        """,
+            {"user_id": str(user.user_id)},
+        )
         for row in rows:
             remote = {
                 "remote_id": str(row.get("remote_id", "")),
@@ -604,11 +620,14 @@ def gui_home(request: Request) -> Response:
     # Get pending actions count
     pending_actions = 0
     try:
-        rows = db.query("""
+        rows = db.query(
+            """
             SELECT COUNT(*) as cnt FROM actions a
             INNER JOIN agent_memberships m ON a.agent_id = m.agent_id
             WHERE m.user_id = :user_id AND m.revoked_at IS NULL AND a.status = 'proposed'
-        """, {"user_id": str(user.user_id)})
+        """,
+            {"user_id": str(user.user_id)},
+        )
         if rows:
             pending_actions = rows[0].get("cnt", 0) or 0
     except Exception as e:
@@ -625,19 +644,23 @@ def gui_home(request: Request) -> Response:
         for a in agents
     ]
 
-    return templates.TemplateResponse(request, "home.html", {
-        "user": {"email": user.email, "user_id": str(user.user_id)},
-        "stage": _cfg.stage,
-        "active_page": "home",
-        "agents": agents_data,
-        "agents_count": len(agents_data),
-        "spaces_count": len(spaces),
-        "remotes": remotes,
-        "remotes_online": remotes_online,
-        "remotes_total": len(remotes),
-        "pending_actions": pending_actions,
-        **_get_ws_context(request),
-    })
+    return templates.TemplateResponse(
+        request,
+        "home.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "home",
+            "agents": agents_data,
+            "agents_count": len(agents_data),
+            "spaces_count": len(spaces),
+            "remotes": remotes,
+            "remotes_online": remotes_online,
+            "remotes_total": len(remotes),
+            "pending_actions": pending_actions,
+            **_get_ws_context(request),
+        },
+    )
 
 
 @app.get("/remotes", name="gui_remotes")
@@ -652,7 +675,8 @@ def gui_remotes(request: Request) -> Response:
     # Get all remotes for user's agents (devices with is_remote = true)
     remotes = []
     try:
-        rows = db.query("""
+        rows = db.query(
+            """
             SELECT d.device_id as remote_id, d.name,
                    d.metadata->>'address' as address,
                    d.metadata->>'connection_type' as connection_type,
@@ -671,13 +695,16 @@ def gui_remotes(request: Request) -> Response:
               AND d.revoked_at IS NULL
               AND (d.metadata->>'is_remote')::boolean = true
             ORDER BY d.last_heartbeat_at DESC NULLS LAST, d.name ASC
-        """, {"user_id": str(user.user_id)})
+        """,
+            {"user_id": str(user.user_id)},
+        )
         for row in rows:
             # Parse capabilities JSON if present
             caps = row.get("capabilities") or []
             if isinstance(caps, str):
                 try:
                     import json
+
                     caps = json.loads(caps)
                 except Exception:
                     caps = []
@@ -690,6 +717,7 @@ def gui_remotes(request: Request) -> Response:
             if last_seen:
                 try:
                     from datetime import datetime, timezone
+
                     if isinstance(last_seen, str):
                         last_seen = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
                     now = datetime.now(timezone.utc)
@@ -705,17 +733,19 @@ def gui_remotes(request: Request) -> Response:
                 except Exception:
                     last_seen_relative = str(last_seen)
 
-            remotes.append({
-                "remote_id": str(row.get("remote_id", "")),
-                "name": row.get("name", "Unknown"),
-                "address": row.get("address") or "",
-                "connection_type": row.get("connection_type") or "network",
-                "capabilities": caps,
-                "status": row.get("status") or "offline",
-                "last_seen": str(last_seen) if last_seen else None,
-                "last_seen_relative": last_seen_relative,
-                "agent_name": row.get("agent_name", ""),
-            })
+            remotes.append(
+                {
+                    "remote_id": str(row.get("remote_id", "")),
+                    "name": row.get("name", "Unknown"),
+                    "address": row.get("address") or "",
+                    "connection_type": row.get("connection_type") or "network",
+                    "capabilities": caps,
+                    "status": row.get("status") or "offline",
+                    "last_seen": str(last_seen) if last_seen else None,
+                    "last_seen_relative": last_seen_relative,
+                    "agent_name": row.get("agent_name", ""),
+                }
+            )
     except Exception as e:
         logger.warning(f"Failed to fetch remotes: {e}")
 
@@ -728,18 +758,22 @@ def gui_remotes(request: Request) -> Response:
     hibernate_count = sum(1 for r in remotes if r["status"] == "hibernate")
     offline_count = sum(1 for r in remotes if r["status"] == "offline")
 
-    return templates.TemplateResponse(request, "remotes.html", {
-        "user": {"email": user.email, "user_id": str(user.user_id)},
-        "stage": _cfg.stage,
-        "active_page": "remotes",
-        "remotes": remotes,
-        "agents": agents_data,
-        "online_count": online_count,
-        "hibernate_count": hibernate_count,
-        "offline_count": offline_count,
-        "total_count": len(remotes),
-        **_get_ws_context(request),
-    })
+    return templates.TemplateResponse(
+        request,
+        "remotes.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "remotes",
+            "remotes": remotes,
+            "agents": agents_data,
+            "online_count": online_count,
+            "hibernate_count": hibernate_count,
+            "offline_count": offline_count,
+            "total_count": len(remotes),
+            **_get_ws_context(request),
+        },
+    )
 
 
 # -----------------------------
@@ -797,17 +831,20 @@ def api_create_remote(request: Request, body: RemoteCreate) -> RemoteResponse:
     scopes = ["events:write", "presence:write", "memories:read"]
 
     try:
-        db.execute("""
+        db.execute(
+            """
             INSERT INTO devices (device_id, agent_id, name, token_hash, metadata, scopes, capabilities)
             VALUES (:device_id::uuid, :agent_id::uuid, :name, :token_hash, :metadata::jsonb, :scopes::jsonb, '{}'::jsonb)
-        """, {
-            "device_id": device_id,
-            "agent_id": body.agent_id,
-            "name": body.name,
-            "token_hash": token_hash_val,
-            "metadata": json.dumps(metadata),
-            "scopes": json.dumps(scopes),
-        })
+        """,
+            {
+                "device_id": device_id,
+                "agent_id": body.agent_id,
+                "name": body.name,
+                "token_hash": token_hash_val,
+                "metadata": json.dumps(metadata),
+                "scopes": json.dumps(scopes),
+            },
+        )
     except Exception as e:
         logger.error(f"Failed to create remote device: {e}")
         raise HTTPException(status_code=500, detail="Failed to create remote")
@@ -859,9 +896,7 @@ def _ping_remote_address(address: str, connection_type: str, timeout: float = 2.
         # Fall back to ICMP ping
         try:
             result = subprocess.run(
-                ["ping", "-c", "1", "-W", str(int(timeout)), host],
-                capture_output=True,
-                timeout=timeout + 1
+                ["ping", "-c", "1", "-W", str(int(timeout)), host], capture_output=True, timeout=timeout + 1
             )
             if result.returncode == 0:
                 return True, "online"
@@ -874,6 +909,7 @@ def _ping_remote_address(address: str, connection_type: str, timeout: float = 2.
         # USB devices - check if device path exists
         # Address should be a device path like /dev/video0
         import os
+
         if address.startswith("/dev/") and os.path.exists(address):
             return True, "online"
         return False, "offline"
@@ -897,7 +933,8 @@ def api_ping_remote(request: Request, remote_id: str) -> dict:
     db = _get_db()
 
     # Get the remote device and check permission
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT d.device_id as remote_id, d.agent_id,
                d.metadata->>'address' as address,
                d.metadata->>'connection_type' as connection_type,
@@ -913,13 +950,16 @@ def api_ping_remote(request: Request, remote_id: str) -> dict:
           AND m.revoked_at IS NULL
           AND d.revoked_at IS NULL
           AND (d.metadata->>'is_remote')::boolean = true
-    """, {"remote_id": remote_id, "user_id": str(user.user_id)})
+    """,
+        {"remote_id": remote_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Remote not found")
 
     remote = rows[0]
     from datetime import datetime, timezone
+
     now = datetime.now(timezone.utc)
 
     # Actually ping the remote based on connection_type
@@ -930,9 +970,12 @@ def api_ping_remote(request: Request, remote_id: str) -> dict:
     # Update last_seen timestamp if online (heartbeat is managed by the device itself)
     try:
         if is_online:
-            db.execute("""
+            db.execute(
+                """
                 UPDATE devices SET last_seen = :now WHERE device_id = :device_id::uuid
-            """, {"device_id": remote_id, "now": now.isoformat()})
+            """,
+                {"device_id": remote_id, "now": now.isoformat()},
+            )
     except Exception as e:
         logger.warning(f"Failed to update remote status: {e}")
 
@@ -954,7 +997,8 @@ def api_remotes_status(request: Request) -> dict:
     db = _get_db()
 
     # Get all remote devices for user
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT d.device_id as remote_id, d.name,
                CASE
                    WHEN d.last_heartbeat_at > now() - interval '60 seconds' THEN 'online'
@@ -968,17 +1012,21 @@ def api_remotes_status(request: Request) -> dict:
           AND m.revoked_at IS NULL
           AND d.revoked_at IS NULL
           AND (d.metadata->>'is_remote')::boolean = true
-    """, {"user_id": str(user.user_id)})
+    """,
+        {"user_id": str(user.user_id)},
+    )
 
     remotes = []
     for row in rows:
-        remotes.append({
-            "remote_id": str(row["remote_id"]),
-            "name": row["name"],
-            "status": row["status"] or "offline",
-            "last_ping": row["last_ping"].isoformat() if row.get("last_ping") else None,
-            "last_seen": row["last_seen"].isoformat() if row.get("last_seen") else None,
-        })
+        remotes.append(
+            {
+                "remote_id": str(row["remote_id"]),
+                "name": row["name"],
+                "status": row["status"] or "offline",
+                "last_ping": row["last_ping"].isoformat() if row.get("last_ping") else None,
+                "last_seen": row["last_seen"].isoformat() if row.get("last_seen") else None,
+            }
+        )
 
     return {
         "remotes": remotes,
@@ -999,7 +1047,8 @@ def api_delete_remote(request: Request, remote_id: str) -> dict:
     db = _get_db()
 
     # Get the remote device and check permission (require admin)
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT d.device_id as remote_id, d.agent_id
         FROM devices d
         INNER JOIN agent_memberships m ON d.agent_id = m.agent_id
@@ -1009,16 +1058,21 @@ def api_delete_remote(request: Request, remote_id: str) -> dict:
           AND m.revoked_at IS NULL
           AND d.revoked_at IS NULL
           AND (d.metadata->>'is_remote')::boolean = true
-    """, {"remote_id": remote_id, "user_id": str(user.user_id)})
+    """,
+        {"remote_id": remote_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Remote not found or permission denied")
 
     try:
         # Soft-delete by setting revoked_at
-        db.execute("""
+        db.execute(
+            """
             UPDATE devices SET revoked_at = now() WHERE device_id = :device_id::uuid
-        """, {"device_id": remote_id})
+        """,
+            {"device_id": remote_id},
+        )
     except Exception as e:
         logger.error(f"Failed to delete remote: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete remote")
@@ -1041,7 +1095,8 @@ def api_update_remote(request: Request, remote_id: str, body: RemoteUpdate) -> d
     db = _get_db()
 
     # Check user has admin permission on the remote's agent
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT d.device_id, d.name, d.metadata::TEXT as metadata
         FROM devices d
         INNER JOIN agent_memberships m ON d.agent_id = m.agent_id
@@ -1051,7 +1106,9 @@ def api_update_remote(request: Request, remote_id: str, body: RemoteUpdate) -> d
           AND m.revoked_at IS NULL
           AND d.revoked_at IS NULL
           AND (d.metadata->>'is_remote')::boolean = true
-    """, {"remote_id": remote_id, "user_id": str(user.user_id)})
+    """,
+        {"remote_id": remote_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Remote not found or permission denied")
@@ -1084,9 +1141,12 @@ def api_update_remote(request: Request, remote_id: str, body: RemoteUpdate) -> d
         raise HTTPException(status_code=400, detail="No fields to update")
 
     try:
-        db.execute(f"""
-            UPDATE devices SET {', '.join(updates)} WHERE device_id = :remote_id::uuid
-        """, params)
+        db.execute(
+            f"""
+            UPDATE devices SET {", ".join(updates)} WHERE device_id = :remote_id::uuid
+        """,
+            params,
+        )
     except Exception as e:
         logger.error(f"Failed to update remote: {e}")
         raise HTTPException(status_code=500, detail="Failed to update remote")
@@ -1103,7 +1163,8 @@ def api_get_remote(request: Request, remote_id: str) -> dict:
 
     db = _get_db()
 
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT d.device_id::TEXT as remote_id, d.agent_id::TEXT as agent_id,
                d.name, d.status, d.metadata::TEXT as metadata,
                d.created_at::TEXT as created_at, d.last_seen_at::TEXT as last_seen_at,
@@ -1117,7 +1178,9 @@ def api_get_remote(request: Request, remote_id: str) -> dict:
           AND m.revoked_at IS NULL
           AND d.revoked_at IS NULL
           AND (d.metadata->>'is_remote')::boolean = true
-    """, {"remote_id": remote_id, "user_id": str(user.user_id)})
+    """,
+        {"remote_id": remote_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Remote not found or permission denied")
@@ -1150,6 +1213,7 @@ def api_get_remote(request: Request, remote_id: str) -> dict:
 
 class SpaceCreate(BaseModel):
     """Request body for creating a space."""
+
     agent_id: str = Field(..., description="ID of the agent that owns this space")
     name: str = Field(..., description="Name of the space")
     privacy_mode: bool = Field(False, description="Whether privacy mode is enabled")
@@ -1157,6 +1221,7 @@ class SpaceCreate(BaseModel):
 
 class SpaceResponse(BaseModel):
     """Response body for space operations."""
+
     space_id: str
     agent_id: str
     name: str
@@ -1179,15 +1244,18 @@ def api_create_space(request: Request, body: SpaceCreate) -> SpaceResponse:
     # Create the space
     space_id = str(uuid.uuid4())
     try:
-        db.execute("""
+        db.execute(
+            """
             INSERT INTO spaces (space_id, agent_id, name, privacy_mode)
             VALUES (:space_id::uuid, :agent_id::uuid, :name, :privacy_mode)
-        """, {
-            "space_id": space_id,
-            "agent_id": body.agent_id,
-            "name": body.name,
-            "privacy_mode": body.privacy_mode,
-        })
+        """,
+            {
+                "space_id": space_id,
+                "agent_id": body.agent_id,
+                "name": body.name,
+                "privacy_mode": body.privacy_mode,
+            },
+        )
     except Exception as e:
         logger.error(f"Failed to create space: {e}")
         raise HTTPException(status_code=500, detail="Failed to create space")
@@ -1210,7 +1278,8 @@ def api_delete_space(request: Request, space_id: str) -> dict:
     db = _get_db()
 
     # Get the space and check permission (require admin/owner on the agent)
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT s.space_id, s.agent_id, s.name
         FROM spaces s
         INNER JOIN agent_memberships m ON s.agent_id = m.agent_id
@@ -1218,7 +1287,9 @@ def api_delete_space(request: Request, space_id: str) -> dict:
           AND m.user_id = :user_id::uuid
           AND m.role IN ('admin', 'owner')
           AND m.revoked_at IS NULL
-    """, {"space_id": space_id, "user_id": str(user.user_id)})
+    """,
+        {"space_id": space_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Space not found or permission denied")
@@ -1226,9 +1297,12 @@ def api_delete_space(request: Request, space_id: str) -> dict:
     space_name = rows[0].get("name", "")
 
     try:
-        db.execute("""
+        db.execute(
+            """
             DELETE FROM spaces WHERE space_id = :space_id::uuid
-        """, {"space_id": space_id})
+        """,
+            {"space_id": space_id},
+        )
     except Exception as e:
         logger.error(f"Failed to delete space: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete space")
@@ -1251,7 +1325,8 @@ def api_update_space(request: Request, space_id: str, body: SpaceUpdate) -> dict
     db = _get_db()
 
     # Check user has admin permission on the space's agent
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT s.space_id, s.name, s.privacy_mode
         FROM spaces s
         INNER JOIN agent_memberships m ON s.agent_id = m.agent_id
@@ -1259,7 +1334,9 @@ def api_update_space(request: Request, space_id: str, body: SpaceUpdate) -> dict
           AND m.user_id = :user_id::uuid
           AND m.role IN ('admin', 'owner')
           AND m.revoked_at IS NULL
-    """, {"space_id": space_id, "user_id": str(user.user_id)})
+    """,
+        {"space_id": space_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Space not found or permission denied")
@@ -1282,9 +1359,12 @@ def api_update_space(request: Request, space_id: str, body: SpaceUpdate) -> dict
         raise HTTPException(status_code=400, detail="No fields to update")
 
     try:
-        db.execute(f"""
-            UPDATE spaces SET {', '.join(updates)} WHERE space_id = :space_id::uuid
-        """, params)
+        db.execute(
+            f"""
+            UPDATE spaces SET {", ".join(updates)} WHERE space_id = :space_id::uuid
+        """,
+            params,
+        )
     except Exception as e:
         logger.error(f"Failed to update space: {e}")
         raise HTTPException(status_code=500, detail="Failed to update space")
@@ -1301,7 +1381,8 @@ def api_get_space(request: Request, space_id: str) -> dict:
 
     db = _get_db()
 
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT s.space_id::TEXT as space_id, s.agent_id::TEXT as agent_id,
                s.name, s.privacy_mode, s.created_at::TEXT as created_at,
                a.name as agent_name
@@ -1312,7 +1393,9 @@ def api_get_space(request: Request, space_id: str) -> dict:
           AND m.user_id = :user_id::uuid
           AND m.role IN ('member', 'admin', 'owner')
           AND m.revoked_at IS NULL
-    """, {"space_id": space_id, "user_id": str(user.user_id)})
+    """,
+        {"space_id": space_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Space not found or permission denied")
@@ -1335,6 +1418,7 @@ def api_get_space(request: Request, space_id: str) -> dict:
 
 class DeviceCreate(BaseModel):
     """Request body for registering a device."""
+
     agent_id: str = Field(..., description="ID of the agent this device belongs to")
     name: str = Field(..., description="Name of the device")
     scopes: list[str] = Field(default_factory=list, description="Scopes assigned to the device")
@@ -1342,6 +1426,7 @@ class DeviceCreate(BaseModel):
 
 class DeviceResponse(BaseModel):
     """Response body for device registration."""
+
     device_id: str
     agent_id: str
     name: str
@@ -1364,6 +1449,7 @@ def api_create_device(request: Request, body: DeviceCreate) -> DeviceResponse:
 
     # Generate device token and hash it
     import hashlib
+
     device_token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(device_token.encode()).hexdigest()
 
@@ -1371,16 +1457,20 @@ def api_create_device(request: Request, body: DeviceCreate) -> DeviceResponse:
     device_id = str(uuid.uuid4())
     try:
         import json
-        db.execute("""
+
+        db.execute(
+            """
             INSERT INTO devices (device_id, agent_id, name, scopes, token_hash)
             VALUES (:device_id::uuid, :agent_id::uuid, :name, :scopes::jsonb, :token_hash)
-        """, {
-            "device_id": device_id,
-            "agent_id": body.agent_id,
-            "name": body.name,
-            "scopes": json.dumps(body.scopes),
-            "token_hash": token_hash,
-        })
+        """,
+            {
+                "device_id": device_id,
+                "agent_id": body.agent_id,
+                "name": body.name,
+                "scopes": json.dumps(body.scopes),
+                "token_hash": token_hash,
+            },
+        )
     except Exception as e:
         logger.error(f"Failed to register device: {e}")
         raise HTTPException(status_code=500, detail="Failed to register device")
@@ -1404,20 +1494,26 @@ def api_revoke_device(request: Request, device_id: str) -> dict:
     db = _get_db()
 
     # Get the device and check permission (require admin)
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT d.device_id, d.agent_id
         FROM devices d
         INNER JOIN agent_memberships m ON d.agent_id = m.agent_id
         WHERE d.device_id = :device_id::uuid AND m.user_id = :user_id::uuid AND m.role IN ('admin', 'owner') AND m.revoked_at IS NULL
-    """, {"device_id": device_id, "user_id": str(user.user_id)})
+    """,
+        {"device_id": device_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Device not found or permission denied")
 
     try:
-        db.execute("""
+        db.execute(
+            """
             UPDATE devices SET revoked_at = NOW() WHERE device_id = :device_id::uuid
-        """, {"device_id": device_id})
+        """,
+            {"device_id": device_id},
+        )
     except Exception as e:
         logger.error(f"Failed to revoke device: {e}")
         raise HTTPException(status_code=500, detail="Failed to revoke device")
@@ -1435,20 +1531,26 @@ def api_delete_device(request: Request, device_id: str) -> dict:
     db = _get_db()
 
     # Get the device and check permission (require admin/owner)
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT d.device_id, d.agent_id
         FROM devices d
         INNER JOIN agent_memberships m ON d.agent_id = m.agent_id
         WHERE d.device_id = :device_id::uuid AND m.user_id = :user_id::uuid AND m.role IN ('admin', 'owner') AND m.revoked_at IS NULL
-    """, {"device_id": device_id, "user_id": str(user.user_id)})
+    """,
+        {"device_id": device_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Device not found or permission denied")
 
     try:
-        db.execute("""
+        db.execute(
+            """
             DELETE FROM devices WHERE device_id = :device_id::uuid
-        """, {"device_id": device_id})
+        """,
+            {"device_id": device_id},
+        )
     except Exception as e:
         logger.error(f"Failed to delete device: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete device")
@@ -1463,12 +1565,14 @@ def api_delete_device(request: Request, device_id: str) -> dict:
 
 class AgentCreate(BaseModel):
     """Request body for creating an agent."""
+
     name: str = Field(..., min_length=1, max_length=255, description="Name of the agent")
     relationship_label: str | None = Field(None, max_length=255, description="Optional label for the relationship")
 
 
 class AgentResponse(BaseModel):
     """Response body for agent creation."""
+
     agent_id: str
     name: str
     role: str
@@ -1515,9 +1619,13 @@ def api_create_agent(request: Request, body: AgentCreate) -> AgentResponse:
     # Add audit log entry if audit bucket is configured
     if _cfg.audit_bucket:
         from agent_hub.audit import append_audit_entry
+
         append_audit_entry(
-            db, bucket=_cfg.audit_bucket, agent_id=agent_id,
-            entry_type="agent_created", entry={"user_id": user.user_id, "name": body.name},
+            db,
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
+            entry_type="agent_created",
+            entry={"user_id": user.user_id, "name": body.name},
         )
 
     return AgentResponse(
@@ -1565,9 +1673,12 @@ def api_update_agent(request: Request, agent_id: str, body: AgentUpdate) -> dict
         raise HTTPException(status_code=400, detail="No fields to update")
 
     try:
-        db.execute(f"""
-            UPDATE agents SET {', '.join(updates)} WHERE agent_id = :agent_id::uuid
-        """, params)
+        db.execute(
+            f"""
+            UPDATE agents SET {", ".join(updates)} WHERE agent_id = :agent_id::uuid
+        """,
+            params,
+        )
     except Exception as e:
         logger.error(f"Failed to update agent: {e}")
         raise HTTPException(status_code=500, detail="Failed to update agent")
@@ -1584,7 +1695,8 @@ def api_get_agent(request: Request, agent_id: str) -> dict:
 
     db = _get_db()
 
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT a.agent_id::TEXT as agent_id, a.name, a.disabled,
                a.created_at::TEXT as created_at,
                mb.role, mb.relationship_label
@@ -1594,7 +1706,9 @@ def api_get_agent(request: Request, agent_id: str) -> dict:
           AND mb.user_id = :user_id::uuid
           AND mb.role IN ('member', 'admin', 'owner')
           AND mb.revoked_at IS NULL
-    """, {"agent_id": agent_id, "user_id": str(user.user_id)})
+    """,
+        {"agent_id": agent_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Agent not found or permission denied")
@@ -1612,6 +1726,7 @@ def api_get_agent(request: Request, agent_id: str) -> dict:
 
 # ----- Membership Management API Endpoints -----
 
+
 @app.get("/api/cognito/users", name="api_list_cognito_users")
 def api_list_cognito_users(request: Request) -> list[dict]:
     """List all users in the Cognito user pool (for member selection)."""
@@ -1623,6 +1738,7 @@ def api_list_cognito_users(request: Request) -> list[dict]:
         raise HTTPException(status_code=500, detail="Cognito not configured")
 
     import boto3
+
     client = boto3.client("cognito-idp")
     users = []
     paginator = client.get_paginator("list_users")
@@ -1631,11 +1747,13 @@ def api_list_cognito_users(request: Request) -> list[dict]:
             attrs = {a["Name"]: a["Value"] for a in u.get("Attributes", [])}
             email = attrs.get("email", u.get("Username", ""))
             if email:
-                users.append({
-                    "email": email,
-                    "status": u.get("UserStatus", "UNKNOWN"),
-                    "enabled": u.get("Enabled", False),
-                })
+                users.append(
+                    {
+                        "email": email,
+                        "status": u.get("UserStatus", "UNKNOWN"),
+                        "enabled": u.get("Enabled", False),
+                    }
+                )
     return users
 
 
@@ -1675,11 +1793,11 @@ def api_add_member(request: Request, agent_id: str, body: MemberAdd) -> MemberRe
         cognito_sub, resolved_email = lookup_cognito_user_by_email(
             user_pool_id=_cfg.cognito_user_pool_id, email=body.email
         )
-    except LookupError as e:
+    except LookupError:
         # Provide a more helpful error message
         raise HTTPException(
             status_code=404,
-            detail=f"User '{body.email}' not found in Cognito. They must have a Cognito account before being added as a member. Use 'marvain cognito create-user' to create one."
+            detail=f"User '{body.email}' not found in Cognito. They must have a Cognito account before being added as a member. Use 'marvain cognito create-user' to create one.",
         )
 
     # Ensure user exists in local DB
@@ -1687,18 +1805,25 @@ def api_add_member(request: Request, agent_id: str, body: MemberAdd) -> MemberRe
 
     try:
         grant_membership(
-            db, agent_id=agent_id, user_id=target_user_id,
-            role=body.role, relationship_label=body.relationship_label
+            db, agent_id=agent_id, user_id=target_user_id, role=body.role, relationship_label=body.relationship_label
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     if _cfg.audit_bucket:
         from agent_hub.audit import append_audit_entry
+
         append_audit_entry(
-            db, bucket=_cfg.audit_bucket, agent_id=agent_id,
+            db,
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
             entry_type="member_granted",
-            entry={"by_user_id": user.user_id, "user_id": target_user_id, "email": resolved_email or body.email, "role": body.role},
+            entry={
+                "by_user_id": user.user_id,
+                "user_id": target_user_id,
+                "email": resolved_email or body.email,
+                "role": body.role,
+            },
         )
 
     return MemberResponse(user_id=target_user_id, email=resolved_email or body.email, role=body.role)
@@ -1717,16 +1842,18 @@ def api_update_member(request: Request, agent_id: str, member_user_id: str, body
 
     try:
         update_membership(
-            db, agent_id=agent_id, user_id=member_user_id,
-            role=body.role, relationship_label=body.relationship_label
+            db, agent_id=agent_id, user_id=member_user_id, role=body.role, relationship_label=body.relationship_label
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     if _cfg.audit_bucket:
         from agent_hub.audit import append_audit_entry
+
         append_audit_entry(
-            db, bucket=_cfg.audit_bucket, agent_id=agent_id,
+            db,
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
             entry_type="member_updated",
             entry={"by_user_id": user.user_id, "user_id": member_user_id, "role": body.role},
         )
@@ -1749,8 +1876,11 @@ def api_delete_member(request: Request, agent_id: str, member_user_id: str) -> d
 
     if _cfg.audit_bucket:
         from agent_hub.audit import append_audit_entry
+
         append_audit_entry(
-            db, bucket=_cfg.audit_bucket, agent_id=agent_id,
+            db,
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
             entry_type="member_revoked",
             entry={"by_user_id": user.user_id, "user_id": member_user_id},
         )
@@ -1771,30 +1901,36 @@ def gui_agents(request: Request) -> Response:
     # Build agent data list
     agents_data = []
     for agent in agents:
-        agents_data.append({
-            "agent_id": str(agent.agent_id),
-            "name": agent.name,
-            "role": agent.role,
-            "relationship_label": agent.relationship_label,
-            "disabled": agent.disabled,
-        })
+        agents_data.append(
+            {
+                "agent_id": str(agent.agent_id),
+                "name": agent.name,
+                "role": agent.role,
+                "relationship_label": agent.relationship_label,
+                "disabled": agent.disabled,
+            }
+        )
 
     # Count by role
     owner_count = sum(1 for a in agents_data if a["role"] == "owner")
     admin_count = sum(1 for a in agents_data if a["role"] == "admin")
     member_count = sum(1 for a in agents_data if a["role"] == "member")
 
-    return templates.TemplateResponse(request, "agents.html", {
-        "user": {"email": user.email, "user_id": str(user.user_id)},
-        "stage": _cfg.stage,
-        "active_page": "agents",
-        "agents": agents_data,
-        "owner_count": owner_count,
-        "admin_count": admin_count,
-        "member_count": member_count,
-        "total_count": len(agents_data),
-        **_get_ws_context(request),
-    })
+    return templates.TemplateResponse(
+        request,
+        "agents.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "agents",
+            "agents": agents_data,
+            "owner_count": owner_count,
+            "admin_count": admin_count,
+            "member_count": member_count,
+            "total_count": len(agents_data),
+            **_get_ws_context(request),
+        },
+    )
 
 
 @app.get("/spaces", name="gui_spaces")
@@ -1835,6 +1971,7 @@ def gui_spaces(request: Request) -> Response:
         if created_at:
             try:
                 from datetime import datetime, timezone
+
                 if hasattr(created_at, "tzinfo"):
                     now = datetime.now(timezone.utc)
                     delta = now - created_at
@@ -1851,29 +1988,32 @@ def gui_spaces(request: Request) -> Response:
         else:
             created_at_relative = None
 
-        spaces_data.append({
-            "space_id": space.space_id,
-            "name": space.name,
-            "agent_id": space.agent_id,
-            "agent_name": space.agent_name,
-            "privacy_mode": extra.get("privacy_mode", False),
-            "created_at_relative": created_at_relative,
-        })
+        spaces_data.append(
+            {
+                "space_id": space.space_id,
+                "name": space.name,
+                "agent_id": space.agent_id,
+                "agent_name": space.agent_name,
+                "privacy_mode": extra.get("privacy_mode", False),
+                "created_at_relative": created_at_relative,
+            }
+        )
 
     # Build agents data for dropdown
-    agents_data = [
-        {"agent_id": a.agent_id, "name": a.name, "role": a.role}
-        for a in agents
-    ]
+    agents_data = [{"agent_id": a.agent_id, "name": a.name, "role": a.role} for a in agents]
 
-    return templates.TemplateResponse(request, "spaces.html", {
-        "user": {"email": user.email, "user_id": str(user.user_id)},
-        "stage": _cfg.stage,
-        "active_page": "spaces",
-        "spaces": spaces_data,
-        "agents": agents_data,
-        **_get_ws_context(request),
-    })
+    return templates.TemplateResponse(
+        request,
+        "spaces.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "spaces",
+            "spaces": spaces_data,
+            "agents": agents_data,
+            **_get_ws_context(request),
+        },
+    )
 
 
 @app.get("/devices", name="gui_devices")
@@ -1907,6 +2047,7 @@ def gui_devices(request: Request) -> Response:
             if last_seen:
                 try:
                     from datetime import datetime, timezone
+
                     if hasattr(last_seen, "tzinfo"):
                         now = datetime.now(timezone.utc)
                         delta = now - last_seen
@@ -1926,35 +2067,39 @@ def gui_devices(request: Request) -> Response:
             scopes = row.get("scopes") or []
             if isinstance(scopes, str):
                 import json
+
                 try:
                     scopes = json.loads(scopes)
                 except Exception:
                     scopes = []
 
-            devices_data.append({
-                "device_id": str(row.get("device_id", "")),
-                "agent_id": str(row.get("agent_id", "")),
-                "agent_name": row.get("agent_name", ""),
-                "name": row.get("name") or "Unnamed Device",
-                "scopes": scopes,
-                "revoked": row.get("revoked_at") is not None,
-                "last_seen_relative": last_seen_relative,
-            })
+            devices_data.append(
+                {
+                    "device_id": str(row.get("device_id", "")),
+                    "agent_id": str(row.get("agent_id", "")),
+                    "agent_name": row.get("agent_name", ""),
+                    "name": row.get("name") or "Unnamed Device",
+                    "scopes": scopes,
+                    "revoked": row.get("revoked_at") is not None,
+                    "last_seen_relative": last_seen_relative,
+                }
+            )
 
     # Build agents data for dropdown
-    agents_data = [
-        {"agent_id": a.agent_id, "name": a.name, "role": a.role}
-        for a in agents
-    ]
+    agents_data = [{"agent_id": a.agent_id, "name": a.name, "role": a.role} for a in agents]
 
-    return templates.TemplateResponse(request, "devices.html", {
-        "user": {"email": user.email, "user_id": str(user.user_id)},
-        "stage": _cfg.stage,
-        "active_page": "devices",
-        "devices": devices_data,
-        "agents": agents_data,
-        **_get_ws_context(request),
-    })
+    return templates.TemplateResponse(
+        request,
+        "devices.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "devices",
+            "devices": devices_data,
+            "agents": agents_data,
+            **_get_ws_context(request),
+        },
+    )
 
 
 @app.get("/devices/{device_id}", name="gui_device_detail")
@@ -1967,7 +2112,8 @@ def gui_device_detail(request: Request, device_id: str) -> Response:
     db = _get_db()
 
     # Get device with permission check
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT d.device_id::TEXT, d.agent_id::TEXT, d.name, d.scopes,
                d.revoked_at, d.created_at, d.last_seen, d.last_heartbeat_at,
                a.name as agent_name,
@@ -1981,7 +2127,9 @@ def gui_device_detail(request: Request, device_id: str) -> Response:
         WHERE d.device_id = :device_id::uuid
           AND m.user_id = :user_id::uuid
           AND m.revoked_at IS NULL
-    """, {"device_id": device_id, "user_id": str(user.user_id)})
+    """,
+        {"device_id": device_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Device not found")
@@ -1992,6 +2140,7 @@ def gui_device_detail(request: Request, device_id: str) -> Response:
     scopes = row.get("scopes") or []
     if isinstance(scopes, str):
         import json as json_module
+
         try:
             scopes = json_module.loads(scopes)
         except Exception:
@@ -2018,13 +2167,17 @@ def gui_device_detail(request: Request, device_id: str) -> Response:
         "is_online": bool(row.get("is_online")),
     }
 
-    return templates.TemplateResponse(request, "device_detail.html", {
-        "user": {"email": user.email, "user_id": str(user.user_id)},
-        "stage": _cfg.stage,
-        "active_page": "devices",
-        "device": device_data,
-        **_get_ws_context(request),
-    })
+    return templates.TemplateResponse(
+        request,
+        "device_detail.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "devices",
+            "device": device_data,
+            **_get_ws_context(request),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2034,12 +2187,14 @@ def gui_device_detail(request: Request, device_id: str) -> Response:
 
 class PersonCreate(BaseModel):
     """Request body for creating a person."""
+
     agent_id: str = Field(..., description="ID of the agent this person belongs to")
     display_name: str = Field(..., description="Display name of the person")
 
 
 class PersonResponse(BaseModel):
     """Response body for person operations."""
+
     person_id: str
     agent_id: str
     display_name: str
@@ -2047,12 +2202,14 @@ class PersonResponse(BaseModel):
 
 class ConsentGrant(BaseModel):
     """A single consent grant."""
+
     type: str = Field(..., description="Type of consent: voice, face, or recording")
     expires_at: str | None = Field(None, description="Optional expiration date (ISO format)")
 
 
 class ConsentUpdate(BaseModel):
     """Request body for updating consents."""
+
     consents: list[ConsentGrant] = Field(default_factory=list, description="List of consent grants")
 
 
@@ -2071,14 +2228,17 @@ def api_create_person(request: Request, body: PersonCreate) -> PersonResponse:
 
     person_id = str(uuid.uuid4())
     try:
-        db.execute("""
+        db.execute(
+            """
             INSERT INTO people (person_id, agent_id, display_name)
             VALUES (:person_id::uuid, :agent_id::uuid, :display_name)
-        """, {
-            "person_id": person_id,
-            "agent_id": body.agent_id,
-            "display_name": body.display_name,
-        })
+        """,
+            {
+                "person_id": person_id,
+                "agent_id": body.agent_id,
+                "display_name": body.display_name,
+            },
+        )
     except Exception as e:
         logger.error(f"Failed to create person: {e}")
         raise HTTPException(status_code=500, detail="Failed to create person")
@@ -2100,12 +2260,15 @@ def api_update_consent(request: Request, person_id: str, body: ConsentUpdate) ->
     db = _get_db()
 
     # Get the person and check permission
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT p.person_id, p.agent_id
         FROM people p
         INNER JOIN agent_memberships m ON p.agent_id = m.agent_id
         WHERE p.person_id = :person_id::uuid AND m.user_id = :user_id::uuid AND m.role IN ('admin', 'owner') AND m.revoked_at IS NULL
-    """, {"person_id": person_id, "user_id": str(user.user_id)})
+    """,
+        {"person_id": person_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Person not found or permission denied")
@@ -2116,10 +2279,13 @@ def api_update_consent(request: Request, person_id: str, body: ConsentUpdate) ->
         from datetime import datetime, timezone
 
         # First, revoke all existing active consents for this person
-        db.execute("""
+        db.execute(
+            """
             UPDATE consent_grants SET revoked_at = :now
             WHERE person_id = :person_id::uuid AND revoked_at IS NULL
-        """, {"person_id": person_id, "now": datetime.now(timezone.utc)})
+        """,
+            {"person_id": person_id, "now": datetime.now(timezone.utc)},
+        )
 
         # Then create new consent grants
         for consent in body.consents:
@@ -2131,16 +2297,19 @@ def api_update_consent(request: Request, person_id: str, body: ConsentUpdate) ->
                 except Exception:
                     expires_at = None
 
-            db.execute("""
+            db.execute(
+                """
                 INSERT INTO consent_grants (consent_id, agent_id, person_id, consent_type, expires_at)
                 VALUES (:consent_id::uuid, :agent_id::uuid, :person_id::uuid, :consent_type, :expires_at)
-            """, {
-                "consent_id": consent_id,
-                "agent_id": agent_id,
-                "person_id": person_id,
-                "consent_type": consent.type,
-                "expires_at": expires_at,
-            })
+            """,
+                {
+                    "consent_id": consent_id,
+                    "agent_id": agent_id,
+                    "person_id": person_id,
+                    "consent_type": consent.type,
+                    "expires_at": expires_at,
+                },
+            )
 
     except Exception as e:
         logger.error(f"Failed to update consent: {e}")
@@ -2163,7 +2332,8 @@ def api_update_person(request: Request, person_id: str, body: PersonUpdate) -> d
     db = _get_db()
 
     # Check the person exists and user has admin permission on the agent
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT p.person_id, p.agent_id, p.display_name
         FROM people p
         INNER JOIN agent_memberships mb ON p.agent_id = mb.agent_id
@@ -2171,15 +2341,20 @@ def api_update_person(request: Request, person_id: str, body: PersonUpdate) -> d
           AND mb.user_id = :user_id::uuid
           AND mb.role IN ('admin', 'owner')
           AND mb.revoked_at IS NULL
-    """, {"person_id": person_id, "user_id": str(user.user_id)})
+    """,
+        {"person_id": person_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Person not found or permission denied")
 
     try:
-        db.execute("""
+        db.execute(
+            """
             UPDATE people SET display_name = :display_name WHERE person_id = :person_id::uuid
-        """, {"person_id": person_id, "display_name": body.display_name})
+        """,
+            {"person_id": person_id, "display_name": body.display_name},
+        )
     except Exception as e:
         logger.error(f"Failed to update person: {e}")
         raise HTTPException(status_code=500, detail="Failed to update person")
@@ -2196,7 +2371,8 @@ def api_get_person(request: Request, person_id: str) -> dict:
 
     db = _get_db()
 
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT p.person_id::TEXT as person_id, p.agent_id::TEXT as agent_id,
                p.display_name, p.created_at::TEXT as created_at, a.name as agent_name
         FROM people p
@@ -2206,7 +2382,9 @@ def api_get_person(request: Request, person_id: str) -> dict:
           AND mb.user_id = :user_id::uuid
           AND mb.role IN ('member', 'admin', 'owner')
           AND mb.revoked_at IS NULL
-    """, {"person_id": person_id, "user_id": str(user.user_id)})
+    """,
+        {"person_id": person_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Person not found or permission denied")
@@ -2236,6 +2414,7 @@ def gui_people(request: Request) -> Response:
     people_data = []
     if agent_ids:
         from datetime import datetime, timezone
+
         placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
         params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
         rows = db.query(
@@ -2269,12 +2448,15 @@ def gui_people(request: Request) -> Response:
                     pass
 
             # Get active consents for this person
-            consent_rows = db.query("""
+            consent_rows = db.query(
+                """
                 SELECT consent_type, expires_at
                 FROM consent_grants
                 WHERE person_id = :person_id::uuid AND revoked_at IS NULL
                   AND (expires_at IS NULL OR expires_at > :now)
-            """, {"person_id": person_id, "now": datetime.now(timezone.utc)})
+            """,
+                {"person_id": person_id, "now": datetime.now(timezone.utc)},
+            )
 
             voice_consent = None
             face_consent = None
@@ -2290,31 +2472,34 @@ def gui_people(request: Request) -> Response:
                 elif ct == "recording":
                     recording_consent = exp_str
 
-            people_data.append({
-                "person_id": person_id,
-                "agent_id": str(row.get("agent_id", "")),
-                "agent_name": row.get("agent_name", ""),
-                "display_name": row.get("display_name", ""),
-                "created_at_relative": created_at_relative,
-                "voice_consent": voice_consent,
-                "face_consent": face_consent,
-                "recording_consent": recording_consent,
-                "active_consents": bool(voice_consent or face_consent or recording_consent),
-            })
+            people_data.append(
+                {
+                    "person_id": person_id,
+                    "agent_id": str(row.get("agent_id", "")),
+                    "agent_name": row.get("agent_name", ""),
+                    "display_name": row.get("display_name", ""),
+                    "created_at_relative": created_at_relative,
+                    "voice_consent": voice_consent,
+                    "face_consent": face_consent,
+                    "recording_consent": recording_consent,
+                    "active_consents": bool(voice_consent or face_consent or recording_consent),
+                }
+            )
 
-    agents_data = [
-        {"agent_id": a.agent_id, "name": a.name, "role": a.role}
-        for a in agents
-    ]
+    agents_data = [{"agent_id": a.agent_id, "name": a.name, "role": a.role} for a in agents]
 
-    return templates.TemplateResponse(request, "people.html", {
-        "user": {"email": user.email, "user_id": str(user.user_id)},
-        "stage": _cfg.stage,
-        "active_page": "people",
-        "people": people_data,
-        "agents": agents_data,
-        **_get_ws_context(request),
-    })
+    return templates.TemplateResponse(
+        request,
+        "people.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "people",
+            "people": people_data,
+            "agents": agents_data,
+            **_get_ws_context(request),
+        },
+    )
 
 
 @app.get("/actions", name="gui_actions")
@@ -2335,8 +2520,9 @@ def gui_actions(request: Request) -> Response:
     action_kinds_set: set = set()
 
     if agent_ids:
-        from datetime import datetime, timezone
         import json
+        from datetime import datetime, timezone
+
         placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
         params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
         rows = db.query(
@@ -2393,24 +2579,23 @@ def gui_actions(request: Request) -> Response:
                 except Exception:
                     required_scopes = []
 
-            actions_data.append({
-                "action_id": str(row.get("action_id", "")),
-                "agent_id": str(row.get("agent_id", "")),
-                "agent_name": row.get("agent_name", ""),
-                "space_id": str(row.get("space_id", "")) if row.get("space_id") else None,
-                "space_name": row.get("space_name"),
-                "kind": kind,
-                "status": status,
-                "payload_str": payload_str,
-                "payload_preview": payload_preview,
-                "required_scopes": required_scopes,
-                "created_at_relative": created_at_relative,
-            })
+            actions_data.append(
+                {
+                    "action_id": str(row.get("action_id", "")),
+                    "agent_id": str(row.get("agent_id", "")),
+                    "agent_name": row.get("agent_name", ""),
+                    "space_id": str(row.get("space_id", "")) if row.get("space_id") else None,
+                    "space_name": row.get("space_name"),
+                    "kind": kind,
+                    "status": status,
+                    "payload_str": payload_str,
+                    "payload_preview": payload_preview,
+                    "required_scopes": required_scopes,
+                    "created_at_relative": created_at_relative,
+                }
+            )
 
-    agents_data = [
-        {"agent_id": a.agent_id, "name": a.name, "role": a.role}
-        for a in agents
-    ]
+    agents_data = [{"agent_id": a.agent_id, "name": a.name, "role": a.role} for a in agents]
 
     # Build spaces by agent for the create modal
     spaces_by_agent: dict = {}
@@ -2418,22 +2603,28 @@ def gui_actions(request: Request) -> Response:
         agent_id = str(space.agent_id)
         if agent_id not in spaces_by_agent:
             spaces_by_agent[agent_id] = []
-        spaces_by_agent[agent_id].append({
-            "space_id": str(space.space_id),
-            "name": space.name,
-        })
+        spaces_by_agent[agent_id].append(
+            {
+                "space_id": str(space.space_id),
+                "name": space.name,
+            }
+        )
 
-    return templates.TemplateResponse(request, "actions.html", {
-        "user": {"email": user.email, "user_id": str(user.user_id)},
-        "stage": _cfg.stage,
-        "active_page": "actions",
-        "actions": actions_data,
-        "status_counts": status_counts,
-        "action_kinds": sorted(action_kinds_set),
-        "agents": agents_data,
-        "spaces_by_agent": spaces_by_agent,
-        **_get_ws_context(request),
-    })
+    return templates.TemplateResponse(
+        request,
+        "actions.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "actions",
+            "actions": actions_data,
+            "status_counts": status_counts,
+            "action_kinds": sorted(action_kinds_set),
+            "agents": agents_data,
+            "spaces_by_agent": spaces_by_agent,
+            **_get_ws_context(request),
+        },
+    )
 
 
 class ActionApproveReject(BaseModel):
@@ -2450,7 +2641,8 @@ def api_get_action(request: Request, action_id: str) -> dict:
     db = _get_db()
 
     # Get the action and check permission (member role sufficient for viewing)
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT ac.action_id::TEXT as action_id, ac.agent_id::TEXT as agent_id,
                ac.space_id::TEXT as space_id, ac.kind, ac.payload::TEXT as payload,
                ac.required_scopes::TEXT as required_scopes, ac.status,
@@ -2467,7 +2659,9 @@ def api_get_action(request: Request, action_id: str) -> dict:
           AND mb.user_id = :user_id::uuid
           AND mb.role IN ('member', 'admin', 'owner')
           AND mb.revoked_at IS NULL
-    """, {"action_id": action_id, "user_id": str(user.user_id)})
+    """,
+        {"action_id": action_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Action not found or permission denied")
@@ -2519,27 +2713,35 @@ def api_approve_action(request: Request, action_id: str) -> dict:
     db = _get_db()
 
     # Get the action and check permission (admin/owner only)
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT ac.action_id, ac.agent_id, ac.status
         FROM actions ac
         INNER JOIN agent_memberships mb ON ac.agent_id = mb.agent_id
         WHERE ac.action_id = :action_id::uuid AND mb.user_id = :user_id::uuid AND mb.role IN ('admin', 'owner') AND mb.revoked_at IS NULL
-    """, {"action_id": action_id, "user_id": str(user.user_id)})
+    """,
+        {"action_id": action_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Action not found or permission denied")
 
     action = rows[0]
     if action.get("status") != "proposed":
-        raise HTTPException(status_code=400, detail=f"Action is not in proposed status (current: {action.get('status')})")
+        raise HTTPException(
+            status_code=400, detail=f"Action is not in proposed status (current: {action.get('status')})"
+        )
 
     try:
-        db.execute("""
+        db.execute(
+            """
             UPDATE actions
             SET status = 'approved', updated_at = now(),
                 approved_by = :user_id::uuid, approved_at = now()
             WHERE action_id = :action_id::uuid
-        """, {"action_id": action_id, "user_id": str(user.user_id)})
+        """,
+            {"action_id": action_id, "user_id": str(user.user_id)},
+        )
     except Exception as e:
         logger.error(f"Failed to approve action: {e}")
         raise HTTPException(status_code=500, detail="Failed to approve action")
@@ -2557,24 +2759,32 @@ def api_reject_action(request: Request, action_id: str, body: ActionApproveRejec
     db = _get_db()
 
     # Get the action and check permission (admin/owner only)
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT ac.action_id, ac.agent_id, ac.status
         FROM actions ac
         INNER JOIN agent_memberships mb ON ac.agent_id = mb.agent_id
         WHERE ac.action_id = :action_id::uuid AND mb.user_id = :user_id::uuid AND mb.role IN ('admin', 'owner') AND mb.revoked_at IS NULL
-    """, {"action_id": action_id, "user_id": str(user.user_id)})
+    """,
+        {"action_id": action_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Action not found or permission denied")
 
     action = rows[0]
     if action.get("status") != "proposed":
-        raise HTTPException(status_code=400, detail=f"Action is not in proposed status (current: {action.get('status')})")
+        raise HTTPException(
+            status_code=400, detail=f"Action is not in proposed status (current: {action.get('status')})"
+        )
 
     try:
-        db.execute("""
+        db.execute(
+            """
             UPDATE actions SET status = 'rejected', updated_at = now() WHERE action_id = :action_id::uuid
-        """, {"action_id": action_id})
+        """,
+            {"action_id": action_id},
+        )
     except Exception as e:
         logger.error(f"Failed to reject action: {e}")
         raise HTTPException(status_code=500, detail="Failed to reject action")
@@ -2611,9 +2821,12 @@ def api_create_action(request: Request, body: ActionCreate) -> dict:
 
     # If space_id provided, verify it belongs to the agent
     if body.space_id:
-        space_rows = db.query("""
+        space_rows = db.query(
+            """
             SELECT space_id FROM spaces WHERE space_id = :space_id::uuid AND agent_id = :agent_id::uuid
-        """, {"space_id": body.space_id, "agent_id": body.agent_id})
+        """,
+            {"space_id": body.space_id, "agent_id": body.agent_id},
+        )
         if not space_rows:
             raise HTTPException(status_code=400, detail="Space not found or does not belong to agent")
 
@@ -2623,24 +2836,30 @@ def api_create_action(request: Request, body: ActionCreate) -> dict:
     status = "approved" if body.auto_approve else "proposed"
 
     try:
-        db.execute("""
+        db.execute(
+            """
             INSERT INTO actions (action_id, agent_id, space_id, kind, payload, required_scopes, status)
             VALUES (:action_id::uuid, :agent_id::uuid, :space_id::uuid, :kind, :payload::jsonb, :scopes::jsonb, :status)
-        """, {
-            "action_id": action_id,
-            "agent_id": body.agent_id,
-            "space_id": body.space_id,
-            "kind": body.kind,
-            "payload": json.dumps(body.payload),
-            "scopes": json.dumps(body.required_scopes),
-            "status": status,
-        })
+        """,
+            {
+                "action_id": action_id,
+                "agent_id": body.agent_id,
+                "space_id": body.space_id,
+                "kind": body.kind,
+                "payload": json.dumps(body.payload),
+                "scopes": json.dumps(body.required_scopes),
+                "status": status,
+            },
+        )
 
         # If auto-approved, update with approver info
         if body.auto_approve:
-            db.execute("""
+            db.execute(
+                """
                 UPDATE actions SET approved_by = :user_id::uuid, approved_at = now() WHERE action_id = :action_id::uuid
-            """, {"action_id": action_id, "user_id": str(user.user_id)})
+            """,
+                {"action_id": action_id, "user_id": str(user.user_id)},
+            )
 
     except Exception as e:
         logger.error(f"Failed to create action: {e}")
@@ -2663,7 +2882,8 @@ def api_get_event(request: Request, event_id: str) -> dict:
 
     db = _get_db()
 
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT e.event_id::TEXT as event_id, e.agent_id::TEXT as agent_id,
                e.space_id::TEXT as space_id, e.device_id::TEXT as device_id,
                e.person_id::TEXT as person_id, e.type, e.payload::TEXT as payload,
@@ -2680,7 +2900,9 @@ def api_get_event(request: Request, event_id: str) -> dict:
           AND mb.user_id = :user_id::uuid
           AND mb.role IN ('member', 'admin', 'owner')
           AND mb.revoked_at IS NULL
-    """, {"event_id": event_id, "user_id": str(user.user_id)})
+    """,
+        {"event_id": event_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Event not found or permission denied")
@@ -2726,8 +2948,8 @@ def gui_events(request: Request) -> Response:
     event_types_set: set = set()
 
     if agent_ids:
-        from datetime import datetime, timezone
         import json
+
         placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
         params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
         rows = db.query(
@@ -2782,40 +3004,40 @@ def gui_events(request: Request) -> Response:
             payload_str = json.dumps(payload) if payload else "{}"
             payload_preview = payload_str[:100] + ("..." if len(payload_str) > 100 else "")
 
-            events_data.append({
-                "event_id": str(row.get("event_id", "")),
-                "agent_id": str(row.get("agent_id", "")),
-                "agent_name": row.get("agent_name", ""),
-                "space_id": str(row.get("space_id", "")) if row.get("space_id") else None,
-                "space_name": row.get("space_name"),
-                "person_id": str(row.get("person_id", "")) if row.get("person_id") else None,
-                "person_name": row.get("person_name"),
-                "type": event_type,
-                "type_category": type_category,
-                "payload_str": payload_str,
-                "payload_preview": payload_preview,
-                "created_at_str": created_at_str,
-            })
+            events_data.append(
+                {
+                    "event_id": str(row.get("event_id", "")),
+                    "agent_id": str(row.get("agent_id", "")),
+                    "agent_name": row.get("agent_name", ""),
+                    "space_id": str(row.get("space_id", "")) if row.get("space_id") else None,
+                    "space_name": row.get("space_name"),
+                    "person_id": str(row.get("person_id", "")) if row.get("person_id") else None,
+                    "person_name": row.get("person_name"),
+                    "type": event_type,
+                    "type_category": type_category,
+                    "payload_str": payload_str,
+                    "payload_preview": payload_preview,
+                    "created_at_str": created_at_str,
+                }
+            )
 
-    agents_data = [
-        {"agent_id": a.agent_id, "name": a.name, "role": a.role}
-        for a in agents
-    ]
-    spaces_data = [
-        {"space_id": s.space_id, "name": s.name}
-        for s in spaces
-    ]
+    agents_data = [{"agent_id": a.agent_id, "name": a.name, "role": a.role} for a in agents]
+    spaces_data = [{"space_id": s.space_id, "name": s.name} for s in spaces]
 
-    return templates.TemplateResponse(request, "events.html", {
-        "user": {"email": user.email, "user_id": str(user.user_id)},
-        "stage": _cfg.stage,
-        "active_page": "events",
-        "events": events_data,
-        "event_types": sorted(event_types_set),
-        "agents": agents_data,
-        "spaces": spaces_data,
-        **_get_ws_context(request),
-    })
+    return templates.TemplateResponse(
+        request,
+        "events.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "events",
+            "events": events_data,
+            "event_types": sorted(event_types_set),
+            "agents": agents_data,
+            "spaces": spaces_data,
+            **_get_ws_context(request),
+        },
+    )
 
 
 @app.get("/memories", name="gui_memories")
@@ -2835,8 +3057,9 @@ def gui_memories(request: Request) -> Response:
     tier_counts = {"episodic": 0, "semantic": 0, "procedural": 0}
 
     if agent_ids:
-        from datetime import datetime, timezone
         import json
+        from datetime import datetime, timezone
+
         placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
         params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
         rows = db.query(
@@ -2888,38 +3111,38 @@ def gui_memories(request: Request) -> Response:
                 except Exception:
                     provenance = {}
 
-            memories_data.append({
-                "memory_id": str(row.get("memory_id", "")),
-                "agent_id": str(row.get("agent_id", "")),
-                "agent_name": row.get("agent_name", ""),
-                "space_id": str(row.get("space_id", "")) if row.get("space_id") else None,
-                "space_name": row.get("space_name"),
-                "tier": tier,
-                "content": row.get("content", ""),
-                "participants": participants,
-                "provenance_source": provenance.get("source", ""),
-                "created_at_relative": created_at_relative,
-            })
+            memories_data.append(
+                {
+                    "memory_id": str(row.get("memory_id", "")),
+                    "agent_id": str(row.get("agent_id", "")),
+                    "agent_name": row.get("agent_name", ""),
+                    "space_id": str(row.get("space_id", "")) if row.get("space_id") else None,
+                    "space_name": row.get("space_name"),
+                    "tier": tier,
+                    "content": row.get("content", ""),
+                    "participants": participants,
+                    "provenance_source": provenance.get("source", ""),
+                    "created_at_relative": created_at_relative,
+                }
+            )
 
-    agents_data = [
-        {"agent_id": a.agent_id, "name": a.name, "role": a.role}
-        for a in agents
-    ]
-    spaces_data = [
-        {"space_id": s.space_id, "name": s.name}
-        for s in spaces
-    ]
+    agents_data = [{"agent_id": a.agent_id, "name": a.name, "role": a.role} for a in agents]
+    spaces_data = [{"space_id": s.space_id, "name": s.name} for s in spaces]
 
-    return templates.TemplateResponse(request, "memories.html", {
-        "user": {"email": user.email, "user_id": str(user.user_id)},
-        "stage": _cfg.stage,
-        "active_page": "memories",
-        "memories": memories_data,
-        "tier_counts": tier_counts,
-        "agents": agents_data,
-        "spaces": spaces_data,
-        **_get_ws_context(request),
-    })
+    return templates.TemplateResponse(
+        request,
+        "memories.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "memories",
+            "memories": memories_data,
+            "tier_counts": tier_counts,
+            "agents": agents_data,
+            "spaces": spaces_data,
+            **_get_ws_context(request),
+        },
+    )
 
 
 @app.delete("/api/memories/{memory_id}", name="api_delete_memory")
@@ -2932,20 +3155,26 @@ def api_delete_memory(request: Request, memory_id: str) -> dict:
     db = _get_db()
 
     # Get the memory and check permission
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT m.memory_id, m.agent_id
         FROM memories m
         INNER JOIN agent_memberships mb ON m.agent_id = mb.agent_id
         WHERE m.memory_id = :memory_id::uuid AND mb.user_id = :user_id::uuid AND mb.role IN ('admin', 'owner') AND mb.revoked_at IS NULL
-    """, {"memory_id": memory_id, "user_id": str(user.user_id)})
+    """,
+        {"memory_id": memory_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Memory not found or permission denied")
 
     try:
-        db.execute("""
+        db.execute(
+            """
             DELETE FROM memories WHERE memory_id = :memory_id::uuid
-        """, {"memory_id": memory_id})
+        """,
+            {"memory_id": memory_id},
+        )
     except Exception as e:
         logger.error(f"Failed to delete memory: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete memory")
@@ -2963,7 +3192,8 @@ def api_get_memory(request: Request, memory_id: str) -> dict:
     db = _get_db()
 
     # Get the memory and check permission (member role sufficient for viewing)
-    rows = db.query("""
+    rows = db.query(
+        """
         SELECT m.memory_id::TEXT as memory_id, m.agent_id::TEXT as agent_id,
                m.space_id::TEXT as space_id, m.tier, m.content,
                m.participants::TEXT as participants,
@@ -2979,7 +3209,9 @@ def api_get_memory(request: Request, memory_id: str) -> dict:
           AND mb.user_id = :user_id::uuid
           AND mb.role IN ('member', 'admin', 'owner')
           AND mb.revoked_at IS NULL
-    """, {"memory_id": memory_id, "user_id": str(user.user_id)})
+    """,
+        {"memory_id": memory_id, "user_id": str(user.user_id)},
+    )
 
     if not rows:
         raise HTTPException(status_code=404, detail="Memory not found or permission denied")
@@ -3020,15 +3252,37 @@ def _get_file_icon(filename: str) -> str:
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     icon_map = {
         "pdf": "fa-file-pdf",
-        "doc": "fa-file-word", "docx": "fa-file-word",
-        "xls": "fa-file-excel", "xlsx": "fa-file-excel",
-        "ppt": "fa-file-powerpoint", "pptx": "fa-file-powerpoint",
-        "jpg": "fa-file-image", "jpeg": "fa-file-image", "png": "fa-file-image", "gif": "fa-file-image", "webp": "fa-file-image",
-        "mp3": "fa-file-audio", "wav": "fa-file-audio", "ogg": "fa-file-audio", "flac": "fa-file-audio",
-        "mp4": "fa-file-video", "webm": "fa-file-video", "mov": "fa-file-video", "avi": "fa-file-video",
-        "zip": "fa-file-archive", "tar": "fa-file-archive", "gz": "fa-file-archive", "rar": "fa-file-archive",
-        "txt": "fa-file-alt", "md": "fa-file-alt",
-        "py": "fa-file-code", "js": "fa-file-code", "ts": "fa-file-code", "html": "fa-file-code", "css": "fa-file-code", "json": "fa-file-code",
+        "doc": "fa-file-word",
+        "docx": "fa-file-word",
+        "xls": "fa-file-excel",
+        "xlsx": "fa-file-excel",
+        "ppt": "fa-file-powerpoint",
+        "pptx": "fa-file-powerpoint",
+        "jpg": "fa-file-image",
+        "jpeg": "fa-file-image",
+        "png": "fa-file-image",
+        "gif": "fa-file-image",
+        "webp": "fa-file-image",
+        "mp3": "fa-file-audio",
+        "wav": "fa-file-audio",
+        "ogg": "fa-file-audio",
+        "flac": "fa-file-audio",
+        "mp4": "fa-file-video",
+        "webm": "fa-file-video",
+        "mov": "fa-file-video",
+        "avi": "fa-file-video",
+        "zip": "fa-file-archive",
+        "tar": "fa-file-archive",
+        "gz": "fa-file-archive",
+        "rar": "fa-file-archive",
+        "txt": "fa-file-alt",
+        "md": "fa-file-alt",
+        "py": "fa-file-code",
+        "js": "fa-file-code",
+        "ts": "fa-file-code",
+        "html": "fa-file-code",
+        "css": "fa-file-code",
+        "json": "fa-file-code",
     }
     return icon_map.get(ext, "fa-file")
 
@@ -3062,6 +3316,7 @@ def gui_artifacts(request: Request) -> Response:
 
     if agent_ids and _cfg.artifact_bucket:
         from datetime import datetime, timezone
+
         s3 = _get_s3()
         agent_name_map = {a.agent_id: a.name for a in agents}
 
@@ -3101,37 +3356,40 @@ def gui_artifacts(request: Request) -> Response:
                             ExpiresIn=3600,
                         )
 
-                        artifacts_data.append({
-                            "key": key,
-                            "filename": filename,
-                            "agent_id": agent_id,
-                            "agent_name": agent_name_map.get(agent_id, "Unknown"),
-                            "size": size,
-                            "size_formatted": _format_file_size(size),
-                            "created_at_relative": created_at_relative,
-                            "icon": _get_file_icon(filename),
-                            "download_url": download_url,
-                        })
+                        artifacts_data.append(
+                            {
+                                "key": key,
+                                "filename": filename,
+                                "agent_id": agent_id,
+                                "agent_name": agent_name_map.get(agent_id, "Unknown"),
+                                "size": size,
+                                "size_formatted": _format_file_size(size),
+                                "created_at_relative": created_at_relative,
+                                "icon": _get_file_icon(filename),
+                                "download_url": download_url,
+                            }
+                        )
             except Exception as e:
                 logger.warning(f"Failed to list artifacts for agent {agent_id}: {e}")
 
         # Sort by last modified (most recent first)
         artifacts_data.sort(key=lambda x: x.get("created_at_relative", ""), reverse=False)
 
-    agents_data = [
-        {"agent_id": a.agent_id, "name": a.name, "role": a.role}
-        for a in agents
-    ]
+    agents_data = [{"agent_id": a.agent_id, "name": a.name, "role": a.role} for a in agents]
 
-    return templates.TemplateResponse(request, "artifacts.html", {
-        "user": {"email": user.email, "user_id": str(user.user_id)},
-        "stage": _cfg.stage,
-        "active_page": "artifacts",
-        "artifacts": artifacts_data,
-        "total_size_formatted": _format_file_size(total_size),
-        "agents": agents_data,
-        **_get_ws_context(request),
-    })
+    return templates.TemplateResponse(
+        request,
+        "artifacts.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "artifacts",
+            "artifacts": artifacts_data,
+            "total_size_formatted": _format_file_size(total_size),
+            "agents": agents_data,
+            **_get_ws_context(request),
+        },
+    )
 
 
 class ArtifactPresign(BaseModel):
@@ -3157,6 +3415,7 @@ def api_presign_upload(request: Request, body: ArtifactPresign) -> dict:
         raise HTTPException(status_code=500, detail="Artifact bucket not configured")
 
     import uuid as uuid_mod
+
     key = f"artifacts/agent_id={body.agent_id}/{uuid_mod.uuid4()}_{body.filename}"
     s3 = _get_s3()
     url = s3.generate_presigned_url(
@@ -3185,6 +3444,7 @@ def gui_audit(request: Request) -> Response:
 
     if agent_ids and _cfg.audit_bucket:
         from datetime import datetime, timezone
+
         s3 = _get_s3()
         agent_name_map = {a.agent_id: a.name for a in agents}
 
@@ -3202,6 +3462,7 @@ def gui_audit(request: Request) -> Response:
                             resp = s3.get_object(Bucket=_cfg.audit_bucket, Key=key)
                             body = resp["Body"].read().decode("utf-8")
                             import json
+
                             entry = json.loads(body)
 
                             # Calculate relative time
@@ -3223,18 +3484,20 @@ def gui_audit(request: Request) -> Response:
                             entry_type = entry.get("type", "unknown")
                             entry_types.add(entry_type)
 
-                            entries_data.append({
-                                "entry_id": entry.get("entry_id", ""),
-                                "agent_id": agent_id,
-                                "agent_name": agent_name_map.get(agent_id, "Unknown"),
-                                "type": entry_type,
-                                "ts": entry.get("ts", ""),
-                                "ts_relative": ts_relative,
-                                "hash": entry.get("hash", ""),
-                                "prev_hash": entry.get("prev_hash", "GENESIS"),
-                                "data": entry.get("data", {}),
-                                "data_preview": data_preview,
-                            })
+                            entries_data.append(
+                                {
+                                    "entry_id": entry.get("entry_id", ""),
+                                    "agent_id": agent_id,
+                                    "agent_name": agent_name_map.get(agent_id, "Unknown"),
+                                    "type": entry_type,
+                                    "ts": entry.get("ts", ""),
+                                    "ts_relative": ts_relative,
+                                    "hash": entry.get("hash", ""),
+                                    "prev_hash": entry.get("prev_hash", "GENESIS"),
+                                    "data": entry.get("data", {}),
+                                    "data_preview": data_preview,
+                                }
+                            )
                         except Exception as e:
                             logger.warning(f"Failed to parse audit entry {key}: {e}")
             except Exception as e:
@@ -3245,22 +3508,24 @@ def gui_audit(request: Request) -> Response:
         # Limit to 100 most recent
         entries_data = entries_data[:100]
 
-    agents_data = [
-        {"agent_id": a.agent_id, "name": a.name, "role": a.role}
-        for a in agents
-    ]
+    agents_data = [{"agent_id": a.agent_id, "name": a.name, "role": a.role} for a in agents]
 
     import json
-    return templates.TemplateResponse(request, "audit.html", {
-        "user": {"email": user.email, "user_id": str(user.user_id)},
-        "stage": _cfg.stage,
-        "active_page": "audit",
-        "entries": entries_data,
-        "entries_json": json.dumps(entries_data),
-        "entry_types": sorted(entry_types),
-        "agents": agents_data,
-        **_get_ws_context(request),
-    })
+
+    return templates.TemplateResponse(
+        request,
+        "audit.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "audit",
+            "entries": entries_data,
+            "entries_json": json.dumps(entries_data),
+            "entry_types": sorted(entry_types),
+            "agents": agents_data,
+            **_get_ws_context(request),
+        },
+    )
 
 
 @app.post("/api/audit/verify", name="api_audit_verify")
@@ -3283,8 +3548,9 @@ def api_audit_verify(request: Request) -> dict:
 
     import hashlib
     import json
+    from typing import Any as _Any
 
-    def _canon_json(obj: Any) -> str:
+    def _canon_json(obj: _Any) -> str:
         return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
     def _sha256_hex(s: str) -> str:
@@ -3323,7 +3589,9 @@ def api_audit_verify(request: Request) -> dict:
         for entry in entries:
             prev_hash = entry.get("prev_hash", "")
             if prev_hash != expected_prev:
-                errors.append(f"Chain break at entry {entry.get('entry_id')}: expected prev_hash {expected_prev[:12]}..., got {prev_hash[:12]}...")
+                errors.append(
+                    f"Chain break at entry {entry.get('entry_id')}: expected prev_hash {expected_prev[:12]}..., got {prev_hash[:12]}..."
+                )
 
             # Verify hash
             stored_hash = entry.get("hash", "")
@@ -3347,7 +3615,9 @@ def gui_profile(request: Request) -> Response:
     user = _gui_get_user(request)
     if not user:
         clear = bool(str(request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or "").strip())
-        return _gui_redirect_to_login(request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear)
+        return _gui_redirect_to_login(
+            request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear
+        )
 
     db = _get_db()
     agents = list_agents_for_user(db, user_id=user.user_id)
@@ -3361,17 +3631,21 @@ def gui_profile(request: Request) -> Response:
         for a in agents
     ]
 
-    return templates.TemplateResponse(request, "profile.html", {
-        "user": {
-            "email": user.email,
-            "user_id": str(user.user_id),
-            "cognito_sub": getattr(user, "cognito_sub", None),
+    return templates.TemplateResponse(
+        request,
+        "profile.html",
+        {
+            "user": {
+                "email": user.email,
+                "user_id": str(user.user_id),
+                "cognito_sub": getattr(user, "cognito_sub", None),
+            },
+            "stage": _cfg.stage,
+            "active_page": "profile",
+            "agents": agents_data,
+            **_get_ws_context(request),
         },
-        "stage": _cfg.stage,
-        "active_page": "profile",
-        "agents": agents_data,
-        **_get_ws_context(request),
-    })
+    )
 
 
 @app.get("/livekit-test", name="gui_livekit_test")
@@ -3380,7 +3654,9 @@ def gui_livekit_test(request: Request, space_id: str | None = None) -> Response:
     user = _gui_get_user(request)
     if not user:
         clear = bool(str(request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or "").strip())
-        return _gui_redirect_to_login(request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear)
+        return _gui_redirect_to_login(
+            request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear
+        )
 
     # Fetch spaces for dropdown
     spaces = list_spaces_for_user(_get_db(), user_id=user.user_id)
@@ -3396,15 +3672,19 @@ def gui_livekit_test(request: Request, space_id: str | None = None) -> Response:
     selected_space = str(space_id or "").strip()
     token_url = _gui_path(request, "/livekit/token")
 
-    return templates.TemplateResponse(request, "livekit_test.html", {
-        "user": {"email": user.email, "user_id": str(user.user_id)},
-        "stage": _cfg.stage,
-        "active_page": "livekit",
-        "spaces": spaces_data,
-        "selected_space": selected_space,
-        "token_url": token_url,
-        **_get_ws_context(request),
-    })
+    return templates.TemplateResponse(
+        request,
+        "livekit_test.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "livekit",
+            "spaces": spaces_data,
+            "selected_space": selected_space,
+            "token_url": token_url,
+            **_get_ws_context(request),
+        },
+    )
 
 
 @app.post("/livekit/token", response_model=LiveKitTokenOut)
@@ -3420,7 +3700,9 @@ def gui_agent_detail(request: Request, agent_id: str) -> Response:
     user = _gui_get_user(request)
     if not user:
         clear = bool(str(request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or "").strip())
-        return _gui_redirect_to_login(request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear)
+        return _gui_redirect_to_login(
+            request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear
+        )
 
     db = _get_db()
     # Ensure the user can see this agent by filtering their memberships.
@@ -3455,11 +3737,15 @@ def gui_agent_detail(request: Request, agent_id: str) -> Response:
         "disabled": match.disabled,
     }
 
-    return templates.TemplateResponse(request, "agent_detail.html", {
-        "user": {"email": user.email, "user_id": str(user.user_id)},
-        "stage": _cfg.stage,
-        "active_page": "agents",
-        "agent": agent_data,
-        "members": members,
-        **_get_ws_context(request),
-    })
+    return templates.TemplateResponse(
+        request,
+        "agent_detail.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "agents",
+            "agent": agent_data,
+            "members": members,
+            **_get_ws_context(request),
+        },
+    )

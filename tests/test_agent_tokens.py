@@ -11,7 +11,6 @@ Tests cover:
 from __future__ import annotations
 
 import importlib.util
-import json
 import os
 import sys
 import unittest
@@ -62,9 +61,7 @@ class TestAgentTokenAuth(unittest.TestCase):
         self.mod._db = self.mock_db
         # Mock user auth at module level
         self.mod.authenticate_user_access_token = mock.Mock(
-            return_value=self.mod.AuthenticatedUser(
-                user_id="u1", cognito_sub="sub-1", email="user@example.com"
-            )
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
         )
 
     def test_create_agent_token_requires_admin(self) -> None:
@@ -86,9 +83,7 @@ class TestAgentTokenAuth(unittest.TestCase):
         self.mod.is_agent_disabled = mock.Mock(return_value=False)
 
         # Mock token creation
-        self.mod.create_agent_token = mock.Mock(
-            return_value=("token-id-123", "plaintext-token-abc")
-        )
+        self.mod.create_agent_token = mock.Mock(return_value=("token-id-123", "plaintext-token-abc"))
 
         r = self.client.post(
             "/v1/agents/agent-1/tokens",
@@ -155,10 +150,9 @@ class TestAgentDelegation(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        from fastapi.testclient import TestClient
-
         # Import AuthenticatedAgent from agent_hub (already in sys.path from module load)
         from agent_hub.auth import AuthenticatedAgent
+        from fastapi.testclient import TestClient
 
         cls.mod = _load_hub_api_app_module()
         cls.AuthenticatedAgent = AuthenticatedAgent
@@ -278,4 +272,3 @@ class TestAgentDelegation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
