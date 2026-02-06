@@ -19,71 +19,93 @@
   </div>
 </div>
 
-<!-- Agent Overview -->
-<div class="grid grid-2 mb-lg">
-  <div class="card">
-    <div class="card-header">
-      <h3 class="card-title">Agent Details</h3>
+<!-- Agent Overview - Primary Section -->
+<div class="agent-overview-section">
+  <div class="grid grid-2 mb-lg">
+    <div class="card agent-details-card">
+      <div class="card-header">
+        <h3 class="card-title"><i class="fas fa-id-card"></i> Agent Details</h3>
+      </div>
+      <div class="card-body">
+        <div class="agent-avatar-large">
+          <i class="fas fa-robot"></i>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Agent ID</span>
+          <code class="detail-value" title="{{ agent.agent_id }}">{{ agent.agent_id[:12] }}...</code>
+          <button class="btn btn-sm btn-outline copy-btn" onclick="Marvain.copyToClipboard('{{ agent.agent_id }}'); Marvain.showToast('success', 'Copied', 'Agent ID copied to clipboard');" title="Copy full ID">
+            <i class="fas fa-copy"></i>
+          </button>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Name</span>
+          <span class="detail-value agent-name-value">{{ agent.name }}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Your Role</span>
+          <span class="badge badge-{{ 'success' if agent.role == 'owner' else 'info' if agent.role == 'admin' else 'warning' }} badge-lg">
+            <i class="fas fa-{{ 'crown' if agent.role == 'owner' else 'shield-alt' if agent.role == 'admin' else 'user' }}"></i>
+            {{ agent.role|title }}
+          </span>
+        </div>
+        {% if agent.relationship_label %}
+        <div class="detail-row">
+          <span class="detail-label">Relationship</span>
+          <span class="detail-value">{{ agent.relationship_label }}</span>
+        </div>
+        {% endif %}
+        <div class="detail-row">
+          <span class="detail-label">Status</span>
+          <span class="detail-value">
+            {% if agent.disabled %}
+            <span class="status-indicator offline"><span class="status-dot"></span> Disabled</span>
+            {% else %}
+            <span class="status-indicator online"><span class="status-dot"></span> Active</span>
+            {% endif %}
+          </span>
+        </div>
+      </div>
     </div>
-    <div class="card-body">
-      <div class="detail-row">
-        <span class="detail-label">Agent ID</span>
-        <code class="detail-value">{{ agent.agent_id }}</code>
-      </div>
-      <div class="detail-row">
-        <span class="detail-label">Name</span>
-        <span class="detail-value">{{ agent.name }}</span>
-      </div>
-      <div class="detail-row">
-        <span class="detail-label">Your Role</span>
-        <span class="badge badge-{{ 'success' if agent.role == 'owner' else 'info' if agent.role == 'admin' else 'warning' }}">
-          {{ agent.role|title }}
-        </span>
-      </div>
-      {% if agent.relationship_label %}
-      <div class="detail-row">
-        <span class="detail-label">Relationship</span>
-        <span class="detail-value">{{ agent.relationship_label }}</span>
-      </div>
-      {% endif %}
-      <div class="detail-row">
-        <span class="detail-label">Status</span>
-        <span class="detail-value">
-          {% if agent.disabled %}
-          <span class="status-dot offline"></span> Disabled
-          {% else %}
-          <span class="status-dot online"></span> Active
-          {% endif %}
-        </span>
-      </div>
-    </div>
-  </div>
 
-  <div class="card">
-    <div class="card-header">
-      <h3 class="card-title">Quick Actions</h3>
-    </div>
-    <div class="card-body">
-      <div class="quick-actions-grid">
-        <a href="/spaces?agent_id={{ agent.agent_id }}" class="quick-action">
-          <i class="fas fa-layer-group"></i>
-          <span>View Spaces</span>
-        </a>
-        <a href="/devices?agent_id={{ agent.agent_id }}" class="quick-action">
-          <i class="fas fa-mobile-alt"></i>
-          <span>View Devices</span>
-        </a>
-        <a href="/remotes?agent_id={{ agent.agent_id }}" class="quick-action">
-          <i class="fas fa-satellite-dish"></i>
-          <span>View Remotes</span>
-        </a>
-        <a href="/memories?agent_id={{ agent.agent_id }}" class="quick-action">
-          <i class="fas fa-brain"></i>
-          <span>View Memories</span>
-        </a>
+    <div class="card quick-actions-card">
+      <div class="card-header">
+        <h3 class="card-title"><i class="fas fa-bolt"></i> Quick Actions</h3>
+      </div>
+      <div class="card-body">
+        <div class="quick-actions-grid">
+          <a href="/spaces?agent_id={{ agent.agent_id }}" class="quick-action">
+            <i class="fas fa-layer-group"></i>
+            <span>View Spaces</span>
+          </a>
+          <a href="/devices?agent_id={{ agent.agent_id }}" class="quick-action">
+            <i class="fas fa-mobile-alt"></i>
+            <span>View Devices</span>
+          </a>
+          <a href="/remotes?agent_id={{ agent.agent_id }}" class="quick-action">
+            <i class="fas fa-satellite-dish"></i>
+            <span>View Remotes</span>
+          </a>
+          <a href="/memories?agent_id={{ agent.agent_id }}" class="quick-action">
+            <i class="fas fa-brain"></i>
+            <span>View Memories</span>
+          </a>
+          <a href="/actions?agent_id={{ agent.agent_id }}" class="quick-action">
+            <i class="fas fa-tasks"></i>
+            <span>View Actions</span>
+          </a>
+          <a href="/events?agent_id={{ agent.agent_id }}" class="quick-action">
+            <i class="fas fa-stream"></i>
+            <span>View Events</span>
+          </a>
+        </div>
       </div>
     </div>
   </div>
+</div>
+
+<!-- Section Divider -->
+<div class="section-divider">
+  <span class="divider-text">Team Management</span>
 </div>
 
 <!-- Members Section -->
@@ -197,7 +219,166 @@
   </div>
 </div>
 
+<!-- Edit Agent Modal -->
+<div class="modal" id="edit-agent-modal" style="display: none;">
+  <div class="modal-backdrop" onclick="Marvain.hideModal('edit-agent-modal')"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3 class="modal-title"><i class="fas fa-edit"></i> Edit Agent</h3>
+      <button type="button" class="modal-close" onclick="Marvain.hideModal('edit-agent-modal')">&times;</button>
+    </div>
+    <form id="edit-agent-form" onsubmit="submitEditAgent(event)">
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="edit-agent-name">Agent Name *</label>
+          <input type="text" id="edit-agent-name" name="name" required placeholder="My Agent">
+        </div>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="edit-agent-disabled" name="disabled">
+            <span>Disable Agent</span>
+          </label>
+          <small class="form-help">Disabled agents will not process any events or actions</small>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" onclick="Marvain.hideModal('edit-agent-modal')">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="edit-agent-submit">
+          <i class="fas fa-save"></i> Save Changes
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <style>
+/* Agent Overview Section */
+.agent-overview-section {
+  margin-bottom: 1.5rem;
+}
+.agent-details-card .card-body {
+  position: relative;
+}
+.agent-avatar-large {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  width: 60px;
+  height: 60px;
+  background: linear-gradient(135deg, var(--color-highlight), var(--color-info));
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.75rem;
+  color: white;
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+}
+.agent-name-value {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+.badge-lg {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.9rem;
+}
+.badge-lg i {
+  margin-right: 0.35rem;
+}
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: var(--radius-full);
+  font-weight: 500;
+}
+.status-indicator.online {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--color-success);
+}
+.status-indicator.offline {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--color-error);
+}
+.status-indicator .status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  animation: pulse 2s infinite;
+}
+.status-indicator.online .status-dot {
+  background: var(--color-success);
+}
+.status-indicator.offline .status-dot {
+  background: var(--color-error);
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.copy-btn {
+  margin-left: 0.5rem;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.75rem;
+}
+
+/* Quick Actions Grid */
+.quick-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+}
+.quick-action {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1rem 0.5rem;
+  background: var(--color-gray-700);
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  color: var(--color-gray-200);
+  transition: all 0.2s ease;
+  text-align: center;
+}
+.quick-action:hover {
+  background: var(--color-gray-600);
+  color: var(--color-highlight);
+  transform: translateY(-2px);
+}
+.quick-action i {
+  font-size: 1.5rem;
+  margin-bottom: 0.5rem;
+  color: var(--color-highlight);
+}
+.quick-action span {
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+/* Section Divider */
+.section-divider {
+  display: flex;
+  align-items: center;
+  margin: 2rem 0 1.5rem;
+}
+.section-divider::before,
+.section-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--color-gray-600);
+}
+.divider-text {
+  padding: 0 1rem;
+  color: var(--color-gray-400);
+  font-size: 0.85rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Role Options */
 .role-options {
   display: flex;
   gap: 1rem;
@@ -243,6 +424,18 @@
 .role-option:hover .role-card {
   border-color: var(--color-gray-500);
 }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .quick-actions-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .agent-avatar-large {
+    width: 50px;
+    height: 50px;
+    font-size: 1.5rem;
+  }
+}
 </style>
 {% endblock %}
 
@@ -252,8 +445,57 @@ var AGENT_ID = '{{ agent.agent_id }}';
 var EXISTING_MEMBERS = [{% for m in members %}'{{ m.email or "" }}'{% if not loop.last %}, {% endif %}{% endfor %}];
 var cognitoUsers = [];
 
-function editAgent() {
-  Marvain.showToast('info', 'Coming Soon', 'Agent editing will be available soon');
+async function editAgent() {
+  try {
+    Marvain.showLoading('Loading agent details...');
+    const response = await fetch(`/api/agents/${AGENT_ID}`);
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to load agent');
+    }
+    const agent = await response.json();
+    Marvain.hideLoading();
+
+    document.getElementById('edit-agent-name').value = agent.name;
+    document.getElementById('edit-agent-disabled').checked = agent.disabled || false;
+    Marvain.showModal('edit-agent-modal');
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+}
+
+async function submitEditAgent(event) {
+  event.preventDefault();
+  const name = document.getElementById('edit-agent-name').value.trim();
+  const disabled = document.getElementById('edit-agent-disabled').checked;
+
+  if (!name) {
+    Marvain.showToast('error', 'Error', 'Agent name is required');
+    return;
+  }
+
+  try {
+    Marvain.showLoading('Saving changes...');
+    const response = await fetch(`/api/agents/${AGENT_ID}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: name, disabled: disabled})
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to update agent');
+    }
+
+    Marvain.hideLoading();
+    Marvain.hideModal('edit-agent-modal');
+    Marvain.showToast('success', 'Success', 'Agent updated successfully');
+    setTimeout(() => location.reload(), 1000);
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
 }
 
 async function loadCognitoUsers() {

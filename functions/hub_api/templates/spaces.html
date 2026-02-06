@@ -143,31 +143,41 @@
   <div class="modal-backdrop" onclick="Marvain.hideModal('edit-space-modal')"></div>
   <div class="modal-content">
     <div class="modal-header">
-      <h3>Manage Space</h3>
+      <h3>Edit Space</h3>
       <button type="button" class="btn btn-sm" onclick="Marvain.hideModal('edit-space-modal')">
         <i class="fas fa-times"></i>
       </button>
     </div>
-    <div class="modal-body">
-      <p class="text-muted" style="margin-bottom: 1rem;">
-        <strong id="edit-space-name"></strong>
-      </p>
-      <div class="form-group" style="margin-bottom: 1.5rem;">
-        <p class="text-muted">More editing options coming soon. For now, you can delete this space.</p>
+    <form onsubmit="submitEditSpace(event)">
+      <div class="modal-body">
+        <input type="hidden" id="edit-space-id">
+        <div class="form-group">
+          <label for="edit-space-name">Space Name *</label>
+          <input type="text" id="edit-space-name" name="name" required placeholder="My Space">
+        </div>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="edit-space-privacy" name="privacy_mode">
+            <span>Privacy Mode</span>
+          </label>
+          <small class="form-help">When enabled, no recordings or transcripts will be stored</small>
+        </div>
+        <hr style="border-color: var(--color-gray-600); margin: 1.5rem 0;">
+        <div class="danger-zone" style="border: 1px solid var(--color-error); border-radius: var(--radius-md); padding: 1rem; background: rgba(239, 68, 68, 0.1);">
+          <h4 style="color: var(--color-error); margin: 0 0 0.5rem 0;"><i class="fas fa-exclamation-triangle"></i> Danger Zone</h4>
+          <p class="text-muted" style="margin-bottom: 1rem;">Deleting a space cannot be undone. All conversation history in this space will be lost.</p>
+          <button type="button" class="btn" style="background: var(--color-error); color: white;" onclick="confirmDeleteSpace()">
+            <i class="fas fa-trash"></i> Delete Space
+          </button>
+        </div>
       </div>
-      <div class="danger-zone" style="border: 1px solid var(--color-error); border-radius: var(--radius-md); padding: 1rem; background: rgba(239, 68, 68, 0.1);">
-        <h4 style="color: var(--color-error); margin: 0 0 0.5rem 0;"><i class="fas fa-exclamation-triangle"></i> Danger Zone</h4>
-        <p class="text-muted" style="margin-bottom: 1rem;">Deleting a space cannot be undone. All conversation history in this space will be lost.</p>
-        <button type="button" class="btn" style="background: var(--color-error); color: white;" onclick="confirmDeleteSpace()">
-          <i class="fas fa-trash"></i> Delete Space
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" onclick="Marvain.hideModal('edit-space-modal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">
+          <i class="fas fa-save"></i> Save Changes
         </button>
       </div>
-    </div>
-    <div class="modal-footer">
-      <button type="button" class="btn btn-outline" onclick="Marvain.hideModal('edit-space-modal')">
-        Close
-      </button>
-    </div>
+    </form>
   </div>
 </div>
 {% endblock %}
@@ -191,11 +201,62 @@ function filterSpaces() {
 let currentEditSpaceId = null;
 let currentEditSpaceName = null;
 
-function editSpace(spaceId, spaceName) {
+async function editSpace(spaceId, spaceName) {
   currentEditSpaceId = spaceId;
   currentEditSpaceName = spaceName;
-  document.getElementById('edit-space-name').textContent = spaceName;
-  Marvain.showModal('edit-space-modal');
+
+  try {
+    Marvain.showLoading('Loading space details...');
+    const response = await fetch(`/api/spaces/${spaceId}`);
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to load space');
+    }
+    const space = await response.json();
+    Marvain.hideLoading();
+
+    document.getElementById('edit-space-id').value = space.space_id;
+    document.getElementById('edit-space-name').value = space.name;
+    document.getElementById('edit-space-privacy').checked = space.privacy_mode || false;
+    Marvain.showModal('edit-space-modal');
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+}
+
+async function submitEditSpace(event) {
+  event.preventDefault();
+  const spaceId = document.getElementById('edit-space-id').value;
+  const name = document.getElementById('edit-space-name').value.trim();
+  const privacyMode = document.getElementById('edit-space-privacy').checked;
+
+  if (!name) {
+    Marvain.showToast('error', 'Error', 'Space name is required');
+    return;
+  }
+
+  try {
+    Marvain.showLoading('Saving changes...');
+    const response = await fetch(`/api/spaces/${spaceId}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: name, privacy_mode: privacyMode})
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to update space');
+    }
+
+    Marvain.hideLoading();
+    Marvain.hideModal('edit-space-modal');
+    Marvain.showToast('success', 'Success', 'Space updated successfully');
+    setTimeout(() => location.reload(), 1000);
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
 }
 
 function confirmDeleteSpace() {

@@ -204,6 +204,7 @@
     wsReconnectAttempts: 0,
     wsMaxReconnectAttempts: 5,
     wsReconnectDelay: 1000,
+    wsAuthenticated: false,
 
     /**
      * Connect to WebSocket server
@@ -220,21 +221,45 @@
       this.ws = new WebSocket(url);
 
       this.ws.onopen = () => {
-        console.log('[Marvain] WebSocket connected');
+        console.log('[Marvain] WebSocket connected, sending hello...');
         this.wsReconnectAttempts = 0;
         // Send hello message with access token
+        // Note: We emit 'connected' only after receiving a successful hello response
         this.wsSend({ action: 'hello', access_token: accessToken });
-        this._wsEmit('connected');
       };
 
       this.ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
           console.log('[Marvain] WebSocket message:', msg);
+
+          // Handle hello response specially - only emit 'connected' after successful auth
+          if (msg.type === 'hello') {
+            if (msg.ok) {
+              console.log('[Marvain] Authenticated successfully');
+              this.wsAuthenticated = true;
+              this._wsEmit('connected');
+            } else {
+              console.error('[Marvain] Authentication failed:', msg.error);
+              this._wsEmit('auth_failed', msg);
+              // Close connection on auth failure
+              this.ws.close();
+              return;
+            }
+          }
+
           this._wsEmit('message', msg);
-          // Also emit specific action type
+          // Emit specific action type (for request/response messages)
           if (msg.action) {
             this._wsEmit(msg.action, msg);
+          }
+          // Emit specific type (for broadcast messages)
+          if (msg.type) {
+            this._wsEmit(msg.type, msg);
+            // Also emit category-level events for page refresh (skip hello and error types)
+            if (msg.type !== 'hello' && msg.type !== 'error') {
+              this._handleBroadcast(msg);
+            }
           }
         } catch (e) {
           console.error('[Marvain] WebSocket parse error:', e);
@@ -302,6 +327,119 @@
     _wsEmit: function(event, data) {
       if (this.wsCallbacks[event]) {
         this.wsCallbacks[event].forEach(cb => cb(data));
+      }
+    },
+
+    /**
+     * Handle broadcast messages for real-time UI updates
+     * @private
+     */
+    _handleBroadcast: function(msg) {
+      const type = msg.type;
+      const payload = msg.payload || {};
+
+      // Debounce rapid updates (max 1 refresh per 500ms per type)
+      if (!this._broadcastTimers) {
+        this._broadcastTimers = {};
+      }
+      if (this._broadcastTimers[type]) {
+        return; // Skip if we have a pending refresh
+      }
+
+      // Visual indicator that real-time update arrived
+      this._showUpdateIndicator(type);
+
+      // Schedule page-specific refresh based on broadcast type
+      this._broadcastTimers[type] = setTimeout(() => {
+        delete this._broadcastTimers[type];
+
+        switch (type) {
+          case 'events.new':
+            // Refresh events list if on events page
+            if (window.location.pathname.includes('/events')) {
+              this._refreshPageSection('events-table');
+            }
+            break;
+
+          case 'actions.updated':
+            // Refresh actions list if on actions page
+            if (window.location.pathname.includes('/actions')) {
+              this._refreshPageSection('actions-table');
+            }
+            break;
+
+          case 'presence.updated':
+            // Update device status indicators on devices/remotes pages
+            if (window.location.pathname.includes('/devices') ||
+                window.location.pathname.includes('/remotes')) {
+              this._updatePresenceIndicator(payload);
+            }
+            break;
+
+          case 'memories.new':
+            // Refresh memories list if on memories page
+            if (window.location.pathname.includes('/memories')) {
+              this._refreshPageSection('memories-table');
+            }
+            break;
+        }
+      }, 500);
+    },
+
+    /**
+     * Show visual indicator that a real-time update arrived
+     * @private
+     */
+    _showUpdateIndicator: function(type) {
+      // Create a small toast or badge indicating new data
+      const indicator = document.createElement('div');
+      indicator.className = 'marvain-update-indicator';
+      indicator.textContent = 'Update: ' + type.replace('.', ' ');
+      indicator.style.cssText = 'position:fixed;bottom:20px;right:20px;background:#6366f1;color:#fff;padding:8px 16px;border-radius:8px;font-size:12px;z-index:9999;opacity:0;transition:opacity 0.3s;';
+      document.body.appendChild(indicator);
+
+      // Fade in
+      requestAnimationFrame(() => {
+        indicator.style.opacity = '1';
+      });
+
+      // Fade out and remove after 2s
+      setTimeout(() => {
+        indicator.style.opacity = '0';
+        setTimeout(() => indicator.remove(), 300);
+      }, 2000);
+    },
+
+    /**
+     * Refresh a page section by reloading the page
+     * @private
+     */
+    _refreshPageSection: function(sectionId) {
+      // For now, simply reload the page to get fresh data
+      // In the future, this could be replaced with AJAX partial updates
+      console.log('[Marvain] Refreshing page for section:', sectionId);
+      window.location.reload();
+    },
+
+    /**
+     * Update presence indicator for a device without full page reload
+     * @private
+     */
+    _updatePresenceIndicator: function(payload) {
+      if (!payload.device_id) return;
+
+      // Find the device row and update the status badge
+      const row = document.querySelector('[data-device-id="' + payload.device_id + '"]');
+      if (row) {
+        const statusBadge = row.querySelector('.status-badge');
+        if (statusBadge) {
+          statusBadge.className = 'status-badge badge badge-success';
+          statusBadge.textContent = 'online';
+        }
+        const heartbeatCell = row.querySelector('.heartbeat-time');
+        if (heartbeatCell && payload.last_heartbeat_at) {
+          heartbeatCell.textContent = payload.last_heartbeat_at;
+        }
       }
     },
 

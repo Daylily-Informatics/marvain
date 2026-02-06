@@ -197,6 +197,35 @@
     </form>
   </div>
 </div>
+
+<!-- Edit Remote Modal -->
+<div id="edit-remote-modal" class="modal" style="display: none;">
+  <div class="modal-backdrop" onclick="Marvain.hideModal('edit-remote-modal')"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3><i class="fas fa-edit"></i> Edit Remote</h3>
+      <button type="button" class="btn-close" onclick="Marvain.hideModal('edit-remote-modal')">&times;</button>
+    </div>
+    <form id="edit-remote-form" onsubmit="submitEditRemote(event)">
+      <div class="modal-body">
+        <input type="hidden" id="edit-remote-id">
+        <div class="form-group">
+          <label for="edit-remote-name">Name *</label>
+          <input type="text" id="edit-remote-name" name="name" required placeholder="Living Room Camera">
+        </div>
+        <div class="form-group">
+          <label for="edit-remote-address">Address</label>
+          <input type="text" id="edit-remote-address" name="address" placeholder="192.168.1.100 or /dev/video0">
+          <small class="form-help">Network address or device path</small>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" onclick="Marvain.hideModal('edit-remote-modal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -338,8 +367,59 @@ function deleteRemote(remoteId) {
     });
 }
 
-function editRemote(remoteId) {
-  Marvain.showToast('info', 'Coming Soon', 'Edit functionality will be added');
+async function editRemote(remoteId) {
+  try {
+    Marvain.showLoading('Loading remote details...');
+    const response = await fetch(`/api/remotes/${remoteId}`);
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to load remote');
+    }
+    const remote = await response.json();
+    Marvain.hideLoading();
+
+    document.getElementById('edit-remote-id').value = remote.remote_id;
+    document.getElementById('edit-remote-name').value = remote.name;
+    document.getElementById('edit-remote-address').value = remote.address || '';
+    Marvain.showModal('edit-remote-modal');
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+}
+
+async function submitEditRemote(event) {
+  event.preventDefault();
+  const remoteId = document.getElementById('edit-remote-id').value;
+  const name = document.getElementById('edit-remote-name').value.trim();
+  const address = document.getElementById('edit-remote-address').value.trim();
+
+  if (!name) {
+    Marvain.showToast('error', 'Error', 'Remote name is required');
+    return;
+  }
+
+  try {
+    Marvain.showLoading('Saving changes...');
+    const response = await fetch(`/api/remotes/${remoteId}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: name, address: address || null})
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to update remote');
+    }
+
+    Marvain.hideLoading();
+    Marvain.hideModal('edit-remote-modal');
+    Marvain.showToast('success', 'Success', 'Remote updated successfully');
+    setTimeout(() => location.reload(), 1000);
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
 }
 
 function submitAddRemote(event) {

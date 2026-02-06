@@ -10,6 +10,7 @@ from typing import Any
 import boto3
 
 from agent_hub.audit import append_audit_entry
+from agent_hub.broadcast import broadcast_event
 from agent_hub.config import load_config
 from agent_hub.openai_http import call_embeddings, call_responses, extract_output_text
 from agent_hub.policy import is_agent_disabled, is_privacy_mode
@@ -357,6 +358,33 @@ Rules:
                     QueueUrl=_cfg.action_queue_url,
                     MessageBody=json.dumps({"action_id": action_id, "agent_id": agent_id}),
                 )
+
+            # Broadcast action creation to subscribed clients
+            try:
+                broadcast_event(
+                    event_type="actions.updated",
+                    agent_id=agent_id,
+                    space_id=ev["space_id"],
+                    payload={
+                        "action_id": action_id,
+                        "kind": a["kind"],
+                        "status": "approved" if a["auto_approve"] else "proposed",
+                    },
+                )
+            except Exception as e:
+                logger.warning("Failed to broadcast action: %s", e)
+
+        # Broadcast memories creation (if any)
+        for mid in created_memory_ids:
+            try:
+                broadcast_event(
+                    event_type="memories.new",
+                    agent_id=agent_id,
+                    space_id=ev["space_id"],
+                    payload={"memory_id": mid},
+                )
+            except Exception as e:
+                logger.warning("Failed to broadcast memory: %s", e)
 
         if _cfg.audit_bucket:
             append_audit_entry(

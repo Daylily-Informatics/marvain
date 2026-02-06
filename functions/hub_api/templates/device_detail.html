@@ -1,0 +1,329 @@
+{% extends "base.html" %}
+
+{% block title %}{{ device.name }} - Device Details{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <nav class="breadcrumb">
+      <a href="/devices"><i class="fas fa-microchip"></i> Devices</a>
+      <span class="separator">/</span>
+      <span>{{ device.name }}</span>
+    </nav>
+    <h1 class="page-title">{{ device.name }}</h1>
+  </div>
+  <div class="page-actions">
+    {% if not device.revoked %}
+    <button type="button" class="btn btn-primary" id="ping-btn" onclick="pingDevice('{{ device.device_id }}')">
+      <i class="fas fa-wifi"></i> Ping Device
+    </button>
+    <button type="button" class="btn btn-outline btn-danger" onclick="revokeDevice('{{ device.device_id }}')">
+      <i class="fas fa-ban"></i> Revoke Device
+    </button>
+    {% endif %}
+    <button type="button" class="btn btn-outline btn-danger" onclick="deleteDevice('{{ device.device_id }}', '{{ device.name }}')">
+      <i class="fas fa-trash"></i> Delete Device
+    </button>
+  </div>
+</div>
+
+<!-- Device Info Card -->
+<div class="grid grid-2">
+  <div class="card">
+    <div class="card-header">
+      <h3 class="card-title"><i class="fas fa-info-circle"></i> Device Information</h3>
+    </div>
+    <div class="card-body">
+      <div class="info-grid">
+        <div class="info-row">
+          <span class="info-label">Device ID</span>
+          <span class="info-value">
+            <code>{{ device.device_id }}</code>
+            <button type="button" class="btn btn-sm btn-outline" onclick="copyText('{{ device.device_id }}', 'Device ID')">
+              <i class="fas fa-copy"></i>
+            </button>
+          </span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Name</span>
+          <span class="info-value">{{ device.name }}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Agent</span>
+          <span class="info-value">
+            <a href="/agents/{{ device.agent_id }}">{{ device.agent_name }}</a>
+          </span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Status</span>
+          <span class="info-value">
+            {% if device.revoked %}
+            <span class="badge badge-error"><i class="fas fa-ban"></i> Revoked</span>
+            {% elif device.is_online %}
+            <span class="badge badge-success"><i class="fas fa-circle"></i> Online</span>
+            {% else %}
+            <span class="badge badge-warning"><i class="fas fa-circle"></i> Offline</span>
+            {% endif %}
+          </span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Created</span>
+          <span class="info-value">{{ device.created_at }}</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Last Seen</span>
+          <span class="info-value">{{ device.last_seen or 'Never' }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h3 class="card-title"><i class="fas fa-shield-alt"></i> Permissions (Scopes)</h3>
+    </div>
+    <div class="card-body">
+      {% if device.scopes %}
+      <div class="scope-list">
+        {% for scope in device.scopes %}
+        <span class="badge badge-info">{{ scope }}</span>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="text-muted">No scopes assigned</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- Connection Info -->
+<div class="card mt-lg">
+  <div class="card-header">
+    <h3 class="card-title"><i class="fas fa-plug"></i> Connection</h3>
+  </div>
+  <div class="card-body">
+    {% if device.revoked %}
+    <div class="alert alert-error">
+      <i class="fas fa-ban"></i> This device has been revoked and can no longer connect.
+    </div>
+    {% else %}
+    <p class="text-muted mb-md">To connect this device to the hub, run the remote satellite daemon:</p>
+    <div class="form-group">
+      <label>Connection Command</label>
+      <div class="input-group">
+        <textarea class="form-control" readonly id="connect-command" rows="2" 
+                  style="font-family: monospace; font-size: 0.85rem; resize: none;">python apps/remote_satellite/daemon.py --hub-ws-url {{ ws_url or 'wss://YOUR_WS_URL' }} --device-token YOUR_DEVICE_TOKEN</textarea>
+        <button type="button" class="btn btn-outline" onclick="copyText(document.getElementById('connect-command').value, 'Command')">
+          <i class="fas fa-copy"></i> Copy
+        </button>
+      </div>
+      <small class="text-muted">Note: You need the device token from when the device was registered. Tokens are only shown once.</small>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function copyText(text, label) {
+  navigator.clipboard.writeText(text).then(() => {
+    Marvain.showToast('success', 'Copied', label + ' copied to clipboard');
+  }).catch(() => {
+    Marvain.showToast('error', 'Error', 'Failed to copy to clipboard');
+  });
+}
+
+function pingDevice(deviceId) {
+  const pingBtn = document.getElementById('ping-btn');
+  if (pingBtn) {
+    pingBtn.disabled = true;
+    pingBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Pinging...';
+  }
+
+  // Check if WebSocket is connected and authenticated
+  if (!Marvain.ws || Marvain.ws.readyState !== WebSocket.OPEN) {
+    Marvain.showToast('error', 'Not Connected', 'WebSocket not connected. Please refresh the page.');
+    if (pingBtn) {
+      pingBtn.disabled = false;
+      pingBtn.innerHTML = '<i class="fas fa-wifi"></i> Ping Device';
+    }
+    return;
+  }
+
+  if (!Marvain.wsAuthenticated) {
+    Marvain.showToast('warning', 'Authenticating', 'Please wait for WebSocket authentication...');
+    if (pingBtn) {
+      pingBtn.disabled = false;
+      pingBtn.innerHTML = '<i class="fas fa-wifi"></i> Ping Device';
+    }
+    return;
+  }
+
+  // Set up one-time listener for ping response
+  const pingHandler = function(msg) {
+    if (msg.type === 'cmd.ping' && msg.target_device_id === deviceId) {
+      Marvain.wsOff('message', pingHandler);
+      if (pingBtn) {
+        pingBtn.disabled = false;
+        pingBtn.innerHTML = '<i class="fas fa-wifi"></i> Ping Device';
+      }
+      if (msg.ok) {
+        if (msg.device_online) {
+          Marvain.showToast('success', 'Device Online',
+            `Device responded! Sent to ${msg.device_connections} connection(s).`);
+          // Update status badge
+          const statusBadge = document.querySelector('.info-value .badge');
+          if (statusBadge) {
+            statusBadge.className = 'badge badge-success';
+            statusBadge.innerHTML = '<i class="fas fa-circle"></i> Online';
+          }
+        } else {
+          Marvain.showToast('warning', 'Device Offline', 'Device is not connected to the hub.');
+        }
+      } else {
+        Marvain.showToast('error', 'Ping Failed', msg.error || 'Unknown error');
+      }
+    }
+  };
+  Marvain.wsOn('message', pingHandler);
+
+  // Send ping command
+  Marvain.wsSend({
+    action: 'cmd.ping',
+    target_device_id: deviceId
+  });
+
+  // Timeout after 10 seconds
+  setTimeout(() => {
+    Marvain.wsOff('message', pingHandler);
+    if (pingBtn && pingBtn.disabled) {
+      pingBtn.disabled = false;
+      pingBtn.innerHTML = '<i class="fas fa-wifi"></i> Ping Device';
+      Marvain.showToast('warning', 'Timeout', 'No response from hub');
+    }
+  }, 10000);
+}
+
+async function revokeDevice(deviceId) {
+  if (!confirm('Are you sure you want to revoke this device? This action cannot be undone.')) {
+    return;
+  }
+
+  try {
+    Marvain.showLoading('Revoking device...');
+    const response = await fetch(`/api/devices/${deviceId}/revoke`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to revoke device');
+    }
+
+    Marvain.hideLoading();
+    Marvain.showToast('success', 'Success', 'Device revoked successfully');
+    setTimeout(() => location.reload(), 1000);
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+}
+
+async function deleteDevice(deviceId, deviceName) {
+  if (!confirm(`Are you sure you want to PERMANENTLY DELETE the device "${deviceName}"?\n\nThis will remove all records of this device. This action cannot be undone.`)) {
+    return;
+  }
+
+  // Double confirmation for destructive action
+  if (!confirm('This is a permanent deletion. Are you absolutely sure?')) {
+    return;
+  }
+
+  try {
+    Marvain.showLoading('Deleting device...');
+    const response = await fetch(`/api/devices/${deviceId}/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to delete device');
+    }
+
+    Marvain.hideLoading();
+    Marvain.showToast('success', 'Deleted', 'Device permanently deleted');
+    // Redirect to devices list since this device no longer exists
+    setTimeout(() => window.location.href = '/devices', 1000);
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+}
+</script>
+
+<style>
+.info-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--color-gray-700);
+}
+.info-row:last-child {
+  border-bottom: none;
+}
+.info-label {
+  color: var(--color-gray-400);
+  font-weight: 500;
+}
+.info-value {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.info-value code {
+  font-size: 0.85rem;
+  background: var(--color-gray-700);
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+}
+.scope-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.9rem;
+}
+.breadcrumb a {
+  color: var(--color-gray-400);
+  text-decoration: none;
+}
+.breadcrumb a:hover {
+  color: var(--color-highlight);
+}
+.breadcrumb .separator {
+  color: var(--color-gray-500);
+}
+.mt-lg {
+  margin-top: 1.5rem;
+}
+.mb-md {
+  margin-bottom: 1rem;
+}
+</style>
+{% endblock %}
+

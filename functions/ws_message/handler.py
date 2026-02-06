@@ -55,6 +55,69 @@ def _send(event, connection_id: str, payload: dict):
     _mgmt_api(event).post_to_connection(ConnectionId=connection_id, Data=data)
 
 
+def _get_device_connections(table, target_device_id: str) -> list[str]:
+    """Find all WebSocket connection IDs for a specific device.
+
+    Returns list of connection_ids where device_id matches and status is authenticated.
+    """
+    try:
+        # Scan for connections with matching device_id
+        # Note: For scale, consider adding a GSI on device_id
+        response = table.scan(
+            FilterExpression="device_id = :did AND #s = :status",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":did": target_device_id,
+                ":status": "authenticated",
+            },
+        )
+        return [item["connection_id"] for item in response.get("Items", [])]
+    except Exception as e:
+        logger.warning("Failed to query connections for device %s: %s", target_device_id, e)
+        return []
+
+
+def _send_to_device(event, table, target_device_id: str, message: dict) -> tuple[int, int]:
+    """Send a message to all WebSocket connections for a device.
+
+    Returns (sent_count, stale_count).
+    """
+    from botocore.exceptions import ClientError
+
+    connection_ids = _get_device_connections(table, target_device_id)
+    if not connection_ids:
+        return (0, 0)
+
+    mgmt_api = _mgmt_api(event)
+    data = json.dumps(message).encode("utf-8")
+
+    sent_count = 0
+    stale_connections = []
+
+    for conn_id in connection_ids:
+        try:
+            mgmt_api.post_to_connection(ConnectionId=conn_id, Data=data)
+            sent_count += 1
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code == "GoneException":
+                stale_connections.append(conn_id)
+            else:
+                logger.warning("Failed to send to device connection %s: %s", conn_id, e)
+        except Exception as e:
+            logger.warning("Failed to send to device connection %s: %s", conn_id, e)
+
+    # Clean up stale connections
+    for conn_id in stale_connections:
+        try:
+            table.delete_item(Key={"connection_id": conn_id})
+            logger.debug("Cleaned up stale connection: %s", conn_id)
+        except Exception:
+            pass
+
+    return (sent_count, len(stale_connections))
+
+
 def _handle_action_decision(event, connection_id: str, table, conn_item: dict, action_id: str, approve: bool, reason: str = ""):
     """Handle approve or reject action decision."""
     action_type = "approve_action" if approve else "reject_action"
@@ -102,14 +165,15 @@ def _handle_action_decision(event, connection_id: str, table, conn_item: dict, a
     new_status = "approved" if approve else "rejected"
 
     if approve:
-        # Approve: update status and queue for execution
+        # Approve: update status with approver info and queue for execution
         _get_db().execute(
             """
             UPDATE actions
-            SET status = 'approved', updated_at = now()
+            SET status = 'approved', updated_at = now(),
+                approved_by = :user_id::uuid, approved_at = now()
             WHERE action_id = :action_id::uuid
             """,
-            {"action_id": action_id},
+            {"action_id": action_id, "user_id": user_id},
         )
 
         # Queue for execution
@@ -178,8 +242,11 @@ def handler(event, context):
         # v1: accept Cognito access_token (preferred) for human users.
         if access_token:
             try:
+                logger.info(f"[hello] Attempting to authenticate access_token, length={len(access_token)}")
                 user = authenticate_user_access_token(_get_db(), access_token)
-            except PermissionError:
+                logger.info(f"[hello] Authentication successful for user_id={user.user_id}")
+            except PermissionError as e:
+                logger.error(f"[hello] Authentication failed: {e}")
                 _send(event, connection_id, {"type": "hello", "ok": False, "error": "invalid_access_token"})
                 return {"statusCode": 200, "body": "ok"}
 
@@ -254,6 +321,12 @@ def handler(event, context):
             _send(event, connection_id, {"type": "hello", "ok": False, "error": "invalid_device_token"})
             return {"statusCode": 200, "body": "ok"}
 
+        # Update last_hello_at and last_seen for presence tracking
+        _get_db().execute(
+            "UPDATE devices SET last_hello_at = now(), last_seen = now() WHERE device_id = :device_id::uuid",
+            {"device_id": dev.device_id},
+        )
+
         table.update_item(
             Key={"connection_id": connection_id},
             UpdateExpression=(
@@ -299,6 +372,185 @@ def handler(event, context):
     # -------------------------------------------------------------------------
     if action == "ping":
         _send(event, connection_id, {"type": "pong", "timestamp": int(time.time() * 1000)})
+        return {"statusCode": 200, "body": "ok"}
+
+    # -------------------------------------------------------------------------
+    # DEVICE COMMAND MESSAGES (cmd.*)
+    # These messages are sent to devices to request actions or configuration.
+    # -------------------------------------------------------------------------
+
+    # cmd.ping - ping a specific device (hub -> device)
+    if action == "cmd.ping":
+        target_device_id = str(msg.get("target_device_id") or "").strip()
+        if not target_device_id:
+            _send(event, connection_id, {"type": "cmd.ping", "ok": False, "error": "missing_target_device_id"})
+            return {"statusCode": 200, "body": "ok"}
+
+        # Only allow users with admin role or the device's own agent to ping
+        if principal_type == "user":
+            # Find the agent that owns the target device
+            rows = _get_db().query(
+                "SELECT agent_id::TEXT FROM devices WHERE device_id = :device_id::uuid AND revoked_at IS NULL",
+                {"device_id": target_device_id},
+            )
+            if not rows:
+                _send(event, connection_id, {"type": "cmd.ping", "ok": False, "error": "device_not_found"})
+                return {"statusCode": 200, "body": "ok"}
+            target_agent_id = rows[0]["agent_id"]
+            if not check_agent_permission(_get_db(), agent_id=target_agent_id, user_id=user_id, required_role="admin"):
+                _send(event, connection_id, {"type": "cmd.ping", "ok": False, "error": "permission_denied"})
+                return {"statusCode": 200, "body": "ok"}
+        else:
+            # Device can only ping devices of its own agent
+            dev_agent = conn_item.get("agent_id")
+            rows = _get_db().query(
+                "SELECT agent_id::TEXT FROM devices WHERE device_id = :device_id::uuid AND revoked_at IS NULL",
+                {"device_id": target_device_id},
+            )
+            if not rows or rows[0]["agent_id"] != dev_agent:
+                _send(event, connection_id, {"type": "cmd.ping", "ok": False, "error": "permission_denied"})
+                return {"statusCode": 200, "body": "ok"}
+
+        # Broadcast cmd.ping to the target device via WebSocket
+        sent_at = int(time.time() * 1000)
+        device_message = {
+            "type": "cmd.ping",
+            "from_connection_id": connection_id,
+            "sent_at": sent_at,
+        }
+        sent_count, stale_count = _send_to_device(event, table, target_device_id, device_message)
+
+        _send(event, connection_id, {
+            "type": "cmd.ping",
+            "ok": True,
+            "target_device_id": target_device_id,
+            "sent_at": sent_at,
+            "device_connections": sent_count,
+            "device_online": sent_count > 0,
+        })
+        return {"statusCode": 200, "body": "ok"}
+
+    # cmd.pong - response to cmd.ping (device -> hub)
+    if action == "cmd.pong":
+        original_sent_at = msg.get("original_sent_at")
+        _send(event, connection_id, {
+            "type": "cmd.pong",
+            "ok": True,
+            "device_id": conn_item.get("device_id"),
+            "received_at": int(time.time() * 1000),
+            "original_sent_at": original_sent_at,
+        })
+        return {"statusCode": 200, "body": "ok"}
+
+    # cmd.run_action - request a device to execute an action
+    if action == "cmd.run_action":
+        target_device_id = str(msg.get("target_device_id") or "").strip()
+        action_kind = str(msg.get("kind") or "").strip()
+        action_payload = msg.get("payload") or {}
+
+        if not target_device_id or not action_kind:
+            _send(event, connection_id, {"type": "cmd.run_action", "ok": False, "error": "missing_target_device_id_or_kind"})
+            return {"statusCode": 200, "body": "ok"}
+
+        # Permission check: user needs admin on the device's agent
+        if principal_type == "user":
+            rows = _get_db().query(
+                "SELECT agent_id::TEXT FROM devices WHERE device_id = :device_id::uuid AND revoked_at IS NULL",
+                {"device_id": target_device_id},
+            )
+            if not rows:
+                _send(event, connection_id, {"type": "cmd.run_action", "ok": False, "error": "device_not_found"})
+                return {"statusCode": 200, "body": "ok"}
+            target_agent_id = rows[0]["agent_id"]
+            if not check_agent_permission(_get_db(), agent_id=target_agent_id, user_id=user_id, required_role="admin"):
+                _send(event, connection_id, {"type": "cmd.run_action", "ok": False, "error": "permission_denied"})
+                return {"statusCode": 200, "body": "ok"}
+        else:
+            _send(event, connection_id, {"type": "cmd.run_action", "ok": False, "error": "user_only"})
+            return {"statusCode": 200, "body": "ok"}
+
+        # Broadcast cmd.run_action to the target device via WebSocket
+        sent_at = int(time.time() * 1000)
+        device_message = {
+            "type": "cmd.run_action",
+            "from_connection_id": connection_id,
+            "kind": action_kind,
+            "payload": action_payload,
+            "sent_at": sent_at,
+        }
+        sent_count, stale_count = _send_to_device(event, table, target_device_id, device_message)
+
+        if sent_count == 0:
+            _send(event, connection_id, {
+                "type": "cmd.run_action",
+                "ok": False,
+                "error": "device_not_connected",
+                "target_device_id": target_device_id,
+            })
+            return {"statusCode": 200, "body": "ok"}
+
+        _send(event, connection_id, {
+            "type": "cmd.run_action",
+            "ok": True,
+            "target_device_id": target_device_id,
+            "kind": action_kind,
+            "sent_at": sent_at,
+            "device_connections": sent_count,
+        })
+        return {"statusCode": 200, "body": "ok"}
+
+    # cmd.config - send configuration update to a device
+    if action == "cmd.config":
+        target_device_id = str(msg.get("target_device_id") or "").strip()
+        config_data = msg.get("config") or {}
+
+        if not target_device_id:
+            _send(event, connection_id, {"type": "cmd.config", "ok": False, "error": "missing_target_device_id"})
+            return {"statusCode": 200, "body": "ok"}
+
+        # Permission check: user needs admin on the device's agent
+        if principal_type == "user":
+            rows = _get_db().query(
+                "SELECT agent_id::TEXT FROM devices WHERE device_id = :device_id::uuid AND revoked_at IS NULL",
+                {"device_id": target_device_id},
+            )
+            if not rows:
+                _send(event, connection_id, {"type": "cmd.config", "ok": False, "error": "device_not_found"})
+                return {"statusCode": 200, "body": "ok"}
+            target_agent_id = rows[0]["agent_id"]
+            if not check_agent_permission(_get_db(), agent_id=target_agent_id, user_id=user_id, required_role="admin"):
+                _send(event, connection_id, {"type": "cmd.config", "ok": False, "error": "permission_denied"})
+                return {"statusCode": 200, "body": "ok"}
+        else:
+            _send(event, connection_id, {"type": "cmd.config", "ok": False, "error": "user_only"})
+            return {"statusCode": 200, "body": "ok"}
+
+        # Broadcast cmd.config to the target device via WebSocket
+        sent_at = int(time.time() * 1000)
+        device_message = {
+            "type": "cmd.config",
+            "from_connection_id": connection_id,
+            "config": config_data,
+            "sent_at": sent_at,
+        }
+        sent_count, stale_count = _send_to_device(event, table, target_device_id, device_message)
+
+        if sent_count == 0:
+            _send(event, connection_id, {
+                "type": "cmd.config",
+                "ok": False,
+                "error": "device_not_connected",
+                "target_device_id": target_device_id,
+            })
+            return {"statusCode": 200, "body": "ok"}
+
+        _send(event, connection_id, {
+            "type": "cmd.config",
+            "ok": True,
+            "target_device_id": target_device_id,
+            "sent_at": sent_at,
+            "device_connections": sent_count,
+        })
         return {"statusCode": 200, "body": "ok"}
 
     # -------------------------------------------------------------------------

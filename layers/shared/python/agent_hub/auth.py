@@ -152,6 +152,27 @@ def require_scopes(device: AuthenticatedDevice, required: list[str]) -> None:
         raise PermissionError(f"Missing required scopes: {missing}")
 
 
+def has_scope(device: AuthenticatedDevice, scope: str) -> bool:
+    """Check if a device has a specific scope.
+
+    Supports wildcard matching: '*' in device.scopes grants all scopes.
+    """
+    if "*" in device.scopes:
+        return True
+    return scope in device.scopes
+
+
+def require_scope(device: AuthenticatedDevice, scope: str) -> None:
+    """Require that a device has a specific scope.
+
+    Raises HTTPException with 403 if the scope is missing.
+    Supports wildcard matching: '*' in device.scopes grants all scopes.
+    """
+    if not has_scope(device, scope):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=403, detail=f"Missing required scope: {scope}")
+
+
 def _ensure_user_row(db: RdsData, *, cognito_sub: str, email: str | None) -> str:
     """Insert or update a user row in the database.
 

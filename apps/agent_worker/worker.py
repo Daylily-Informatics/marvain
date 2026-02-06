@@ -120,16 +120,103 @@ def hub_ingest_transcript(
         logger.warning(f"Failed to ingest transcript: {e}")
 
 
-class ForgeAssistant(Agent):
-    def __init__(self) -> None:
-        super().__init__(
-            instructions=(
-                "You are Forge, a persistent personal AI agent and companion. "
-                "Be concise, curious, and pragmatic. "
-                "If you are unsure, ask a clarifying question. "
-                "You may be proactive with suggestions, but avoid being pushy."
-            )
+def _fetch_space_events(space_id: str, limit: int = 50) -> list[dict]:
+    """Fetch recent events for context hydration.
+
+    Returns list of events or empty list on failure.
+    """
+    if not HUB_API_BASE or not HUB_DEVICE_TOKEN:
+        return []
+    try:
+        resp = requests.get(
+            f"{HUB_API_BASE}/v1/spaces/{space_id}/events",
+            headers={"Authorization": f"Bearer {HUB_DEVICE_TOKEN}"},
+            params={"limit": limit},
+            timeout=5,
         )
+        if resp.ok:
+            return resp.json().get("events", [])
+        logger.warning(f"Failed to fetch space events: {resp.status_code}")
+    except Exception as e:
+        logger.warning(f"Failed to fetch space events: {e}")
+    return []
+
+
+def _fetch_recall_memories(agent_id: str, space_id: str | None, query: str, k: int = 8) -> list[dict]:
+    """Fetch relevant memories via semantic search.
+
+    Returns list of memories or empty list on failure.
+    """
+    if not HUB_API_BASE or not HUB_DEVICE_TOKEN:
+        return []
+    try:
+        resp = requests.post(
+            f"{HUB_API_BASE}/v1/recall",
+            headers={"Authorization": f"Bearer {HUB_DEVICE_TOKEN}"},
+            json={
+                "agent_id": agent_id,
+                "space_id": space_id,
+                "query": query,
+                "k": k,
+            },
+            timeout=10,
+        )
+        if resp.ok:
+            return resp.json().get("memories", [])
+        logger.warning(f"Failed to fetch memories: {resp.status_code}")
+    except Exception as e:
+        logger.warning(f"Failed to fetch memories: {e}")
+    return []
+
+
+def _build_context_block(events: list[dict], memories: list[dict]) -> str:
+    """Build context block for agent instructions.
+
+    Summarizes recent conversation and relevant memories.
+    """
+    parts = []
+
+    # Add memory context if available
+    if memories:
+        parts.append("## Relevant Memories")
+        for mem in memories[:5]:  # Limit to top 5
+            tier = mem.get("tier", "")
+            content = mem.get("content", "")[:500]  # Truncate long content
+            parts.append(f"- [{tier}] {content}")
+
+    # Add recent conversation summary if available
+    if events:
+        parts.append("\n## Recent Conversation in This Space")
+        # Group by role and summarize - show last 10 events max
+        for ev in reversed(events[:10]):
+            payload = ev.get("payload", {})
+            role = payload.get("role", "unknown")
+            text = payload.get("text", "")[:200]  # Truncate
+            if text and ev.get("type") == "transcript_chunk":
+                speaker = "User" if role == "user" else "You"
+                parts.append(f"- {speaker}: {text}")
+
+    if not parts:
+        return ""
+
+    return "\n".join(parts)
+
+
+BASE_INSTRUCTIONS = (
+    "You are Forge, a persistent personal AI agent and companion. "
+    "Be concise, curious, and pragmatic. "
+    "If you are unsure, ask a clarifying question. "
+    "You may be proactive with suggestions, but avoid being pushy."
+)
+
+
+class ForgeAssistant(Agent):
+    def __init__(self, context_block: str = "") -> None:
+        if context_block:
+            instructions = f"{BASE_INSTRUCTIONS}\n\n# Context from Prior Sessions\n{context_block}"
+        else:
+            instructions = BASE_INSTRUCTIONS
+        super().__init__(instructions=instructions)
 
 
 # Agent name for explicit dispatch - must match the name in tokens minted by Hub API
@@ -162,7 +249,25 @@ async def forge_agent(ctx: agents.JobContext):
         logger.error(f"No space_id in agent metadata; room={ctx.room.name}, metadata={ctx.job.metadata}")
         return
 
+    agent_id = metadata.get("agent_id")
     logger.info(f"Agent dispatched to space: {space_id} (room: {ctx.room.name}, session: {room_session_id})")
+
+    # Context hydration: fetch prior events and memories for continuity
+    context_block = ""
+    if agent_id and HUB_API_BASE and HUB_DEVICE_TOKEN:
+        logger.info(f"Fetching context for space {space_id}...")
+        events = _fetch_space_events(space_id, limit=50)
+        memories = _fetch_recall_memories(
+            agent_id=agent_id,
+            space_id=space_id,
+            query="session context recent conversation important facts",
+            k=8,
+        )
+        context_block = _build_context_block(events, memories)
+        if context_block:
+            logger.info(f"Context hydration: {len(events)} events, {len(memories)} memories")
+        else:
+            logger.debug("No prior context found for this space")
 
     # Track whether we should auto-disconnect when humans leave
     should_disconnect_on_empty = True
@@ -292,6 +397,8 @@ async def forge_agent(ctx: agents.JobContext):
         """Process a typed chat message and generate a response.
 
         Interrupts any ongoing speech before responding to avoid overlapping voices.
+        Uses user_input parameter to properly inject the message into the conversation
+        history, so the agent responds to the typed message (not the last voice input).
         """
         try:
             # Interrupt any ongoing speech to avoid overlapping voices
@@ -300,17 +407,16 @@ async def forge_agent(ctx: agents.JobContext):
             # Small delay to let the interruption take effect
             await asyncio.sleep(0.1)
 
-            # Use generate_reply to have the agent respond to the typed text
-            # The agent will speak the response aloud
-            await session.generate_reply(
-                instructions=f"The user '{sender}' typed this message (not spoken): {text}\n\nRespond naturally as if they had said it aloud."
-            )
+            # Use generate_reply with user_input to inject the typed message
+            # into the conversation as a proper user turn. This ensures the agent
+            # responds to this message, not the last voice input.
+            await session.generate_reply(user_input=text)
         except Exception as e:
             logger.warning(f"Failed to generate reply for typed message: {e}")
 
     await session.start(
         room=ctx.room,
-        agent=ForgeAssistant(),
+        agent=ForgeAssistant(context_block=context_block),
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
                 noise_cancellation=lambda params: noise_cancellation.BVCTelephony()

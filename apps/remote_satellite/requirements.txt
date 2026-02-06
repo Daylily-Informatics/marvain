@@ -1,0 +1,6 @@
+# Remote Satellite Daemon Dependencies
+websockets>=12.0
+aiohttp>=3.9.0
+click>=8.0.0
+pyyaml>=6.0
+
