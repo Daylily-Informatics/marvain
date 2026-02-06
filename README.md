@@ -279,4 +279,4 @@ python -m worker
   
 ## AND
 
-- I'd like marvain to be able to manage other agents on my and its behalf.
+- I'd like marvain to be able to manage other agents on my and its behalf. 
