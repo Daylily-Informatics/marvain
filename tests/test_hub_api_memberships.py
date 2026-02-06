@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import importlib.util
 import dataclasses
+import importlib.util
 import os
 import sys
 import unittest
@@ -241,9 +241,7 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
 
     def test_create_agent_requires_authentication(self) -> None:
         """Test POST /v1/agents returns 401 without auth."""
-        self.mod.authenticate_user_access_token = mock.Mock(
-            side_effect=PermissionError("Invalid token")
-        )
+        self.mod.authenticate_user_access_token = mock.Mock(side_effect=PermissionError("Invalid token"))
 
         r = self.client.post(
             "/v1/agents",

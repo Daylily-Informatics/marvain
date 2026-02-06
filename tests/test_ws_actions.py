@@ -1,9 +1,9 @@
 """Tests for WebSocket action handlers."""
+
 from __future__ import annotations
 
 import json
 import os
-import pytest
 from unittest.mock import MagicMock, patch
 
 # Set region before importing handler (boto3 needs it at import time)
@@ -16,6 +16,7 @@ os.environ.setdefault("ACTION_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/1
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "functions" / "ws_message"))
 
 
@@ -44,8 +45,12 @@ class TestPingAction:
         mock_mgmt.return_value.post_to_connection = mock_post
 
         event = {
-            "requestContext": {"connectionId": "conn-123", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
-            "body": json.dumps({"action": "ping"})
+            "requestContext": {
+                "connectionId": "conn-123",
+                "domainName": "test.execute-api.us-east-1.amazonaws.com",
+                "stage": "prod",
+            },
+            "body": json.dumps({"action": "ping"}),
         }
 
         result = handler(event, {})
@@ -74,8 +79,12 @@ class TestPingAction:
         mock_mgmt.return_value.post_to_connection = mock_post
 
         event = {
-            "requestContext": {"connectionId": "conn-123", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
-            "body": json.dumps({"action": "ping"})
+            "requestContext": {
+                "connectionId": "conn-123",
+                "domainName": "test.execute-api.us-east-1.amazonaws.com",
+                "stage": "prod",
+            },
+            "body": json.dumps({"action": "ping"}),
         }
 
         result = handler(event, {})
@@ -91,6 +100,7 @@ class TestPingAction:
     def test_expired_auth_returns_auth_expired(self, mock_mgmt, mock_db, mock_dynamo):
         """Connection with expired authenticated_at should get auth_expired error."""
         import time as _time
+
         from handler import handler
 
         mock_table = MagicMock()
@@ -110,8 +120,12 @@ class TestPingAction:
         mock_mgmt.return_value.post_to_connection = mock_post
 
         event = {
-            "requestContext": {"connectionId": "conn-expired", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
-            "body": json.dumps({"action": "ping"})
+            "requestContext": {
+                "connectionId": "conn-expired",
+                "domainName": "test.execute-api.us-east-1.amazonaws.com",
+                "stage": "prod",
+            },
+            "body": json.dumps({"action": "ping"}),
         }
 
         result = handler(event, {})
@@ -130,6 +144,7 @@ class TestPingAction:
     def test_fresh_auth_not_expired(self, mock_time, mock_mgmt, mock_db, mock_dynamo):
         """Connection with recent authenticated_at should proceed normally."""
         import time as _time
+
         from handler import handler
 
         now = int(_time.time())
@@ -151,8 +166,12 @@ class TestPingAction:
         mock_mgmt.return_value.post_to_connection = mock_post
 
         event = {
-            "requestContext": {"connectionId": "conn-fresh", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
-            "body": json.dumps({"action": "ping"})
+            "requestContext": {
+                "connectionId": "conn-fresh",
+                "domainName": "test.execute-api.us-east-1.amazonaws.com",
+                "stage": "prod",
+            },
+            "body": json.dumps({"action": "ping"}),
         }
 
         result = handler(event, {})
@@ -203,8 +222,12 @@ class TestListActions:
             mock_mgmt.return_value.post_to_connection = mock_post
 
             event = {
-                "requestContext": {"connectionId": "conn-123", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
-                "body": json.dumps({"action": "list_actions", "agent_id": "agent-xyz"})
+                "requestContext": {
+                    "connectionId": "conn-123",
+                    "domainName": "test.execute-api.us-east-1.amazonaws.com",
+                    "stage": "prod",
+                },
+                "body": json.dumps({"action": "list_actions", "agent_id": "agent-xyz"}),
             }
 
             result = handler(event, {})
@@ -233,11 +256,15 @@ class TestListActions:
         mock_mgmt.return_value.post_to_connection = mock_post
 
         event = {
-            "requestContext": {"connectionId": "conn-123", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
-            "body": json.dumps({"action": "list_actions"})  # No agent_id
+            "requestContext": {
+                "connectionId": "conn-123",
+                "domainName": "test.execute-api.us-east-1.amazonaws.com",
+                "stage": "prod",
+            },
+            "body": json.dumps({"action": "list_actions"}),  # No agent_id
         }
 
-        result = handler(event, {})
+        handler(event, {})
 
         sent_data = json.loads(mock_post.call_args[1]["Data"].decode())
         assert sent_data["type"] == "list_actions"
@@ -261,7 +288,12 @@ class TestApproveAction:
 
         mock_table = MagicMock()
         mock_table.get_item.return_value = {
-            "Item": {"connection_id": "conn-123", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
+            "Item": {
+                "connection_id": "conn-123",
+                "status": "authenticated",
+                "principal_type": "user",
+                "user_id": "user-abc",
+            }
         }
         mock_dynamo.Table.return_value = mock_table
 
@@ -278,8 +310,12 @@ class TestApproveAction:
             mock_mgmt.return_value.post_to_connection = mock_post
 
             event = {
-                "requestContext": {"connectionId": "conn-123", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
-                "body": json.dumps({"action": "approve_action", "action_id": "act-1"})
+                "requestContext": {
+                    "connectionId": "conn-123",
+                    "domainName": "test.execute-api.us-east-1.amazonaws.com",
+                    "stage": "prod",
+                },
+                "body": json.dumps({"action": "approve_action", "action_id": "act-1"}),
             }
 
             result = handler(event, {})
@@ -301,7 +337,12 @@ class TestApproveAction:
 
         mock_table = MagicMock()
         mock_table.get_item.return_value = {
-            "Item": {"connection_id": "conn-123", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
+            "Item": {
+                "connection_id": "conn-123",
+                "status": "authenticated",
+                "principal_type": "user",
+                "user_id": "user-abc",
+            }
         }
         mock_dynamo.Table.return_value = mock_table
 
@@ -316,11 +357,15 @@ class TestApproveAction:
             mock_mgmt.return_value.post_to_connection = mock_post
 
             event = {
-                "requestContext": {"connectionId": "conn-123", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
-                "body": json.dumps({"action": "approve_action", "action_id": "act-1"})
+                "requestContext": {
+                    "connectionId": "conn-123",
+                    "domainName": "test.execute-api.us-east-1.amazonaws.com",
+                    "stage": "prod",
+                },
+                "body": json.dumps({"action": "approve_action", "action_id": "act-1"}),
             }
 
-            result = handler(event, {})
+            handler(event, {})
 
             sent_data = json.loads(mock_post.call_args[1]["Data"].decode())
             assert sent_data["ok"] is False
@@ -341,7 +386,12 @@ class TestRejectAction:
 
         mock_table = MagicMock()
         mock_table.get_item.return_value = {
-            "Item": {"connection_id": "conn-123", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
+            "Item": {
+                "connection_id": "conn-123",
+                "status": "authenticated",
+                "principal_type": "user",
+                "user_id": "user-abc",
+            }
         }
         mock_dynamo.Table.return_value = mock_table
 
@@ -358,8 +408,12 @@ class TestRejectAction:
             mock_mgmt.return_value.post_to_connection = mock_post
 
             event = {
-                "requestContext": {"connectionId": "conn-123", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
-                "body": json.dumps({"action": "reject_action", "action_id": "act-1", "reason": "Not needed"})
+                "requestContext": {
+                    "connectionId": "conn-123",
+                    "domainName": "test.execute-api.us-east-1.amazonaws.com",
+                    "stage": "prod",
+                },
+                "body": json.dumps({"action": "reject_action", "action_id": "act-1", "reason": "Not needed"}),
             }
 
             result = handler(event, {})
@@ -385,7 +439,13 @@ class TestSubscribePresence:
 
         mock_table = MagicMock()
         mock_table.get_item.return_value = {
-            "Item": {"connection_id": "conn-123", "status": "authenticated", "principal_type": "user", "user_id": "user-abc", "subscriptions": []}
+            "Item": {
+                "connection_id": "conn-123",
+                "status": "authenticated",
+                "principal_type": "user",
+                "user_id": "user-abc",
+                "subscriptions": [],
+            }
         }
         mock_dynamo.Table.return_value = mock_table
 
@@ -394,8 +454,12 @@ class TestSubscribePresence:
             mock_mgmt.return_value.post_to_connection = mock_post
 
             event = {
-                "requestContext": {"connectionId": "conn-123", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
-                "body": json.dumps({"action": "subscribe_presence", "agent_id": "agent-xyz", "space_id": "space-1"})
+                "requestContext": {
+                    "connectionId": "conn-123",
+                    "domainName": "test.execute-api.us-east-1.amazonaws.com",
+                    "stage": "prod",
+                },
+                "body": json.dumps({"action": "subscribe_presence", "agent_id": "agent-xyz", "space_id": "space-1"}),
             }
 
             result = handler(event, {})
@@ -422,7 +486,13 @@ class TestSubscribeEvents:
 
         mock_table = MagicMock()
         mock_table.get_item.return_value = {
-            "Item": {"connection_id": "conn-123", "status": "authenticated", "principal_type": "user", "user_id": "user-abc", "subscriptions": []}
+            "Item": {
+                "connection_id": "conn-123",
+                "status": "authenticated",
+                "principal_type": "user",
+                "user_id": "user-abc",
+                "subscriptions": [],
+            }
         }
         mock_dynamo.Table.return_value = mock_table
 
@@ -431,8 +501,12 @@ class TestSubscribeEvents:
             mock_mgmt.return_value.post_to_connection = mock_post
 
             event = {
-                "requestContext": {"connectionId": "conn-123", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
-                "body": json.dumps({"action": "subscribe_events", "agent_id": "agent-xyz"})
+                "requestContext": {
+                    "connectionId": "conn-123",
+                    "domainName": "test.execute-api.us-east-1.amazonaws.com",
+                    "stage": "prod",
+                },
+                "body": json.dumps({"action": "subscribe_events", "agent_id": "agent-xyz"}),
             }
 
             result = handler(event, {})
@@ -456,7 +530,13 @@ class TestSubscribeEvents:
 
         mock_table = MagicMock()
         mock_table.get_item.return_value = {
-            "Item": {"connection_id": "conn-123", "status": "authenticated", "principal_type": "user", "user_id": "user-abc", "subscriptions": []}
+            "Item": {
+                "connection_id": "conn-123",
+                "status": "authenticated",
+                "principal_type": "user",
+                "user_id": "user-abc",
+                "subscriptions": [],
+            }
         }
         mock_dynamo.Table.return_value = mock_table
 
@@ -465,8 +545,12 @@ class TestSubscribeEvents:
             mock_mgmt.return_value.post_to_connection = mock_post
 
             event = {
-                "requestContext": {"connectionId": "conn-123", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
-                "body": json.dumps({"action": "subscribe_events", "agent_id": "agent-xyz", "space_id": "space-1"})
+                "requestContext": {
+                    "connectionId": "conn-123",
+                    "domainName": "test.execute-api.us-east-1.amazonaws.com",
+                    "stage": "prod",
+                },
+                "body": json.dumps({"action": "subscribe_events", "agent_id": "agent-xyz", "space_id": "space-1"}),
             }
 
             result = handler(event, {})
@@ -487,7 +571,12 @@ class TestSubscribeEvents:
 
         mock_table = MagicMock()
         mock_table.get_item.return_value = {
-            "Item": {"connection_id": "conn-123", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
+            "Item": {
+                "connection_id": "conn-123",
+                "status": "authenticated",
+                "principal_type": "user",
+                "user_id": "user-abc",
+            }
         }
         mock_dynamo.Table.return_value = mock_table
 
@@ -495,8 +584,12 @@ class TestSubscribeEvents:
         mock_mgmt.return_value.post_to_connection = mock_post
 
         event = {
-            "requestContext": {"connectionId": "conn-123", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
-            "body": json.dumps({"action": "subscribe_events"})  # Missing agent_id
+            "requestContext": {
+                "connectionId": "conn-123",
+                "domainName": "test.execute-api.us-east-1.amazonaws.com",
+                "stage": "prod",
+            },
+            "body": json.dumps({"action": "subscribe_events"}),  # Missing agent_id
         }
 
         result = handler(event, {})
@@ -516,7 +609,12 @@ class TestSubscribeEvents:
 
         mock_table = MagicMock()
         mock_table.get_item.return_value = {
-            "Item": {"connection_id": "conn-123", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
+            "Item": {
+                "connection_id": "conn-123",
+                "status": "authenticated",
+                "principal_type": "user",
+                "user_id": "user-abc",
+            }
         }
         mock_dynamo.Table.return_value = mock_table
 
@@ -525,8 +623,12 @@ class TestSubscribeEvents:
             mock_mgmt.return_value.post_to_connection = mock_post
 
             event = {
-                "requestContext": {"connectionId": "conn-123", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
-                "body": json.dumps({"action": "subscribe_events", "agent_id": "agent-xyz"})
+                "requestContext": {
+                    "connectionId": "conn-123",
+                    "domainName": "test.execute-api.us-east-1.amazonaws.com",
+                    "stage": "prod",
+                },
+                "body": json.dumps({"action": "subscribe_events", "agent_id": "agent-xyz"}),
             }
 
             result = handler(event, {})
@@ -554,13 +656,16 @@ class TestCmdPingBroadcast:
         # Mock DynamoDB table - user's connection
         mock_table = MagicMock()
         mock_table.get_item.return_value = {
-            "Item": {"connection_id": "user-conn", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
+            "Item": {
+                "connection_id": "user-conn",
+                "status": "authenticated",
+                "principal_type": "user",
+                "user_id": "user-abc",
+            }
         }
         # Mock GSI query to find device connections (used by _get_device_connections)
         mock_table.query.return_value = {
-            "Items": [
-                {"connection_id": "device-conn-1", "device_id": "device-xyz", "status": "authenticated"}
-            ]
+            "Items": [{"connection_id": "device-conn-1", "device_id": "device-xyz", "status": "authenticated"}]
         }
         mock_dynamo.Table.return_value = mock_table
 
@@ -574,8 +679,12 @@ class TestCmdPingBroadcast:
             mock_mgmt.return_value.post_to_connection = mock_post
 
             event = {
-                "requestContext": {"connectionId": "user-conn", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
-                "body": json.dumps({"action": "cmd.ping", "target_device_id": "device-xyz"})
+                "requestContext": {
+                    "connectionId": "user-conn",
+                    "domainName": "test.execute-api.us-east-1.amazonaws.com",
+                    "stage": "prod",
+                },
+                "body": json.dumps({"action": "cmd.ping", "target_device_id": "device-xyz"}),
             }
 
             result = handler(event, {})
@@ -610,7 +719,12 @@ class TestCmdPingBroadcast:
 
         mock_table = MagicMock()
         mock_table.get_item.return_value = {
-            "Item": {"connection_id": "user-conn", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
+            "Item": {
+                "connection_id": "user-conn",
+                "status": "authenticated",
+                "principal_type": "user",
+                "user_id": "user-abc",
+            }
         }
         # No device connections found
         mock_table.scan.return_value = {"Items": []}
@@ -625,8 +739,12 @@ class TestCmdPingBroadcast:
             mock_mgmt.return_value.post_to_connection = mock_post
 
             event = {
-                "requestContext": {"connectionId": "user-conn", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
-                "body": json.dumps({"action": "cmd.ping", "target_device_id": "device-xyz"})
+                "requestContext": {
+                    "connectionId": "user-conn",
+                    "domainName": "test.execute-api.us-east-1.amazonaws.com",
+                    "stage": "prod",
+                },
+                "body": json.dumps({"action": "cmd.ping", "target_device_id": "device-xyz"}),
             }
 
             result = handler(event, {})
@@ -654,7 +772,12 @@ class TestCmdRunActionBroadcast:
 
         mock_table = MagicMock()
         mock_table.get_item.return_value = {
-            "Item": {"connection_id": "user-conn", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
+            "Item": {
+                "connection_id": "user-conn",
+                "status": "authenticated",
+                "principal_type": "user",
+                "user_id": "user-abc",
+            }
         }
         # Mock GSI query to find device connections
         mock_table.query.return_value = {
@@ -671,13 +794,19 @@ class TestCmdRunActionBroadcast:
             mock_mgmt.return_value.post_to_connection = mock_post
 
             event = {
-                "requestContext": {"connectionId": "user-conn", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
-                "body": json.dumps({
-                    "action": "cmd.run_action",
-                    "target_device_id": "device-xyz",
-                    "kind": "status",
-                    "payload": {"include_disk": True}
-                })
+                "requestContext": {
+                    "connectionId": "user-conn",
+                    "domainName": "test.execute-api.us-east-1.amazonaws.com",
+                    "stage": "prod",
+                },
+                "body": json.dumps(
+                    {
+                        "action": "cmd.run_action",
+                        "target_device_id": "device-xyz",
+                        "kind": "status",
+                        "payload": {"include_disk": True},
+                    }
+                ),
             }
 
             result = handler(event, {})
@@ -707,7 +836,12 @@ class TestCmdRunActionBroadcast:
 
         mock_table = MagicMock()
         mock_table.get_item.return_value = {
-            "Item": {"connection_id": "user-conn", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
+            "Item": {
+                "connection_id": "user-conn",
+                "status": "authenticated",
+                "principal_type": "user",
+                "user_id": "user-abc",
+            }
         }
         mock_table.scan.return_value = {"Items": []}  # No device connections
         mock_dynamo.Table.return_value = mock_table
@@ -721,15 +855,15 @@ class TestCmdRunActionBroadcast:
             mock_mgmt.return_value.post_to_connection = mock_post
 
             event = {
-                "requestContext": {"connectionId": "user-conn", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
-                "body": json.dumps({
-                    "action": "cmd.run_action",
-                    "target_device_id": "device-xyz",
-                    "kind": "status"
-                })
+                "requestContext": {
+                    "connectionId": "user-conn",
+                    "domainName": "test.execute-api.us-east-1.amazonaws.com",
+                    "stage": "prod",
+                },
+                "body": json.dumps({"action": "cmd.run_action", "target_device_id": "device-xyz", "kind": "status"}),
             }
 
-            result = handler(event, {})
+            handler(event, {})
 
             sent_data = json.loads(mock_post.call_args[1]["Data"].decode())
             assert sent_data["ok"] is False
@@ -751,7 +885,12 @@ class TestCmdConfigBroadcast:
 
         mock_table = MagicMock()
         mock_table.get_item.return_value = {
-            "Item": {"connection_id": "user-conn", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
+            "Item": {
+                "connection_id": "user-conn",
+                "status": "authenticated",
+                "principal_type": "user",
+                "user_id": "user-abc",
+            }
         }
         # Mock GSI query to find device connections
         mock_table.query.return_value = {
@@ -768,12 +907,18 @@ class TestCmdConfigBroadcast:
             mock_mgmt.return_value.post_to_connection = mock_post
 
             event = {
-                "requestContext": {"connectionId": "user-conn", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
-                "body": json.dumps({
-                    "action": "cmd.config",
-                    "target_device_id": "device-xyz",
-                    "config": {"log_level": "DEBUG", "heartbeat_interval": 30}
-                })
+                "requestContext": {
+                    "connectionId": "user-conn",
+                    "domainName": "test.execute-api.us-east-1.amazonaws.com",
+                    "stage": "prod",
+                },
+                "body": json.dumps(
+                    {
+                        "action": "cmd.config",
+                        "target_device_id": "device-xyz",
+                        "config": {"log_level": "DEBUG", "heartbeat_interval": 30},
+                    }
+                ),
             }
 
             result = handler(event, {})
@@ -792,4 +937,3 @@ class TestCmdConfigBroadcast:
             user_data = json.loads(user_call[1]["Data"].decode())
             assert user_data["ok"] is True
             assert user_data["device_connections"] == 1
-

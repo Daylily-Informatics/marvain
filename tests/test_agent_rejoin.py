@@ -16,7 +16,6 @@ import dataclasses
 import importlib.util
 import json
 import os
-import re
 import sys
 import unittest
 from pathlib import Path
@@ -74,6 +73,7 @@ class TestEphemeralRoomNames(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.mod = _load_hub_api_app_module()
         from fastapi.testclient import TestClient
+
         cls.client = TestClient(cls.mod.api_app)
 
     def setUp(self) -> None:
@@ -172,6 +172,7 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
                     def decorator(fn):
                         self._handlers[event] = fn
                         return fn
+
                     return decorator
 
             async def disconnect(self):
@@ -196,9 +197,11 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
                     self._handlers[event] = cb
                     return None
                 else:
+
                     def decorator(fn):
                         self._handlers[event] = fn
                         return fn
+
                     return decorator
 
             async def start(self, **kwargs):
@@ -212,8 +215,9 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
         ctx = FakeCtx(room)
 
         # Patch out the real session + model construction.
-        with mock.patch.object(worker, "AgentSession", FakeSession), mock.patch.object(
-            worker.openai.realtime, "RealtimeModel", lambda **kwargs: object()
+        with (
+            mock.patch.object(worker, "AgentSession", FakeSession),
+            mock.patch.object(worker.openai.realtime, "RealtimeModel", lambda **kwargs: object()),
         ):
 
             async def _run():
@@ -263,6 +267,7 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
                     def decorator(fn):
                         self._handlers[event] = fn
                         return fn
+
                     return decorator
 
             async def disconnect(self):
@@ -286,9 +291,11 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
                     self._handlers[event] = cb
                     return None
                 else:
+
                     def decorator(fn):
                         self._handlers[event] = fn
                         return fn
+
                     return decorator
 
             async def start(self, **kwargs):
@@ -297,8 +304,9 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
             async def generate_reply(self, **kwargs):
                 return None
 
-        with mock.patch.object(worker, "AgentSession", FakeSession), mock.patch.object(
-            worker.openai.realtime, "RealtimeModel", lambda **kwargs: object()
+        with (
+            mock.patch.object(worker, "AgentSession", FakeSession),
+            mock.patch.object(worker.openai.realtime, "RealtimeModel", lambda **kwargs: object()),
         ):
 
             async def _run_two():
@@ -312,4 +320,3 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

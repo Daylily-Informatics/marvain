@@ -10,6 +10,7 @@ Architecture:
 - lambda_handler.py: imports from api_app.py
 - run_local.py: imports from app.py
 """
+
 from __future__ import annotations
 
 import json
@@ -20,10 +21,6 @@ import uuid
 from typing import Any, Optional
 
 import boto3
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from pydantic import BaseModel, Field
-from starlette.middleware.sessions import SessionMiddleware
-
 from agent_hub.audit import append_audit_entry
 from agent_hub.auth import (
     AuthenticatedAgent,
@@ -41,7 +38,9 @@ from agent_hub.auth import (
     require_scope,
     revoke_agent_token,
 )
+from agent_hub.broadcast import broadcast_event
 from agent_hub.config import load_config
+from agent_hub.livekit_tokens import mint_livekit_join_token
 from agent_hub.memberships import (
     check_agent_permission,
     claim_first_owner,
@@ -51,12 +50,13 @@ from agent_hub.memberships import (
     revoke_membership,
     update_membership,
 )
-from agent_hub.livekit_tokens import mint_livekit_join_token
-from agent_hub.broadcast import broadcast_event
 from agent_hub.openai_http import call_embeddings
 from agent_hub.policy import is_agent_disabled, is_privacy_mode
 from agent_hub.rds_data import RdsData, RdsDataEnv
 from agent_hub.secrets import get_secret_json
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from pydantic import BaseModel, Field
+from starlette.middleware.sessions import SessionMiddleware
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -107,7 +107,9 @@ _s3: Any = None
 def _get_db() -> RdsData:
     global _db
     if _db is None:
-        _db = RdsData(RdsDataEnv(resource_arn=_cfg.db_resource_arn, secret_arn=_cfg.db_secret_arn, database=_cfg.db_name))
+        _db = RdsData(
+            RdsDataEnv(resource_arn=_cfg.db_resource_arn, secret_arn=_cfg.db_secret_arn, database=_cfg.db_name)
+        )
     return _db
 
 
@@ -170,6 +172,7 @@ def get_config():
 # -----------------------------
 # Pydantic Models
 # -----------------------------
+
 
 class BootstrapIn(BaseModel):
     agent_name: str = Field(default="Forge")
@@ -273,6 +276,7 @@ class PresignIn(BaseModel):
 # Helper Functions
 # -----------------------------
 
+
 def _require_agent_role(*, user: AuthenticatedUser, agent_id: str, required_role: str) -> None:
     if not check_agent_permission(_get_db(), agent_id=agent_id, user_id=user.user_id, required_role=required_role):
         raise HTTPException(status_code=403, detail="Forbidden")
@@ -355,6 +359,7 @@ async def _mint_livekit_token_for_user(*, user: AuthenticatedUser, space_id: str
 # API Routes
 # -----------------------------
 
+
 @api_app.get("/health")
 def health() -> dict[str, Any]:
     return {"ok": True, "stage": _cfg.stage}
@@ -408,8 +413,11 @@ def create_agent(body: CreateAgentIn, user: AuthenticatedUser = Depends(get_user
 
     if _cfg.audit_bucket:
         append_audit_entry(
-            _get_db(), bucket=_cfg.audit_bucket, agent_id=agent_id,
-            entry_type="agent_created", entry={"user_id": user.user_id, "name": body.name},
+            _get_db(),
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
+            entry_type="agent_created",
+            entry={"user_id": user.user_id, "name": body.name},
         )
 
     return AgentOut(
@@ -450,7 +458,9 @@ def update_agent(agent_id: str, body: UpdateAgentIn, user: AuthenticatedUser = D
 
     if _cfg.audit_bucket:
         append_audit_entry(
-            _get_db(), bucket=_cfg.audit_bucket, agent_id=agent_id,
+            _get_db(),
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
             entry_type="agent_updated",
             entry={"user_id": user.user_id, "name": body.name, "disabled": body.disabled},
         )
@@ -466,8 +476,13 @@ def update_agent(agent_id: str, body: UpdateAgentIn, user: AuthenticatedUser = D
     if not rows:
         raise HTTPException(status_code=404, detail="Agent not found")
     r = rows[0]
-    return AgentOut(agent_id=agent_id, name=r["name"], role=r["role"],
-                    relationship_label=r.get("relationship_label"), disabled=r["disabled"])
+    return AgentOut(
+        agent_id=agent_id,
+        name=r["name"],
+        role=r["role"],
+        relationship_label=r.get("relationship_label"),
+        disabled=r["disabled"],
+    )
 
 
 @api_app.post("/v1/livekit/token", response_model=LiveKitTokenOut)
@@ -484,8 +499,11 @@ def claim_owner(agent_id: str, user: AuthenticatedUser = Depends(get_user)) -> d
         raise HTTPException(status_code=409, detail=str(e))
     if _cfg.audit_bucket:
         append_audit_entry(
-            _get_db(), bucket=_cfg.audit_bucket, agent_id=agent_id,
-            entry_type="owner_claimed", entry={"user_id": user.user_id},
+            _get_db(),
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
+            entry_type="owner_claimed",
+            entry={"user_id": user.user_id},
         )
     return {"agent_id": agent_id, "user_id": user.user_id, "role": "owner"}
 
@@ -510,35 +528,63 @@ def add_member(agent_id: str, body: GrantMemberIn, user: AuthenticatedUser = Dep
         raise HTTPException(status_code=500, detail="COGNITO_USER_POOL_ID not configured")
     try:
         cognito_sub, resolved_email = lookup_cognito_user_by_email(
-            user_pool_id=_cfg.cognito_user_pool_id, email=body.email,
+            user_pool_id=_cfg.cognito_user_pool_id,
+            email=body.email,
         )
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     user_id = ensure_user_row(_get_db(), cognito_sub=cognito_sub, email=(resolved_email or body.email))
     try:
-        grant_membership(_get_db(), agent_id=agent_id, user_id=user_id, role=body.role, relationship_label=body.relationship_label)
+        grant_membership(
+            _get_db(), agent_id=agent_id, user_id=user_id, role=body.role, relationship_label=body.relationship_label
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if _cfg.audit_bucket:
         append_audit_entry(
-            _get_db(), bucket=_cfg.audit_bucket, agent_id=agent_id, entry_type="member_granted",
-            entry={"by_user_id": user.user_id, "user_id": user_id, "cognito_sub": cognito_sub,
-                   "email": (resolved_email or body.email), "role": body.role, "relationship_label": body.relationship_label},
+            _get_db(),
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
+            entry_type="member_granted",
+            entry={
+                "by_user_id": user.user_id,
+                "user_id": user_id,
+                "cognito_sub": cognito_sub,
+                "email": (resolved_email or body.email),
+                "role": body.role,
+                "relationship_label": body.relationship_label,
+            },
         )
-    return AgentMemberOut(user_id=user_id, cognito_sub=cognito_sub, email=(resolved_email or body.email),
-                          role=body.role, relationship_label=body.relationship_label)
+    return AgentMemberOut(
+        user_id=user_id,
+        cognito_sub=cognito_sub,
+        email=(resolved_email or body.email),
+        role=body.role,
+        relationship_label=body.relationship_label,
+    )
 
 
 @api_app.patch("/v1/agents/{agent_id}/memberships/{member_user_id}")
-def patch_member(agent_id: str, member_user_id: str, body: UpdateMemberIn, user: AuthenticatedUser = Depends(get_user)) -> dict[str, Any]:
+def patch_member(
+    agent_id: str, member_user_id: str, body: UpdateMemberIn, user: AuthenticatedUser = Depends(get_user)
+) -> dict[str, Any]:
     _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
     try:
-        update_membership(_get_db(), agent_id=agent_id, user_id=member_user_id, role=body.role, relationship_label=body.relationship_label)
+        update_membership(
+            _get_db(),
+            agent_id=agent_id,
+            user_id=member_user_id,
+            role=body.role,
+            relationship_label=body.relationship_label,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if _cfg.audit_bucket:
         append_audit_entry(
-            _get_db(), bucket=_cfg.audit_bucket, agent_id=agent_id, entry_type="member_updated",
+            _get_db(),
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
+            entry_type="member_updated",
             entry={"by_user_id": user.user_id, "user_id": member_user_id, "role": body.role},
         )
     return {"ok": True}
@@ -550,7 +596,10 @@ def delete_member(agent_id: str, member_user_id: str, user: AuthenticatedUser = 
     revoke_membership(_get_db(), agent_id=agent_id, user_id=member_user_id)
     if _cfg.audit_bucket:
         append_audit_entry(
-            _get_db(), bucket=_cfg.audit_bucket, agent_id=agent_id, entry_type="member_revoked",
+            _get_db(),
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
+            entry_type="member_revoked",
             entry={"by_user_id": user.user_id, "user_id": member_user_id},
         )
     return {"ok": True}
@@ -567,12 +616,21 @@ def register_device(body: RegisterDeviceIn, user: AuthenticatedUser = Depends(ge
     _get_db().execute(
         """INSERT INTO devices(device_id, agent_id, name, scopes, capabilities, token_hash)
            VALUES (:device_id::uuid, :agent_id::uuid, :name, :scopes::jsonb, :capabilities::jsonb, :token_hash)""",
-        {"device_id": device_id, "agent_id": body.agent_id, "name": body.name or "device",
-         "scopes": json.dumps(body.scopes), "capabilities": json.dumps(body.capabilities), "token_hash": token_hash},
+        {
+            "device_id": device_id,
+            "agent_id": body.agent_id,
+            "name": body.name or "device",
+            "scopes": json.dumps(body.scopes),
+            "capabilities": json.dumps(body.capabilities),
+            "token_hash": token_hash,
+        },
     )
     if _cfg.audit_bucket:
         append_audit_entry(
-            _get_db(), bucket=_cfg.audit_bucket, agent_id=body.agent_id, entry_type="device_registered",
+            _get_db(),
+            bucket=_cfg.audit_bucket,
+            agent_id=body.agent_id,
+            entry_type="device_registered",
             entry={"device_id": device_id, "name": body.name, "scopes": body.scopes, "by_user_id": user.user_id},
         )
     return RegisterDeviceOut(device_id=device_id, device_token=token)
@@ -589,26 +647,39 @@ def admin_bootstrap(body: BootstrapIn) -> BootstrapOut:
     try:
         _get_db().execute(
             "INSERT INTO agents(agent_id, name, disabled) VALUES (:agent_id::uuid, :name, false)",
-            {"agent_id": agent_id, "name": body.agent_name}, transaction_id=tx,
+            {"agent_id": agent_id, "name": body.agent_name},
+            transaction_id=tx,
         )
         _get_db().execute(
             "INSERT INTO spaces(space_id, agent_id, name, privacy_mode) VALUES (:space_id::uuid, :agent_id::uuid, :name, false)",
-            {"space_id": space_id, "agent_id": agent_id, "name": body.default_space_name}, transaction_id=tx,
+            {"space_id": space_id, "agent_id": agent_id, "name": body.default_space_name},
+            transaction_id=tx,
         )
         _get_db().execute(
             """INSERT INTO devices(device_id, agent_id, name, scopes, capabilities, token_hash)
                VALUES (:device_id::uuid, :agent_id::uuid, :name, :scopes::jsonb, :capabilities::jsonb, :token_hash)""",
-            {"device_id": device_id, "agent_id": agent_id, "name": "primary",
-             "scopes": json.dumps(["events:write", "memory:read", "memory:delete", "spaces:write"]),
-             "capabilities": json.dumps({"kind": "admin"}), "token_hash": token_hash}, transaction_id=tx,
+            {
+                "device_id": device_id,
+                "agent_id": agent_id,
+                "name": "primary",
+                "scopes": json.dumps(["events:write", "memory:read", "memory:delete", "spaces:write"]),
+                "capabilities": json.dumps({"kind": "admin"}),
+                "token_hash": token_hash,
+            },
+            transaction_id=tx,
         )
         _get_db().commit(tx)
     except Exception:
         _get_db().rollback(tx)
         raise
     if _cfg.audit_bucket:
-        append_audit_entry(_get_db(), bucket=_cfg.audit_bucket, agent_id=agent_id,
-                           entry_type="bootstrap", entry={"space_id": space_id, "device_id": device_id})
+        append_audit_entry(
+            _get_db(),
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
+            entry_type="bootstrap",
+            entry={"space_id": space_id, "device_id": device_id},
+        )
     return BootstrapOut(agent_id=agent_id, space_id=space_id, device_id=device_id, device_token=token)
 
 
@@ -620,26 +691,46 @@ def admin_register_device(body: RegisterDeviceIn) -> RegisterDeviceOut:
     _get_db().execute(
         """INSERT INTO devices(device_id, agent_id, name, scopes, capabilities, token_hash)
            VALUES (:device_id::uuid, :agent_id::uuid, :name, :scopes::jsonb, :capabilities::jsonb, :token_hash)""",
-        {"device_id": device_id, "agent_id": body.agent_id, "name": body.name or "device",
-         "scopes": json.dumps(body.scopes), "capabilities": json.dumps(body.capabilities), "token_hash": token_hash},
+        {
+            "device_id": device_id,
+            "agent_id": body.agent_id,
+            "name": body.name or "device",
+            "scopes": json.dumps(body.scopes),
+            "capabilities": json.dumps(body.capabilities),
+            "token_hash": token_hash,
+        },
     )
     if _cfg.audit_bucket:
-        append_audit_entry(_get_db(), bucket=_cfg.audit_bucket, agent_id=body.agent_id,
-                           entry_type="device_registered", entry={"device_id": device_id, "name": body.name, "scopes": body.scopes})
+        append_audit_entry(
+            _get_db(),
+            bucket=_cfg.audit_bucket,
+            agent_id=body.agent_id,
+            entry_type="device_registered",
+            entry={"device_id": device_id, "name": body.name, "scopes": body.scopes},
+        )
     return RegisterDeviceOut(device_id=device_id, device_token=token)
 
 
 @api_app.post("/v1/admin/spaces/{space_id}/privacy", dependencies=[Depends(require_admin)])
 def admin_set_privacy(space_id: str, body: SetPrivacyIn) -> dict[str, Any]:
-    rows = _get_db().query("SELECT agent_id::TEXT as agent_id FROM spaces WHERE space_id = :space_id::uuid LIMIT 1", {"space_id": space_id})
+    rows = _get_db().query(
+        "SELECT agent_id::TEXT as agent_id FROM spaces WHERE space_id = :space_id::uuid LIMIT 1", {"space_id": space_id}
+    )
     if not rows:
         raise HTTPException(status_code=404, detail="Space not found")
     agent_id = rows[0]["agent_id"]
-    _get_db().execute("UPDATE spaces SET privacy_mode = :privacy_mode WHERE space_id = :space_id::uuid",
-                      {"space_id": space_id, "privacy_mode": body.privacy_mode})
+    _get_db().execute(
+        "UPDATE spaces SET privacy_mode = :privacy_mode WHERE space_id = :space_id::uuid",
+        {"space_id": space_id, "privacy_mode": body.privacy_mode},
+    )
     if _cfg.audit_bucket:
-        append_audit_entry(_get_db(), bucket=_cfg.audit_bucket, agent_id=agent_id,
-                           entry_type="privacy_mode_set", entry={"space_id": space_id, "privacy_mode": body.privacy_mode})
+        append_audit_entry(
+            _get_db(),
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
+            entry_type="privacy_mode_set",
+            entry={"space_id": space_id, "privacy_mode": body.privacy_mode},
+        )
     return {"space_id": space_id, "privacy_mode": body.privacy_mode}
 
 
@@ -655,18 +746,38 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
         """INSERT INTO events(event_id, agent_id, space_id, device_id, person_id, type, payload)
            VALUES (:event_id::uuid, :agent_id::uuid, :space_id::uuid, :device_id::uuid,
                    CASE WHEN :person_id IS NULL THEN NULL ELSE :person_id::uuid END, :type, :payload::jsonb)""",
-        {"event_id": event_id, "agent_id": device.agent_id, "space_id": body.space_id, "device_id": device.device_id,
-         "person_id": body.person_id, "type": body.type, "payload": json.dumps(body.payload)},
+        {
+            "event_id": event_id,
+            "agent_id": device.agent_id,
+            "space_id": body.space_id,
+            "device_id": device.device_id,
+            "person_id": body.person_id,
+            "type": body.type,
+            "payload": json.dumps(body.payload),
+        },
     )
     queued = False
     if body.type == "transcript_chunk" and _cfg.transcript_queue_url:
-        _get_sqs().send_message(QueueUrl=_cfg.transcript_queue_url, MessageBody=json.dumps({
-            "event_id": event_id, "agent_id": device.agent_id, "space_id": body.space_id, "device_id": device.device_id,
-        }))
+        _get_sqs().send_message(
+            QueueUrl=_cfg.transcript_queue_url,
+            MessageBody=json.dumps(
+                {
+                    "event_id": event_id,
+                    "agent_id": device.agent_id,
+                    "space_id": body.space_id,
+                    "device_id": device.device_id,
+                }
+            ),
+        )
         queued = True
     if _cfg.audit_bucket:
-        append_audit_entry(_get_db(), bucket=_cfg.audit_bucket, agent_id=device.agent_id,
-                           entry_type="event_ingested", entry={"event_id": event_id, "type": body.type, "space_id": body.space_id, "queued": queued})
+        append_audit_entry(
+            _get_db(),
+            bucket=_cfg.audit_bucket,
+            agent_id=device.agent_id,
+            entry_type="event_ingested",
+            entry={"event_id": event_id, "type": body.type, "space_id": body.space_id, "queued": queued},
+        )
 
     # Broadcast to subscribed WebSocket clients
     try:
@@ -705,11 +816,18 @@ def list_memories(limit: int = 50, device: AuthenticatedDevice = Depends(get_dev
 @api_app.delete("/v1/memories/{memory_id}")
 def delete_memory(memory_id: str, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
     require_scope(device, "memories:write")
-    _get_db().execute("DELETE FROM memories WHERE memory_id = :memory_id::uuid AND agent_id = :agent_id::uuid",
-                      {"memory_id": memory_id, "agent_id": device.agent_id})
+    _get_db().execute(
+        "DELETE FROM memories WHERE memory_id = :memory_id::uuid AND agent_id = :agent_id::uuid",
+        {"memory_id": memory_id, "agent_id": device.agent_id},
+    )
     if _cfg.audit_bucket:
-        append_audit_entry(_get_db(), bucket=_cfg.audit_bucket, agent_id=device.agent_id,
-                           entry_type="memory_deleted", entry={"memory_id": memory_id})
+        append_audit_entry(
+            _get_db(),
+            bucket=_cfg.audit_bucket,
+            agent_id=device.agent_id,
+            entry_type="memory_deleted",
+            entry={"memory_id": memory_id},
+        )
     return {"deleted": True, "memory_id": memory_id}
 
 
@@ -720,6 +838,7 @@ def delete_memory(memory_id: str, device: AuthenticatedDevice = Depends(get_devi
 
 class RecallIn(BaseModel):
     """Request body for semantic memory recall."""
+
     agent_id: str
     space_id: str | None = None
     query: str = Field(..., min_length=1, max_length=2000)
@@ -729,6 +848,7 @@ class RecallIn(BaseModel):
 
 class RecallMemoryOut(BaseModel):
     """A single recalled memory."""
+
     memory_id: str
     tier: str
     content: str
@@ -738,6 +858,7 @@ class RecallMemoryOut(BaseModel):
 
 class RecallOut(BaseModel):
     """Response for memory recall."""
+
     memories: list[RecallMemoryOut]
 
 
@@ -828,6 +949,7 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
 
 class SpaceEventOut(BaseModel):
     """A single event in a space."""
+
     event_id: str
     type: str
     person_id: str | None
@@ -837,6 +959,7 @@ class SpaceEventOut(BaseModel):
 
 class SpaceEventsOut(BaseModel):
     """Response for space events."""
+
     events: list[SpaceEventOut]
 
 
@@ -891,13 +1014,15 @@ def get_space_events(
             payload = json.loads(r.get("payload_json") or "{}")
         except Exception:
             payload = {}
-        events.append(SpaceEventOut(
-            event_id=r["event_id"],
-            type=r["type"],
-            person_id=r.get("person_id"),
-            payload=payload,
-            created_at=r["created_at"],
-        ))
+        events.append(
+            SpaceEventOut(
+                event_id=r["event_id"],
+                type=r["type"],
+                person_id=r.get("person_id"),
+                payload=payload,
+                created_at=r["created_at"],
+            )
+        )
 
     return SpaceEventsOut(events=events)
 
@@ -923,18 +1048,22 @@ def presign_upload(body: PresignIn, device: AuthenticatedDevice = Depends(get_de
 
 class HeartbeatIn(BaseModel):
     """Optional metadata to update on heartbeat."""
+
     metadata: dict[str, Any] | None = Field(default=None, description="Optional device metadata update")
 
 
 class HeartbeatOut(BaseModel):
     """Response for heartbeat."""
+
     ok: bool
     device_id: str
     last_heartbeat_at: str
 
 
 @api_app.post("/v1/devices/heartbeat", response_model=HeartbeatOut)
-def device_heartbeat(body: HeartbeatIn | None = None, device: AuthenticatedDevice = Depends(get_device)) -> HeartbeatOut:
+def device_heartbeat(
+    body: HeartbeatIn | None = None, device: AuthenticatedDevice = Depends(get_device)
+) -> HeartbeatOut:
     """Update device heartbeat timestamp and optionally metadata.
 
     This endpoint should be called periodically (every 15-30 seconds) by devices
@@ -1304,12 +1433,14 @@ def delegate_list_spaces(
     result = []
     for r in rows:
         if agent.allowed_spaces is None or r["space_id"] in agent.allowed_spaces:
-            result.append({
-                "space_id": r["space_id"],
-                "name": r.get("name"),
-                "privacy_mode": r.get("privacy_mode", False),
-                "created_at": r.get("created_at"),
-            })
+            result.append(
+                {
+                    "space_id": r["space_id"],
+                    "name": r.get("name"),
+                    "privacy_mode": r.get("privacy_mode", False),
+                    "created_at": r.get("created_at"),
+                }
+            )
 
     return result
 
@@ -1404,4 +1535,3 @@ def delegate_write_memory(
     )
 
     return {"memory_id": memory_id, "created": True}
-

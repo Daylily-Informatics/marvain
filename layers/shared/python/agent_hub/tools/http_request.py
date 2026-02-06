@@ -6,18 +6,19 @@ HTTP/HTTPS URLs are permitted.  Regardless of the allowlist, requests to
 cloud metadata endpoints, localhost, and RFC-1918 private ranges are
 always blocked to prevent SSRF.
 """
+
 from __future__ import annotations
 
 import ipaddress
 import json
 import logging
 import socket
-import urllib.request
 import urllib.error
+import urllib.request
 from typing import Any
 from urllib.parse import urlparse
 
-from .registry import ToolRegistry, ToolResult, ToolContext
+from .registry import ToolContext, ToolRegistry, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -116,10 +117,10 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
     # Validate headers
     if not isinstance(headers, dict):
         headers = {}
-    
+
     # Clamp timeout
     timeout = max(1, min(timeout, 60))
-    
+
     try:
         # Prepare request body
         data = None
@@ -132,43 +133,50 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
                 data = body.encode("utf-8")
             else:
                 data = str(body).encode("utf-8")
-        
+
         # Build request
         req = urllib.request.Request(url, data=data, method=method)
         for key, value in headers.items():
             req.add_header(str(key), str(value))
-        
+
         # Add user agent
         req.add_header("User-Agent", f"marvain-tool/{TOOL_NAME}")
-        
+
         # Execute request
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             status = resp.status
             resp_headers = dict(resp.headers)
             raw_body = resp.read(MAX_RESPONSE_SIZE)
-        
+
         # Try to decode as text
         try:
             body_text = raw_body.decode("utf-8")
         except UnicodeDecodeError:
             body_text = f"<binary data, {len(raw_body)} bytes>"
-        
-        return ToolResult(ok=True, data={
-            "status": status,
-            "headers": resp_headers,
-            "body": body_text,
-            "body_length": len(raw_body),
-        })
-        
+
+        return ToolResult(
+            ok=True,
+            data={
+                "status": status,
+                "headers": resp_headers,
+                "body": body_text,
+                "body_length": len(raw_body),
+            },
+        )
+
     except urllib.error.HTTPError as e:
         try:
             error_body = e.read(MAX_RESPONSE_SIZE).decode("utf-8", errors="replace")
         except Exception:
             error_body = ""
-        return ToolResult(ok=False, error=f"http_error_{e.code}", data={
-            "status": e.code,
-            "body": error_body[:1000],
-        })
+        return ToolResult(
+            ok=False,
+            error=f"http_error_{e.code}",
+            data={
+                "status": e.code,
+                "body": error_body[:1000],
+            },
+        )
     except urllib.error.URLError as e:
         return ToolResult(ok=False, error=f"url_error: {str(e.reason)}")
     except TimeoutError:
@@ -186,4 +194,3 @@ def register(registry: ToolRegistry) -> None:
         handler=_handler,
         description="Make HTTP/HTTPS requests to any external URL",
     )
-

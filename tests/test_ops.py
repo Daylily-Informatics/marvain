@@ -8,11 +8,11 @@ from unittest import mock
 
 from marvain_cli.config import ResolvedEnv
 from marvain_cli.ops import (
-    Ctx,
     GUI_DEFAULT_HOST,
     GUI_DEFAULT_PORT,
     GUI_LOG_FILENAME,
     GUI_PID_FILENAME,
+    Ctx,
     _get_gui_log_file,
     _get_gui_pid_file,
     _is_port_in_use,
@@ -97,7 +97,10 @@ class TestOps(unittest.TestCase):
             env=ResolvedEnv(env="dev", aws_profile="p", aws_region="r", stack_name="s", raw={}),
         )
 
-        with mock.patch("marvain_cli.ops._conda_preflight", return_value=0), mock.patch("marvain_cli.ops._eprint", side_effect=cap):
+        with (
+            mock.patch("marvain_cli.ops._conda_preflight", return_value=0),
+            mock.patch("marvain_cli.ops._eprint", side_effect=cap),
+        ):
             rc = sam_logs(ctx, dry_run=True, functions=["HubApiFunction"], tail=False, since="10m")
         self.assertEqual(rc, 0)
         joined = "\n".join(emitted)
@@ -105,7 +108,6 @@ class TestOps(unittest.TestCase):
         self.assertIn(" -s ", joined)
         self.assertIn("10min ago", joined)
         self.assertNotIn("--since", joined)
-
 
     def test_sam_logs_default_dry_run_does_not_use_name_flag(self) -> None:
         emitted: list[str] = []
@@ -119,8 +121,9 @@ class TestOps(unittest.TestCase):
             env=ResolvedEnv(env="dev", aws_profile="p", aws_region="r", stack_name="s", raw={}),
         )
 
-        with mock.patch("marvain_cli.ops._conda_preflight", return_value=0), mock.patch(
-            "marvain_cli.ops._eprint", side_effect=cap
+        with (
+            mock.patch("marvain_cli.ops._conda_preflight", return_value=0),
+            mock.patch("marvain_cli.ops._eprint", side_effect=cap),
         ):
             rc = sam_logs(ctx, dry_run=True, functions=None, tail=False, since=None)
         self.assertEqual(rc, 0)
@@ -140,8 +143,9 @@ class TestOps(unittest.TestCase):
             env=ResolvedEnv(env="dev", aws_profile="p", aws_region="r", stack_name="s", raw={}),
         )
 
-        with mock.patch("marvain_cli.ops._conda_preflight", return_value=0), mock.patch(
-            "marvain_cli.ops._eprint", side_effect=cap
+        with (
+            mock.patch("marvain_cli.ops._conda_preflight", return_value=0),
+            mock.patch("marvain_cli.ops._eprint", side_effect=cap),
         ):
             rc = init_db(ctx, dry_run=True, sql_file=None)
 
@@ -152,7 +156,6 @@ class TestOps(unittest.TestCase):
         self.assertIn("sql/003_owner_unique_index.sql", joined)
         self.assertLess(joined.find("sql/001_init.sql"), joined.find("sql/002_users_and_memberships.sql"))
         self.assertLess(joined.find("sql/002_users_and_memberships.sql"), joined.find("sql/003_owner_unique_index.sql"))
-
 
     def test_hub_claim_first_owner_dry_run_emits_http_request_without_leaking_token(self) -> None:
         emitted: list[str] = []
@@ -177,10 +180,11 @@ class TestOps(unittest.TestCase):
 
         self.assertEqual(out, {})
         joined = "\n".join(emitted)
-        self.assertIn("HTTP POST https://example.com/dev/v1/agents/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/claim_owner", joined)
+        self.assertIn(
+            "HTTP POST https://example.com/dev/v1/agents/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/claim_owner", joined
+        )
         self.assertIn("Authorization: Bearer abcdef...", joined)
         self.assertNotIn("abcdef1234567890", joined)
-
 
     def test_cognito_admin_create_user_dry_run_uses_admin_create_user(self) -> None:
         emitted: list[str] = []
@@ -202,7 +206,6 @@ class TestOps(unittest.TestCase):
         self.assertIn("aws cognito-idp admin-create-user", joined)
         self.assertIn("--user-pool-id pool-123", joined)
         self.assertIn("--username x@example.com", joined)
-
 
     def test_cognito_admin_delete_user_dry_run_uses_admin_delete_user(self) -> None:
         emitted: list[str] = []
@@ -288,6 +291,7 @@ class TestGuiLifecycle(unittest.TestCase):
         """Should return False for a port that's not in use."""
         # Use a random high port that's unlikely to be in use
         import random
+
         unused_port = random.randint(50000, 60000)
         self.assertFalse(_is_port_in_use(unused_port))
 
@@ -426,8 +430,8 @@ class TestDeviceDetection(unittest.TestCase):
         """list_detected_devices should filter by device_type."""
         from marvain_cli.ops import list_detected_devices
 
-        # Get all devices
-        all_devices = list_detected_devices()
+        # Get all devices (verify no error)
+        list_detected_devices()
 
         # Filter by video
         video_devices = list_detected_devices(device_type="video")
@@ -498,9 +502,10 @@ class TestDeviceDetection(unittest.TestCase):
 
     def test_get_linux_video_connection_type_usb_path_detection(self) -> None:
         """_get_linux_video_connection_type should detect USB from sysfs path."""
-        from marvain_cli.ops import _get_linux_video_connection_type
-        import tempfile
         import os
+        import tempfile
+
+        from marvain_cli.ops import _get_linux_video_connection_type
 
         # Create a mock sysfs structure with USB in the path
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -515,8 +520,10 @@ class TestDeviceDetection(unittest.TestCase):
             os.symlink(usb_device_dir, device_link)
 
             # Patch the sysfs base path for testing
-            with mock.patch("marvain_cli.ops.os.path.exists") as mock_exists, \
-                 mock.patch("marvain_cli.ops.os.path.realpath") as mock_realpath:
+            with (
+                mock.patch("marvain_cli.ops.os.path.exists") as mock_exists,
+                mock.patch("marvain_cli.ops.os.path.realpath") as mock_realpath,
+            ):
                 mock_exists.return_value = True
                 # Simulate USB device path
                 mock_realpath.return_value = "/sys/devices/pci0000:00/0000:00:14.0/usb1/1-2/1-2:1.0"
@@ -529,9 +536,11 @@ class TestDeviceDetection(unittest.TestCase):
         from marvain_cli.ops import _get_linux_video_connection_type
 
         # Patch to simulate a PCI device (no 'usb' in path)
-        with mock.patch("marvain_cli.ops.os.path.exists") as mock_exists, \
-             mock.patch("marvain_cli.ops.os.path.realpath") as mock_realpath, \
-             mock.patch("marvain_cli.ops.os.path.islink") as mock_islink:
+        with (
+            mock.patch("marvain_cli.ops.os.path.exists") as mock_exists,
+            mock.patch("marvain_cli.ops.os.path.realpath") as mock_realpath,
+            mock.patch("marvain_cli.ops.os.path.islink") as mock_islink,
+        ):
             mock_exists.return_value = True
             mock_islink.return_value = False
             # Simulate PCI device path (no 'usb' in path)

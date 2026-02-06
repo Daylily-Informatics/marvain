@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine
 
@@ -84,10 +83,12 @@ class HubClient:
 
         if msg_type == "cmd.ping":
             # Respond to ping
-            await self._send({
-                "action": "cmd.pong",
-                "original_sent_at": msg.get("sent_at"),
-            })
+            await self._send(
+                {
+                    "action": "cmd.pong",
+                    "original_sent_at": msg.get("sent_at"),
+                }
+            )
             logger.debug("Responded to cmd.ping")
 
         elif msg_type.startswith("cmd.") and self.on_command:
@@ -156,4 +157,3 @@ class HubClient:
         if self._ws:
             await self._ws.close()
             self._ws = None
-

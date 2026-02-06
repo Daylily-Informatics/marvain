@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
-import logging
 
 import boto3
-
 from agent_hub.audit import append_audit_entry
 from agent_hub.auth import authenticate_device, authenticate_user_access_token
 from agent_hub.config import load_config
-from agent_hub.memberships import list_agents_for_user, check_agent_permission
+from agent_hub.memberships import check_agent_permission, list_agents_for_user
 from agent_hub.rds_data import RdsData, RdsDataEnv
 
 logger = logging.getLogger()
@@ -29,11 +28,13 @@ _cfg = None
 def _get_db() -> RdsData:
     global _db
     if _db is None:
-        _db = RdsData(RdsDataEnv(
-            resource_arn=os.environ["DB_RESOURCE_ARN"],
-            secret_arn=os.environ["DB_SECRET_ARN"],
-            database=os.environ["DB_NAME"],
-        ))
+        _db = RdsData(
+            RdsDataEnv(
+                resource_arn=os.environ["DB_RESOURCE_ARN"],
+                secret_arn=os.environ["DB_SECRET_ARN"],
+                database=os.environ["DB_NAME"],
+            )
+        )
     return _db
 
 
@@ -135,7 +136,9 @@ def _send_to_device(event, table, target_device_id: str, message: dict) -> tuple
     return (sent_count, len(stale_connections))
 
 
-def _handle_action_decision(event, connection_id: str, table, conn_item: dict, action_id: str, approve: bool, reason: str = ""):
+def _handle_action_decision(
+    event, connection_id: str, table, conn_item: dict, action_id: str, approve: bool, reason: str = ""
+):
     """Handle approve or reject action decision."""
     action_type = "approve_action" if approve else "reject_action"
 
@@ -171,12 +174,16 @@ def _handle_action_decision(event, connection_id: str, table, conn_item: dict, a
 
     # Only proposed actions can be approved/rejected
     if current_status != "proposed":
-        _send(event, connection_id, {
-            "type": action_type,
-            "ok": False,
-            "error": "invalid_status",
-            "current_status": current_status,
-        })
+        _send(
+            event,
+            connection_id,
+            {
+                "type": action_type,
+                "ok": False,
+                "error": "invalid_status",
+                "current_status": current_status,
+            },
+        )
         return {"statusCode": 200, "body": "ok"}
 
     new_status = "approved" if approve else "rejected"
@@ -250,7 +257,6 @@ def handler(event, context):
 
     action = msg.get("action") or ""
     table = _dynamo.Table(_TABLE)
-
 
     if action == "hello":
         access_token = str(msg.get("access_token") or "").strip()
@@ -399,12 +405,16 @@ def handler(event, context):
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={":s": "expired"},
         )
-        _send(event, connection_id, {
-            "type": "error",
-            "error": "auth_expired",
-            "message": "Session expired. Send hello with a fresh token to re-authenticate.",
-            "action": action,
-        })
+        _send(
+            event,
+            connection_id,
+            {
+                "type": "error",
+                "error": "auth_expired",
+                "message": "Session expired. Send hello with a fresh token to re-authenticate.",
+                "action": action,
+            },
+        )
         return {"statusCode": 200, "body": "ok"}
 
     principal_type = conn_item.get("principal_type")
@@ -464,26 +474,34 @@ def handler(event, context):
         }
         sent_count, stale_count = _send_to_device(event, table, target_device_id, device_message)
 
-        _send(event, connection_id, {
-            "type": "cmd.ping",
-            "ok": True,
-            "target_device_id": target_device_id,
-            "sent_at": sent_at,
-            "device_connections": sent_count,
-            "device_online": sent_count > 0,
-        })
+        _send(
+            event,
+            connection_id,
+            {
+                "type": "cmd.ping",
+                "ok": True,
+                "target_device_id": target_device_id,
+                "sent_at": sent_at,
+                "device_connections": sent_count,
+                "device_online": sent_count > 0,
+            },
+        )
         return {"statusCode": 200, "body": "ok"}
 
     # cmd.pong - response to cmd.ping (device -> hub)
     if action == "cmd.pong":
         original_sent_at = msg.get("original_sent_at")
-        _send(event, connection_id, {
-            "type": "cmd.pong",
-            "ok": True,
-            "device_id": conn_item.get("device_id"),
-            "received_at": int(time.time() * 1000),
-            "original_sent_at": original_sent_at,
-        })
+        _send(
+            event,
+            connection_id,
+            {
+                "type": "cmd.pong",
+                "ok": True,
+                "device_id": conn_item.get("device_id"),
+                "received_at": int(time.time() * 1000),
+                "original_sent_at": original_sent_at,
+            },
+        )
         return {"statusCode": 200, "body": "ok"}
 
     # cmd.run_action - request a device to execute an action
@@ -493,7 +511,11 @@ def handler(event, context):
         action_payload = msg.get("payload") or {}
 
         if not target_device_id or not action_kind:
-            _send(event, connection_id, {"type": "cmd.run_action", "ok": False, "error": "missing_target_device_id_or_kind"})
+            _send(
+                event,
+                connection_id,
+                {"type": "cmd.run_action", "ok": False, "error": "missing_target_device_id_or_kind"},
+            )
             return {"statusCode": 200, "body": "ok"}
 
         # Permission check: user needs admin on the device's agent
@@ -525,22 +547,30 @@ def handler(event, context):
         sent_count, stale_count = _send_to_device(event, table, target_device_id, device_message)
 
         if sent_count == 0:
-            _send(event, connection_id, {
-                "type": "cmd.run_action",
-                "ok": False,
-                "error": "device_not_connected",
-                "target_device_id": target_device_id,
-            })
+            _send(
+                event,
+                connection_id,
+                {
+                    "type": "cmd.run_action",
+                    "ok": False,
+                    "error": "device_not_connected",
+                    "target_device_id": target_device_id,
+                },
+            )
             return {"statusCode": 200, "body": "ok"}
 
-        _send(event, connection_id, {
-            "type": "cmd.run_action",
-            "ok": True,
-            "target_device_id": target_device_id,
-            "kind": action_kind,
-            "sent_at": sent_at,
-            "device_connections": sent_count,
-        })
+        _send(
+            event,
+            connection_id,
+            {
+                "type": "cmd.run_action",
+                "ok": True,
+                "target_device_id": target_device_id,
+                "kind": action_kind,
+                "sent_at": sent_at,
+                "device_connections": sent_count,
+            },
+        )
         return {"statusCode": 200, "body": "ok"}
 
     # cmd.config - send configuration update to a device
@@ -580,21 +610,29 @@ def handler(event, context):
         sent_count, stale_count = _send_to_device(event, table, target_device_id, device_message)
 
         if sent_count == 0:
-            _send(event, connection_id, {
-                "type": "cmd.config",
-                "ok": False,
-                "error": "device_not_connected",
-                "target_device_id": target_device_id,
-            })
+            _send(
+                event,
+                connection_id,
+                {
+                    "type": "cmd.config",
+                    "ok": False,
+                    "error": "device_not_connected",
+                    "target_device_id": target_device_id,
+                },
+            )
             return {"statusCode": 200, "body": "ok"}
 
-        _send(event, connection_id, {
-            "type": "cmd.config",
-            "ok": True,
-            "target_device_id": target_device_id,
-            "sent_at": sent_at,
-            "device_connections": sent_count,
-        })
+        _send(
+            event,
+            connection_id,
+            {
+                "type": "cmd.config",
+                "ok": True,
+                "target_device_id": target_device_id,
+                "sent_at": sent_at,
+                "device_connections": sent_count,
+            },
+        )
         return {"statusCode": 200, "body": "ok"}
 
     # -------------------------------------------------------------------------
@@ -701,11 +739,15 @@ def handler(event, context):
                 ExpressionAttributeValues={":subs": subscriptions},
             )
 
-        _send(event, connection_id, {
-            "type": "subscribe_presence",
-            "ok": True,
-            "subscription": sub_key,
-        })
+        _send(
+            event,
+            connection_id,
+            {
+                "type": "subscribe_presence",
+                "ok": True,
+                "subscription": sub_key,
+            },
+        )
         return {"statusCode": 200, "body": "ok"}
 
     # -------------------------------------------------------------------------
@@ -742,14 +784,18 @@ def handler(event, context):
                 ExpressionAttributeValues={":subs": subscriptions},
             )
 
-        _send(event, connection_id, {
-            "type": "subscribe_events",
-            "ok": True,
-            "subscription": sub_key,
-            "agent_id": agent_id,
-            "space_id": space_id or None,
-            "event_types": event_types if event_types else None,
-        })
+        _send(
+            event,
+            connection_id,
+            {
+                "type": "subscribe_events",
+                "ok": True,
+                "subscription": sub_key,
+                "agent_id": agent_id,
+                "space_id": space_id or None,
+                "event_types": event_types if event_types else None,
+            },
+        )
         return {"statusCode": 200, "body": "ok"}
 
     # Default: unknown action

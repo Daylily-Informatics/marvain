@@ -9,11 +9,11 @@ These tests verify the 7 features that replaced 'Coming Soon' toast stubs:
 6. Space Editing Options - PATCH /api/spaces/{space_id}
 7. Edit Remote - PATCH /api/remotes/{remote_id}
 """
+
 from __future__ import annotations
 
 import dataclasses
 import importlib.util
-import json
 import os
 import sys
 import unittest
@@ -70,6 +70,7 @@ class TestComingSoonFeatures(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.mod = _load_hub_api_app_module()
         from fastapi.testclient import TestClient
+
         cls._TestClient = TestClient
         # Store originals
         cls._orig_gui_get_user = cls.mod._gui_get_user
@@ -96,9 +97,7 @@ class TestComingSoonFeatures(unittest.TestCase):
 
     def _mock_authenticated_user(self):
         """Return a mock authenticated user."""
-        return self.mod.AuthenticatedUser(
-            user_id="u1", cognito_sub="sub-1", email="u1@example.com"
-        )
+        return self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
 
     def _mock_db(self, query_results=None, execute_results=None):
         """Create a mock database object."""
@@ -126,19 +125,23 @@ class TestComingSoonFeatures(unittest.TestCase):
 
     def test_get_action_success(self) -> None:
         self.mod._gui_get_user = mock.Mock(return_value=self._mock_authenticated_user())
-        mock_db = self._mock_db(query_results=[{
-            "action_id": "action-1",
-            "agent_id": "agent-1",
-            "kind": "shell_command",
-            "payload": '{"cmd": "echo hello"}',
-            "required_scopes": '["shell_command:execute"]',
-            "status": "completed",
-            "result": '{"stdout": "hello"}',
-            "error": None,
-            "created_at": "2025-01-01T00:00:00",
-            "approved_at": "2025-01-01T00:00:01",
-            "completed_at": "2025-01-01T00:00:02",
-        }])
+        mock_db = self._mock_db(
+            query_results=[
+                {
+                    "action_id": "action-1",
+                    "agent_id": "agent-1",
+                    "kind": "shell_command",
+                    "payload": '{"cmd": "echo hello"}',
+                    "required_scopes": '["shell_command:execute"]',
+                    "status": "completed",
+                    "result": '{"stdout": "hello"}',
+                    "error": None,
+                    "created_at": "2025-01-01T00:00:00",
+                    "approved_at": "2025-01-01T00:00:01",
+                    "completed_at": "2025-01-01T00:00:02",
+                }
+            ]
+        )
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
         r = self.client.get("/api/actions/action-1")
@@ -184,14 +187,18 @@ class TestComingSoonFeatures(unittest.TestCase):
 
     def test_get_person_success(self) -> None:
         self.mod._gui_get_user = mock.Mock(return_value=self._mock_authenticated_user())
-        mock_db = self._mock_db(query_results=[{
-            "person_id": "person-1",
-            "agent_id": "agent-1",
-            "agent_name": "Test Agent",
-            "display_name": "John Doe",
-            "metadata": "{}",
-            "created_at": "2025-01-01T00:00:00",
-        }])
+        mock_db = self._mock_db(
+            query_results=[
+                {
+                    "person_id": "person-1",
+                    "agent_id": "agent-1",
+                    "agent_name": "Test Agent",
+                    "display_name": "John Doe",
+                    "metadata": "{}",
+                    "created_at": "2025-01-01T00:00:00",
+                }
+            ]
+        )
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
         r = self.client.get("/api/people/person-1")
@@ -211,19 +218,23 @@ class TestComingSoonFeatures(unittest.TestCase):
 
     def test_get_memory_success(self) -> None:
         self.mod._gui_get_user = mock.Mock(return_value=self._mock_authenticated_user())
-        mock_db = self._mock_db(query_results=[{
-            "memory_id": "memory-1",
-            "agent_id": "agent-1",
-            "space_id": "space-1",
-            "agent_name": "Test Agent",
-            "space_name": "Living Room",
-            "tier": "episodic",
-            "content": "User discussed their project",
-            "participants": "[]",
-            "provenance": "{}",
-            "retention": "{}",
-            "created_at": "2025-01-01T00:00:00",
-        }])
+        mock_db = self._mock_db(
+            query_results=[
+                {
+                    "memory_id": "memory-1",
+                    "agent_id": "agent-1",
+                    "space_id": "space-1",
+                    "agent_name": "Test Agent",
+                    "space_name": "Living Room",
+                    "tier": "episodic",
+                    "content": "User discussed their project",
+                    "participants": "[]",
+                    "provenance": "{}",
+                    "retention": "{}",
+                    "created_at": "2025-01-01T00:00:00",
+                }
+            ]
+        )
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
         r = self.client.get("/api/memories/memory-1")
@@ -272,14 +283,18 @@ class TestComingSoonFeatures(unittest.TestCase):
 
     def test_get_agent_success(self) -> None:
         self.mod._gui_get_user = mock.Mock(return_value=self._mock_authenticated_user())
-        mock_db = self._mock_db(query_results=[{
-            "agent_id": "agent-1",
-            "name": "Test Agent",
-            "disabled": False,
-            "role": "owner",
-            "relationship_label": None,
-            "created_at": "2025-01-01T00:00:00",
-        }])
+        mock_db = self._mock_db(
+            query_results=[
+                {
+                    "agent_id": "agent-1",
+                    "name": "Test Agent",
+                    "disabled": False,
+                    "role": "owner",
+                    "relationship_label": None,
+                    "created_at": "2025-01-01T00:00:00",
+                }
+            ]
+        )
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
         r = self.client.get("/api/agents/agent-1")
@@ -309,20 +324,24 @@ class TestComingSoonFeatures(unittest.TestCase):
 
     def test_get_event_success(self) -> None:
         self.mod._gui_get_user = mock.Mock(return_value=self._mock_authenticated_user())
-        mock_db = self._mock_db(query_results=[{
-            "event_id": "event-1",
-            "agent_id": "agent-1",
-            "agent_name": "Test Agent",
-            "space_id": "space-1",
-            "space_name": "Living Room",
-            "device_id": None,
-            "device_name": None,
-            "person_id": None,
-            "person_name": None,
-            "type": "conversation_started",
-            "payload": '{"participants": 2}',
-            "created_at": "2025-01-01T00:00:00",
-        }])
+        mock_db = self._mock_db(
+            query_results=[
+                {
+                    "event_id": "event-1",
+                    "agent_id": "agent-1",
+                    "agent_name": "Test Agent",
+                    "space_id": "space-1",
+                    "space_name": "Living Room",
+                    "device_id": None,
+                    "device_name": None,
+                    "person_id": None,
+                    "person_name": None,
+                    "type": "conversation_started",
+                    "payload": '{"participants": 2}',
+                    "created_at": "2025-01-01T00:00:00",
+                }
+            ]
+        )
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
         r = self.client.get("/api/events/event-1")
@@ -375,14 +394,18 @@ class TestComingSoonFeatures(unittest.TestCase):
 
     def test_get_space_success(self) -> None:
         self.mod._gui_get_user = mock.Mock(return_value=self._mock_authenticated_user())
-        mock_db = self._mock_db(query_results=[{
-            "space_id": "space-1",
-            "agent_id": "agent-1",
-            "agent_name": "Test Agent",
-            "name": "Living Room",
-            "privacy_mode": False,
-            "created_at": "2025-01-01T00:00:00",
-        }])
+        mock_db = self._mock_db(
+            query_results=[
+                {
+                    "space_id": "space-1",
+                    "agent_id": "agent-1",
+                    "agent_name": "Test Agent",
+                    "name": "Living Room",
+                    "privacy_mode": False,
+                    "created_at": "2025-01-01T00:00:00",
+                }
+            ]
+        )
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
         r = self.client.get("/api/spaces/space-1")
@@ -411,11 +434,15 @@ class TestComingSoonFeatures(unittest.TestCase):
 
     def test_update_remote_success(self) -> None:
         self.mod._gui_get_user = mock.Mock(return_value=self._mock_authenticated_user())
-        mock_db = self._mock_db(query_results=[{
-            "device_id": "remote-1",
-            "name": "Old Name",
-            "metadata": '{"is_remote": true, "address": "192.168.1.1"}'
-        }])
+        mock_db = self._mock_db(
+            query_results=[
+                {
+                    "device_id": "remote-1",
+                    "name": "Old Name",
+                    "metadata": '{"is_remote": true, "address": "192.168.1.1"}',
+                }
+            ]
+        )
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
         r = self.client.patch("/api/remotes/remote-1", json={"name": "New Name", "address": "192.168.1.100"})
@@ -426,11 +453,9 @@ class TestComingSoonFeatures(unittest.TestCase):
 
     def test_update_remote_rejects_empty_name(self) -> None:
         self.mod._gui_get_user = mock.Mock(return_value=self._mock_authenticated_user())
-        mock_db = self._mock_db(query_results=[{
-            "device_id": "remote-1",
-            "name": "Old Name",
-            "metadata": '{"is_remote": true}'
-        }])
+        mock_db = self._mock_db(
+            query_results=[{"device_id": "remote-1", "name": "Old Name", "metadata": '{"is_remote": true}'}]
+        )
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
         r = self.client.patch("/api/remotes/remote-1", json={"name": ""})
@@ -443,16 +468,20 @@ class TestComingSoonFeatures(unittest.TestCase):
 
     def test_get_remote_success(self) -> None:
         self.mod._gui_get_user = mock.Mock(return_value=self._mock_authenticated_user())
-        mock_db = self._mock_db(query_results=[{
-            "remote_id": "remote-1",
-            "agent_id": "agent-1",
-            "agent_name": "Test Agent",
-            "name": "Living Room Camera",
-            "status": "online",
-            "metadata": '{"is_remote": true, "address": "192.168.1.100", "connection_type": "network"}',
-            "created_at": "2025-01-01T00:00:00",
-            "last_seen_at": "2025-01-01T12:00:00",
-        }])
+        mock_db = self._mock_db(
+            query_results=[
+                {
+                    "remote_id": "remote-1",
+                    "agent_id": "agent-1",
+                    "agent_name": "Test Agent",
+                    "name": "Living Room Camera",
+                    "status": "online",
+                    "metadata": '{"is_remote": true, "address": "192.168.1.100", "connection_type": "network"}',
+                    "created_at": "2025-01-01T00:00:00",
+                    "last_seen_at": "2025-01-01T12:00:00",
+                }
+            ]
+        )
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
         r = self.client.get("/api/remotes/remote-1")
@@ -466,4 +495,3 @@ class TestComingSoonFeatures(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

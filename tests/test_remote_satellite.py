@@ -2,6 +2,7 @@
 
 These tests verify the device-local action handlers in the remote satellite daemon.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -10,9 +11,6 @@ import platform
 import sys
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 # Directory containing the remote satellite code
 _REMOTE_SAT_DIR = Path(__file__).parent.parent / "apps" / "remote_satellite"
@@ -34,9 +32,7 @@ def _load_remote_satellite_daemon():
 
         # Load the daemon module with a unique name to avoid conflicts
         daemon_path = _REMOTE_SAT_DIR / "daemon.py"
-        spec = importlib.util.spec_from_file_location(
-            "remote_satellite_daemon", daemon_path
-        )
+        spec = importlib.util.spec_from_file_location("remote_satellite_daemon", daemon_path)
         module = importlib.util.module_from_spec(spec)
 
         # Register under unique name before exec to handle any self-imports
@@ -130,10 +126,7 @@ class TestConfigCommand:
 
     def test_handle_config_command(self):
         """config command should store configuration."""
-        msg = {
-            "type": "cmd.config",
-            "config": {"log_level": "DEBUG", "heartbeat_interval": 30}
-        }
+        msg = {"type": "cmd.config", "config": {"log_level": "DEBUG", "heartbeat_interval": 30}}
         result = _run_async(handle_command(msg))
 
         assert result is not None
@@ -322,4 +315,3 @@ class TestActionPayloadVariations:
 
         assert result is not None
         assert result["status"] == "success"
-

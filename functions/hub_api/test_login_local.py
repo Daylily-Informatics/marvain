@@ -9,6 +9,7 @@ Use `marvain gui start` for local development instead.
 import os
 import sys
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 # Load environment variables from .env.local
@@ -26,16 +27,18 @@ if not os.getenv("AWS_REGION"):
     os.environ["AWS_REGION"] = "us-east-1"
 
 # Now test the login URL generation
-import secrets
-import urllib.parse
-import hashlib
-import base64
+import base64  # noqa: E402
+import hashlib  # noqa: E402
+import secrets  # noqa: E402
+import urllib.parse  # noqa: E402
+
 
 def _pkce_pair():
     """Generate PKCE code_verifier and code_challenge."""
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("utf-8").rstrip("=")
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode("utf-8").rstrip("=")
     return verifier, challenge
+
 
 def _cognito_hosted_ui_base_url() -> str:
     """Return https://<domain>.auth.<region>.amazoncognito.com (no trailing slash)."""
@@ -52,6 +55,7 @@ def _cognito_hosted_ui_base_url() -> str:
 
     region = os.getenv("AWS_REGION") or "us-west-2"
     return f"https://{dom}.auth.{region}.amazoncognito.com".rstrip("/")
+
 
 # Test the login URL generation
 state = secrets.token_urlsafe(24)
@@ -84,7 +88,6 @@ print(f"\nCognito Domain: {os.getenv('COGNITO_DOMAIN')}")
 print(f"Cognito Base URL: {base}")
 print(f"Client ID: {client_id}")
 print(f"Redirect URI: {redirect_uri}")
-print(f"\nGenerated Login URL:")
+print("\nGenerated Login URL:")
 print(login_url)
 print("\n" + "=" * 80)
-

@@ -133,9 +133,7 @@ class TestHubApiLiveKit(unittest.TestCase):
 
     def test_v1_livekit_token_requires_auth(self) -> None:
         """Test that token endpoint requires authentication."""
-        self.mod.authenticate_user_access_token = mock.Mock(
-            side_effect=PermissionError("Invalid token")
-        )
+        self.mod.authenticate_user_access_token = mock.Mock(side_effect=PermissionError("Invalid token"))
 
         r = self.client.post(
             "/v1/livekit/token",

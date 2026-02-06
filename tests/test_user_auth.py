@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import sys
 import unittest
-from unittest import mock
-
 from pathlib import Path
+from unittest import mock
 
 # Make the shared Lambda layer importable in local unit tests.
 _SHARED = Path(__file__).resolve().parents[1] / "layers" / "shared" / "python"
 if str(_SHARED) not in sys.path:
     sys.path.insert(0, str(_SHARED))
 
-from agent_hub.auth import AuthenticatedUser, authenticate_user_access_token
+from agent_hub.auth import AuthenticatedUser, authenticate_user_access_token  # noqa: E402
 
 
 class _FakeDb:
@@ -77,4 +76,3 @@ class TestUserAuth(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

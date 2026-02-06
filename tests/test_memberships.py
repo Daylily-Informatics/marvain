@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sys
 import unittest
-
 from pathlib import Path
 
 # Make the shared Lambda layer importable in local unit tests.
@@ -10,7 +9,7 @@ _SHARED = Path(__file__).resolve().parents[1] / "layers" / "shared" / "python"
 if str(_SHARED) not in sys.path:
     sys.path.insert(0, str(_SHARED))
 
-from agent_hub.memberships import AgentMembership, check_agent_permission, list_agents_for_user
+from agent_hub.memberships import AgentMembership, check_agent_permission, list_agents_for_user  # noqa: E402
 
 
 class _FakeDb:
@@ -60,7 +59,14 @@ class TestMemberships(unittest.TestCase):
 
         out = list_agents_for_user(db, user_id="u1")
 
-        self.assertEqual(out, [AgentMembership(agent_id="a1", name="agent", disabled=False, role="owner", relationship_label="close-friend")])
+        self.assertEqual(
+            out,
+            [
+                AgentMembership(
+                    agent_id="a1", name="agent", disabled=False, role="owner", relationship_label="close-friend"
+                )
+            ],
+        )
         self.assertIsNotNone(db.last_sql)
         self.assertIn("FROM agent_memberships", db.last_sql or "")
         self.assertIn("JOIN agents", db.last_sql or "")
@@ -83,4 +89,3 @@ class TestMemberships(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

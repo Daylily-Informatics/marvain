@@ -5,8 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from marvain_cli.config import ConfigError, load_config_dict, resolve_env
-from marvain_cli.config import dump_simple_yaml
+from marvain_cli.config import ConfigError, dump_simple_yaml, load_config_dict, resolve_env
 
 
 class TestConfigLoader(unittest.TestCase):
@@ -16,7 +15,7 @@ class TestConfigLoader(unittest.TestCase):
             "default_env: dev\n"
             "envs:\n"
             "  dev:\n"
-            "    aws_profile: \"p1\"\n"
+            '    aws_profile: "p1"\n'
             "    aws_region: us-west-2\n"
             "    stack_name: marvain-u-dev\n"
         )

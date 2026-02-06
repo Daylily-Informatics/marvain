@@ -10,8 +10,8 @@ from agent_hub.broadcast import broadcast_event
 from agent_hub.config import load_config
 from agent_hub.policy import is_agent_disabled
 from agent_hub.rds_data import RdsData, RdsDataEnv
-from agent_hub.tools import execute_tool, get_registry
-from agent_hub.tools.registry import ToolContext, ToolResult
+from agent_hub.tools import execute_tool
+from agent_hub.tools.registry import ToolContext
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
