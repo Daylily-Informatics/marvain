@@ -249,6 +249,9 @@ Resources:
               KeyType: HASH
           Projection:
             ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
 
   # -----------------------------
   # Lambda layer
@@ -453,6 +456,11 @@ Resources:
       RestApiId: !Ref HubApi
       DeploymentId: !If [IsDeploymentV2, !Ref HubApiDeploymentV2, !Ref HubApiDeploymentV1]
       StageName: !Ref StageName
+      MethodSettings:
+        - HttpMethod: "*"
+          ResourcePath: "/*"
+          ThrottlingBurstLimit: 50
+          ThrottlingRateLimit: 100
 
   # -----------------------------
   # Planner (deliberative loop)
@@ -605,6 +613,7 @@ Resources:
       Environment:
         Variables:
           WS_TABLE: !Ref WsConnectionsTable
+          WS_AUTH_TTL_SECONDS: "3600"
           DB_RESOURCE_ARN: !GetAtt AuroraCluster.DBClusterArn
           DB_SECRET_ARN: !Ref DbCredentialsSecret
           DB_NAME: !Ref DbName

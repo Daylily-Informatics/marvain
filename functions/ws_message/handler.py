@@ -18,6 +18,7 @@ logger.setLevel(logging.INFO)
 
 _TABLE = os.getenv("WS_TABLE")
 _ACTION_QUEUE_URL = os.getenv("ACTION_QUEUE_URL")
+_WS_AUTH_TTL = int(os.getenv("WS_AUTH_TTL_SECONDS", "3600"))
 _dynamo = boto3.resource("dynamodb")
 _sqs = boto3.client("sqs")
 
@@ -278,6 +279,7 @@ def handler(event, context):
                 for a in agents
             ]
 
+            now_ts = int(time.time())
             expr_names = {"#s": "status"}
             expr_values = {
                 ":s": "authenticated",
@@ -285,6 +287,8 @@ def handler(event, context):
                 ":uid": user.user_id,
                 ":cs": user.cognito_sub,
                 ":ag": agents_out,
+                ":aat": now_ts,
+                ":ttl": now_ts + _WS_AUTH_TTL,
             }
             set_parts = [
                 "#s=:s",
@@ -292,6 +296,8 @@ def handler(event, context):
                 "user_id=:uid",
                 "cognito_sub=:cs",
                 "agents=:ag",
+                "authenticated_at=:aat",
+                "ttl=:ttl",
             ]
             remove_parts = ["agent_id", "device_id", "scopes"]
             if user.email:
@@ -343,19 +349,23 @@ def handler(event, context):
             {"device_id": dev.device_id},
         )
 
+        dev_now_ts = int(time.time())
         table.update_item(
             Key={"connection_id": connection_id},
             UpdateExpression=(
-                "SET #s=:s, principal_type=:pt, agent_id=:a, device_id=:d, scopes=:sc "
+                "SET #s=:s, principal_type=:pt, agent_id=:a, device_id=:d, scopes=:sc, "
+                "authenticated_at=:aat, #ttl=:ttl "
                 "REMOVE user_id, cognito_sub, email, agents"
             ),
-            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeNames={"#s": "status", "#ttl": "ttl"},
             ExpressionAttributeValues={
                 ":s": "authenticated",
                 ":pt": "device",
                 ":a": dev.agent_id,
                 ":d": dev.device_id,
                 ":sc": dev.scopes,
+                ":aat": dev_now_ts,
+                ":ttl": dev_now_ts + _WS_AUTH_TTL,
             },
         )
 
@@ -377,6 +387,24 @@ def handler(event, context):
     conn_item = table.get_item(Key={"connection_id": connection_id}).get("Item", {})
     if conn_item.get("status") != "authenticated":
         _send(event, connection_id, {"type": "error", "error": "not_authenticated", "action": action})
+        return {"statusCode": 200, "body": "ok"}
+
+    # Check auth expiry — require re-authentication if TTL exceeded
+    auth_at = conn_item.get("authenticated_at")
+    if auth_at is not None and int(time.time()) - int(auth_at) > _WS_AUTH_TTL:
+        # Mark connection as expired so DynamoDB TTL can clean it up
+        table.update_item(
+            Key={"connection_id": connection_id},
+            UpdateExpression="SET #s = :s",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":s": "expired"},
+        )
+        _send(event, connection_id, {
+            "type": "error",
+            "error": "auth_expired",
+            "message": "Session expired. Send hello with a fresh token to re-authenticate.",
+            "action": action,
+        })
         return {"statusCode": 200, "body": "ok"}
 
     principal_type = conn_item.get("principal_type")

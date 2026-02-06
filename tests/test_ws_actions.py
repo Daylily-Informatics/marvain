@@ -85,6 +85,82 @@ class TestPingAction:
         assert sent_data["type"] == "error"
         assert sent_data["error"] == "not_authenticated"
 
+    @patch("handler._dynamo")
+    @patch("handler._get_db")
+    @patch("handler._mgmt_api")
+    def test_expired_auth_returns_auth_expired(self, mock_mgmt, mock_db, mock_dynamo):
+        """Connection with expired authenticated_at should get auth_expired error."""
+        import time as _time
+        from handler import handler
+
+        mock_table = MagicMock()
+        # authenticated_at in the past, well beyond the default 3600s TTL
+        expired_ts = int(_time.time()) - 7200
+        mock_table.get_item.return_value = {
+            "Item": {
+                "connection_id": "conn-expired",
+                "status": "authenticated",
+                "principal_type": "user",
+                "authenticated_at": expired_ts,
+            }
+        }
+        mock_dynamo.Table.return_value = mock_table
+
+        mock_post = MagicMock()
+        mock_mgmt.return_value.post_to_connection = mock_post
+
+        event = {
+            "requestContext": {"connectionId": "conn-expired", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
+            "body": json.dumps({"action": "ping"})
+        }
+
+        result = handler(event, {})
+
+        assert result["statusCode"] == 200
+        sent_data = json.loads(mock_post.call_args[1]["Data"].decode())
+        assert sent_data["type"] == "error"
+        assert sent_data["error"] == "auth_expired"
+        # Connection status should be updated to expired
+        mock_table.update_item.assert_called_once()
+
+    @patch("handler._dynamo")
+    @patch("handler._get_db")
+    @patch("handler._mgmt_api")
+    @patch("handler.time")
+    def test_fresh_auth_not_expired(self, mock_time, mock_mgmt, mock_db, mock_dynamo):
+        """Connection with recent authenticated_at should proceed normally."""
+        import time as _time
+        from handler import handler
+
+        now = int(_time.time())
+        mock_time.time.return_value = float(now)
+
+        mock_table = MagicMock()
+        # authenticated_at just a few seconds ago
+        mock_table.get_item.return_value = {
+            "Item": {
+                "connection_id": "conn-fresh",
+                "status": "authenticated",
+                "principal_type": "user",
+                "authenticated_at": now - 10,
+            }
+        }
+        mock_dynamo.Table.return_value = mock_table
+
+        mock_post = MagicMock()
+        mock_mgmt.return_value.post_to_connection = mock_post
+
+        event = {
+            "requestContext": {"connectionId": "conn-fresh", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
+            "body": json.dumps({"action": "ping"})
+        }
+
+        result = handler(event, {})
+
+        assert result["statusCode"] == 200
+        sent_data = json.loads(mock_post.call_args[1]["Data"].decode())
+        assert sent_data["type"] == "pong"
+
 
 class TestListActions:
     """Tests for the list_actions action."""
@@ -480,8 +556,8 @@ class TestCmdPingBroadcast:
         mock_table.get_item.return_value = {
             "Item": {"connection_id": "user-conn", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
         }
-        # Mock scan to find device connections
-        mock_table.scan.return_value = {
+        # Mock GSI query to find device connections (used by _get_device_connections)
+        mock_table.query.return_value = {
             "Items": [
                 {"connection_id": "device-conn-1", "device_id": "device-xyz", "status": "authenticated"}
             ]
@@ -580,7 +656,8 @@ class TestCmdRunActionBroadcast:
         mock_table.get_item.return_value = {
             "Item": {"connection_id": "user-conn", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
         }
-        mock_table.scan.return_value = {
+        # Mock GSI query to find device connections
+        mock_table.query.return_value = {
             "Items": [{"connection_id": "device-conn-1", "device_id": "device-xyz", "status": "authenticated"}]
         }
         mock_dynamo.Table.return_value = mock_table
@@ -676,7 +753,8 @@ class TestCmdConfigBroadcast:
         mock_table.get_item.return_value = {
             "Item": {"connection_id": "user-conn", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
         }
-        mock_table.scan.return_value = {
+        # Mock GSI query to find device connections
+        mock_table.query.return_value = {
             "Items": [{"connection_id": "device-conn-1", "device_id": "device-xyz", "status": "authenticated"}]
         }
         mock_dynamo.Table.return_value = mock_table
