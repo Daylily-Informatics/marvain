@@ -19,6 +19,7 @@ envs:
         AuroraMinACU: "0.5"
         AuroraMaxACU: "2"
         PlannerModel: "gpt-4.1-mini"
+        LiveKitUrl: "wss://your-livekit-server.livekit.cloud"
 
     # Populated by `marvain bootstrap` / `marvain monitor outputs`
     resources: {}

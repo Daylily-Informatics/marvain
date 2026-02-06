@@ -461,3 +461,257 @@ class TestSubscribeEvents:
             assert sent_data["ok"] is False
             assert sent_data["error"] == "permission_denied"
 
+
+class TestCmdPingBroadcast:
+    """Tests for cmd.ping device command broadcast."""
+
+    @patch("handler._dynamo")
+    @patch("handler._get_db")
+    @patch("handler._mgmt_api")
+    @patch("handler.time")
+    def test_cmd_ping_broadcasts_to_device_connection(self, mock_time, mock_mgmt, mock_db, mock_dynamo):
+        """cmd.ping should be broadcast to target device connections."""
+        from handler import handler
+
+        mock_time.time.return_value = 1700000000.123
+
+        # Mock DynamoDB table - user's connection
+        mock_table = MagicMock()
+        mock_table.get_item.return_value = {
+            "Item": {"connection_id": "user-conn", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
+        }
+        # Mock scan to find device connections
+        mock_table.scan.return_value = {
+            "Items": [
+                {"connection_id": "device-conn-1", "device_id": "device-xyz", "status": "authenticated"}
+            ]
+        }
+        mock_dynamo.Table.return_value = mock_table
+
+        # Mock DB query for device ownership
+        mock_db_instance = MagicMock()
+        mock_db_instance.query.return_value = [{"agent_id": "agent-xyz"}]
+        mock_db.return_value = mock_db_instance
+
+        with patch("handler.check_agent_permission", return_value=True):
+            mock_post = MagicMock()
+            mock_mgmt.return_value.post_to_connection = mock_post
+
+            event = {
+                "requestContext": {"connectionId": "user-conn", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
+                "body": json.dumps({"action": "cmd.ping", "target_device_id": "device-xyz"})
+            }
+
+            result = handler(event, {})
+
+            assert result["statusCode"] == 200
+            # Should have been called twice: once for device, once for response to user
+            assert mock_post.call_count == 2
+
+            # Check the device received the ping
+            device_call = mock_post.call_args_list[0]
+            device_data = json.loads(device_call[1]["Data"].decode())
+            assert device_data["type"] == "cmd.ping"
+            assert device_data["from_connection_id"] == "user-conn"
+
+            # Check user received acknowledgment
+            user_call = mock_post.call_args_list[1]
+            user_data = json.loads(user_call[1]["Data"].decode())
+            assert user_data["type"] == "cmd.ping"
+            assert user_data["ok"] is True
+            assert user_data["device_online"] is True
+            assert user_data["device_connections"] == 1
+
+    @patch("handler._dynamo")
+    @patch("handler._get_db")
+    @patch("handler._mgmt_api")
+    @patch("handler.time")
+    def test_cmd_ping_device_not_connected(self, mock_time, mock_mgmt, mock_db, mock_dynamo):
+        """cmd.ping to offline device should still succeed but indicate device_online=False."""
+        from handler import handler
+
+        mock_time.time.return_value = 1700000000.123
+
+        mock_table = MagicMock()
+        mock_table.get_item.return_value = {
+            "Item": {"connection_id": "user-conn", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
+        }
+        # No device connections found
+        mock_table.scan.return_value = {"Items": []}
+        mock_dynamo.Table.return_value = mock_table
+
+        mock_db_instance = MagicMock()
+        mock_db_instance.query.return_value = [{"agent_id": "agent-xyz"}]
+        mock_db.return_value = mock_db_instance
+
+        with patch("handler.check_agent_permission", return_value=True):
+            mock_post = MagicMock()
+            mock_mgmt.return_value.post_to_connection = mock_post
+
+            event = {
+                "requestContext": {"connectionId": "user-conn", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
+                "body": json.dumps({"action": "cmd.ping", "target_device_id": "device-xyz"})
+            }
+
+            result = handler(event, {})
+
+            assert result["statusCode"] == 200
+            sent_data = json.loads(mock_post.call_args[1]["Data"].decode())
+            assert sent_data["type"] == "cmd.ping"
+            assert sent_data["ok"] is True
+            assert sent_data["device_online"] is False
+            assert sent_data["device_connections"] == 0
+
+
+class TestCmdRunActionBroadcast:
+    """Tests for cmd.run_action device command broadcast."""
+
+    @patch("handler._dynamo")
+    @patch("handler._get_db")
+    @patch("handler._mgmt_api")
+    @patch("handler.time")
+    def test_cmd_run_action_broadcasts_to_device(self, mock_time, mock_mgmt, mock_db, mock_dynamo):
+        """cmd.run_action should be broadcast to target device connections."""
+        from handler import handler
+
+        mock_time.time.return_value = 1700000000.123
+
+        mock_table = MagicMock()
+        mock_table.get_item.return_value = {
+            "Item": {"connection_id": "user-conn", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
+        }
+        mock_table.scan.return_value = {
+            "Items": [{"connection_id": "device-conn-1", "device_id": "device-xyz", "status": "authenticated"}]
+        }
+        mock_dynamo.Table.return_value = mock_table
+
+        mock_db_instance = MagicMock()
+        mock_db_instance.query.return_value = [{"agent_id": "agent-xyz"}]
+        mock_db.return_value = mock_db_instance
+
+        with patch("handler.check_agent_permission", return_value=True):
+            mock_post = MagicMock()
+            mock_mgmt.return_value.post_to_connection = mock_post
+
+            event = {
+                "requestContext": {"connectionId": "user-conn", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
+                "body": json.dumps({
+                    "action": "cmd.run_action",
+                    "target_device_id": "device-xyz",
+                    "kind": "status",
+                    "payload": {"include_disk": True}
+                })
+            }
+
+            result = handler(event, {})
+
+            assert result["statusCode"] == 200
+            assert mock_post.call_count == 2
+
+            # Check device received the run_action command
+            device_call = mock_post.call_args_list[0]
+            device_data = json.loads(device_call[1]["Data"].decode())
+            assert device_data["type"] == "cmd.run_action"
+            assert device_data["kind"] == "status"
+            assert device_data["payload"] == {"include_disk": True}
+
+            # Check user received acknowledgment
+            user_call = mock_post.call_args_list[1]
+            user_data = json.loads(user_call[1]["Data"].decode())
+            assert user_data["ok"] is True
+            assert user_data["device_connections"] == 1
+
+    @patch("handler._dynamo")
+    @patch("handler._get_db")
+    @patch("handler._mgmt_api")
+    def test_cmd_run_action_requires_connected_device(self, mock_mgmt, mock_db, mock_dynamo):
+        """cmd.run_action should fail if device not connected."""
+        from handler import handler
+
+        mock_table = MagicMock()
+        mock_table.get_item.return_value = {
+            "Item": {"connection_id": "user-conn", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
+        }
+        mock_table.scan.return_value = {"Items": []}  # No device connections
+        mock_dynamo.Table.return_value = mock_table
+
+        mock_db_instance = MagicMock()
+        mock_db_instance.query.return_value = [{"agent_id": "agent-xyz"}]
+        mock_db.return_value = mock_db_instance
+
+        with patch("handler.check_agent_permission", return_value=True):
+            mock_post = MagicMock()
+            mock_mgmt.return_value.post_to_connection = mock_post
+
+            event = {
+                "requestContext": {"connectionId": "user-conn", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
+                "body": json.dumps({
+                    "action": "cmd.run_action",
+                    "target_device_id": "device-xyz",
+                    "kind": "status"
+                })
+            }
+
+            result = handler(event, {})
+
+            sent_data = json.loads(mock_post.call_args[1]["Data"].decode())
+            assert sent_data["ok"] is False
+            assert sent_data["error"] == "device_not_connected"
+
+
+class TestCmdConfigBroadcast:
+    """Tests for cmd.config device command broadcast."""
+
+    @patch("handler._dynamo")
+    @patch("handler._get_db")
+    @patch("handler._mgmt_api")
+    @patch("handler.time")
+    def test_cmd_config_broadcasts_to_device(self, mock_time, mock_mgmt, mock_db, mock_dynamo):
+        """cmd.config should be broadcast to target device connections."""
+        from handler import handler
+
+        mock_time.time.return_value = 1700000000.123
+
+        mock_table = MagicMock()
+        mock_table.get_item.return_value = {
+            "Item": {"connection_id": "user-conn", "status": "authenticated", "principal_type": "user", "user_id": "user-abc"}
+        }
+        mock_table.scan.return_value = {
+            "Items": [{"connection_id": "device-conn-1", "device_id": "device-xyz", "status": "authenticated"}]
+        }
+        mock_dynamo.Table.return_value = mock_table
+
+        mock_db_instance = MagicMock()
+        mock_db_instance.query.return_value = [{"agent_id": "agent-xyz"}]
+        mock_db.return_value = mock_db_instance
+
+        with patch("handler.check_agent_permission", return_value=True):
+            mock_post = MagicMock()
+            mock_mgmt.return_value.post_to_connection = mock_post
+
+            event = {
+                "requestContext": {"connectionId": "user-conn", "domainName": "test.execute-api.us-east-1.amazonaws.com", "stage": "prod"},
+                "body": json.dumps({
+                    "action": "cmd.config",
+                    "target_device_id": "device-xyz",
+                    "config": {"log_level": "DEBUG", "heartbeat_interval": 30}
+                })
+            }
+
+            result = handler(event, {})
+
+            assert result["statusCode"] == 200
+            assert mock_post.call_count == 2
+
+            # Check device received the config command
+            device_call = mock_post.call_args_list[0]
+            device_data = json.loads(device_call[1]["Data"].decode())
+            assert device_data["type"] == "cmd.config"
+            assert device_data["config"] == {"log_level": "DEBUG", "heartbeat_interval": 30}
+
+            # Check user received acknowledgment
+            user_call = mock_post.call_args_list[1]
+            user_data = json.loads(user_call[1]["Data"].decode())
+            assert user_data["ok"] is True
+            assert user_data["device_connections"] == 1
+

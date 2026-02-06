@@ -91,6 +91,9 @@
           <i class="fas fa-ban"></i> Revoke
         </button>
         {% endif %}
+        <button class="btn btn-sm btn-outline btn-danger" onclick="deleteDevice('{{ device.device_id }}', '{{ device.name }}')" title="Permanently delete this device">
+          <i class="fas fa-trash"></i> Delete
+        </button>
       </div>
     </div>
   </div>
@@ -169,7 +172,7 @@ function filterDevices() {
 }
 
 function viewDevice(deviceId) {
-  Marvain.showToast('info', 'Coming Soon', 'Device details will be available in a future update.');
+  window.location.href = `/devices/${deviceId}`;
 }
 
 async function revokeDevice(deviceId) {
@@ -191,6 +194,37 @@ async function revokeDevice(deviceId) {
 
     Marvain.hideLoading();
     Marvain.showToast('success', 'Success', 'Device revoked successfully');
+    setTimeout(() => location.reload(), 1000);
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+}
+
+async function deleteDevice(deviceId, deviceName) {
+  if (!confirm(`Are you sure you want to PERMANENTLY DELETE the device "${deviceName}"?\n\nThis will remove all records of this device. This action cannot be undone.`)) {
+    return;
+  }
+
+  // Double confirmation for destructive action
+  if (!confirm('This is a permanent deletion. Are you absolutely sure?')) {
+    return;
+  }
+
+  try {
+    Marvain.showLoading('Deleting device...');
+    const response = await fetch(`/api/devices/${deviceId}/delete`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'}
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to delete device');
+    }
+
+    Marvain.hideLoading();
+    Marvain.showToast('success', 'Deleted', 'Device permanently deleted');
     setTimeout(() => location.reload(), 1000);
   } catch (error) {
     Marvain.hideLoading();
@@ -231,13 +265,106 @@ async function submitCreateDevice(event) {
     Marvain.hideLoading();
     Marvain.hideModal('create-device-modal');
 
-    // Show token in alert (user should copy it - it won't be shown again)
-    alert('Device registered successfully!\n\nDevice Token (copy this, it will not be shown again):\n' + result.token);
-    location.reload();
+    // Show token in a copyable in-page element
+    showDeviceTokenResult(result);
   } catch (error) {
     Marvain.hideLoading();
     Marvain.showToast('error', 'Error', error.message);
   }
+}
+
+function showDeviceTokenResult(result) {
+  // Create or update the token result container
+  let container = document.getElementById('device-token-result');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'device-token-result';
+    container.className = 'card';
+    container.style.cssText = 'margin-bottom: 2rem; border: 2px solid var(--color-success); background: var(--color-gray-800);';
+
+    // Insert at the top of the page content
+    const pageHeader = document.querySelector('.page-header');
+    pageHeader.parentNode.insertBefore(container, pageHeader.nextSibling);
+  }
+
+  container.innerHTML = `
+    <div class="card-header" style="background: var(--color-success); color: white;">
+      <h3 class="card-title" style="color: white;"><i class="fas fa-check-circle"></i> Device Registered Successfully</h3>
+      <button type="button" class="btn btn-sm" onclick="dismissTokenResult()" style="color: white;">
+        <i class="fas fa-times"></i>
+      </button>
+    </div>
+    <div class="card-body">
+      <div class="alert alert-warning" style="margin-bottom: 1rem;">
+        <i class="fas fa-exclamation-triangle"></i>
+        <strong>Important:</strong> Copy this token now. It will not be shown again!
+      </div>
+
+      <div class="form-group">
+        <label>Device ID</label>
+        <div class="input-group">
+          <input type="text" class="form-control" value="${result.device_id}" readonly id="device-id-input">
+          <button type="button" class="btn btn-outline" onclick="copyToClipboard('device-id-input', 'Device ID')">
+            <i class="fas fa-copy"></i> Copy
+          </button>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Device Token</label>
+        <div class="input-group">
+          <input type="text" class="form-control" value="${result.token}" readonly id="device-token-input"
+                 style="font-family: monospace; font-size: 0.9rem;">
+          <button type="button" class="btn btn-primary" onclick="copyToClipboard('device-token-input', 'Device Token')">
+            <i class="fas fa-copy"></i> Copy Token
+          </button>
+        </div>
+      </div>
+
+      <div class="form-group" style="margin-top: 1.5rem;">
+        <label>Quick Start Command</label>
+        <p class="text-muted" style="margin-bottom: 0.5rem;">Run this on the device to connect it to the hub:</p>
+        <div class="input-group">
+          <textarea class="form-control" readonly id="device-command-input" rows="2"
+                    style="font-family: monospace; font-size: 0.85rem; resize: none;">python apps/remote_satellite/daemon.py --hub-ws-url {{ ws_url }} --device-token ${result.token}</textarea>
+          <button type="button" class="btn btn-outline" onclick="copyToClipboard('device-command-input', 'Command')">
+            <i class="fas fa-copy"></i> Copy
+          </button>
+        </div>
+      </div>
+
+      <div style="margin-top: 1.5rem; text-align: right;">
+        <button type="button" class="btn btn-primary" onclick="dismissTokenResult()">
+          <i class="fas fa-check"></i> Done - I've Copied the Token
+        </button>
+      </div>
+    </div>
+  `;
+
+  // Scroll to the result
+  container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function dismissTokenResult() {
+  const container = document.getElementById('device-token-result');
+  if (container) {
+    container.remove();
+  }
+  location.reload();
+}
+
+function copyToClipboard(inputId, label) {
+  const input = document.getElementById(inputId);
+  input.select();
+  input.setSelectionRange(0, 99999); // For mobile
+
+  navigator.clipboard.writeText(input.value).then(() => {
+    Marvain.showToast('success', 'Copied', label + ' copied to clipboard');
+  }).catch(() => {
+    // Fallback for older browsers
+    document.execCommand('copy');
+    Marvain.showToast('success', 'Copied', label + ' copied to clipboard');
+  });
 }
 
 // Register modal show function

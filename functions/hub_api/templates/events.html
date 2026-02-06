@@ -2,6 +2,22 @@
 
 {% block title %}Events - Marvain{% endblock %}
 
+{% block head %}
+<style>
+.detail-section { margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--color-gray-600); }
+.detail-section:last-child { border-bottom: none; margin-bottom: 0; }
+.detail-section h4 { margin: 0 0 1rem 0; color: var(--color-gray-200); font-size: 1rem; }
+.detail-section h4 i { margin-right: 0.5rem; color: var(--color-highlight); }
+.detail-grid { display: grid; gap: 0.75rem; }
+.detail-row { display: flex; align-items: center; gap: 1rem; }
+.detail-label { color: var(--color-gray-400); min-width: 120px; font-size: 0.875rem; }
+.detail-value { color: var(--color-gray-200); }
+.json-display { background: var(--color-gray-900); padding: 1rem; border-radius: var(--radius-md); overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.8125rem; color: var(--color-gray-200); max-height: 300px; overflow-y: auto; margin: 0; }
+.loading-spinner { text-align: center; padding: 2rem; color: var(--color-gray-400); }
+.error-message { text-align: center; padding: 2rem; color: var(--color-error); }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="page-header">
   <div>
@@ -99,6 +115,19 @@
     <p>Events will appear here as your agents interact with the world.</p>
   </div>
   {% endif %}
+</div>
+
+<!-- Event Details Modal -->
+<div class="modal-overlay" id="event-detail-modal" style="display: none;">
+  <div class="modal" style="max-width: 700px;">
+    <div class="modal-header">
+      <h3><i class="fas fa-stream"></i> Event Details</h3>
+      <button type="button" class="modal-close" onclick="Marvain.hideModal('event-detail-modal')">&times;</button>
+    </div>
+    <div class="modal-body" id="event-detail-content">
+      <div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> Loading...</div>
+    </div>
+  </div>
 </div>
 {% endblock %}
 
@@ -249,8 +278,71 @@ function togglePause() {
   }
 }
 
-function viewEvent(eventId) {
-  Marvain.showToast('info', 'Coming Soon', 'Event details view will be available soon.');
+async function viewEvent(eventId) {
+  const content = document.getElementById('event-detail-content');
+  content.innerHTML = '<div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
+  Marvain.showModal('event-detail-modal');
+
+  try {
+    const response = await fetch(`/api/events/${eventId}`);
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to load event');
+    }
+    const event = await response.json();
+
+    content.innerHTML = `
+      <div class="detail-section">
+        <h4><i class="fas fa-info-circle"></i> Basic Info</h4>
+        <div class="detail-grid">
+          <div class="detail-row">
+            <span class="detail-label">Event ID</span>
+            <code class="detail-value">${event.event_id}</code>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Type</span>
+            <span class="badge badge-info">${event.type}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Created</span>
+            <span class="detail-value">${event.created_at || 'N/A'}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="detail-section">
+        <h4><i class="fas fa-sitemap"></i> Context</h4>
+        <div class="detail-grid">
+          <div class="detail-row">
+            <span class="detail-label">Agent</span>
+            <span class="detail-value">${event.agent_name || event.agent_id || 'N/A'}</span>
+          </div>
+          ${event.space_name ? `
+          <div class="detail-row">
+            <span class="detail-label">Space</span>
+            <span class="detail-value">${event.space_name}</span>
+          </div>` : ''}
+          ${event.device_name ? `
+          <div class="detail-row">
+            <span class="detail-label">Device</span>
+            <span class="detail-value">${event.device_name}</span>
+          </div>` : ''}
+          ${event.person_name ? `
+          <div class="detail-row">
+            <span class="detail-label">Person</span>
+            <span class="detail-value">${event.person_name}</span>
+          </div>` : ''}
+        </div>
+      </div>
+
+      <div class="detail-section">
+        <h4><i class="fas fa-code"></i> Payload</h4>
+        <pre class="json-display">${JSON.stringify(event.payload, null, 2)}</pre>
+      </div>
+    `;
+  } catch (error) {
+    content.innerHTML = `<div class="error-message"><i class="fas fa-exclamation-triangle"></i> ${error.message}</div>`;
+  }
 }
 </script>
 {% endblock %}

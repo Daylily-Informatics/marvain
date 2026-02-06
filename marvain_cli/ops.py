@@ -1045,6 +1045,7 @@ def gui_run(
         "OpenAISecretArn": "OPENAI_SECRET_ARN",
         "LiveKitSecretArn": "LIVEKIT_SECRET_ARN",
         "LiveKitUrl": "LIVEKIT_URL",
+        "HubWebSocketUrl": "WS_API_URL",
         "AuditBucketName": "AUDIT_BUCKET",
         "ArtifactBucketName": "ARTIFACT_BUCKET",
         "SessionSecretArn": "SESSION_SECRET_ARN",
@@ -1084,7 +1085,7 @@ def gui_run(
 # GUI Lifecycle Management
 # -----------------------------------------------------------------------------
 
-GUI_DEFAULT_HOST = "127.0.0.1"
+GUI_DEFAULT_HOST = "localhost"
 GUI_DEFAULT_PORT = 8084
 GUI_PID_FILENAME = ".marvain-gui.pid"
 GUI_LOG_FILENAME = ".marvain-gui.log"
@@ -1511,6 +1512,7 @@ def gui_start(
         "OpenAISecretArn": "OPENAI_SECRET_ARN",
         "LiveKitSecretArn": "LIVEKIT_SECRET_ARN",
         "LiveKitUrl": "LIVEKIT_URL",
+        "HubWebSocketUrl": "WS_API_URL",
         "AuditBucketName": "AUDIT_BUCKET",
         "ArtifactBucketName": "ARTIFACT_BUCKET",
         "SessionSecretArn": "SESSION_SECRET_ARN",

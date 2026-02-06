@@ -2,6 +2,23 @@
 
 {% block title %}Memories - Marvain{% endblock %}
 
+{% block head %}
+<style>
+.detail-section { margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--color-gray-600); }
+.detail-section:last-child { border-bottom: none; margin-bottom: 0; }
+.detail-section h4 { margin: 0 0 1rem 0; color: var(--color-gray-200); font-size: 1rem; }
+.detail-section h4 i { margin-right: 0.5rem; color: var(--color-highlight); }
+.detail-grid { display: grid; gap: 0.75rem; }
+.detail-row { display: flex; align-items: center; gap: 1rem; }
+.detail-label { color: var(--color-gray-400); min-width: 120px; font-size: 0.875rem; }
+.detail-value { color: var(--color-gray-200); }
+.json-display { background: var(--color-gray-900); padding: 1rem; border-radius: var(--radius-md); overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.8125rem; color: var(--color-gray-200); max-height: 300px; overflow-y: auto; margin: 0; white-space: pre-wrap; word-wrap: break-word; }
+.loading-spinner { text-align: center; padding: 2rem; color: var(--color-gray-400); }
+.error-message { text-align: center; padding: 2rem; color: var(--color-error); }
+.participant-list { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="page-header">
   <div>
@@ -123,6 +140,19 @@
   </div>
   {% endif %}
 </div>
+
+<!-- Memory Details Modal -->
+<div class="modal-overlay" id="memory-detail-modal" style="display: none;">
+  <div class="modal" style="max-width: 700px;">
+    <div class="modal-header">
+      <h3><i class="fas fa-brain"></i> Memory Details</h3>
+      <button type="button" class="modal-close" onclick="Marvain.hideModal('memory-detail-modal')">&times;</button>
+    </div>
+    <div class="modal-body" id="memory-detail-content">
+      <div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> Loading...</div>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
@@ -142,8 +172,85 @@ function filterMemories() {
   });
 }
 
-function viewMemory(memoryId) {
-  Marvain.showToast('info', 'Coming Soon', 'Memory details view will be available soon.');
+async function viewMemory(memoryId) {
+  const content = document.getElementById('memory-detail-content');
+  content.innerHTML = '<div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
+  Marvain.showModal('memory-detail-modal');
+
+  try {
+    const response = await fetch(`/api/memories/${memoryId}`);
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to load memory');
+    }
+    const memory = await response.json();
+
+    const tierBadge = {
+      'episodic': 'info',
+      'semantic': 'success',
+      'procedural': 'warning'
+    }[memory.tier] || 'secondary';
+
+    const participants = memory.participants || [];
+    const provenance = memory.provenance || {};
+    const retention = memory.retention || {};
+
+    content.innerHTML = `
+      <div class="detail-section">
+        <h4><i class="fas fa-info-circle"></i> Basic Info</h4>
+        <div class="detail-grid">
+          <div class="detail-row">
+            <span class="detail-label">Memory ID</span>
+            <code class="detail-value">${memory.memory_id}</code>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Tier</span>
+            <span class="badge badge-${tierBadge}">${memory.tier}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Agent</span>
+            <span class="detail-value">${memory.agent_name || memory.agent_id}</span>
+          </div>
+          ${memory.space_name ? `
+          <div class="detail-row">
+            <span class="detail-label">Space</span>
+            <span class="detail-value">${memory.space_name}</span>
+          </div>` : ''}
+          <div class="detail-row">
+            <span class="detail-label">Created</span>
+            <span class="detail-value">${memory.created_at || 'N/A'}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="detail-section">
+        <h4><i class="fas fa-file-alt"></i> Content</h4>
+        <pre class="json-display">${memory.content || 'No content'}</pre>
+      </div>
+
+      ${participants.length > 0 ? `
+      <div class="detail-section">
+        <h4><i class="fas fa-users"></i> Participants</h4>
+        <div class="participant-list">
+          ${participants.map(p => `<span class="badge badge-outline">${p}</span>`).join(' ')}
+        </div>
+      </div>` : ''}
+
+      ${Object.keys(provenance).length > 0 ? `
+      <div class="detail-section">
+        <h4><i class="fas fa-history"></i> Provenance</h4>
+        <pre class="json-display">${JSON.stringify(provenance, null, 2)}</pre>
+      </div>` : ''}
+
+      ${Object.keys(retention).length > 0 ? `
+      <div class="detail-section">
+        <h4><i class="fas fa-clock"></i> Retention</h4>
+        <pre class="json-display">${JSON.stringify(retention, null, 2)}</pre>
+      </div>` : ''}
+    `;
+  } catch (error) {
+    content.innerHTML = `<div class="error-message"><i class="fas fa-exclamation-triangle"></i> ${error.message}</div>`;
+  }
 }
 
 async function deleteMemory(memoryId) {

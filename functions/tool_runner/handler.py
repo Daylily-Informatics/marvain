@@ -6,6 +6,7 @@ import os
 from typing import Any
 
 from agent_hub.audit import append_audit_entry
+from agent_hub.broadcast import broadcast_event
 from agent_hub.config import load_config
 from agent_hub.policy import is_agent_disabled
 from agent_hub.rds_data import RdsData, RdsDataEnv
@@ -114,15 +115,25 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
         result: dict[str, Any] = tool_result.to_dict()
         result["kind"] = kind
 
-        # Mark executed or failed based on result
+        # Mark executed or failed based on result, and persist result/error
         new_status = "executed" if tool_result.ok else "failed"
         _db.execute(
             """
             UPDATE actions
-            SET status=:status, updated_at=now(), executed_at=now()
+            SET status = :status,
+                updated_at = now(),
+                executed_at = now(),
+                completed_at = now(),
+                result = :result::jsonb,
+                error = :error
             WHERE action_id = :action_id::uuid
             """,
-            {"action_id": action_id, "status": new_status},
+            {
+                "action_id": action_id,
+                "status": new_status,
+                "result": json.dumps(tool_result.data) if tool_result.ok else None,
+                "error": tool_result.error if not tool_result.ok else None,
+            },
         )
 
         if _cfg.audit_bucket:
@@ -133,6 +144,22 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
                 entry_type="action_executed",
                 entry={"action_id": action_id, "kind": kind, "result": result, "status": new_status},
             )
+
+        # Broadcast action completion to subscribed clients
+        try:
+            broadcast_event(
+                event_type="actions.updated",
+                agent_id=agent_id,
+                space_id=action.get("space_id"),
+                payload={
+                    "action_id": action_id,
+                    "kind": kind,
+                    "status": new_status,
+                    "has_result": tool_result.ok,
+                },
+            )
+        except Exception as e:
+            logger.warning("Failed to broadcast action update: %s", e)
 
         processed += 1
 

@@ -2,11 +2,91 @@
 
 {% block title %}Actions - Marvain{% endblock %}
 
+{% block head %}
+<style>
+.detail-section {
+  margin-bottom: 1.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--color-gray-600);
+}
+.detail-section:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+.detail-section h4 {
+  margin: 0 0 1rem 0;
+  color: var(--color-gray-200);
+  font-size: 1rem;
+}
+.detail-section h4 i {
+  margin-right: 0.5rem;
+  color: var(--color-highlight);
+}
+.detail-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+.detail-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+.detail-label {
+  color: var(--color-gray-400);
+  min-width: 120px;
+  font-size: 0.875rem;
+}
+.detail-value {
+  color: var(--color-gray-200);
+}
+.json-display {
+  background: var(--color-gray-900);
+  padding: 1rem;
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8125rem;
+  color: var(--color-gray-200);
+  max-height: 300px;
+  overflow-y: auto;
+  margin: 0;
+}
+.json-display.error {
+  color: var(--color-error);
+}
+.scope-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.badge-outline {
+  background: transparent;
+  border: 1px solid var(--color-gray-500);
+  color: var(--color-gray-300);
+}
+.loading-spinner {
+  text-align: center;
+  padding: 2rem;
+  color: var(--color-gray-400);
+}
+.error-message {
+  text-align: center;
+  padding: 2rem;
+  color: var(--color-error);
+}
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="page-header">
   <div>
     <h1 class="page-title"><i class="fas fa-bolt"></i> Actions</h1>
     <p class="text-muted">Review and manage agent actions</p>
+  </div>
+  <div class="page-actions">
+    <button type="button" class="btn btn-primary" onclick="showCreateActionModal()">
+      <i class="fas fa-plus"></i> Create Action
+    </button>
   </div>
 </div>
 
@@ -130,6 +210,82 @@
   </div>
   {% endif %}
 </div>
+
+<!-- Action Details Modal -->
+<div class="modal-overlay" id="action-detail-modal" style="display: none;">
+  <div class="modal" style="max-width: 700px;">
+    <div class="modal-header">
+      <h3><i class="fas fa-bolt"></i> Action Details</h3>
+      <button type="button" class="modal-close" onclick="Marvain.hideModal('action-detail-modal')">&times;</button>
+    </div>
+    <div class="modal-body" id="action-detail-content">
+      <div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> Loading...</div>
+    </div>
+  </div>
+</div>
+
+<!-- Create Action Modal -->
+<div class="modal-overlay" id="create-action-modal" style="display: none;">
+  <div class="modal" style="max-width: 600px;">
+    <div class="modal-header">
+      <h3><i class="fas fa-plus-circle"></i> Create Action</h3>
+      <button type="button" class="modal-close" onclick="hideCreateActionModal()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <form id="create-action-form" onsubmit="submitCreateAction(event)">
+        <div class="form-group">
+          <label for="action-agent">Agent <span class="required">*</span></label>
+          <select id="action-agent" name="agent_id" required>
+            <option value="">Select an agent...</option>
+            {% for agent in agents %}
+            <option value="{{ agent.agent_id }}">{{ agent.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="action-space">Space (optional)</label>
+          <select id="action-space" name="space_id">
+            <option value="">No space</option>
+          </select>
+          <small class="text-muted">Select an agent first to see available spaces</small>
+        </div>
+        <div class="form-group">
+          <label for="action-kind">Action Kind <span class="required">*</span></label>
+          <select id="action-kind" name="kind" required>
+            <option value="">Select action type...</option>
+            <option value="send_message">send_message</option>
+            <option value="create_memory">create_memory</option>
+            <option value="http_request">http_request</option>
+            <option value="device_command">device_command</option>
+            <option value="shell_command">shell_command</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="action-payload">Payload (JSON) <span class="required">*</span></label>
+          <textarea id="action-payload" name="payload" rows="6" required placeholder='{"key": "value"}'></textarea>
+          <small class="text-muted">Enter valid JSON payload for the action</small>
+        </div>
+        <div class="form-group">
+          <label for="action-scopes">Required Scopes</label>
+          <input type="text" id="action-scopes" name="scopes" placeholder="scope1, scope2, scope3">
+          <small class="text-muted">Comma-separated list of required scopes</small>
+        </div>
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="action-auto-approve" name="auto_approve">
+            <span>Auto-approve and execute immediately</span>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-outline" onclick="hideCreateActionModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary">
+            <i class="fas fa-bolt"></i> Create Action
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
@@ -149,8 +305,110 @@ function filterActions() {
   });
 }
 
-function viewAction(actionId) {
-  Marvain.showToast('info', 'Coming Soon', 'Action details view will be available soon.');
+async function viewAction(actionId) {
+  const modal = document.getElementById('action-detail-modal');
+  const content = document.getElementById('action-detail-content');
+  content.innerHTML = '<div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
+  Marvain.showModal('action-detail-modal');
+
+  try {
+    const response = await fetch(`/api/actions/${actionId}`);
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to load action');
+    }
+    const action = await response.json();
+
+    const statusBadge = {
+      'proposed': 'warning',
+      'approved': 'info',
+      'executing': 'info',
+      'completed': 'success',
+      'failed': 'error',
+      'rejected': 'error'
+    }[action.status] || 'secondary';
+
+    content.innerHTML = `
+      <div class="detail-section">
+        <h4><i class="fas fa-info-circle"></i> Basic Info</h4>
+        <div class="detail-grid">
+          <div class="detail-row">
+            <span class="detail-label">Action ID</span>
+            <code class="detail-value">${action.action_id}</code>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Kind</span>
+            <span class="badge badge-info">${action.kind}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Status</span>
+            <span class="badge badge-${statusBadge}">${action.status}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Agent</span>
+            <span class="detail-value">${action.agent_name || action.agent_id}</span>
+          </div>
+          ${action.space_name ? `
+          <div class="detail-row">
+            <span class="detail-label">Space</span>
+            <span class="detail-value">${action.space_name}</span>
+          </div>` : ''}
+        </div>
+      </div>
+
+      <div class="detail-section">
+        <h4><i class="fas fa-code"></i> Payload</h4>
+        <pre class="json-display">${JSON.stringify(action.payload, null, 2)}</pre>
+      </div>
+
+      ${action.required_scopes && action.required_scopes.length > 0 ? `
+      <div class="detail-section">
+        <h4><i class="fas fa-shield-alt"></i> Required Scopes</h4>
+        <div class="scope-list">
+          ${action.required_scopes.map(s => `<span class="badge badge-outline">${s}</span>`).join(' ')}
+        </div>
+      </div>` : ''}
+
+      <div class="detail-section">
+        <h4><i class="fas fa-clock"></i> Timeline</h4>
+        <div class="detail-grid">
+          <div class="detail-row">
+            <span class="detail-label">Created</span>
+            <span class="detail-value">${action.created_at || 'N/A'}</span>
+          </div>
+          ${action.approved_at ? `
+          <div class="detail-row">
+            <span class="detail-label">Approved</span>
+            <span class="detail-value">${action.approved_at}</span>
+          </div>` : ''}
+          ${action.executed_at ? `
+          <div class="detail-row">
+            <span class="detail-label">Executed</span>
+            <span class="detail-value">${action.executed_at}</span>
+          </div>` : ''}
+          ${action.completed_at ? `
+          <div class="detail-row">
+            <span class="detail-label">Completed</span>
+            <span class="detail-value">${action.completed_at}</span>
+          </div>` : ''}
+        </div>
+      </div>
+
+      ${action.result ? `
+      <div class="detail-section">
+        <h4><i class="fas fa-check-circle"></i> Result</h4>
+        <pre class="json-display">${typeof action.result === 'object' ? JSON.stringify(action.result, null, 2) : action.result}</pre>
+      </div>` : ''}
+
+      ${action.error ? `
+      <div class="detail-section">
+        <h4><i class="fas fa-exclamation-circle"></i> Error</h4>
+        <pre class="json-display error">${action.error}</pre>
+      </div>` : ''}
+    `;
+  } catch (error) {
+    content.innerHTML = `<div class="error-message"><i class="fas fa-exclamation-triangle"></i> ${error.message}</div>`;
+  }
 }
 
 async function approveAction(actionId) {
@@ -205,6 +463,95 @@ async function rejectAction(actionId) {
     Marvain.showToast('error', 'Error', error.message);
   }
 }
+
+// Spaces data for agent filtering
+const agentSpaces = {{ spaces_by_agent|tojson|safe if spaces_by_agent else '{}' }};
+
+function showCreateActionModal() {
+  document.getElementById('create-action-modal').style.display = 'flex';
+  document.getElementById('create-action-form').reset();
+  document.getElementById('action-space').innerHTML = '<option value="">No space</option>';
+}
+
+function hideCreateActionModal() {
+  document.getElementById('create-action-modal').style.display = 'none';
+}
+
+// Update spaces dropdown when agent changes
+document.getElementById('action-agent').addEventListener('change', function() {
+  const agentId = this.value;
+  const spaceSelect = document.getElementById('action-space');
+  spaceSelect.innerHTML = '<option value="">No space</option>';
+
+  if (agentId && agentSpaces[agentId]) {
+    agentSpaces[agentId].forEach(space => {
+      const option = document.createElement('option');
+      option.value = space.space_id;
+      option.textContent = space.name;
+      spaceSelect.appendChild(option);
+    });
+  }
+});
+
+async function submitCreateAction(event) {
+  event.preventDefault();
+
+  const form = document.getElementById('create-action-form');
+  const agentId = document.getElementById('action-agent').value;
+  const spaceId = document.getElementById('action-space').value || null;
+  const kind = document.getElementById('action-kind').value;
+  const payloadText = document.getElementById('action-payload').value;
+  const scopesText = document.getElementById('action-scopes').value;
+  const autoApprove = document.getElementById('action-auto-approve').checked;
+
+  // Validate JSON payload
+  let payload;
+  try {
+    payload = JSON.parse(payloadText);
+  } catch (e) {
+    Marvain.showToast('error', 'Invalid JSON', 'Please enter valid JSON in the payload field');
+    return;
+  }
+
+  // Parse scopes
+  const scopes = scopesText ? scopesText.split(',').map(s => s.trim()).filter(s => s) : [];
+
+  try {
+    Marvain.showLoading('Creating action...');
+    const response = await fetch('/api/actions', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        agent_id: agentId,
+        space_id: spaceId,
+        kind: kind,
+        payload: payload,
+        required_scopes: scopes,
+        auto_approve: autoApprove
+      })
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to create action');
+    }
+
+    Marvain.hideLoading();
+    hideCreateActionModal();
+    Marvain.showToast('success', 'Success', autoApprove ? 'Action created and queued for execution' : 'Action created');
+    setTimeout(() => location.reload(), 1000);
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+}
+
+// Close modal on overlay click
+document.getElementById('create-action-modal').addEventListener('click', function(e) {
+  if (e.target === this) {
+    hideCreateActionModal();
+  }
+});
 </script>
 {% endblock %}
 

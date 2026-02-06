@@ -117,6 +117,32 @@
   {% endif %}
 </div>
 
+<!-- Edit Person Modal -->
+<div id="edit-person-modal" class="modal" style="display: none;">
+  <div class="modal-backdrop" onclick="Marvain.hideModal('edit-person-modal')"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>Edit Person</h3>
+      <button type="button" class="btn btn-sm" onclick="Marvain.hideModal('edit-person-modal')">
+        <i class="fas fa-times"></i>
+      </button>
+    </div>
+    <form onsubmit="submitEditPerson(event)">
+      <div class="modal-body">
+        <input type="hidden" id="edit-person-id" name="person_id">
+        <div class="form-group">
+          <label for="edit-person-name">Display Name *</label>
+          <input type="text" id="edit-person-name" name="display_name" required placeholder="John Doe">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" onclick="Marvain.hideModal('edit-person-modal')">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <!-- Add Person Modal -->
 <div id="create-person-modal" class="modal" style="display: none;">
   <div class="modal-backdrop" onclick="Marvain.hideModal('create-person-modal')"></div>
@@ -229,8 +255,53 @@ function filterPeople() {
   });
 }
 
-function editPerson(personId) {
-  Marvain.showToast('info', 'Coming Soon', 'Edit person functionality will be available soon.');
+async function editPerson(personId) {
+  try {
+    Marvain.showLoading('Loading person details...');
+    const response = await fetch(`/api/people/${personId}`);
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to load person');
+    }
+    const person = await response.json();
+    Marvain.hideLoading();
+
+    document.getElementById('edit-person-id').value = person.person_id;
+    document.getElementById('edit-person-name').value = person.display_name;
+    Marvain.showModal('edit-person-modal');
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+}
+
+async function submitEditPerson(event) {
+  event.preventDefault();
+  const form = event.target;
+  const personId = document.getElementById('edit-person-id').value;
+  const displayName = document.getElementById('edit-person-name').value;
+
+  try {
+    Marvain.showLoading('Saving changes...');
+    const response = await fetch(`/api/people/${personId}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({display_name: displayName})
+    });
+
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to update person');
+    }
+
+    Marvain.hideLoading();
+    Marvain.hideModal('edit-person-modal');
+    Marvain.showToast('success', 'Success', 'Person updated successfully');
+    setTimeout(() => location.reload(), 1000);
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
 }
 
 function manageConsent(personId, displayName) {

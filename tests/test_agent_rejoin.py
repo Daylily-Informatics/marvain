@@ -161,8 +161,18 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
                 self._start_blocker = asyncio.Event()
                 self._disconnected_event = asyncio.Event()
 
-            def on(self, event: str, cb):
-                self._handlers[event] = cb
+            def on(self, event: str, cb=None):
+                """Support both decorator-style and callback-style registration."""
+                if cb is not None:
+                    # Callback-style: room.on("event", handler)
+                    self._handlers[event] = cb
+                    return None
+                else:
+                    # Decorator-style: @room.on("event")
+                    def decorator(fn):
+                        self._handlers[event] = fn
+                        return fn
+                    return decorator
 
             async def disconnect(self):
                 self.disconnected = True
@@ -180,8 +190,16 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
             def __init__(self, **kwargs):
                 self._handlers = {}
 
-            def on(self, event: str, cb):
-                self._handlers[event] = cb
+            def on(self, event: str, cb=None):
+                """Support both decorator-style and callback-style registration."""
+                if cb is not None:
+                    self._handlers[event] = cb
+                    return None
+                else:
+                    def decorator(fn):
+                        self._handlers[event] = fn
+                        return fn
+                    return decorator
 
             async def start(self, **kwargs):
                 # Block until test allows forge_agent to continue.
@@ -234,8 +252,18 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
                 self._handlers = {}
                 self._start_blocker = asyncio.Event()
 
-            def on(self, event: str, cb):
-                self._handlers[event] = cb
+            def on(self, event: str, cb=None):
+                """Support both decorator-style and callback-style registration."""
+                if cb is not None:
+                    # Callback-style: room.on("event", handler)
+                    self._handlers[event] = cb
+                    return None
+                else:
+                    # Decorator-style: @room.on("event")
+                    def decorator(fn):
+                        self._handlers[event] = fn
+                        return fn
+                    return decorator
 
             async def disconnect(self):
                 return None
@@ -252,8 +280,16 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
             def __init__(self, **kwargs):
                 self._handlers = {}
 
-            def on(self, event: str, cb):
-                self._handlers[event] = cb
+            def on(self, event: str, cb=None):
+                """Support both decorator-style and callback-style registration."""
+                if cb is not None:
+                    self._handlers[event] = cb
+                    return None
+                else:
+                    def decorator(fn):
+                        self._handlers[event] = fn
+                        return fn
+                    return decorator
 
             async def start(self, **kwargs):
                 kwargs["room"]._start_blocker.set()
