@@ -1020,25 +1020,16 @@ def api_launch_satellite(request: Request, device_id: str, body: DeviceLaunchSat
     This is a LOCAL-DEV-ONLY endpoint. It spawns the satellite daemon as a
     background subprocess on the machine running the GUI server.
     """
-    import re
     import subprocess as _sp
 
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    # --- Input validation (CodeQL: prevent path traversal & command injection) ---
-    # Validate device_id is a proper UUID (hex + dashes only)
-    if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", device_id, re.IGNORECASE):
-        raise HTTPException(status_code=400, detail="Invalid device_id format")
-
-    # Validate device_token contains only safe characters (alphanumeric + punctuation used in JWTs/tokens)
-    if not re.fullmatch(r"[A-Za-z0-9._~+/=-]{10,4096}", body.device_token):
-        raise HTTPException(status_code=400, detail="Invalid device_token format")
-
     db = _get_db()
 
-    # Verify device exists and user has permission
+    # Verify device exists and user has permission — the DB-returned device_id
+    # is server-controlled (not user-tainted) so safe for paths/commands.
     rows = db.query(
         """
         SELECT d.device_id, d.agent_id, d.name
@@ -1053,6 +1044,9 @@ def api_launch_satellite(request: Request, device_id: str, body: DeviceLaunchSat
     if not rows:
         raise HTTPException(status_code=404, detail="Device not found or permission denied")
 
+    # Use the DB-returned device_id (server-controlled, not user-tainted)
+    verified_device_id: str = rows[0]["device_id"]
+
     ws_url = _cfg.ws_api_url
     if not ws_url:
         raise HTTPException(status_code=500, detail="WebSocket URL not configured (WS_API_URL)")
@@ -1060,43 +1054,34 @@ def api_launch_satellite(request: Request, device_id: str, body: DeviceLaunchSat
     # Resolve the daemon script path relative to the repo root
     repo_root = Path(__file__).resolve().parent.parent.parent
     daemon_script = (repo_root / "apps" / "remote_satellite" / "daemon.py").resolve()
-    # Ensure the resolved path is within the repo root (prevent path traversal)
-    if not str(daemon_script).startswith(str(repo_root)):
-        raise HTTPException(status_code=500, detail="Satellite daemon script path is outside repo root")
     if not daemon_script.exists():
         raise HTTPException(status_code=500, detail="Satellite daemon script not found")
 
-    # Build the command — device_id is validated as UUID above, device_token as safe chars
+    # Build the command — pass device_token via env var (not CLI arg) to avoid
+    # command-injection taint. The daemon reads MARVAIN_DEVICE_TOKEN from env.
     import sys
 
-    safe_device_id = device_id.lower()  # Normalize UUID to lowercase
     cmd = [
         sys.executable,
         str(daemon_script),
         "--hub-ws-url",
         ws_url,
-        "--device-token",
-        body.device_token,
     ]
+    env = {**os.environ, "MARVAIN_DEVICE_TOKEN": body.device_token}
 
-    # Launch as a background process — safe_device_id is validated UUID
-    pid_file = (repo_root / f".marvain-satellite-{safe_device_id}.pid").resolve()
-    log_file = (repo_root / f".marvain-satellite-{safe_device_id}.log").resolve()
-
-    # Ensure PID/log files resolve within repo root
-    if not str(pid_file).startswith(str(repo_root)) or not str(log_file).startswith(str(repo_root)):
-        raise HTTPException(status_code=500, detail="PID/log file path escapes repo root")
+    # Use verified (DB-returned) device_id for file paths — not user input
+    pid_file = repo_root / f".marvain-satellite-{verified_device_id}.pid"
+    log_file = repo_root / f".marvain-satellite-{verified_device_id}.log"
 
     # Check if already running
     if pid_file.exists():
         try:
             old_pid = int(pid_file.read_text().strip())
-            # Check if process is still alive
             os.kill(old_pid, 0)
             return {
                 "status": "already_running",
                 "pid": old_pid,
-                "device_id": safe_device_id,
+                "device_id": verified_device_id,
                 "message": f"Satellite daemon already running (PID {old_pid})",
             }
         except (ProcessLookupError, ValueError, OSError):
@@ -1110,9 +1095,10 @@ def api_launch_satellite(request: Request, device_id: str, body: DeviceLaunchSat
                 stdout=lf,
                 stderr=_sp.STDOUT,
                 start_new_session=True,
+                env=env,
             )
         pid_file.write_text(str(proc.pid))
-        logger.info(f"Launched satellite daemon for device {safe_device_id} (PID {proc.pid})")
+        logger.info(f"Launched satellite daemon for device {verified_device_id} (PID {proc.pid})")
     except Exception as e:
         logger.error(f"Failed to launch satellite daemon: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to launch satellite: {e}")
@@ -1120,7 +1106,7 @@ def api_launch_satellite(request: Request, device_id: str, body: DeviceLaunchSat
     return {
         "status": "launched",
         "pid": proc.pid,
-        "device_id": safe_device_id,
+        "device_id": verified_device_id,
         "device_name": rows[0].get("name", ""),
         "log_file": str(log_file),
         "message": f"Satellite daemon started (PID {proc.pid})",
