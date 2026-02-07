@@ -140,6 +140,7 @@ class TestEphemeralRoomNames(unittest.TestCase):
         metadata = call_kwargs["agent_metadata"]
         self.assertEqual(metadata["space_id"], "my-space-uuid")
         self.assertIn("room_session_id", metadata)
+        self.assertEqual(metadata["agent_id"], "a1")
 
 
 class TestAgentWorkerDisconnect(unittest.TestCase):

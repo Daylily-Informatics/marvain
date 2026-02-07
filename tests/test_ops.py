@@ -84,6 +84,9 @@ class TestOps(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertTrue(any("INSERT INTO spaces" in s and "CAST(:a AS uuid)" in s for s in captured_sql))
         self.assertTrue(any("INSERT INTO devices" in s and "CAST(:a AS uuid)" in s for s in captured_sql))
+        # Bootstrap now auto-creates agent_membership for the first user
+        self.assertTrue(any("SELECT user_id FROM users" in s for s in captured_sql))
+        self.assertTrue(any("INSERT INTO agent_memberships" in s for s in captured_sql))
 
     def test_sam_logs_since_uses_start_time_flag(self) -> None:
         emitted: list[str] = []
