@@ -23,6 +23,7 @@ from marvain_cli.ops import (
     _write_pid_file,
     bootstrap,
     cognito_admin_create_user,
+    examples_create,
     cognito_admin_delete_user,
     gui_logs,
     gui_restart,
@@ -87,6 +88,66 @@ class TestOps(unittest.TestCase):
         # Bootstrap now auto-creates agent_membership for the first user
         self.assertTrue(any("SELECT user_id FROM users" in s for s in captured_sql))
         self.assertTrue(any("INSERT INTO agent_memberships" in s for s in captured_sql))
+
+    def test_examples_create_creates_agent_space_device_and_seeds_memories(self) -> None:
+        captured_sql: list[str] = []
+
+        def fake_rds_execute(*_args, **kwargs):
+            captured_sql.append(str(kwargs.get("sql")))
+            idx = len(captured_sql)
+            if idx == 1:
+                v = "aa111111-1111-1111-1111-111111111111"
+            elif idx == 2:
+                v = "bb222222-2222-2222-2222-222222222222"
+            elif idx == 3:
+                v = "cc333333-3333-3333-3333-333333333333"
+            else:
+                v = "dd444444-4444-4444-4444-444444444444"
+            return {"records": [[{"stringValue": v}]]}
+
+        cfg = {"envs": {"dev": {}}}
+        ctx = Ctx(
+            config_path=Path("/tmp/marvain.yaml"),
+            cfg=cfg,
+            env=ResolvedEnv(env="dev", aws_profile="p", aws_region="r", stack_name="s", raw={}),
+        )
+
+        with (
+            mock.patch("marvain_cli.ops._conda_preflight", return_value=0),
+            mock.patch("marvain_cli.ops._db_outputs", return_value=("db", "sec", "name")),
+            mock.patch("marvain_cli.ops._rds_execute", side_effect=fake_rds_execute),
+            mock.patch("marvain_cli.ops._eprint"),
+            contextlib.redirect_stdout(io.StringIO()) as stdout,
+        ):
+            rc = examples_create(
+                ctx,
+                dry_run=False,
+                agent_name="example-agent",
+                space_name="example-space",
+                device_name="test-dev",
+                seed_memories=True,
+            )
+
+        self.assertEqual(rc, 0)
+        # Verify agent, space, device creation SQL
+        self.assertTrue(any("INSERT INTO agents" in s for s in captured_sql))
+        self.assertTrue(any("INSERT INTO spaces" in s and "CAST(:a AS uuid)" in s for s in captured_sql))
+        self.assertTrue(any("INSERT INTO devices" in s and "CAST(:a AS uuid)" in s for s in captured_sql))
+        # Verify membership creation
+        self.assertTrue(any("SELECT user_id FROM users" in s for s in captured_sql))
+        self.assertTrue(any("INSERT INTO agent_memberships" in s for s in captured_sql))
+        # Verify 3 example memories were seeded
+        mem_inserts = [s for s in captured_sql if "INSERT INTO memories" in s]
+        self.assertEqual(len(mem_inserts), 3)
+        # Verify JSON output
+        import json
+
+        output = json.loads(stdout.getvalue())
+        self.assertEqual(output["agent_name"], "example-agent")
+        self.assertEqual(output["space_name"], "example-space")
+        self.assertEqual(output["device_name"], "test-dev")
+        self.assertTrue(output["membership_created"])
+        self.assertEqual(output["memories_seeded"], 3)
 
     def test_sam_logs_since_uses_start_time_flag(self) -> None:
         emitted: list[str] = []
