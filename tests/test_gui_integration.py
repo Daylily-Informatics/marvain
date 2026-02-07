@@ -82,7 +82,6 @@ class TestAuthenticatedEndpointsRedirect:
         "/spaces",
         "/devices",
         "/people",
-        "/remotes",
         "/actions",
         "/events",
         "/memories",
@@ -142,13 +141,6 @@ class TestAuthenticatedEndpoints:
         assert r.status_code == 200
         assert "device" in r.text.lower()
 
-    def test_remotes_renders_list(self):
-        """Remotes page should render remote list."""
-        session = get_session()
-        r = session.get(f"{BASE_URL}/remotes")
-        assert r.status_code == 200
-        assert "remote" in r.text.lower()
-
     def test_events_renders_stream(self):
         """Events page should render event stream."""
         session = get_session()
@@ -203,14 +195,6 @@ class TestAuthenticatedEndpoints:
 class TestGUIApiEndpoints:
     """Test GUI API endpoints (POST/DELETE actions)."""
 
-    def test_remotes_status_returns_json(self):
-        """GET /api/remotes/status should return JSON."""
-        session = get_session()
-        r = session.get(f"{BASE_URL}/api/remotes/status")
-        assert r.status_code == 200
-        data = r.json()
-        assert "remotes" in data
-
     def test_livekit_token_requires_space_id(self):
         """POST /livekit/token requires space_id."""
         session = get_session()
@@ -228,12 +212,6 @@ class TestGUIApiEndpoints:
         """POST /api/spaces requires name field."""
         session = get_session()
         r = session.post(f"{BASE_URL}/api/spaces", json={})
-        assert r.status_code in (400, 422)
-
-    def test_create_remote_requires_fields(self):
-        """POST /api/remotes requires name and address."""
-        session = get_session()
-        r = session.post(f"{BASE_URL}/api/remotes", json={})
         assert r.status_code in (400, 422)
 
 

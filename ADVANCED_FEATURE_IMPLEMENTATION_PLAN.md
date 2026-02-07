@@ -16,7 +16,7 @@ This plan implements the Advanced Feature Plan (Specs 0–5) to create a fully f
 
 2. **Spec 1**: Make devices fully functional with scope enforcement, heartbeat, and command channel.
 
-3. **Spec 2**: Unify remotes as devices, create a remote satellite daemon, and implement heartbeat-based presence.
+3. **Spec 2**: Devices fully unified (legacy remotes removed); remote satellite daemon implemented.
 
 4. **Spec 3**: Complete action lifecycle with approval persistence, execution status, result storage, and tool execution.
 
@@ -25,8 +25,8 @@ This plan implements the Advanced Feature Plan (Specs 0–5) to create a fully f
 6. **Spec 5**: Implement real-time event broadcasting to make the GUI feel alive.
 
 **Trade-offs**:
-- **Gain**: Coherent permission model, working devices/remotes/actions/memories, real-time GUI, and session continuity.
-- **Lose**: Migration effort to remove legacy table references; remote daemon is a new app to maintain.
+- **Gain**: Coherent permission model, working devices/actions/memories, real-time GUI, and session continuity.
+- **Lose**: Remote satellite daemon is a new app to maintain.
 
 ---
 
@@ -36,7 +36,7 @@ This plan implements the Advanced Feature Plan (Specs 0–5) to create a fully f
 flowchart TD
     S0[Spec 0: Fix Identity/Permission Spine]
     S1[Spec 1: Devices Fully Functional]
-    S2[Spec 2: Remotes as Devices]
+    S2[Spec 2: Devices (legacy remotes removed)]
     S3[Spec 3: Actions Fully Functional]
     S4[Spec 4: Core Agent + Memories]
     S5[Spec 5: Real-time Event Stream]
@@ -55,7 +55,7 @@ flowchart TD
 **Critical Path**: Spec 0 → (Spec 1 + Spec 3) → Spec 5
 
 **Parallel Workstreams** (after Spec 0):
-- Spec 1 + Spec 2 (devices/remotes)
+- Spec 1 + Spec 2 (devices)
 - Spec 3 + Spec 4 (actions/memories)
 - All converge at Spec 5 (broadcasting)
 
@@ -85,7 +85,7 @@ ALTER TABLE IF EXISTS memberships RENAME TO legacy_memberships;
 | File | Change |
 |------|--------|
 | `functions/hub_api/app.py` | Replace all `memberships` JOIN with `agent_memberships` (8 occurrences found) |
-| `sql/003_remotes.sql` | Already creates `memberships` - mark as legacy reference only |
+| `sql/003_remotes.sql` | Already creates `memberships` - mark as legacy reference only | (DELETED)
 
 **Lines to modify in `app.py`** (found via search):
 - Line 428, 452, 503, 723, 783, 819, 1009, 1524, 1790, 1825, 2073
@@ -99,7 +99,7 @@ ALTER TABLE IF EXISTS memberships RENAME TO legacy_memberships;
 
 **Acceptance Criteria**:
 - [ ] No code references `memberships` table (only `legacy_memberships` or `agent_memberships`)
-- [ ] GUI pages (revoke device, delete memory, approve action, delete remote) work correctly
+- [ ] GUI pages (revoke device, delete memory, approve action) work correctly
 - [ ] All existing tests pass
 
 **Risk**: Medium — requires careful search/replace and testing  
@@ -168,92 +168,14 @@ ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_heartbeat_at timestamptz;
 
 ---
 
-### Phase 2: Spec 2 — Remotes as Devices
+### Phase 2: Spec 2 -- Devices (formerly "Remotes as Devices") -- COMPLETE, legacy removed
 
-**Goal**: Unify remotes and devices; create remote satellite daemon.
+> **Status**: Complete. The legacy `remotes` table, GUI page (`/remotes`), API endpoints
+> (`/api/remotes/*`), and all related tests have been fully removed from the codebase (2026-02-06).
+> Satellite devices are managed exclusively through the `devices` table.
 
-#### 3.2.1 Design Decision
-
-**Recommendation**: Fold `remotes` into `devices` (Option A from spec).
-
-- Remotes are devices with `metadata.is_remote = true`
-- Remote-specific fields stored in `devices.metadata` and `devices.capabilities`
-- Existing `remotes` table becomes `legacy_remotes` or is migrated
-
-#### 3.2.2 Database Migration
-
-**File**: `sql/007_remotes_to_devices.sql`
-
-```sql
--- Migrate existing remotes to devices
--- Each remote gets a new device entry with appropriate metadata
-
-INSERT INTO devices (agent_id, name, capabilities, metadata, scopes)
-SELECT
-    agent_id,
-    name,
-    capabilities,
-    jsonb_build_object(
-        'is_remote', true,
-        'address', address,
-        'connection_type', connection_type
-    ),
-    '["events:write", "presence:write"]'::jsonb
-FROM remotes
-WHERE NOT EXISTS (
-    SELECT 1 FROM devices d
-    WHERE d.metadata->>'migrated_from_remote_id' = remotes.remote_id::text
-)
-ON CONFLICT DO NOTHING;
-
--- Rename remotes table to legacy
-ALTER TABLE IF EXISTS remotes RENAME TO legacy_remotes;
-```
-
-#### 3.2.3 New App: Remote Satellite Daemon
-
-**Directory**: `apps/remote_satellite/`
-
-| File | Purpose |
-|------|---------|
-| `apps/remote_satellite/__init__.py` | Package init |
-| `apps/remote_satellite/daemon.py` | Main daemon entry point |
-| `apps/remote_satellite/hub_client.py` | WebSocket + REST Hub client |
-| `apps/remote_satellite/requirements.txt` | Dependencies (websockets, requests) |
-| `apps/remote_satellite/README.md` | Installation and usage |
-
-**Daemon Responsibilities**:
-1. Connect to Hub WebSocket using device token
-2. Send `hello` on connect
-3. Send heartbeat every 15–30 seconds
-4. Respond to `cmd.ping` with `cmd.pong`
-5. Execute device-local tools on `cmd.run_action` (Phase 2 stretch)
-
-#### 3.2.4 GUI Updates
-
-| File | Change |
-|------|--------|
-| `functions/hub_api/app.py` | Update `/remotes` route to query devices with `is_remote` metadata |
-| `functions/hub_api/templates/remotes.html` | Show device-based remotes |
-| `functions/hub_api/app.py` | `POST /api/remotes` creates a device with remote metadata |
-
-#### 3.2.5 Tests
-
-| Test File | Tests |
-|-----------|-------|
-| `tests/test_remote_satellite.py` (new) | Daemon heartbeat, ping/pong |
-| `tests/test_gui_remotes_as_devices.py` (new) | GUI shows device-based remotes |
-
-**Acceptance Criteria**:
-- [ ] Adding a remote produces a device with token + install snippet
-- [ ] Remote shows "online" when daemon is connected
-- [ ] Ping works over WebSocket (server→remote→server)
-- [ ] Existing remote data migrated successfully
-
-**Risk**: Medium — new app, migration
-**Estimate**: 4–5 hours
-
----
+The remote satellite daemon (`apps/remote_satellite/`) authenticates as a device and connects
+via WebSocket for heartbeats, ping/pong, and action execution.
 
 ### Phase 3: Spec 3 — Actions Fully Functional
 
@@ -316,7 +238,7 @@ def execute(payload: dict, ctx: ToolContext) -> ToolResult:
 **Acceptance Criteria**:
 - [ ] GUI approve → action executes
 - [ ] GUI shows action results (result/error)
-- [ ] `device_command` action can ping a remote
+- [ ] `device_command` action can ping a device
 - [ ] `send_message` stores event even if broadcast fails
 
 **Risk**: Medium
@@ -459,7 +381,6 @@ def broadcast_to_subscribers(
 | `functions/hub_api/static/js/marvain.js` | Handle broadcast messages, update UI |
 | `functions/hub_api/templates/actions.html` | Auto-refresh on `actions.updated` |
 | `functions/hub_api/templates/devices.html` | Auto-refresh on `presence.updated` |
-| `functions/hub_api/templates/remotes.html` | Auto-refresh on `presence.updated` |
 
 #### 3.5.6 Tests
 
@@ -470,7 +391,7 @@ def broadcast_to_subscribers(
 
 **Acceptance Criteria**:
 - [ ] Actions page updates without manual refresh
-- [ ] Remotes/devices online state updates without polling
+- [ ] Devices online state updates without polling
 - [ ] Events page shows new events in real-time
 
 **Risk**: Medium — requires DynamoDB GSI for efficient subscription lookup
@@ -539,9 +460,9 @@ Each commit should be a logical unit:
    - `feat(ws): add device command messages`
 
 3. **Phase 2 commits**:
-   - `feat(db): add migration 007 for remotes to devices`
+   - `refactor(db): remove migration 007 (remotes to devices) -- legacy cleanup`
    - `feat(app): add remote satellite daemon skeleton`
-   - `refactor(gui): update remotes page for device-based remotes`
+   - `refactor: remove legacy remotes page entirely`
 
 4. **Phase 3 commits**:
    - `feat(db): add migration 008 for action enhancement`
@@ -599,7 +520,7 @@ git revert <commit-hash>
 ### 6.4 Data Safety
 
 - `legacy_memberships` preserved (not dropped)
-- `legacy_remotes` preserved (not dropped)
+- `legacy_remotes (REMOVED)` preserved (not dropped)
 - Audit bucket has Object Lock (immutable)
 
 ---
@@ -636,7 +557,7 @@ git revert <commit-hash>
 |-------|-------------|----------|--------------|
 | Phase 0 | Fix identity/permission spine | 2–3 hours | None |
 | Phase 1 | Devices fully functional | 3–4 hours | Phase 0 |
-| Phase 2 | Remotes as devices | 4–5 hours | Phase 0, Phase 1 |
+| Phase 2 | Devices (legacy remotes removed) | 4–5 hours | Phase 0, Phase 1 |
 | Phase 3 | Actions fully functional | 4–5 hours | Phase 0 |
 | Phase 4 | Core agent + memories | 4–5 hours | Phase 0 |
 | Phase 5 | Real-time event stream | 4–5 hours | Phase 3, Phase 4 |
@@ -672,7 +593,7 @@ All 6 phases (Specs 0-5) have been successfully implemented.
 |-------|------|--------|--------|
 | 0 | Fix Identity/Permission Spine | `c5abd1f` | ✅ Complete |
 | 1 | Devices Fully Functional | `24f9d3f` | ✅ Complete |
-| 2 | Remotes as Devices | `2c73b39` | ✅ Complete |
+| 2 | Devices (legacy remotes removed) | `2c73b39` | ✅ Complete |
 | 3 | Actions Fully Functional | `8938244` | ✅ Complete |
 | 4 | Core Agent + Memories | `806bdd7` | ✅ Complete |
 | 5 | Real-time Event Stream | `4604d61` | ✅ Complete |
@@ -687,7 +608,7 @@ All 6 phases (Specs 0-5) have been successfully implemented.
 **New Files Created:**
 - `sql/005_users_columns_and_legacy_cleanup.sql` - Migration for users columns and legacy memberships cleanup
 - `sql/006_devices_enhancement.sql` - Device scopes, heartbeat, command channel
-- `sql/007_remotes_to_devices.sql` - Migrate remotes to devices table
+- `sql/007_remotes_to_devices.sql (DELETED)` - Migrate remotes to devices table
 - `sql/008_actions_enhancement.sql` - Action lifecycle columns (result, error, timestamps)
 - `layers/shared/python/agent_hub/broadcast.py` - WebSocket broadcast module
 - `layers/shared/python/agent_hub/tools/device_command.py` - Device command tool

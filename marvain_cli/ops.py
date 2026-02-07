@@ -2065,13 +2065,40 @@ def agent_logs(
 
 
 def _split_sql(sql_text: str) -> list[str]:
-    # Same basic behavior as scripts/db_init.py: good enough for our schema file.
+    """Split SQL text into individual statements.
+
+    Handles dollar-quoted blocks (``DO $$ ... END $$;``) so that semicolons
+    inside PL/pgSQL bodies are not treated as statement terminators.
+    """
     stmts: list[str] = []
     buf: list[str] = []
+    in_dollar_block = False
     for line in sql_text.splitlines():
-        if line.strip().startswith("--"):
+        stripped = line.strip()
+        if stripped.startswith("--"):
             continue
+
+        # Track $$ dollar-quoting boundaries
+        dollar_count = line.count("$$")
+        was_in_dollar_block = in_dollar_block
+        if dollar_count % 2 == 1:
+            in_dollar_block = not in_dollar_block
+
         buf.append(line)
+
+        if in_dollar_block:
+            # Inside a $$ block — accumulate, never split
+            continue
+
+        if was_in_dollar_block and not in_dollar_block:
+            # Just closed a $$ block (e.g. END $$;) — emit whole buffer
+            joined = "\n".join(buf).strip().rstrip(";").strip()
+            if joined:
+                stmts.append(joined)
+            buf = []
+            continue
+
+        # Normal: split on `;` outside any $$ block
         if ";" in line:
             joined = "\n".join(buf)
             parts = joined.split(";")

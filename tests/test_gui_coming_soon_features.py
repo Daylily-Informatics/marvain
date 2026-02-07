@@ -1,13 +1,12 @@
 """Tests for GUI 'Coming Soon' features that have been implemented.
 
-These tests verify the 7 features that replaced 'Coming Soon' toast stubs:
+These tests verify the 6 features that replaced 'Coming Soon' toast stubs:
 1. Action Details View - GET /api/actions/{action_id}
 2. Edit Person - PATCH /api/people/{person_id}
 3. Memory Details View - GET /api/memories/{memory_id}
 4. Edit Agent - PATCH /api/agents/{agent_id}
 5. Event Details View - GET /api/events/{event_id}
 6. Space Editing Options - PATCH /api/spaces/{space_id}
-7. Edit Remote - PATCH /api/remotes/{remote_id}
 """
 
 from __future__ import annotations
@@ -414,83 +413,6 @@ class TestComingSoonFeatures(unittest.TestCase):
         self.assertEqual(data["space_id"], "space-1")
         self.assertEqual(data["name"], "Living Room")
         self.assertEqual(data["privacy_mode"], False)
-
-    # -------------------------------------------------------------------------
-    # Feature 1.7: Edit Remote - PATCH /api/remotes/{remote_id}
-    # -------------------------------------------------------------------------
-
-    def test_update_remote_requires_authentication(self) -> None:
-        self.mod._gui_get_user = mock.Mock(return_value=None)
-        r = self.client.patch("/api/remotes/remote-1", json={"name": "New Name"})
-        self.assertEqual(r.status_code, 401)
-
-    def test_update_remote_returns_not_found_without_permission(self) -> None:
-        self.mod._gui_get_user = mock.Mock(return_value=self._mock_authenticated_user())
-        mock_db = self._mock_db(query_results=[])
-        self.mod._get_db = mock.Mock(return_value=mock_db)
-
-        r = self.client.patch("/api/remotes/remote-1", json={"name": "New Name"})
-        self.assertEqual(r.status_code, 404)
-
-    def test_update_remote_success(self) -> None:
-        self.mod._gui_get_user = mock.Mock(return_value=self._mock_authenticated_user())
-        mock_db = self._mock_db(
-            query_results=[
-                {
-                    "device_id": "remote-1",
-                    "name": "Old Name",
-                    "metadata": '{"is_remote": true, "address": "192.168.1.1"}',
-                }
-            ]
-        )
-        self.mod._get_db = mock.Mock(return_value=mock_db)
-
-        r = self.client.patch("/api/remotes/remote-1", json={"name": "New Name", "address": "192.168.1.100"})
-        self.assertEqual(r.status_code, 200)
-        data = r.json()
-        self.assertEqual(data["message"], "Remote updated")
-        self.assertEqual(data["remote_id"], "remote-1")
-
-    def test_update_remote_rejects_empty_name(self) -> None:
-        self.mod._gui_get_user = mock.Mock(return_value=self._mock_authenticated_user())
-        mock_db = self._mock_db(
-            query_results=[{"device_id": "remote-1", "name": "Old Name", "metadata": '{"is_remote": true}'}]
-        )
-        self.mod._get_db = mock.Mock(return_value=mock_db)
-
-        r = self.client.patch("/api/remotes/remote-1", json={"name": ""})
-        self.assertEqual(r.status_code, 400)
-
-    def test_get_remote_requires_authentication(self) -> None:
-        self.mod._gui_get_user = mock.Mock(return_value=None)
-        r = self.client.get("/api/remotes/remote-1")
-        self.assertEqual(r.status_code, 401)
-
-    def test_get_remote_success(self) -> None:
-        self.mod._gui_get_user = mock.Mock(return_value=self._mock_authenticated_user())
-        mock_db = self._mock_db(
-            query_results=[
-                {
-                    "remote_id": "remote-1",
-                    "agent_id": "agent-1",
-                    "agent_name": "Test Agent",
-                    "name": "Living Room Camera",
-                    "status": "online",
-                    "metadata": '{"is_remote": true, "address": "192.168.1.100", "connection_type": "network"}',
-                    "created_at": "2025-01-01T00:00:00",
-                    "last_seen_at": "2025-01-01T12:00:00",
-                }
-            ]
-        )
-        self.mod._get_db = mock.Mock(return_value=mock_db)
-
-        r = self.client.get("/api/remotes/remote-1")
-        self.assertEqual(r.status_code, 200)
-        data = r.json()
-        self.assertEqual(data["remote_id"], "remote-1")
-        self.assertEqual(data["name"], "Living Room Camera")
-        self.assertEqual(data["address"], "192.168.1.100")
-        self.assertEqual(data["connection_type"], "network")
 
 
 if __name__ == "__main__":

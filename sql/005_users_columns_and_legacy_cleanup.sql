@@ -3,19 +3,19 @@
 -- 
 -- Purpose:
 -- 1. Add missing columns to users table (display_name, last_seen)
---    These may already exist if sql/003_remotes.sql ran, but ADD IF NOT EXISTS is safe.
+--    These columns are added with ADD IF NOT EXISTS for safety.
 -- 2. Rename legacy 'memberships' table to 'legacy_memberships' to prevent accidental use.
 --    All code should use 'agent_memberships' instead.
 --
 -- This migration is idempotent and can be run multiple times safely.
 
 -- Add missing columns to users table if they don't exist
--- (sql/002 creates users without these; sql/003 may have added them)
+-- (sql/002 creates users without these)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen timestamptz;
 
 -- Rename legacy memberships table to prevent accidental use
--- This table was created by sql/003_remotes.sql but is a duplicate of agent_memberships
+-- This table is a duplicate of agent_memberships
 -- with a different structure (has membership_id PK vs composite key, no revoked_at, etc.)
 --
 -- Note: This will fail if the table doesn't exist, which is fine - means sql/003 wasn't run.

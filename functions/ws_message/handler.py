@@ -286,7 +286,7 @@ def handler(event, context):
             ]
 
             now_ts = int(time.time())
-            expr_names = {"#s": "status"}
+            expr_names = {"#s": "status", "#ttl": "ttl"}
             expr_values = {
                 ":s": "authenticated",
                 ":pt": "user",
@@ -303,7 +303,7 @@ def handler(event, context):
                 "cognito_sub=:cs",
                 "agents=:ag",
                 "authenticated_at=:aat",
-                "ttl=:ttl",
+                "#ttl=:ttl",
             ]
             remove_parts = ["agent_id", "device_id", "scopes"]
             if user.email:
