@@ -2385,6 +2385,211 @@ def bootstrap(
 
 
 # ------------------------------------------------------------------------------
+# Examples: create a fully-configured reference setup
+# ------------------------------------------------------------------------------
+
+# Example memories seeded by `examples create`
+_EXAMPLE_MEMORIES = [
+    {
+        "tier": "episodic",
+        "content": (
+            "User introduced themselves as a software engineer who works with "
+            "distributed systems and enjoys hiking on weekends."
+        ),
+    },
+    {
+        "tier": "semantic",
+        "content": (
+            "The user prefers concise, direct communication. They respond well to "
+            "bullet-point summaries and dislike verbose explanations."
+        ),
+    },
+    {
+        "tier": "procedural",
+        "content": (
+            "When the user asks for a status update, summarize recent events first, "
+            "then highlight any pending actions, and end with open questions."
+        ),
+    },
+]
+
+
+def examples_create(
+    ctx: Ctx,
+    *,
+    dry_run: bool,
+    agent_name: str,
+    space_name: str,
+    device_name: str | None,
+    seed_memories: bool,
+) -> int:
+    """Create a fully-configured example agent/space/device with optional seed memories."""
+    rc = _conda_preflight(enforce=not dry_run)
+    if rc != 0:
+        return rc
+    if dry_run:
+        _eprint("[dry-run] Would create example agent, space, device, membership, and seed memories")
+        return 0
+
+    resource_arn, secret_arn, db_name = _db_outputs(ctx, dry_run=dry_run)
+
+    d_name = device_name or socket.gethostname()
+    token = secrets.token_hex(32)
+    import hashlib
+
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    # 1. Create agent
+    _eprint(f"Creating example agent '{agent_name}'...")
+    agent_res = _rds_execute(
+        ctx,
+        resource_arn=resource_arn,
+        secret_arn=secret_arn,
+        db_name=db_name,
+        sql="INSERT INTO agents (name) VALUES (:n) RETURNING agent_id",
+        parameters=[{"name": "n", "value": {"stringValue": agent_name}}],
+        dry_run=dry_run,
+    )
+    agent_id = _first_cell_as_string(agent_res)
+    _eprint(f"  agent_id: {agent_id}")
+
+    # 2. Create space
+    _eprint(f"Creating space '{space_name}'...")
+    space_res = _rds_execute(
+        ctx,
+        resource_arn=resource_arn,
+        secret_arn=secret_arn,
+        db_name=db_name,
+        sql="INSERT INTO spaces (agent_id, name) VALUES (CAST(:a AS uuid), :n) RETURNING space_id",
+        parameters=[
+            {"name": "a", "value": {"stringValue": agent_id}},
+            {"name": "n", "value": {"stringValue": space_name}},
+        ],
+        dry_run=dry_run,
+    )
+    space_id = _first_cell_as_string(space_res)
+    _eprint(f"  space_id: {space_id}")
+
+    # 3. Create device with full scopes
+    scopes = json.dumps(
+        ["events:read", "events:write", "memories:read", "memories:write", "artifacts:write", "presence:write"]
+    )
+    _eprint(f"Creating device '{d_name}'...")
+    dev_res = _rds_execute(
+        ctx,
+        resource_arn=resource_arn,
+        secret_arn=secret_arn,
+        db_name=db_name,
+        sql=(
+            "INSERT INTO devices (agent_id, name, token_hash, scopes)"
+            " VALUES (CAST(:a AS uuid), :n, :h, CAST(:s AS jsonb))"
+            " RETURNING device_id"
+        ),
+        parameters=[
+            {"name": "a", "value": {"stringValue": agent_id}},
+            {"name": "n", "value": {"stringValue": d_name}},
+            {"name": "h", "value": {"stringValue": token_hash}},
+            {"name": "s", "value": {"stringValue": scopes}},
+        ],
+        dry_run=dry_run,
+    )
+    device_id = _first_cell_as_string(dev_res)
+    _eprint(f"  device_id: {device_id}")
+
+    # 4. Auto-create agent_membership
+    membership_created = False
+    try:
+        user_rows = _rds_execute(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            sql="SELECT user_id FROM users ORDER BY created_at ASC LIMIT 2",
+            parameters=[],
+            dry_run=dry_run,
+        )
+        records = (user_rows or {}).get("records", [])
+        if len(records) >= 1:
+            user_id = records[0][0].get("stringValue", "")
+            if user_id:
+                _rds_execute(
+                    ctx,
+                    resource_arn=resource_arn,
+                    secret_arn=secret_arn,
+                    db_name=db_name,
+                    sql=(
+                        "INSERT INTO agent_memberships (agent_id, user_id, role)"
+                        " VALUES (CAST(:a AS uuid), CAST(:u AS uuid), 'owner')"
+                        " ON CONFLICT (agent_id, user_id) DO UPDATE SET role = 'owner', revoked_at = NULL"
+                    ),
+                    parameters=[
+                        {"name": "a", "value": {"stringValue": agent_id}},
+                        {"name": "u", "value": {"stringValue": user_id}},
+                    ],
+                    dry_run=dry_run,
+                )
+                membership_created = True
+                _eprint(f"  Created owner membership: user {user_id}")
+        else:
+            _eprint("  HINT: No users yet. Run 'marvain members claim-owner "
+                    f"--agent-id {agent_id}' after first GUI login.")
+    except Exception as exc:
+        _eprint(f"  WARNING: Could not auto-create membership: {exc}")
+
+    # 5. Seed example memories
+    memories_created = 0
+    if seed_memories:
+        _eprint("Seeding example memories...")
+        for mem in _EXAMPLE_MEMORIES:
+            try:
+                _rds_execute(
+                    ctx,
+                    resource_arn=resource_arn,
+                    secret_arn=secret_arn,
+                    db_name=db_name,
+                    sql=(
+                        "INSERT INTO memories (agent_id, space_id, tier, content)"
+                        " VALUES (CAST(:a AS uuid), CAST(:s AS uuid), :t, :c)"
+                    ),
+                    parameters=[
+                        {"name": "a", "value": {"stringValue": agent_id}},
+                        {"name": "s", "value": {"stringValue": space_id}},
+                        {"name": "t", "value": {"stringValue": mem["tier"]}},
+                        {"name": "c", "value": {"stringValue": mem["content"]}},
+                    ],
+                    dry_run=dry_run,
+                )
+                memories_created += 1
+                _eprint(f"  [{mem['tier']}] {mem['content'][:60]}...")
+            except Exception as exc:
+                _eprint(f"  WARNING: Failed to create {mem['tier']} memory: {exc}")
+
+    # 6. Print summary
+    result = {
+        "agent_id": agent_id,
+        "agent_name": agent_name,
+        "space_id": space_id,
+        "space_name": space_name,
+        "device_id": device_id,
+        "device_name": d_name,
+        "device_token": token,
+        "membership_created": membership_created,
+        "memories_seeded": memories_created,
+    }
+    print(json.dumps(result, indent=2, sort_keys=True))
+
+    _eprint("\n--- Next steps ---")
+    _eprint(f"1. Start the agent worker:  marvain agent start")
+    _eprint(f"2. Open GUI:                marvain gui start --no-https")
+    _eprint(f"3. Navigate to agent:       http://localhost:8084/agents/{agent_id}")
+    _eprint(f"4. Test voice interaction:   http://localhost:8084/livekit-test?space_id={space_id}")
+    if not membership_created:
+        _eprint(f"5. Claim ownership:         marvain members claim-owner --agent-id {agent_id}")
+
+    return 0
+
+
+# ------------------------------------------------------------------------------
 # Cognito Admin User Management
 # ------------------------------------------------------------------------------
 

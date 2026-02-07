@@ -19,6 +19,7 @@ def run(argv: list[str]) -> int:
         agent_stop,
         bootstrap,
         cognito_create_user,
+        examples_create,
         cognito_delete_user,
         cognito_get_user,
         cognito_list_users,
@@ -859,6 +860,37 @@ def run(argv: list[str]) -> int:
 
         cognito_delete_user(c, email=email, dry_run=dr)
         raise typer.Exit(code=0)
+
+    # ---- examples ----
+    examples_app = typer.Typer(help="Example configuration management")
+    app.add_typer(examples_app, name="examples")
+
+    @examples_app.command("create", help="Create a fully-configured example agent/space/device setup")
+    def examples_create_cmd(
+        ctx: typer.Context,
+        agent_name: str = typer.Option("example-agent", "--agent-name", help="Name for the example agent"),
+        space_name: str = typer.Option("example-space", "--space-name", help="Name for the example space"),
+        device_name: str | None = typer.Option(None, "--device-name", help="Device name (defaults to hostname)"),
+        seed_memories: bool = typer.Option(True, "--seed-memories/--no-seed-memories", help="Seed example memories"),
+        dry_run: bool = typer.Option(False, "--dry-run", help="Print commands, do not execute"),
+    ) -> None:
+        """Create a reference example showing best practices for agent/device/space configuration.
+
+        Creates an agent, space, device (with full scopes), agent_membership, and
+        optionally seeds example memories (episodic, semantic, procedural).
+        """
+        c = _load(ctx)
+        dr = bool(dry_run) or bool(ctx.obj.get("dry_run"))
+        raise typer.Exit(
+            code=examples_create(
+                c,
+                dry_run=dr,
+                agent_name=agent_name,
+                space_name=space_name,
+                device_name=device_name,
+                seed_memories=seed_memories,
+            )
+        )
 
     @app.command("test")
     def _test(
