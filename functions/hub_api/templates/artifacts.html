@@ -165,25 +165,11 @@ document.getElementById('upload-form').addEventListener('submit', async function
   progressText.textContent = '0%';
 
   try {
-    // Get presigned URL
-    const presignResponse = await fetch('/api/artifacts/presign', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        agent_id: agentId,
-        filename: file.name,
-        content_type: file.type || 'application/octet-stream'
-      })
-    });
+    const formData = new FormData();
+    formData.append('agent_id', agentId);
+    formData.append('file', file);
 
-    if (!presignResponse.ok) {
-      const err = await presignResponse.json();
-      throw new Error(err.detail || 'Failed to get upload URL');
-    }
-
-    const { upload_url } = await presignResponse.json();
-
-    // Upload file with progress tracking
+    // Upload via server-side proxy (avoids S3 CORS issues)
     const xhr = new XMLHttpRequest();
     xhr.upload.addEventListener('progress', function(e) {
       if (e.lengthComputable) {
@@ -196,12 +182,16 @@ document.getElementById('upload-form').addEventListener('submit', async function
     await new Promise((resolve, reject) => {
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) resolve();
-        else reject(new Error('Upload failed'));
+        else {
+          try {
+            const err = JSON.parse(xhr.responseText);
+            reject(new Error(err.detail || 'Upload failed'));
+          } catch { reject(new Error('Upload failed')); }
+        }
       };
       xhr.onerror = () => reject(new Error('Upload failed'));
-      xhr.open('PUT', upload_url);
-      xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
-      xhr.send(file);
+      xhr.open('POST', '/api/artifacts/upload');
+      xhr.send(formData);
     });
 
     Marvain.showToast('success', 'Uploaded', 'File uploaded successfully');

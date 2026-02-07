@@ -1832,10 +1832,10 @@ def api_update_consent(request: Request, person_id: str, body: ConsentUpdate) ->
         # First, revoke all existing active consents for this person
         db.execute(
             """
-            UPDATE consent_grants SET revoked_at = :now
+            UPDATE consent_grants SET revoked_at = :now::timestamptz
             WHERE person_id = :person_id::uuid AND revoked_at IS NULL
         """,
-            {"person_id": person_id, "now": datetime.now(timezone.utc)},
+            {"person_id": person_id, "now": datetime.now(timezone.utc).isoformat()},
         )
 
         # Then create new consent grants
@@ -1851,14 +1851,15 @@ def api_update_consent(request: Request, person_id: str, body: ConsentUpdate) ->
             db.execute(
                 """
                 INSERT INTO consent_grants (consent_id, agent_id, person_id, consent_type, expires_at)
-                VALUES (:consent_id::uuid, :agent_id::uuid, :person_id::uuid, :consent_type, :expires_at)
+                VALUES (:consent_id::uuid, :agent_id::uuid, :person_id::uuid, :consent_type,
+                        CASE WHEN :expires_at IS NULL THEN NULL ELSE :expires_at::timestamptz END)
             """,
                 {
                     "consent_id": consent_id,
                     "agent_id": agent_id,
                     "person_id": person_id,
                     "consent_type": consent.type,
-                    "expires_at": expires_at,
+                    "expires_at": expires_at.isoformat() if expires_at else None,
                 },
             )
 
@@ -2976,6 +2977,45 @@ def api_presign_upload(request: Request, body: ArtifactPresign) -> dict:
     )
 
     return {"upload_url": url, "key": key, "bucket": _cfg.artifact_bucket}
+
+
+@app.post("/api/artifacts/upload", name="api_upload_artifact")
+async def api_upload_artifact(request: Request) -> dict:
+    """Upload an artifact via server-side proxy (avoids CORS issues with S3)."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    form = await request.form()
+    agent_id = form.get("agent_id")
+    upload_file = form.get("file")
+
+    if not agent_id or not upload_file:
+        raise HTTPException(status_code=400, detail="agent_id and file are required")
+
+    db = _get_db()
+    if not check_agent_permission(db, agent_id=str(agent_id), user_id=user.user_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Admin permission required")
+
+    if not _cfg.artifact_bucket:
+        raise HTTPException(status_code=500, detail="Artifact bucket not configured")
+
+    import uuid as uuid_mod
+
+    filename = getattr(upload_file, "filename", "unknown")
+    content_type = getattr(upload_file, "content_type", "application/octet-stream") or "application/octet-stream"
+    key = f"artifacts/agent_id={agent_id}/{uuid_mod.uuid4()}_{filename}"
+
+    file_content = await upload_file.read()
+    s3 = _get_s3()
+    s3.put_object(
+        Bucket=_cfg.artifact_bucket,
+        Key=key,
+        Body=file_content,
+        ContentType=content_type,
+    )
+
+    return {"key": key, "bucket": _cfg.artifact_bucket, "filename": filename}
 
 
 @app.get("/audit", name="gui_audit")

@@ -565,10 +565,14 @@ pre {
 .modal {
   position: fixed;
   inset: 0;
-  display: flex;
+  display: none;
   align-items: center;
   justify-content: center;
   z-index: 1000;
+}
+
+.modal.active {
+  display: flex;
 }
 
 .modal-backdrop {
@@ -638,6 +642,7 @@ pre {
 }
 
 .modal-overlay .modal {
+  display: block;
   position: relative;
   background: var(--color-gray-800);
   border-radius: var(--radius-lg);
