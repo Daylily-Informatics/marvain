@@ -662,7 +662,7 @@ def admin_bootstrap(body: BootstrapIn) -> BootstrapOut:
                 "device_id": device_id,
                 "agent_id": agent_id,
                 "name": "primary",
-                "scopes": json.dumps(["events:write", "memory:read", "memory:delete", "spaces:write"]),
+                "scopes": json.dumps(["events:read", "events:write", "memories:read", "memories:write", "artifacts:write", "presence:write"]),
                 "capabilities": json.dumps({"kind": "admin"}),
                 "token_hash": token_hash,
             },
@@ -745,13 +745,13 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
     _get_db().execute(
         """INSERT INTO events(event_id, agent_id, space_id, device_id, person_id, type, payload)
            VALUES (:event_id::uuid, :agent_id::uuid, :space_id::uuid, :device_id::uuid,
-                   CASE WHEN :person_id IS NULL THEN NULL ELSE :person_id::uuid END, :type, :payload::jsonb)""",
+                   CASE WHEN :person_id = '' THEN NULL ELSE :person_id::uuid END, :type, :payload::jsonb)""",
         {
             "event_id": event_id,
             "agent_id": device.agent_id,
             "space_id": body.space_id,
             "device_id": device.device_id,
-            "person_id": body.person_id,
+            "person_id": body.person_id or "",
             "type": body.type,
             "payload": json.dumps(body.payload),
         },
