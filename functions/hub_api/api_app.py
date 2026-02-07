@@ -349,6 +349,7 @@ async def _mint_livekit_token_for_user(*, user: AuthenticatedUser, space_id: str
         ttl_seconds=3600,
         agent_metadata={
             "space_id": str(space_id),
+            "agent_id": str(agent_id),
             "room_session_id": room_session_id,
         },
     )

@@ -2308,6 +2308,53 @@ def bootstrap(
     )
     device_id = _first_cell_as_string(dev_res)
 
+    # Best-effort: auto-create agent_membership for an existing user.
+    # The users table is populated on first GUI login, so it may be empty
+    # if bootstrap runs before any login.  In that case we print a hint.
+    membership_created = False
+    try:
+        user_rows = _rds_execute(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            sql="SELECT user_id FROM users ORDER BY created_at ASC LIMIT 2",
+            parameters=[],
+            dry_run=dry_run,
+        )
+        records = (user_rows or {}).get("records", [])
+        if len(records) == 1:
+            user_id = records[0][0].get("stringValue", "")
+            if user_id:
+                _rds_execute(
+                    ctx,
+                    resource_arn=resource_arn,
+                    secret_arn=secret_arn,
+                    db_name=db_name,
+                    sql=(
+                        "INSERT INTO agent_memberships (agent_id, user_id, role)"
+                        " VALUES (CAST(:a AS uuid), CAST(:u AS uuid), 'owner')"
+                        " ON CONFLICT (agent_id, user_id) DO UPDATE SET role = 'owner', revoked_at = NULL"
+                    ),
+                    parameters=[
+                        {"name": "a", "value": {"stringValue": agent_id}},
+                        {"name": "u", "value": {"stringValue": user_id}},
+                    ],
+                    dry_run=dry_run,
+                )
+                membership_created = True
+                _eprint(f"Created owner membership: user {user_id} -> agent {agent_id}")
+        elif len(records) > 1:
+            _eprint("HINT: Multiple users found. Run 'marvain members claim-owner "
+                    f"--agent-id {agent_id}' to claim ownership.")
+        else:
+            _eprint("HINT: No users found yet. After creating a Cognito user and "
+                    "logging into the GUI, run 'marvain members claim-owner "
+                    f"--agent-id {agent_id}' to see this agent in the GUI.")
+    except Exception as exc:
+        _eprint(f"WARNING: Could not auto-create agent membership: {exc}")
+        _eprint(f"HINT: Run 'marvain members claim-owner --agent-id {agent_id}' manually.")
+
     print(
         json.dumps(
             {
@@ -2316,6 +2363,7 @@ def bootstrap(
                 "device_id": device_id,
                 "device_name": d_name,
                 "device_token": token,
+                "membership_created": membership_created,
             },
             indent=2,
             sort_keys=True,
