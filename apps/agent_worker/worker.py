@@ -82,6 +82,7 @@ def hub_ingest_transcript(
     text: str,
     role: str,
     participant_identity: str | None = None,
+    input_modality: str = "voice",
 ) -> None:
     """Send a transcript chunk to the Hub for persistence.
 
@@ -90,6 +91,7 @@ def hub_ingest_transcript(
         text: The transcript text
         role: Either "user" or "assistant"
         participant_identity: The LiveKit participant identity
+        input_modality: Either "voice" or "text"
     """
     if not HUB_API_BASE or not HUB_DEVICE_TOKEN or not space_id:
         logger.debug("Skipping transcript ingest: missing HUB_API_BASE, HUB_DEVICE_TOKEN, or space_id")
@@ -107,6 +109,7 @@ def hub_ingest_transcript(
                     "role": role,
                     "participant_identity": participant_identity,
                     "source": "livekit_agent_worker",
+                    "input_modality": input_modality,
                 },
             },
             timeout=3,
@@ -118,6 +121,45 @@ def hub_ingest_transcript(
     except Exception as e:
         # Don't crash the realtime loop
         logger.warning(f"Failed to ingest transcript: {e}")
+
+
+def hub_create_memory(
+    *,
+    space_id: str,
+    content: str,
+    tier: str = "episodic",
+    metadata: dict | None = None,
+) -> None:
+    """Create a memory in the Hub's memory system.
+
+    Args:
+        space_id: The Marvain space ID
+        content: The memory content text
+        tier: Memory tier (episodic, semantic, procedural)
+        metadata: Additional metadata (input_modality, role, room_name, etc.)
+    """
+    if not HUB_API_BASE or not HUB_DEVICE_TOKEN or not space_id:
+        logger.debug("Skipping memory creation: missing HUB_API_BASE, HUB_DEVICE_TOKEN, or space_id")
+        return
+
+    try:
+        resp = requests.post(
+            f"{HUB_API_BASE}/v1/memories",
+            headers={"Authorization": f"Bearer {HUB_DEVICE_TOKEN}"},
+            json={
+                "space_id": space_id,
+                "tier": tier,
+                "content": content,
+                "metadata": metadata or {},
+            },
+            timeout=3,
+        )
+        if resp.ok:
+            logger.debug(f"Created memory ({tier}): {content[:50]}...")
+        else:
+            logger.warning(f"Failed to create memory: {resp.status_code}")
+    except Exception as e:
+        logger.warning(f"Failed to create memory: {e}")
 
 
 def _fetch_space_events(space_id: str, limit: int = 50) -> list[dict]:
@@ -348,7 +390,20 @@ async def forge_agent(ctx: agents.JobContext):
             space_id=space_id,
             text=text,
             role=role,
-            participant_identity=None,  # Could be enhanced later
+            participant_identity=None,
+            input_modality="voice",
+        )
+        # Auto-save as episodic memory
+        hub_create_memory(
+            space_id=space_id,
+            content=text,
+            tier="episodic",
+            metadata={
+                "role": role,
+                "input_modality": "voice",
+                "room_name": ctx.room.name,
+                "room_session_id": room_session_id,
+            },
         )
 
     session.on("conversation_item_added", on_conversation_item_added)
@@ -385,6 +440,20 @@ async def forge_agent(ctx: agents.JobContext):
                 text=text,
                 role="user",
                 participant_identity=sender,
+                input_modality="text",
+            )
+            # Auto-save as episodic memory
+            hub_create_memory(
+                space_id=space_id,
+                content=text,
+                tier="episodic",
+                metadata={
+                    "role": "user",
+                    "input_modality": "text",
+                    "room_name": ctx.room.name,
+                    "room_session_id": room_session_id,
+                    "participant_identity": sender,
+                },
             )
 
             # Inject the typed message into the agent's conversation

@@ -831,6 +831,73 @@ def delete_memory(memory_id: str, device: AuthenticatedDevice = Depends(get_devi
     return {"deleted": True, "memory_id": memory_id}
 
 
+class MemoryCreateIn(BaseModel):
+    """Request body for creating a memory from a device."""
+
+    space_id: str | None = None
+    tier: str = Field(default="episodic", description="Memory tier: episodic, semantic, or procedural")
+    content: str = Field(..., min_length=1, max_length=10000)
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Arbitrary metadata (input_modality, room_name, etc.)")
+    participants: list[str] = Field(default_factory=list)
+
+
+@api_app.post("/v1/memories")
+def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
+    """Create a memory for the device's agent (requires memories:write scope)."""
+    require_scope(device, "memories:write")
+
+    if body.space_id:
+        # Verify the space belongs to this agent
+        rows = _get_db().query(
+            "SELECT 1 FROM spaces WHERE space_id = :space_id::uuid AND agent_id = :agent_id::uuid",
+            {"space_id": body.space_id, "agent_id": device.agent_id},
+        )
+        if not rows:
+            raise HTTPException(status_code=404, detail="Space not found for this agent")
+
+    memory_id = str(uuid.uuid4())
+    provenance = {
+        "source": "device",
+        "device_id": device.device_id,
+        **body.metadata,
+    }
+
+    _get_db().execute(
+        """
+        INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants, provenance)
+        VALUES (
+            :memory_id::uuid,
+            :agent_id::uuid,
+            CASE WHEN :space_id IS NULL THEN NULL ELSE :space_id::uuid END,
+            :tier,
+            :content,
+            :participants::jsonb,
+            :provenance::jsonb
+        )
+        """,
+        {
+            "memory_id": memory_id,
+            "agent_id": device.agent_id,
+            "space_id": body.space_id,
+            "tier": body.tier,
+            "content": body.content,
+            "participants": json.dumps(body.participants),
+            "provenance": json.dumps(provenance),
+        },
+    )
+
+    if _cfg.audit_bucket:
+        append_audit_entry(
+            _get_db(),
+            bucket=_cfg.audit_bucket,
+            agent_id=device.agent_id,
+            entry_type="memory_created",
+            entry={"memory_id": memory_id, "tier": body.tier, "source": "device"},
+        )
+
+    return {"memory_id": memory_id, "tier": body.tier, "created": True}
+
+
 # -----------------------------------------------------------------------------
 # Memory Recall Endpoint (Semantic Search)
 # -----------------------------------------------------------------------------
