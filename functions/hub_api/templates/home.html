@@ -15,7 +15,7 @@
       <i class="fas fa-microchip"></i>
     </div>
     <div class="stat-content">
-      <div class="stat-value">—</div>
+      <div class="stat-value">{{ devices_count }}</div>
       <div class="stat-label">Devices</div>
     </div>
   </a>
@@ -60,11 +60,31 @@
       <a href="{{ url_for('gui_devices') }}" class="btn btn-outline btn-sm">View All</a>
     </div>
     <div class="card-body">
-      <div class="empty-state">
-        <div class="empty-state-icon"><i class="fas fa-microchip"></i></div>
-        <p>Manage your devices</p>
-        <a href="{{ url_for('gui_devices') }}" class="btn btn-primary btn-sm">View Devices</a>
-      </div>
+      {% if devices %}
+        <div style="display: flex; flex-direction: column; gap: var(--spacing-sm);">
+          {% for device in devices[:5] %}
+          <a href="{{ url_for('gui_device_detail', device_id=device.device_id) }}"
+             style="display: flex; align-items: center; justify-content: space-between; padding: var(--spacing-sm); background: var(--color-gray-700); border-radius: var(--radius-sm); text-decoration: none; color: inherit;">
+            <div style="display: flex; align-items: center; gap: var(--spacing-sm);">
+              <i class="fas fa-microchip" style="color: var(--color-info);"></i>
+              <span>{{ device.name }}</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: var(--spacing-sm);">
+              <span class="badge badge-info">{{ device.agent_name }}</span>
+              {% if device.revoked %}
+                <span class="badge badge-error">Revoked</span>
+              {% endif %}
+            </div>
+          </a>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="empty-state">
+          <div class="empty-state-icon"><i class="fas fa-microchip"></i></div>
+          <p>No devices registered yet</p>
+          <a href="{{ url_for('gui_devices') }}" class="btn btn-primary btn-sm">Add Device</a>
+        </div>
+      {% endif %}
     </div>
   </div>
   
@@ -127,6 +147,9 @@
       </a>
       <a href="{{ url_for('gui_audit') }}" class="btn btn-outline">
         <i class="fas fa-shield-alt"></i> Audit Log
+      </a>
+      <a href="{{ url_for('gui_people') }}" class="btn btn-outline">
+        <i class="fas fa-users"></i> People &amp; Consent
       </a>
     </div>
   </div>
