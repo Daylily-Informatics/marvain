@@ -142,12 +142,71 @@ source marvain_activate</code></pre>
   --device-token YOUR_DEVICE_TOKEN</code></pre>
 
         <h4 style="margin-bottom: var(--spacing-sm);">4. Verify</h4>
-        <p style="color: var(--color-gray-300);">Once the daemon connects, this device's status will change to <span class="badge badge-success" style="font-size: 0.75rem;"><i class="fas fa-circle"></i> Online</span> and the <strong>Ping Device</strong> button above will receive a response.</p>
+        <p style="color: var(--color-gray-300); margin-bottom: var(--spacing-md);">Once the daemon connects, this device's status will change to <span class="badge badge-success" style="font-size: 0.75rem;"><i class="fas fa-circle"></i> Online</span> and the <strong>Ping Device</strong> button above will receive a response.</p>
+
+        <h4 style="margin-bottom: var(--spacing-sm);">5. Next Steps — Using Your Device</h4>
+        <p style="color: var(--color-gray-300); margin-bottom: var(--spacing-sm);">
+          Devices are satellite nodes in the Marvain agent hub. Once online, a device can:
+        </p>
+        <ul style="margin-left: var(--spacing-lg); margin-bottom: var(--spacing-md); color: var(--color-gray-300);">
+          <li><strong>Receive commands</strong> — The hub sends real-time instructions via WebSocket (e.g., play audio, capture data)</li>
+          <li><strong>Emit events</strong> — The daemon pushes events (sensor data, voice transcripts, presence changes) back to the hub</li>
+          <li><strong>Execute actions</strong> — Approved actions on the <a href="/actions" style="color: var(--color-highlight);">Actions</a> page can target this device</li>
+        </ul>
+        <p style="color: var(--color-gray-300); margin-bottom: var(--spacing-sm);"><strong>Explore further:</strong></p>
+        <ul style="margin-left: var(--spacing-lg); color: var(--color-gray-300);">
+          <li><a href="/events" style="color: var(--color-highlight);"><i class="fas fa-bolt"></i> Events</a> — View events emitted by this device</li>
+          <li><a href="/actions" style="color: var(--color-highlight);"><i class="fas fa-cogs"></i> Actions</a> — Create actions that target this device</li>
+          <li><a href="/memories" style="color: var(--color-highlight);"><i class="fas fa-brain"></i> Memories</a> — Browse memories derived from device interactions</li>
+          <li><a href="/livekit-test" style="color: var(--color-highlight);"><i class="fas fa-microphone"></i> LiveKit Test</a> — Test voice interaction with the agent</li>
+        </ul>
       </div>
     </details>
     {% endif %}
   </div>
 </div>
+
+<!-- Agent Worker Controls -->
+{% if not device.revoked %}
+<div class="card mt-lg">
+  <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+    <h3 class="card-title"><i class="fas fa-robot"></i> Agent Worker</h3>
+    <div id="aw-status-badge">
+      <span class="badge" style="background: var(--color-gray-600);"><i class="fas fa-spinner fa-spin"></i> Checking…</span>
+    </div>
+  </div>
+  <div class="card-body">
+    <div class="info-grid" id="aw-info" style="margin-bottom: var(--spacing-md);">
+      <div class="info-row">
+        <span class="info-label">Status</span>
+        <span class="info-value" id="aw-status-text">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">PID</span>
+        <span class="info-value" id="aw-pid-text">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Log File</span>
+        <span class="info-value" id="aw-log-text" style="word-break: break-all;">—</span>
+      </div>
+    </div>
+    <div style="display: flex; gap: var(--spacing-sm); flex-wrap: wrap;">
+      <button type="button" class="btn btn-primary" id="aw-launch-btn" onclick="awLaunch()" style="display:none;">
+        <i class="fas fa-play"></i> Launch Agent Worker
+      </button>
+      <button type="button" class="btn btn-outline" id="aw-restart-btn" onclick="awRestart()" style="display:none;">
+        <i class="fas fa-sync-alt"></i> Restart
+      </button>
+      <button type="button" class="btn btn-outline btn-danger" id="aw-stop-btn" onclick="awStop()" style="display:none;">
+        <i class="fas fa-stop"></i> Stop
+      </button>
+      <button type="button" class="btn btn-outline" id="aw-refresh-btn" onclick="awRefreshStatus()">
+        <i class="fas fa-redo"></i> Refresh
+      </button>
+    </div>
+  </div>
+</div>
+{% endif %}
 
 {% endblock %}
 
@@ -289,6 +348,104 @@ async function deleteDevice(deviceId, deviceName) {
     Marvain.showToast('error', 'Error', error.message);
   }
 }
+
+// --- Agent Worker lifecycle controls ---
+function _awUpdateUI(data) {
+  const running = data.status === 'running' || data.status === 'already_running';
+  const badge = document.getElementById('aw-status-badge');
+  const statusText = document.getElementById('aw-status-text');
+  const pidText = document.getElementById('aw-pid-text');
+  const logText = document.getElementById('aw-log-text');
+  const launchBtn = document.getElementById('aw-launch-btn');
+  const stopBtn = document.getElementById('aw-stop-btn');
+  const restartBtn = document.getElementById('aw-restart-btn');
+
+  if (running) {
+    badge.innerHTML = '<span class="badge badge-success"><i class="fas fa-check-circle"></i> Running</span>';
+    statusText.textContent = 'Running';
+    pidText.textContent = data.pid || '—';
+    launchBtn.style.display = 'none';
+    stopBtn.style.display = '';
+    restartBtn.style.display = '';
+  } else {
+    badge.innerHTML = '<span class="badge badge-warning"><i class="fas fa-circle"></i> Stopped</span>';
+    statusText.textContent = 'Stopped';
+    pidText.textContent = '—';
+    launchBtn.style.display = '';
+    stopBtn.style.display = 'none';
+    restartBtn.style.display = 'none';
+  }
+  logText.textContent = data.log_file || '—';
+}
+
+async function awRefreshStatus() {
+  try {
+    const resp = await fetch('/api/agent-worker/status');
+    if (!resp.ok) throw new Error('Failed to get status');
+    const data = await resp.json();
+    _awUpdateUI(data);
+  } catch (e) {
+    document.getElementById('aw-status-badge').innerHTML =
+      '<span class="badge badge-error"><i class="fas fa-times-circle"></i> Error</span>';
+  }
+}
+
+async function awLaunch() {
+  const btn = document.getElementById('aw-launch-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Launching…';
+  try {
+    const resp = await fetch('/api/agent-worker/launch', { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'Launch failed');
+    Marvain.showToast('success', 'Agent Worker', data.message);
+    _awUpdateUI(data);
+  } catch (e) {
+    Marvain.showToast('error', 'Launch Failed', e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-play"></i> Launch Agent Worker';
+  }
+}
+
+async function awStop() {
+  const btn = document.getElementById('aw-stop-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Stopping…';
+  try {
+    const resp = await fetch('/api/agent-worker/stop', { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'Stop failed');
+    Marvain.showToast('success', 'Agent Worker', data.message);
+    _awUpdateUI(data);
+  } catch (e) {
+    Marvain.showToast('error', 'Stop Failed', e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-stop"></i> Stop';
+  }
+}
+
+async function awRestart() {
+  const btn = document.getElementById('aw-restart-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Restarting…';
+  try {
+    const resp = await fetch('/api/agent-worker/restart', { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || 'Restart failed');
+    Marvain.showToast('success', 'Agent Worker', data.message);
+    _awUpdateUI(data);
+  } catch (e) {
+    Marvain.showToast('error', 'Restart Failed', e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-sync-alt"></i> Restart';
+  }
+}
+
+// Auto-fetch status on page load
+document.addEventListener('DOMContentLoaded', awRefreshStatus);
 </script>
 
 <style>

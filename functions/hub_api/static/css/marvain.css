@@ -565,10 +565,14 @@ pre {
 .modal {
   position: fixed;
   inset: 0;
-  display: flex;
+  display: none;
   align-items: center;
   justify-content: center;
   z-index: 1000;
+}
+
+.modal.active {
+  display: flex;
 }
 
 .modal-backdrop {
@@ -624,6 +628,42 @@ pre {
   gap: var(--spacing-sm);
   padding: var(--spacing-md) var(--spacing-lg);
   border-top: 1px solid var(--color-gray-600);
+}
+
+/* Modal overlay — used by actions.html and other inline modals */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 1000;
+}
+
+.modal-overlay .modal {
+  display: block;
+  position: relative;
+  background: var(--color-gray-800);
+  border-radius: var(--radius-lg);
+  width: 100%;
+  max-height: 90vh;
+  overflow: auto;
+  box-shadow: var(--shadow-lg);
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  color: var(--color-gray-400);
+  font-size: 1.5rem;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0;
+}
+
+.modal-close:hover {
+  color: var(--color-white);
 }
 
 /* ==================== Page Header ==================== */

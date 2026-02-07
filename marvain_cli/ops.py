@@ -2281,17 +2281,28 @@ def bootstrap(
     )
     space_id = _first_cell_as_string(space_res)
 
+    # Bootstrap device gets full admin scopes so the agent worker can
+    # ingest events, create/read memories, upload artifacts, and heartbeat.
+    bootstrap_scopes = json.dumps(
+        ["events:read", "events:write", "memories:read", "memories:write", "artifacts:write", "presence:write"]
+    )
+
     dev_res = _rds_execute(
         ctx,
         resource_arn=resource_arn,
         secret_arn=secret_arn,
         db_name=db_name,
         # RDS Data API binds :a as text; cast to uuid for Postgres.
-        sql="INSERT INTO devices (agent_id, name, token_hash) VALUES (CAST(:a AS uuid), :n, :h) RETURNING device_id",
+        sql=(
+            "INSERT INTO devices (agent_id, name, token_hash, scopes)"
+            " VALUES (CAST(:a AS uuid), :n, :h, CAST(:s AS jsonb))"
+            " RETURNING device_id"
+        ),
         parameters=[
             {"name": "a", "value": {"stringValue": agent_id}},
             {"name": "n", "value": {"stringValue": d_name}},
             {"name": "h", "value": {"stringValue": token_hash}},
+            {"name": "s", "value": {"stringValue": bootstrap_scopes}},
         ],
         dry_run=dry_run,
     )

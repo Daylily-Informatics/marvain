@@ -437,34 +437,34 @@ class TestAgentsGui(unittest.TestCase):
         mock_agent.disabled = False
         self.mod.list_agents_for_user = mock.Mock(return_value=[mock_agent])
 
+        members_rows = [
+            {
+                "user_id": "u1",
+                "role": "owner",
+                "relationship_label": "My Assistant",
+                "email": "owner@example.com",
+                "created_at": "2025-01-01",
+            },
+            {
+                "user_id": "u2",
+                "role": "admin",
+                "relationship_label": "Work Partner",
+                "email": "admin@example.com",
+                "created_at": "2025-01-02",
+            },
+        ]
+        summary_rows = [{"device_count": 1, "space_count": 2, "memory_count": 3, "event_count": 4}]
         mock_db = mock.Mock()
-        mock_db.query = mock.Mock(
-            return_value=[
-                {
-                    "user_id": "u1",
-                    "role": "owner",
-                    "relationship_label": "My Assistant",
-                    "email": "owner@example.com",
-                    "created_at": "2025-01-01",
-                },
-                {
-                    "user_id": "u2",
-                    "role": "admin",
-                    "relationship_label": "Work Partner",
-                    "email": "admin@example.com",
-                    "created_at": "2025-01-02",
-                },
-            ]
-        )
+        mock_db.query = mock.Mock(side_effect=[members_rows, summary_rows])
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
         r = self.client.get("/agents/a1")
 
         self.assertEqual(r.status_code, 200)
-        # Members query should use agent_memberships table with UUID cast
-        mock_db.query.assert_called_once()
-        call_args = mock_db.query.call_args
-        query_sql = call_args[0][0]
+        # Members query + summary query = 2 calls
+        self.assertEqual(mock_db.query.call_count, 2)
+        members_call_args = mock_db.query.call_args_list[0]
+        query_sql = members_call_args[0][0]
         self.assertIn("agent_memberships", query_sql)
         self.assertIn("::uuid", query_sql)
 
