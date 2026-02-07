@@ -1492,6 +1492,92 @@ def api_update_agent(request: Request, agent_id: str, body: AgentUpdate) -> dict
     return {"message": "Agent updated", "agent_id": agent_id}
 
 
+@app.post("/api/agents/{agent_id}/delete", name="api_delete_agent")
+def api_delete_agent(request: Request, agent_id: str) -> dict:
+    """Delete an agent permanently.  Owner role required.
+
+    Cascade deletes will remove all related spaces, devices, people,
+    events, memories, actions, and audit_state rows automatically.
+    """
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Only the *owner* may delete the entire agent.
+    rows = db.query(
+        """
+        SELECT a.agent_id
+        FROM agents a
+        INNER JOIN agent_memberships m ON a.agent_id = m.agent_id
+        WHERE a.agent_id = :agent_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.role = 'owner'
+          AND m.revoked_at IS NULL
+    """,
+        {"agent_id": agent_id, "user_id": str(user.user_id)},
+    )
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Agent not found or permission denied (owner required)")
+
+    try:
+        db.execute(
+            "DELETE FROM agents WHERE agent_id = :agent_id::uuid",
+            {"agent_id": agent_id},
+        )
+    except Exception as e:
+        logger.error(f"Failed to delete agent: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete agent")
+
+    return {"message": "Agent deleted", "agent_id": agent_id}
+
+
+@app.get("/api/agents/{agent_id}/summary", name="api_agent_summary")
+def api_agent_summary(request: Request, agent_id: str) -> dict:
+    """Return summary counts for an agent (devices, spaces, memories)."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Verify access
+    rows = db.query(
+        """
+        SELECT 1
+        FROM agent_memberships
+        WHERE agent_id = :agent_id::uuid AND user_id = :user_id::uuid
+          AND revoked_at IS NULL
+    """,
+        {"agent_id": agent_id, "user_id": str(user.user_id)},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Agent not found or permission denied")
+
+    counts = db.query(
+        """
+        SELECT
+          (SELECT count(*) FROM devices WHERE agent_id = :aid::uuid AND revoked_at IS NULL) AS device_count,
+          (SELECT count(*) FROM spaces WHERE agent_id = :aid::uuid) AS space_count,
+          (SELECT count(*) FROM memories WHERE agent_id = :aid::uuid) AS memory_count,
+          (SELECT count(*) FROM events WHERE agent_id = :aid::uuid) AS event_count
+    """,
+        {"aid": agent_id},
+    )
+    row = counts[0] if counts else {}
+    worker = _agent_worker_status_dict()
+    return {
+        "device_count": row.get("device_count", 0),
+        "space_count": row.get("space_count", 0),
+        "memory_count": row.get("memory_count", 0),
+        "event_count": row.get("event_count", 0),
+        "worker_status": worker["status"],
+        "worker_pid": worker["pid"],
+    }
+
+
 @app.get("/api/agents/{agent_id}", name="api_get_agent")
 def api_get_agent(request: Request, agent_id: str) -> dict:
     """Get agent details."""
@@ -3604,6 +3690,28 @@ def gui_agent_detail(request: Request, agent_id: str) -> Response:
         "disabled": match.disabled,
     }
 
+    # Fetch summary counts for this agent
+    summary_rows = db.query(
+        """
+        SELECT
+          (SELECT count(*) FROM devices WHERE agent_id = :aid::uuid AND revoked_at IS NULL) AS device_count,
+          (SELECT count(*) FROM spaces WHERE agent_id = :aid::uuid) AS space_count,
+          (SELECT count(*) FROM memories WHERE agent_id = :aid::uuid) AS memory_count,
+          (SELECT count(*) FROM events WHERE agent_id = :aid::uuid) AS event_count
+    """,
+        {"aid": agent_id},
+    )
+    sr = summary_rows[0] if summary_rows else {}
+    worker = _agent_worker_status_dict()
+    summary = {
+        "device_count": sr.get("device_count", 0),
+        "space_count": sr.get("space_count", 0),
+        "memory_count": sr.get("memory_count", 0),
+        "event_count": sr.get("event_count", 0),
+        "worker_status": worker["status"],
+        "worker_pid": worker["pid"],
+    }
+
     return templates.TemplateResponse(
         request,
         "agent_detail.html",
@@ -3613,6 +3721,7 @@ def gui_agent_detail(request: Request, agent_id: str) -> Response:
             "active_page": "agents",
             "agent": agent_data,
             "members": members,
+            "summary": summary,
             **_get_ws_context(request),
         },
     )
