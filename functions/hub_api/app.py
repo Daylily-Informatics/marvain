@@ -1007,6 +1007,363 @@ def api_delete_device(request: Request, device_id: str) -> dict:
     return {"message": "Device deleted", "device_id": device_id}
 
 
+class DeviceLaunchSatellite(BaseModel):
+    """Request body for launching a satellite daemon for a device."""
+
+    device_token: str = Field(..., description="Device authentication token")
+
+
+@app.post("/api/devices/{device_id}/launch-satellite", name="api_launch_satellite")
+def api_launch_satellite(request: Request, device_id: str, body: DeviceLaunchSatellite) -> dict:
+    """Launch the remote satellite daemon for a device.
+
+    This is a LOCAL-DEV-ONLY endpoint. It spawns the satellite daemon as a
+    background subprocess on the machine running the GUI server.
+    """
+    import subprocess as _sp
+
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Verify device exists and user has permission — the DB-returned device_id
+    # is server-controlled (not user-tainted) so safe for paths/commands.
+    rows = db.query(
+        """
+        SELECT d.device_id, d.agent_id, d.name
+        FROM devices d
+        INNER JOIN agent_memberships m ON d.agent_id = m.agent_id
+        WHERE d.device_id = :device_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.revoked_at IS NULL
+    """,
+        {"device_id": device_id, "user_id": str(user.user_id)},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Device not found or permission denied")
+
+    # Use the DB-returned device_id (server-controlled, not user-tainted)
+    verified_device_id: str = rows[0]["device_id"]
+
+    ws_url = _cfg.ws_api_url
+    if not ws_url:
+        raise HTTPException(status_code=500, detail="WebSocket URL not configured (WS_API_URL)")
+
+    # Resolve the daemon script path relative to the repo root
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    daemon_script = (repo_root / "apps" / "remote_satellite" / "daemon.py").resolve()
+    if not daemon_script.exists():
+        raise HTTPException(status_code=500, detail="Satellite daemon script not found")
+
+    # Build the command — pass device_token via env var (not CLI arg) to avoid
+    # command-injection taint. The daemon reads MARVAIN_DEVICE_TOKEN from env.
+    import sys
+
+    cmd = [
+        sys.executable,
+        str(daemon_script),
+        "--hub-ws-url",
+        ws_url,
+    ]
+    env = {**os.environ, "MARVAIN_DEVICE_TOKEN": body.device_token}
+
+    # Use verified (DB-returned) device_id for file paths — not user input
+    pid_file = repo_root / f".marvain-satellite-{verified_device_id}.pid"
+    log_file = repo_root / f".marvain-satellite-{verified_device_id}.log"
+
+    # Check if already running
+    if pid_file.exists():
+        try:
+            old_pid = int(pid_file.read_text().strip())
+            os.kill(old_pid, 0)
+            return {
+                "status": "already_running",
+                "pid": old_pid,
+                "device_id": verified_device_id,
+                "message": f"Satellite daemon already running (PID {old_pid})",
+            }
+        except (ProcessLookupError, ValueError, OSError):
+            pid_file.unlink(missing_ok=True)
+
+    try:
+        with open(log_file, "w") as lf:
+            proc = _sp.Popen(
+                cmd,
+                stdin=_sp.DEVNULL,
+                stdout=lf,
+                stderr=_sp.STDOUT,
+                start_new_session=True,
+                env=env,
+            )
+        pid_file.write_text(str(proc.pid))
+        logger.info(f"Launched satellite daemon for device {verified_device_id} (PID {proc.pid})")
+    except Exception as e:
+        logger.error(f"Failed to launch satellite daemon: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to launch satellite: {e}")
+
+    return {
+        "status": "launched",
+        "pid": proc.pid,
+        "device_id": verified_device_id,
+        "device_name": rows[0].get("name", ""),
+        "log_file": str(log_file),
+        "message": f"Satellite daemon started (PID {proc.pid})",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Agent Worker Lifecycle Management (LOCAL-DEV-ONLY)
+# ---------------------------------------------------------------------------
+
+_AGENT_PID_FILENAME = ".marvain-agent.pid"
+_AGENT_LOG_FILENAME = ".marvain-agent.log"
+
+
+def _agent_pid_file() -> Path:
+    """Return the path to the agent worker PID file in the repo root."""
+    return Path(__file__).resolve().parent.parent.parent / _AGENT_PID_FILENAME
+
+
+def _agent_log_file() -> Path:
+    """Return the path to the agent worker log file in the repo root."""
+    return Path(__file__).resolve().parent.parent.parent / _AGENT_LOG_FILENAME
+
+
+def _process_alive(pid: int) -> bool:
+    """Check whether a process with *pid* is running."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def _agent_worker_status_dict() -> dict:
+    """Return the current agent worker status as a JSON-safe dict."""
+    pid_file = _agent_pid_file()
+    log_file = _agent_log_file()
+    if not pid_file.exists():
+        return {"status": "stopped", "pid": None, "log_file": str(log_file)}
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (ValueError, OSError):
+        pid_file.unlink(missing_ok=True)
+        return {"status": "stopped", "pid": None, "log_file": str(log_file)}
+    if _process_alive(pid):
+        return {"status": "running", "pid": pid, "log_file": str(log_file)}
+    # Stale PID file
+    pid_file.unlink(missing_ok=True)
+    return {"status": "stopped", "pid": None, "log_file": str(log_file)}
+
+
+def _read_marvain_config() -> dict:
+    """Read ~/.config/marvain/marvain-config.yaml and return its dict."""
+    import yaml
+
+    p = Path(os.path.expanduser("~/.config/marvain/marvain-config.yaml"))
+    if not p.exists():
+        return {}
+    with open(p) as fh:
+        return yaml.safe_load(fh) or {}
+
+
+@app.get("/api/agent-worker/status", name="api_agent_worker_status")
+def api_agent_worker_status(request: Request) -> dict:
+    """Return the current agent worker status (running/stopped, PID)."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return _agent_worker_status_dict()
+
+
+@app.post("/api/agent-worker/stop", name="api_agent_worker_stop")
+def api_agent_worker_stop(request: Request) -> dict:
+    """Stop the agent worker process."""
+    import signal
+    import time
+
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    pid_file = _agent_pid_file()
+    if not pid_file.exists():
+        return {"status": "stopped", "message": "Agent worker is not running (no PID file)"}
+
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (ValueError, OSError):
+        pid_file.unlink(missing_ok=True)
+        return {"status": "stopped", "message": "Removed invalid PID file"}
+
+    if not _process_alive(pid):
+        pid_file.unlink(missing_ok=True)
+        return {"status": "stopped", "message": "Agent worker was already stopped (stale PID)"}
+
+    # SIGTERM first, then SIGKILL if needed
+    try:
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(20):
+            time.sleep(0.25)
+            if not _process_alive(pid):
+                break
+        else:
+            os.kill(pid, signal.SIGKILL)
+            time.sleep(0.5)
+    except (OSError, ProcessLookupError):
+        pass
+
+    pid_file.unlink(missing_ok=True)
+    stopped = not _process_alive(pid)
+    return {
+        "status": "stopped" if stopped else "error",
+        "pid": None if stopped else pid,
+        "message": "Agent worker stopped" if stopped else f"Failed to stop PID {pid}",
+    }
+
+
+@app.post("/api/agent-worker/launch", name="api_agent_worker_launch")
+def api_agent_worker_launch(request: Request) -> dict:
+    """Launch the agent worker process.
+
+    Reads marvain-config.yaml for LiveKit/OpenAI secret ARNs and bootstrap
+    data, fetches credentials from Secrets Manager, then spawns the worker
+    as a background subprocess.
+    """
+    import subprocess as _sp
+    import sys
+
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # Already running?
+    cur = _agent_worker_status_dict()
+    if cur["status"] == "running":
+        return {
+            "status": "already_running",
+            "pid": cur["pid"],
+            "message": f"Agent worker already running (PID {cur['pid']})",
+        }
+
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    worker_dir = repo_root / "apps" / "agent_worker"
+    if not (worker_dir / "worker.py").exists():
+        raise HTTPException(status_code=500, detail="Agent worker script not found")
+
+    # --- Gather credentials ---------------------------------------------------
+    livekit_url = _cfg.livekit_url
+    livekit_secret_arn = _cfg.livekit_secret_arn
+    openai_secret_arn = _cfg.openai_secret_arn
+
+    if not livekit_url:
+        raise HTTPException(status_code=500, detail="LIVEKIT_URL not configured")
+    if not livekit_secret_arn:
+        raise HTTPException(status_code=500, detail="LIVEKIT_SECRET_ARN not configured")
+    if not openai_secret_arn:
+        raise HTTPException(status_code=500, detail="OPENAI_SECRET_ARN not configured")
+
+    try:
+        lk = get_secret_json(livekit_secret_arn)
+        livekit_api_key = lk.get("api_key", "")
+        livekit_api_secret = lk.get("api_secret", "")
+        if not livekit_api_key or not livekit_api_secret:
+            raise HTTPException(status_code=500, detail="LiveKit secret missing api_key/api_secret")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch LiveKit secret: {exc}")
+
+    try:
+        oai = get_secret_json(openai_secret_arn)
+        openai_api_key = oai.get("api_key", "")
+        if not openai_api_key or openai_api_key == "REPLACE_ME":
+            raise HTTPException(status_code=500, detail="OpenAI secret missing api_key")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch OpenAI secret: {exc}")
+
+    # Read additional config from marvain-config.yaml (HubRestApiBase, bootstrap)
+    mcfg = _read_marvain_config()
+    default_env = mcfg.get("default_env", "dev")
+    env_cfg = mcfg.get("envs", {}).get(default_env, {})
+    resources = env_cfg.get("resources", {})
+    bootstrap = env_cfg.get("bootstrap", {})
+
+    # --- Build subprocess environment ----------------------------------------
+    env = {**os.environ}
+    env["LIVEKIT_URL"] = livekit_url
+    env["LIVEKIT_API_KEY"] = livekit_api_key
+    env["LIVEKIT_API_SECRET"] = livekit_api_secret
+    env["OPENAI_API_KEY"] = openai_api_key
+
+    hub_api_base = resources.get("HubRestApiBase", "")
+    if hub_api_base:
+        env["HUB_API_BASE"] = hub_api_base
+
+    device_token = bootstrap.get("device_token", "")
+    space_id = bootstrap.get("space_id", "")
+    if device_token:
+        env["HUB_DEVICE_TOKEN"] = device_token
+    if space_id:
+        env["SPACE_ID"] = space_id
+
+    # AWS credentials (inherit from GUI process)
+    aws_profile = env_cfg.get("aws_profile", os.getenv("AWS_PROFILE", ""))
+    aws_region = env_cfg.get("aws_region", os.getenv("AWS_REGION", "us-east-1"))
+    if aws_profile:
+        env["AWS_PROFILE"] = aws_profile
+    env["AWS_REGION"] = aws_region
+    env["AWS_DEFAULT_REGION"] = aws_region
+
+    # --- Spawn ----------------------------------------------------------------
+    cmd = [sys.executable, "worker.py", "dev"]
+    log_file = _agent_log_file()
+    pid_file = _agent_pid_file()
+
+    try:
+        with open(log_file, "w") as lf:
+            proc = _sp.Popen(
+                cmd,
+                cwd=str(worker_dir),
+                env=env,
+                stdin=_sp.DEVNULL,
+                stdout=lf,
+                stderr=_sp.STDOUT,
+                start_new_session=True,
+            )
+        pid_file.write_text(str(proc.pid))
+        logger.info("Launched agent worker (PID %s)", proc.pid)
+    except Exception as exc:
+        logger.error("Failed to launch agent worker: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to launch agent worker: {exc}")
+
+    return {
+        "status": "launched",
+        "pid": proc.pid,
+        "log_file": str(log_file),
+        "message": f"Agent worker started (PID {proc.pid})",
+    }
+
+
+@app.post("/api/agent-worker/restart", name="api_agent_worker_restart")
+def api_agent_worker_restart(request: Request) -> dict:
+    """Restart the agent worker (stop then launch)."""
+    import time
+
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # Stop first (ignore result — may already be stopped)
+    api_agent_worker_stop(request)
+    time.sleep(1)
+    return api_agent_worker_launch(request)
+
+
 # ---------------------------------------------------------------------------
 # Agents API endpoints (session-based auth for GUI)
 # ---------------------------------------------------------------------------
@@ -1133,6 +1490,92 @@ def api_update_agent(request: Request, agent_id: str, body: AgentUpdate) -> dict
         raise HTTPException(status_code=500, detail="Failed to update agent")
 
     return {"message": "Agent updated", "agent_id": agent_id}
+
+
+@app.post("/api/agents/{agent_id}/delete", name="api_delete_agent")
+def api_delete_agent(request: Request, agent_id: str) -> dict:
+    """Delete an agent permanently.  Owner role required.
+
+    Cascade deletes will remove all related spaces, devices, people,
+    events, memories, actions, and audit_state rows automatically.
+    """
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Only the *owner* may delete the entire agent.
+    rows = db.query(
+        """
+        SELECT a.agent_id
+        FROM agents a
+        INNER JOIN agent_memberships m ON a.agent_id = m.agent_id
+        WHERE a.agent_id = :agent_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.role = 'owner'
+          AND m.revoked_at IS NULL
+    """,
+        {"agent_id": agent_id, "user_id": str(user.user_id)},
+    )
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Agent not found or permission denied (owner required)")
+
+    try:
+        db.execute(
+            "DELETE FROM agents WHERE agent_id = :agent_id::uuid",
+            {"agent_id": agent_id},
+        )
+    except Exception as e:
+        logger.error(f"Failed to delete agent: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete agent")
+
+    return {"message": "Agent deleted", "agent_id": agent_id}
+
+
+@app.get("/api/agents/{agent_id}/summary", name="api_agent_summary")
+def api_agent_summary(request: Request, agent_id: str) -> dict:
+    """Return summary counts for an agent (devices, spaces, memories)."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Verify access
+    rows = db.query(
+        """
+        SELECT 1
+        FROM agent_memberships
+        WHERE agent_id = :agent_id::uuid AND user_id = :user_id::uuid
+          AND revoked_at IS NULL
+    """,
+        {"agent_id": agent_id, "user_id": str(user.user_id)},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Agent not found or permission denied")
+
+    counts = db.query(
+        """
+        SELECT
+          (SELECT count(*) FROM devices WHERE agent_id = :aid::uuid AND revoked_at IS NULL) AS device_count,
+          (SELECT count(*) FROM spaces WHERE agent_id = :aid::uuid) AS space_count,
+          (SELECT count(*) FROM memories WHERE agent_id = :aid::uuid) AS memory_count,
+          (SELECT count(*) FROM events WHERE agent_id = :aid::uuid) AS event_count
+    """,
+        {"aid": agent_id},
+    )
+    row = counts[0] if counts else {}
+    worker = _agent_worker_status_dict()
+    return {
+        "device_count": row.get("device_count", 0),
+        "space_count": row.get("space_count", 0),
+        "memory_count": row.get("memory_count", 0),
+        "event_count": row.get("event_count", 0),
+        "worker_status": worker["status"],
+        "worker_pid": worker["pid"],
+    }
 
 
 @app.get("/api/agents/{agent_id}", name="api_get_agent")
@@ -1730,10 +2173,10 @@ def api_update_consent(request: Request, person_id: str, body: ConsentUpdate) ->
         # First, revoke all existing active consents for this person
         db.execute(
             """
-            UPDATE consent_grants SET revoked_at = :now
+            UPDATE consent_grants SET revoked_at = :now::timestamptz
             WHERE person_id = :person_id::uuid AND revoked_at IS NULL
         """,
-            {"person_id": person_id, "now": datetime.now(timezone.utc)},
+            {"person_id": person_id, "now": datetime.now(timezone.utc).isoformat()},
         )
 
         # Then create new consent grants
@@ -1749,14 +2192,15 @@ def api_update_consent(request: Request, person_id: str, body: ConsentUpdate) ->
             db.execute(
                 """
                 INSERT INTO consent_grants (consent_id, agent_id, person_id, consent_type, expires_at)
-                VALUES (:consent_id::uuid, :agent_id::uuid, :person_id::uuid, :consent_type, :expires_at)
+                VALUES (:consent_id::uuid, :agent_id::uuid, :person_id::uuid, :consent_type,
+                        CASE WHEN :expires_at IS NULL THEN NULL ELSE :expires_at::timestamptz END)
             """,
                 {
                     "consent_id": consent_id,
                     "agent_id": agent_id,
                     "person_id": person_id,
                     "consent_type": consent.type,
-                    "expires_at": expires_at,
+                    "expires_at": expires_at.isoformat() if expires_at else None,
                 },
             )
 
@@ -1902,9 +2346,9 @@ def gui_people(request: Request) -> Response:
                 SELECT consent_type, expires_at
                 FROM consent_grants
                 WHERE person_id = :person_id::uuid AND revoked_at IS NULL
-                  AND (expires_at IS NULL OR expires_at > :now)
+                  AND (expires_at IS NULL OR expires_at > :now::timestamptz)
             """,
-                {"person_id": person_id, "now": datetime.now(timezone.utc)},
+                {"person_id": person_id, "now": datetime.now(timezone.utc).isoformat()},
             )
 
             voice_consent = None
@@ -2876,6 +3320,45 @@ def api_presign_upload(request: Request, body: ArtifactPresign) -> dict:
     return {"upload_url": url, "key": key, "bucket": _cfg.artifact_bucket}
 
 
+@app.post("/api/artifacts/upload", name="api_upload_artifact")
+async def api_upload_artifact(request: Request) -> dict:
+    """Upload an artifact via server-side proxy (avoids CORS issues with S3)."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    form = await request.form()
+    agent_id = form.get("agent_id")
+    upload_file = form.get("file")
+
+    if not agent_id or not upload_file:
+        raise HTTPException(status_code=400, detail="agent_id and file are required")
+
+    db = _get_db()
+    if not check_agent_permission(db, agent_id=str(agent_id), user_id=user.user_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Admin permission required")
+
+    if not _cfg.artifact_bucket:
+        raise HTTPException(status_code=500, detail="Artifact bucket not configured")
+
+    import uuid as uuid_mod
+
+    filename = getattr(upload_file, "filename", "unknown")
+    content_type = getattr(upload_file, "content_type", "application/octet-stream") or "application/octet-stream"
+    key = f"artifacts/agent_id={agent_id}/{uuid_mod.uuid4()}_{filename}"
+
+    file_content = await upload_file.read()
+    s3 = _get_s3()
+    s3.put_object(
+        Bucket=_cfg.artifact_bucket,
+        Key=key,
+        Body=file_content,
+        ContentType=content_type,
+    )
+
+    return {"key": key, "bucket": _cfg.artifact_bucket, "filename": filename}
+
+
 @app.get("/audit", name="gui_audit")
 def gui_audit(request: Request) -> Response:
     """Audit log viewer."""
@@ -3080,6 +3563,24 @@ def gui_profile(request: Request) -> Response:
         for a in agents
     ]
 
+    # --- Infrastructure / S3 bucket status ---
+    def _check_bucket(name: str | None) -> dict:
+        """Return bucket status dict: name, exists, region, error."""
+        if not name:
+            return {"name": None, "exists": False, "region": None, "error": "Not configured"}
+        try:
+            s3 = _get_s3()
+            loc = s3.get_bucket_location(Bucket=name)
+            region = loc.get("LocationConstraint") or "us-east-1"
+            return {"name": name, "exists": True, "region": region, "error": None}
+        except s3.exceptions.NoSuchBucket:
+            return {"name": name, "exists": False, "region": None, "error": "Bucket does not exist"}
+        except Exception as exc:
+            return {"name": name, "exists": False, "region": None, "error": str(exc)}
+
+    artifact_bucket = _check_bucket(_cfg.artifact_bucket)
+    audit_bucket = _check_bucket(_cfg.audit_bucket)
+
     return templates.TemplateResponse(
         request,
         "profile.html",
@@ -3092,6 +3593,9 @@ def gui_profile(request: Request) -> Response:
             "stage": _cfg.stage,
             "active_page": "profile",
             "agents": agents_data,
+            "artifact_bucket": artifact_bucket,
+            "audit_bucket": audit_bucket,
+            "aws_region": _cfg.cognito_region or os.getenv("AWS_REGION", "us-east-1"),
             **_get_ws_context(request),
         },
     )
@@ -3186,6 +3690,28 @@ def gui_agent_detail(request: Request, agent_id: str) -> Response:
         "disabled": match.disabled,
     }
 
+    # Fetch summary counts for this agent
+    summary_rows = db.query(
+        """
+        SELECT
+          (SELECT count(*) FROM devices WHERE agent_id = :aid::uuid AND revoked_at IS NULL) AS device_count,
+          (SELECT count(*) FROM spaces WHERE agent_id = :aid::uuid) AS space_count,
+          (SELECT count(*) FROM memories WHERE agent_id = :aid::uuid) AS memory_count,
+          (SELECT count(*) FROM events WHERE agent_id = :aid::uuid) AS event_count
+    """,
+        {"aid": agent_id},
+    )
+    sr = summary_rows[0] if summary_rows else {}
+    worker = _agent_worker_status_dict()
+    summary = {
+        "device_count": sr.get("device_count", 0),
+        "space_count": sr.get("space_count", 0),
+        "memory_count": sr.get("memory_count", 0),
+        "event_count": sr.get("event_count", 0),
+        "worker_status": worker["status"],
+        "worker_pid": worker["pid"],
+    }
+
     return templates.TemplateResponse(
         request,
         "agent_detail.html",
@@ -3195,6 +3721,7 @@ def gui_agent_detail(request: Request, agent_id: str) -> Response:
             "active_page": "agents",
             "agent": agent_data,
             "members": members,
+            "summary": summary,
             **_get_ws_context(request),
         },
     )

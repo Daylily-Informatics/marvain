@@ -3,3 +3,4 @@ mangum
 itsdangerous
 python-jose[cryptography]
 httpx
+livekit-api>=1.1.0
