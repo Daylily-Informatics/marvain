@@ -3226,6 +3226,24 @@ def gui_profile(request: Request) -> Response:
         for a in agents
     ]
 
+    # --- Infrastructure / S3 bucket status ---
+    def _check_bucket(name: str | None) -> dict:
+        """Return bucket status dict: name, exists, region, error."""
+        if not name:
+            return {"name": None, "exists": False, "region": None, "error": "Not configured"}
+        try:
+            s3 = _get_s3()
+            loc = s3.get_bucket_location(Bucket=name)
+            region = loc.get("LocationConstraint") or "us-east-1"
+            return {"name": name, "exists": True, "region": region, "error": None}
+        except s3.exceptions.NoSuchBucket:
+            return {"name": name, "exists": False, "region": None, "error": "Bucket does not exist"}
+        except Exception as exc:
+            return {"name": name, "exists": False, "region": None, "error": str(exc)}
+
+    artifact_bucket = _check_bucket(_cfg.artifact_bucket)
+    audit_bucket = _check_bucket(_cfg.audit_bucket)
+
     return templates.TemplateResponse(
         request,
         "profile.html",
@@ -3238,6 +3256,9 @@ def gui_profile(request: Request) -> Response:
             "stage": _cfg.stage,
             "active_page": "profile",
             "agents": agents_data,
+            "artifact_bucket": artifact_bucket,
+            "audit_bucket": audit_bucket,
+            "aws_region": _cfg.cognito_region or os.getenv("AWS_REGION", "us-east-1"),
             **_get_ws_context(request),
         },
     )
