@@ -1114,6 +1114,257 @@ def api_launch_satellite(request: Request, device_id: str, body: DeviceLaunchSat
 
 
 # ---------------------------------------------------------------------------
+# Agent Worker Lifecycle Management (LOCAL-DEV-ONLY)
+# ---------------------------------------------------------------------------
+
+_AGENT_PID_FILENAME = ".marvain-agent.pid"
+_AGENT_LOG_FILENAME = ".marvain-agent.log"
+
+
+def _agent_pid_file() -> Path:
+    """Return the path to the agent worker PID file in the repo root."""
+    return Path(__file__).resolve().parent.parent.parent / _AGENT_PID_FILENAME
+
+
+def _agent_log_file() -> Path:
+    """Return the path to the agent worker log file in the repo root."""
+    return Path(__file__).resolve().parent.parent.parent / _AGENT_LOG_FILENAME
+
+
+def _process_alive(pid: int) -> bool:
+    """Check whether a process with *pid* is running."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def _agent_worker_status_dict() -> dict:
+    """Return the current agent worker status as a JSON-safe dict."""
+    pid_file = _agent_pid_file()
+    log_file = _agent_log_file()
+    if not pid_file.exists():
+        return {"status": "stopped", "pid": None, "log_file": str(log_file)}
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (ValueError, OSError):
+        pid_file.unlink(missing_ok=True)
+        return {"status": "stopped", "pid": None, "log_file": str(log_file)}
+    if _process_alive(pid):
+        return {"status": "running", "pid": pid, "log_file": str(log_file)}
+    # Stale PID file
+    pid_file.unlink(missing_ok=True)
+    return {"status": "stopped", "pid": None, "log_file": str(log_file)}
+
+
+def _read_marvain_config() -> dict:
+    """Read ~/.config/marvain/marvain-config.yaml and return its dict."""
+    import yaml
+
+    p = Path(os.path.expanduser("~/.config/marvain/marvain-config.yaml"))
+    if not p.exists():
+        return {}
+    with open(p) as fh:
+        return yaml.safe_load(fh) or {}
+
+
+@app.get("/api/agent-worker/status", name="api_agent_worker_status")
+def api_agent_worker_status(request: Request) -> dict:
+    """Return the current agent worker status (running/stopped, PID)."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return _agent_worker_status_dict()
+
+
+@app.post("/api/agent-worker/stop", name="api_agent_worker_stop")
+def api_agent_worker_stop(request: Request) -> dict:
+    """Stop the agent worker process."""
+    import signal
+    import time
+
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    pid_file = _agent_pid_file()
+    if not pid_file.exists():
+        return {"status": "stopped", "message": "Agent worker is not running (no PID file)"}
+
+    try:
+        pid = int(pid_file.read_text().strip())
+    except (ValueError, OSError):
+        pid_file.unlink(missing_ok=True)
+        return {"status": "stopped", "message": "Removed invalid PID file"}
+
+    if not _process_alive(pid):
+        pid_file.unlink(missing_ok=True)
+        return {"status": "stopped", "message": "Agent worker was already stopped (stale PID)"}
+
+    # SIGTERM first, then SIGKILL if needed
+    try:
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(20):
+            time.sleep(0.25)
+            if not _process_alive(pid):
+                break
+        else:
+            os.kill(pid, signal.SIGKILL)
+            time.sleep(0.5)
+    except (OSError, ProcessLookupError):
+        pass
+
+    pid_file.unlink(missing_ok=True)
+    stopped = not _process_alive(pid)
+    return {
+        "status": "stopped" if stopped else "error",
+        "pid": None if stopped else pid,
+        "message": "Agent worker stopped" if stopped else f"Failed to stop PID {pid}",
+    }
+
+
+@app.post("/api/agent-worker/launch", name="api_agent_worker_launch")
+def api_agent_worker_launch(request: Request) -> dict:
+    """Launch the agent worker process.
+
+    Reads marvain-config.yaml for LiveKit/OpenAI secret ARNs and bootstrap
+    data, fetches credentials from Secrets Manager, then spawns the worker
+    as a background subprocess.
+    """
+    import subprocess as _sp
+    import sys
+
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # Already running?
+    cur = _agent_worker_status_dict()
+    if cur["status"] == "running":
+        return {
+            "status": "already_running",
+            "pid": cur["pid"],
+            "message": f"Agent worker already running (PID {cur['pid']})",
+        }
+
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    worker_dir = repo_root / "apps" / "agent_worker"
+    if not (worker_dir / "worker.py").exists():
+        raise HTTPException(status_code=500, detail="Agent worker script not found")
+
+    # --- Gather credentials ---------------------------------------------------
+    livekit_url = _cfg.livekit_url
+    livekit_secret_arn = _cfg.livekit_secret_arn
+    openai_secret_arn = _cfg.openai_secret_arn
+
+    if not livekit_url:
+        raise HTTPException(status_code=500, detail="LIVEKIT_URL not configured")
+    if not livekit_secret_arn:
+        raise HTTPException(status_code=500, detail="LIVEKIT_SECRET_ARN not configured")
+    if not openai_secret_arn:
+        raise HTTPException(status_code=500, detail="OPENAI_SECRET_ARN not configured")
+
+    try:
+        lk = get_secret_json(livekit_secret_arn)
+        livekit_api_key = lk.get("api_key", "")
+        livekit_api_secret = lk.get("api_secret", "")
+        if not livekit_api_key or not livekit_api_secret:
+            raise HTTPException(status_code=500, detail="LiveKit secret missing api_key/api_secret")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch LiveKit secret: {exc}")
+
+    try:
+        oai = get_secret_json(openai_secret_arn)
+        openai_api_key = oai.get("api_key", "")
+        if not openai_api_key or openai_api_key == "REPLACE_ME":
+            raise HTTPException(status_code=500, detail="OpenAI secret missing api_key")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch OpenAI secret: {exc}")
+
+    # Read additional config from marvain-config.yaml (HubRestApiBase, bootstrap)
+    mcfg = _read_marvain_config()
+    default_env = mcfg.get("default_env", "dev")
+    env_cfg = mcfg.get("envs", {}).get(default_env, {})
+    resources = env_cfg.get("resources", {})
+    bootstrap = env_cfg.get("bootstrap", {})
+
+    # --- Build subprocess environment ----------------------------------------
+    env = {**os.environ}
+    env["LIVEKIT_URL"] = livekit_url
+    env["LIVEKIT_API_KEY"] = livekit_api_key
+    env["LIVEKIT_API_SECRET"] = livekit_api_secret
+    env["OPENAI_API_KEY"] = openai_api_key
+
+    hub_api_base = resources.get("HubRestApiBase", "")
+    if hub_api_base:
+        env["HUB_API_BASE"] = hub_api_base
+
+    device_token = bootstrap.get("device_token", "")
+    space_id = bootstrap.get("space_id", "")
+    if device_token:
+        env["HUB_DEVICE_TOKEN"] = device_token
+    if space_id:
+        env["SPACE_ID"] = space_id
+
+    # AWS credentials (inherit from GUI process)
+    aws_profile = env_cfg.get("aws_profile", os.getenv("AWS_PROFILE", ""))
+    aws_region = env_cfg.get("aws_region", os.getenv("AWS_REGION", "us-east-1"))
+    if aws_profile:
+        env["AWS_PROFILE"] = aws_profile
+    env["AWS_REGION"] = aws_region
+    env["AWS_DEFAULT_REGION"] = aws_region
+
+    # --- Spawn ----------------------------------------------------------------
+    cmd = [sys.executable, "worker.py", "dev"]
+    log_file = _agent_log_file()
+    pid_file = _agent_pid_file()
+
+    try:
+        with open(log_file, "w") as lf:
+            proc = _sp.Popen(
+                cmd,
+                cwd=str(worker_dir),
+                env=env,
+                stdin=_sp.DEVNULL,
+                stdout=lf,
+                stderr=_sp.STDOUT,
+                start_new_session=True,
+            )
+        pid_file.write_text(str(proc.pid))
+        logger.info("Launched agent worker (PID %s)", proc.pid)
+    except Exception as exc:
+        logger.error("Failed to launch agent worker: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to launch agent worker: {exc}")
+
+    return {
+        "status": "launched",
+        "pid": proc.pid,
+        "log_file": str(log_file),
+        "message": f"Agent worker started (PID {proc.pid})",
+    }
+
+
+@app.post("/api/agent-worker/restart", name="api_agent_worker_restart")
+def api_agent_worker_restart(request: Request) -> dict:
+    """Restart the agent worker (stop then launch)."""
+    import time
+
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # Stop first (ignore result — may already be stopped)
+    api_agent_worker_stop(request)
+    time.sleep(1)
+    return api_agent_worker_launch(request)
+
+
+# ---------------------------------------------------------------------------
 # Agents API endpoints (session-based auth for GUI)
 # ---------------------------------------------------------------------------
 
