@@ -1007,6 +1007,108 @@ def api_delete_device(request: Request, device_id: str) -> dict:
     return {"message": "Device deleted", "device_id": device_id}
 
 
+class DeviceLaunchSatellite(BaseModel):
+    """Request body for launching a satellite daemon for a device."""
+
+    device_token: str = Field(..., description="Device authentication token")
+
+
+@app.post("/api/devices/{device_id}/launch-satellite", name="api_launch_satellite")
+def api_launch_satellite(request: Request, device_id: str, body: DeviceLaunchSatellite) -> dict:
+    """Launch the remote satellite daemon for a device.
+
+    This is a LOCAL-DEV-ONLY endpoint. It spawns the satellite daemon as a
+    background subprocess on the machine running the GUI server.
+    """
+    import subprocess as _sp
+
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Verify device exists and user has permission
+    rows = db.query(
+        """
+        SELECT d.device_id, d.agent_id, d.name
+        FROM devices d
+        INNER JOIN agent_memberships m ON d.agent_id = m.agent_id
+        WHERE d.device_id = :device_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.revoked_at IS NULL
+    """,
+        {"device_id": device_id, "user_id": str(user.user_id)},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Device not found or permission denied")
+
+    ws_url = _cfg.ws_api_url
+    if not ws_url:
+        raise HTTPException(status_code=500, detail="WebSocket URL not configured (WS_API_URL)")
+
+    # Resolve the daemon script path relative to the repo root
+    repo_root = Path(__file__).parent.parent.parent
+    daemon_script = repo_root / "apps" / "remote_satellite" / "daemon.py"
+    if not daemon_script.exists():
+        raise HTTPException(status_code=500, detail="Satellite daemon script not found")
+
+    # Build the command
+    import sys
+
+    cmd = [
+        sys.executable,
+        str(daemon_script),
+        "--hub-ws-url",
+        ws_url,
+        "--device-token",
+        body.device_token,
+    ]
+
+    # Launch as a background process
+    pid_file = repo_root / f".marvain-satellite-{device_id}.pid"
+    log_file = repo_root / f".marvain-satellite-{device_id}.log"
+
+    # Check if already running
+    if pid_file.exists():
+        try:
+            old_pid = int(pid_file.read_text().strip())
+            # Check if process is still alive
+            os.kill(old_pid, 0)
+            return {
+                "status": "already_running",
+                "pid": old_pid,
+                "device_id": device_id,
+                "message": f"Satellite daemon already running (PID {old_pid})",
+            }
+        except (ProcessLookupError, ValueError, OSError):
+            pid_file.unlink(missing_ok=True)
+
+    try:
+        with open(log_file, "w") as lf:
+            proc = _sp.Popen(
+                cmd,
+                stdin=_sp.DEVNULL,
+                stdout=lf,
+                stderr=_sp.STDOUT,
+                start_new_session=True,
+            )
+        pid_file.write_text(str(proc.pid))
+        logger.info(f"Launched satellite daemon for device {device_id} (PID {proc.pid})")
+    except Exception as e:
+        logger.error(f"Failed to launch satellite daemon: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to launch satellite: {e}")
+
+    return {
+        "status": "launched",
+        "pid": proc.pid,
+        "device_id": device_id,
+        "device_name": rows[0].get("name", ""),
+        "log_file": str(log_file),
+        "message": f"Satellite daemon started (PID {proc.pid})",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Agents API endpoints (session-based auth for GUI)
 # ---------------------------------------------------------------------------

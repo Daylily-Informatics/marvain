@@ -321,64 +321,20 @@ function showDeviceTokenResult(result) {
         </div>
       </div>
 
-      <div class="form-group" style="margin-top: 1.5rem;">
-        <label>Quick Start Command</label>
-        <p class="text-muted" style="margin-bottom: 0.5rem;">Run this on the device to connect it to the hub:</p>
-        <div class="input-group">
-          <textarea class="form-control" readonly id="device-command-input" rows="2"
-                    style="font-family: monospace; font-size: 0.85rem; resize: none;">python apps/remote_satellite/daemon.py --hub-ws-url {{ ws_url }} --device-token ${result.token}</textarea>
-          <button type="button" class="btn btn-outline" onclick="copyToClipboard('device-command-input', 'Command')">
-            <i class="fas fa-copy"></i> Copy
-          </button>
-        </div>
+      <div style="margin-top: 1.5rem; display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+        <button type="button" class="btn btn-primary" id="launch-satellite-btn"
+                onclick="launchSatellite('${result.device_id}', '${result.token}')"
+                style="font-size: 1rem; padding: 0.75rem 1.5rem;">
+          <i class="fas fa-rocket"></i> Launch Satellite
+        </button>
+        <span id="launch-satellite-status" style="color: var(--color-gray-300); font-size: 0.9rem;"></span>
+      </div>
+      <div id="launch-satellite-info" style="display: none; margin-top: 1rem; background: var(--color-gray-700); border-radius: var(--radius-md); padding: var(--spacing-md);">
       </div>
 
-      <details style="margin-top: 1.5rem; background: var(--color-gray-700); border-radius: var(--radius-md); padding: 0;">
-        <summary style="cursor: pointer; color: var(--color-highlight); font-weight: 600; padding: var(--spacing-md); list-style: none; display: flex; align-items: center; gap: 0.5rem;">
-          <i class="fas fa-rocket"></i> Launch Agent Worker — Full Setup Guide
-          <i class="fas fa-chevron-down" style="margin-left: auto; font-size: 0.75rem;"></i>
-        </summary>
-        <div style="padding: 0 var(--spacing-md) var(--spacing-md);">
-          <h4 style="margin-bottom: var(--spacing-sm); margin-top: var(--spacing-sm);">1. Prerequisites</h4>
-          <ul style="margin-left: var(--spacing-lg); margin-bottom: var(--spacing-md); color: var(--color-gray-300);">
-            <li>Python 3.11+ with the <code>marvain</code> conda environment</li>
-            <li>LiveKit and OpenAI credentials configured in AWS Secrets Manager</li>
-            <li>Network access to the Hub WebSocket endpoint</li>
-          </ul>
-
-          <h4 style="margin-bottom: var(--spacing-sm);">2. Activate Environment</h4>
-          <div class="input-group" style="margin-bottom: var(--spacing-md);">
-            <textarea class="form-control" readonly id="device-env-cmd" rows="2"
-                      style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; resize: none; background: var(--color-gray-900);">cd /path/to/marvain
-source marvain_activate</textarea>
-            <button type="button" class="btn btn-outline" onclick="copyToClipboard('device-env-cmd', 'Env command')">
-              <i class="fas fa-copy"></i>
-            </button>
-          </div>
-
-          <h4 style="margin-bottom: var(--spacing-sm);">3. Start the Satellite Daemon</h4>
-          <div class="input-group" style="margin-bottom: var(--spacing-md);">
-            <textarea class="form-control" readonly id="device-daemon-cmd" rows="3"
-                      style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; resize: none; background: var(--color-gray-900);">python apps/remote_satellite/daemon.py \\
-  --hub-ws-url {{ ws_url }} \\
-  --device-token ${result.token}</textarea>
-            <button type="button" class="btn btn-outline" onclick="copyToClipboard('device-daemon-cmd', 'Daemon command')">
-              <i class="fas fa-copy"></i>
-            </button>
-          </div>
-
-          <h4 style="margin-bottom: var(--spacing-sm);">4. Verify Connection</h4>
-          <p style="color: var(--color-gray-300); margin-bottom: var(--spacing-sm);">
-            Once the daemon connects, the device status will change to
-            <span class="badge badge-success" style="font-size: 0.75rem;"><i class="fas fa-circle"></i> Online</span>
-            on this page. You can also use the <strong>Ping Device</strong> button on the device detail page to confirm connectivity.
-          </p>
-        </div>
-      </details>
-
       <div style="margin-top: 1.5rem; text-align: right;">
-        <button type="button" class="btn btn-primary" onclick="dismissTokenResult()">
-          <i class="fas fa-check"></i> Done - I've Copied the Token
+        <button type="button" class="btn btn-outline" onclick="dismissTokenResult()">
+          <i class="fas fa-check"></i> Done
         </button>
       </div>
     </div>
@@ -394,6 +350,51 @@ function dismissTokenResult() {
     container.remove();
   }
   location.reload();
+}
+
+async function launchSatellite(deviceId, deviceToken) {
+  const btn = document.getElementById('launch-satellite-btn');
+  const status = document.getElementById('launch-satellite-status');
+  const info = document.getElementById('launch-satellite-info');
+
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Launching…';
+  status.textContent = '';
+
+  try {
+    const resp = await fetch(`/api/devices/${deviceId}/launch-satellite`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({device_token: deviceToken}),
+    });
+    const data = await resp.json();
+
+    if (!resp.ok) {
+      throw new Error(data.detail || 'Launch failed');
+    }
+
+    if (data.status === 'already_running') {
+      btn.innerHTML = '<i class="fas fa-circle" style="color: var(--color-success);"></i> Already Running';
+      btn.classList.remove('btn-primary');
+      btn.classList.add('btn-outline');
+      status.innerHTML = `PID <strong>${data.pid}</strong>`;
+      Marvain.showToast('info', 'Already Running', data.message);
+    } else {
+      btn.innerHTML = '<i class="fas fa-check-circle"></i> Satellite Running';
+      btn.classList.remove('btn-primary');
+      btn.classList.add('btn-outline');
+      btn.style.borderColor = 'var(--color-success)';
+      btn.style.color = 'var(--color-success)';
+      status.innerHTML = `PID <strong>${data.pid}</strong>`;
+      info.style.display = 'block';
+      info.innerHTML = `<p style="margin:0; color: var(--color-gray-300); font-size: 0.85rem;"><i class="fas fa-file-alt"></i> Log: <code>${data.log_file}</code></p>`;
+      Marvain.showToast('success', 'Launched', data.message);
+    }
+  } catch (err) {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-rocket"></i> Launch Satellite';
+    Marvain.showToast('error', 'Launch Failed', err.message);
+  }
 }
 
 function copyToClipboard(inputId, label) {
