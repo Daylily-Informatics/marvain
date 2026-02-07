@@ -142,7 +142,24 @@ source marvain_activate</code></pre>
   --device-token YOUR_DEVICE_TOKEN</code></pre>
 
         <h4 style="margin-bottom: var(--spacing-sm);">4. Verify</h4>
-        <p style="color: var(--color-gray-300);">Once the daemon connects, this device's status will change to <span class="badge badge-success" style="font-size: 0.75rem;"><i class="fas fa-circle"></i> Online</span> and the <strong>Ping Device</strong> button above will receive a response.</p>
+        <p style="color: var(--color-gray-300); margin-bottom: var(--spacing-md);">Once the daemon connects, this device's status will change to <span class="badge badge-success" style="font-size: 0.75rem;"><i class="fas fa-circle"></i> Online</span> and the <strong>Ping Device</strong> button above will receive a response.</p>
+
+        <h4 style="margin-bottom: var(--spacing-sm);">5. Next Steps — Using Your Device</h4>
+        <p style="color: var(--color-gray-300); margin-bottom: var(--spacing-sm);">
+          Devices are satellite nodes in the Marvain agent hub. Once online, a device can:
+        </p>
+        <ul style="margin-left: var(--spacing-lg); margin-bottom: var(--spacing-md); color: var(--color-gray-300);">
+          <li><strong>Receive commands</strong> — The hub sends real-time instructions via WebSocket (e.g., play audio, capture data)</li>
+          <li><strong>Emit events</strong> — The daemon pushes events (sensor data, voice transcripts, presence changes) back to the hub</li>
+          <li><strong>Execute actions</strong> — Approved actions on the <a href="/actions" style="color: var(--color-highlight);">Actions</a> page can target this device</li>
+        </ul>
+        <p style="color: var(--color-gray-300); margin-bottom: var(--spacing-sm);"><strong>Explore further:</strong></p>
+        <ul style="margin-left: var(--spacing-lg); color: var(--color-gray-300);">
+          <li><a href="/events" style="color: var(--color-highlight);"><i class="fas fa-bolt"></i> Events</a> — View events emitted by this device</li>
+          <li><a href="/actions" style="color: var(--color-highlight);"><i class="fas fa-cogs"></i> Actions</a> — Create actions that target this device</li>
+          <li><a href="/memories" style="color: var(--color-highlight);"><i class="fas fa-brain"></i> Memories</a> — Browse memories derived from device interactions</li>
+          <li><a href="/livekit-test" style="color: var(--color-highlight);"><i class="fas fa-microphone"></i> LiveKit Test</a> — Test voice interaction with the agent</li>
+        </ul>
       </div>
     </details>
     {% endif %}
