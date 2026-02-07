@@ -67,8 +67,8 @@ python daemon.py --config-file config.yaml
 ## Getting a Device Token
 
 1. Log into the Marvain Hub GUI
-2. Navigate to **Remotes** (or **Devices**)
-3. Click **Add Remote**
+2. Navigate to **Devices**
+3. Click **Register Device**
 4. Copy the generated device token
 
 **Important**: The token is shown only once. Store it securely.

@@ -7,7 +7,7 @@ Correct: agent_memberships (used by API + websocket permission checks).
 
 Incorrect/legacy: memberships (used by several GUI routes and admin operations like revoke/delete).
 
-If you don’t fix this first, “devices/remotes/actions/memories” will always feel randomly broken depending on which endpoint you hit.
+If you don’t fix this first, “devices/actions/memories” will always feel randomly broken depending on which endpoint you hit.
 
 Requirements
 
@@ -26,7 +26,7 @@ Either drop the memberships table or rename it to legacy_memberships to avoid fu
 
 Acceptance criteria
 
-GUI pages that mutate data (revoke device, delete memory, approve action, delete remote) work for a real logged-in member/admin using only agent_memberships.
+GUI pages that mutate data (revoke device, delete memory, approve action) work for a real logged-in member/admin using only agent_memberships.
 
 No endpoint references memberships anymore.
 
@@ -136,80 +136,16 @@ Revoking a device immediately blocks it from posting events and from WS hello.
 
 Heartbeat updates last-seen and the GUI reflects online/offline without manual refresh (once Spec 5 is done).
 
-Spec 2: Remotes fully functional (as “remote devices”)
-What “Remotes” should mean
+Spec 2: Devices (formerly "Remotes as Devices") -- COMPLETE, legacy removed
 
-A remote is a device that:
+> Status: Complete. The legacy remotes table, GUI page, API endpoints, and all related code
+> have been fully removed from the codebase (2026-02-06). Satellite devices are now managed
+> exclusively through the devices table with metadata.is_remote = true.
 
-is expected to be online sometimes
+The remote satellite daemon (apps/remote_satellite/) authenticates as a device using a device token.
+It connects via WebSocket, sends heartbeats, responds to cmd.ping, and executes device-local actions.
 
-has a location/endpoint identity (hostname, LAN IP, physical place)
-
-exposes capabilities that actions can target (mic, camera, filesystem, GPIO, etc)
-
-Server-side pinging is the wrong abstraction (Lambda often can’t ping, NAT/VPC issues, false negatives). Replace it with “remote heartbeats + command ping”.
-
-Data model
-
-You have two reasonable options. I recommend option A.
-
-Option A (recommended): fold remotes into devices
-
-Remove remotes table entirely eventually.
-
-Represent remote metadata in devices.metadata and devices.capabilities.
-
-Option B (keep remotes table, but link it to a device)
-
-Add remotes.device_id uuid references devices(device_id)
-
-Remote record becomes metadata only.
-
-All comms use the linked device token.
-
-Remote bootstrap flow
-
-When the user adds a remote in the GUI:
-
-Hub creates a device (scopes/capabilities appropriate for remotes).
-
-Hub returns a device token.
-
-User installs/runs a remote daemon using that token.
-
-Remote daemon
-
-Create a new app: apps/remote_satellite/ (Python).
-
-Responsibilities:
-
-Connect to Hub WebSocket using the device token.
-
-Send hello and periodic heartbeat (every 15s or 30s).
-
-Respond to cmd.ping.
-
-Execute device-local tools only when instructed via an approved action (see Actions spec).
-
-This is your “remote runtime”.
-
-Remote ping
-
-Redefine “Ping” as:
-
-server sends cmd.ping
-
-remote replies cmd.pong
-
-Hub updates last_seen and status=online
-
-Acceptance criteria
-
-Adding a remote produces a usable install snippet and token.
-
-Remote shows “online” when daemon is connected, “offline” after TTL.
-
-Ping works across NAT/Internet because it’s over the existing authenticated channel.
+All "remote" functionality is now handled through the Devices page and the standard device API.
 
 Spec 3: Actions fully functional
 Current gaps that must be closed
@@ -298,7 +234,7 @@ payload: {action_id, kind, ok, result, error}
 
 Tools that make the system actually useful
 
-Minimum set to make “devices/remotes/actions” coherent:
+Minimum set to make “devices/actions” coherent:
 
 send_message
 
@@ -312,7 +248,7 @@ payload: { device_id, command, args }
 
 Implementation: send WS cmd.* to that device and await response (with timeout).
 
-This is how Actions can operate on Remotes safely.
+This is how Actions can operate on devices safely.
 
 http_request keep allow-list restriction.
 
@@ -324,7 +260,7 @@ From GUI: approve an action and it executes.
 
 GUI shows action results (result/error).
 
-A device_command action can ping a remote and store the result.
+A device_command action can ping a device and store the result.
 
 Spec 4: Core agent running + full memories
 
@@ -472,7 +408,7 @@ Acceptance criteria
 
 Actions page updates without manual refresh.
 
-Remotes/devices online state updates without polling.
+Devices online state updates without polling.
 
 Repository requirements (so you can actually run all this)
 
@@ -522,9 +458,9 @@ your browser (for the LiveKit test page)
 
 Do this next:
 
-Implement Spec 0 (membership + users schema fix) first. Until memberships is gone from code, devices/remotes/actions will keep failing in inconsistent ways.
+Implement Spec 0 (membership + users schema fix) first. Until memberships is gone from code, devices/actions will keep failing in inconsistent ways.
 
-Pick Remotes model: I recommend “remote == device” and deleting server-side pinging. Implement remote daemon skeleton and WS ping.
+Remotes model: Completed -- “remote == device” with server-side pinging removed. Remote daemon implemented in apps/remote_satellite/.
 
 Make action approval enqueue from the GUI endpoints and add result/error columns to actions so you can see outcomes.
 

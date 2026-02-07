@@ -10,13 +10,13 @@
 
 <!-- Quick Stats -->
 <div class="grid grid-4 mb-lg">
-  <a href="{{ url_for('gui_remotes') }}" class="stat-card">
-    <div class="card-icon {% if remotes_online > 0 %}success{% else %}warning{% endif %}">
-      <i class="fas fa-satellite-dish"></i>
+  <a href="{{ url_for('gui_devices') }}" class="stat-card">
+    <div class="card-icon info">
+      <i class="fas fa-microchip"></i>
     </div>
     <div class="stat-content">
-      <div class="stat-value">{{ remotes_online }}/{{ remotes_total }}</div>
-      <div class="stat-label">Remotes Online</div>
+      <div class="stat-value">—</div>
+      <div class="stat-label">Devices</div>
     </div>
   </a>
   
@@ -53,35 +53,18 @@
 
 <!-- Two Column Layout -->
 <div class="grid grid-2">
-  <!-- Remotes Status -->
+  <!-- Devices -->
   <div class="card">
     <div class="card-header">
-      <h3 class="card-title"><i class="fas fa-network-wired"></i> Remote Satellites</h3>
-      <a href="{{ url_for('gui_remotes') }}" class="btn btn-outline btn-sm">View All</a>
+      <h3 class="card-title"><i class="fas fa-microchip"></i> Devices</h3>
+      <a href="{{ url_for('gui_devices') }}" class="btn btn-outline btn-sm">View All</a>
     </div>
     <div class="card-body">
-      {% if remotes %}
-        <div style="display: flex; flex-direction: column; gap: var(--spacing-sm);">
-          {% for remote in remotes[:5] %}
-          <div style="display: flex; align-items: center; justify-content: space-between; padding: var(--spacing-sm); background: var(--color-gray-700); border-radius: var(--radius-sm);">
-            <div style="display: flex; align-items: center; gap: var(--spacing-sm);">
-              <span class="status-dot {{ remote.status }}"></span>
-              <span>{{ remote.name }}</span>
-              <code class="text-xs text-muted">{{ remote.address }}</code>
-            </div>
-            <span class="badge badge-{% if remote.status == 'online' %}success{% elif remote.status == 'hibernate' %}warning{% else %}error{% endif %}">
-              {{ remote.status }}
-            </span>
-          </div>
-          {% endfor %}
-        </div>
-      {% else %}
-        <div class="empty-state">
-          <div class="empty-state-icon"><i class="fas fa-satellite"></i></div>
-          <p>No remotes connected yet</p>
-          <a href="{{ url_for('gui_remotes') }}" class="btn btn-primary btn-sm">Add Remote</a>
-        </div>
-      {% endif %}
+      <div class="empty-state">
+        <div class="empty-state-icon"><i class="fas fa-microchip"></i></div>
+        <p>Manage your devices</p>
+        <a href="{{ url_for('gui_devices') }}" class="btn btn-primary btn-sm">View Devices</a>
+      </div>
     </div>
   </div>
   
@@ -127,8 +110,8 @@
   </div>
   <div class="card-body">
     <div style="display: flex; gap: var(--spacing-md); flex-wrap: wrap;">
-      <a href="{{ url_for('gui_remotes') }}?action=add" class="btn btn-outline">
-        <i class="fas fa-plus"></i> Add Remote
+      <a href="{{ url_for('gui_devices') }}" class="btn btn-outline">
+        <i class="fas fa-microchip"></i> Manage Devices
       </a>
       <a href="{{ url_for('gui_livekit_test') }}" class="btn btn-outline">
         <i class="fas fa-video"></i> LiveKit Test
