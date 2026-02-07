@@ -1902,9 +1902,9 @@ def gui_people(request: Request) -> Response:
                 SELECT consent_type, expires_at
                 FROM consent_grants
                 WHERE person_id = :person_id::uuid AND revoked_at IS NULL
-                  AND (expires_at IS NULL OR expires_at > :now)
+                  AND (expires_at IS NULL OR expires_at > :now::timestamptz)
             """,
-                {"person_id": person_id, "now": datetime.now(timezone.utc)},
+                {"person_id": person_id, "now": datetime.now(timezone.utc).isoformat()},
             )
 
             voice_consent = None

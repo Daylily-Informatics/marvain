@@ -333,6 +333,49 @@ function showDeviceTokenResult(result) {
         </div>
       </div>
 
+      <details style="margin-top: 1.5rem; background: var(--color-gray-700); border-radius: var(--radius-md); padding: 0;">
+        <summary style="cursor: pointer; color: var(--color-highlight); font-weight: 600; padding: var(--spacing-md); list-style: none; display: flex; align-items: center; gap: 0.5rem;">
+          <i class="fas fa-rocket"></i> Launch Agent Worker — Full Setup Guide
+          <i class="fas fa-chevron-down" style="margin-left: auto; font-size: 0.75rem;"></i>
+        </summary>
+        <div style="padding: 0 var(--spacing-md) var(--spacing-md);">
+          <h4 style="margin-bottom: var(--spacing-sm); margin-top: var(--spacing-sm);">1. Prerequisites</h4>
+          <ul style="margin-left: var(--spacing-lg); margin-bottom: var(--spacing-md); color: var(--color-gray-300);">
+            <li>Python 3.11+ with the <code>marvain</code> conda environment</li>
+            <li>LiveKit and OpenAI credentials configured in AWS Secrets Manager</li>
+            <li>Network access to the Hub WebSocket endpoint</li>
+          </ul>
+
+          <h4 style="margin-bottom: var(--spacing-sm);">2. Activate Environment</h4>
+          <div class="input-group" style="margin-bottom: var(--spacing-md);">
+            <textarea class="form-control" readonly id="device-env-cmd" rows="2"
+                      style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; resize: none; background: var(--color-gray-900);">cd /path/to/marvain
+source marvain_activate</textarea>
+            <button type="button" class="btn btn-outline" onclick="copyToClipboard('device-env-cmd', 'Env command')">
+              <i class="fas fa-copy"></i>
+            </button>
+          </div>
+
+          <h4 style="margin-bottom: var(--spacing-sm);">3. Start the Satellite Daemon</h4>
+          <div class="input-group" style="margin-bottom: var(--spacing-md);">
+            <textarea class="form-control" readonly id="device-daemon-cmd" rows="3"
+                      style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; resize: none; background: var(--color-gray-900);">python apps/remote_satellite/daemon.py \\
+  --hub-ws-url {{ ws_url }} \\
+  --device-token ${result.token}</textarea>
+            <button type="button" class="btn btn-outline" onclick="copyToClipboard('device-daemon-cmd', 'Daemon command')">
+              <i class="fas fa-copy"></i>
+            </button>
+          </div>
+
+          <h4 style="margin-bottom: var(--spacing-sm);">4. Verify Connection</h4>
+          <p style="color: var(--color-gray-300); margin-bottom: var(--spacing-sm);">
+            Once the daemon connects, the device status will change to
+            <span class="badge badge-success" style="font-size: 0.75rem;"><i class="fas fa-circle"></i> Online</span>
+            on this page. You can also use the <strong>Ping Device</strong> button on the device detail page to confirm connectivity.
+          </p>
+        </div>
+      </details>
+
       <div style="margin-top: 1.5rem; text-align: right;">
         <button type="button" class="btn btn-primary" onclick="dismissTokenResult()">
           <i class="fas fa-check"></i> Done - I've Copied the Token
