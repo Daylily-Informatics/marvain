@@ -601,6 +601,42 @@ def gui_home(request: Request) -> Response:
         for a in agents
     ]
 
+    # Get devices count and recent devices for the user's agents
+    devices_count = 0
+    devices_data: list[dict] = []
+    agent_ids = [str(a.agent_id) for a in agents]
+    if agent_ids:
+        try:
+            placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+            params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+            count_rows = db.query(
+                f"SELECT COUNT(*) as cnt FROM devices WHERE agent_id::TEXT IN ({placeholders})",
+                params,
+            )
+            if count_rows:
+                devices_count = count_rows[0].get("cnt", 0) or 0
+
+            dev_rows = db.query(
+                f"""SELECT d.device_id::TEXT as device_id, d.name,
+                           a.name as agent_name, d.revoked_at
+                    FROM devices d
+                    JOIN agents a ON a.agent_id = d.agent_id
+                    WHERE d.agent_id::TEXT IN ({placeholders})
+                    ORDER BY d.created_at DESC LIMIT 5""",
+                params,
+            )
+            for row in dev_rows:
+                devices_data.append(
+                    {
+                        "device_id": str(row.get("device_id", "")),
+                        "name": row.get("name") or "Unnamed Device",
+                        "agent_name": row.get("agent_name", ""),
+                        "revoked": row.get("revoked_at") is not None,
+                    }
+                )
+        except Exception as e:
+            logger.warning(f"Failed to fetch devices for home: {e}")
+
     return templates.TemplateResponse(
         request,
         "home.html",
@@ -612,6 +648,8 @@ def gui_home(request: Request) -> Response:
             "agents_count": len(agents_data),
             "spaces_count": len(spaces),
             "pending_actions": pending_actions,
+            "devices_count": devices_count,
+            "devices": devices_data,
             **_get_ws_context(request),
         },
     )

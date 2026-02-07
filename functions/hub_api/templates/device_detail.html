@@ -111,7 +111,7 @@
     <div class="form-group">
       <label>Connection Command</label>
       <div class="input-group">
-        <textarea class="form-control" readonly id="connect-command" rows="2" 
+        <textarea class="form-control" readonly id="connect-command" rows="2"
                   style="font-family: monospace; font-size: 0.85rem; resize: none;">python apps/remote_satellite/daemon.py --hub-ws-url {{ ws_url or 'wss://YOUR_WS_URL' }} --device-token YOUR_DEVICE_TOKEN</textarea>
         <button type="button" class="btn btn-outline" onclick="copyText(document.getElementById('connect-command').value, 'Command')">
           <i class="fas fa-copy"></i> Copy
@@ -119,6 +119,32 @@
       </div>
       <small class="text-muted">Note: You need the device token from when the device was registered. Tokens are only shown once.</small>
     </div>
+
+    <details style="margin-top: var(--spacing-lg);">
+      <summary style="cursor: pointer; color: var(--color-highlight); font-weight: 500; padding: var(--spacing-sm) 0;">
+        <i class="fas fa-book-open"></i> Getting Started — Full Setup Guide
+      </summary>
+      <div style="margin-top: var(--spacing-md); padding: var(--spacing-md); background: var(--color-gray-700); border-radius: var(--radius-md);">
+        <h4 style="margin-bottom: var(--spacing-sm);">1. Prerequisites</h4>
+        <ul style="margin-left: var(--spacing-lg); margin-bottom: var(--spacing-md); color: var(--color-gray-300);">
+          <li>Python 3.11+ with the <code>marvain</code> conda environment activated</li>
+          <li>The device token (shown once at registration — copy it then)</li>
+          <li>Network access to the Hub WebSocket endpoint</li>
+        </ul>
+
+        <h4 style="margin-bottom: var(--spacing-sm);">2. Activate Environment</h4>
+        <pre style="background: var(--color-gray-900); padding: var(--spacing-sm); border-radius: var(--radius-sm); font-size: 0.85rem; overflow-x: auto; margin-bottom: var(--spacing-md);"><code>cd /path/to/marvain
+source marvain_activate</code></pre>
+
+        <h4 style="margin-bottom: var(--spacing-sm);">3. Run the Satellite Daemon</h4>
+        <pre style="background: var(--color-gray-900); padding: var(--spacing-sm); border-radius: var(--radius-sm); font-size: 0.85rem; overflow-x: auto; margin-bottom: var(--spacing-md);"><code>python apps/remote_satellite/daemon.py \
+  --hub-ws-url {{ ws_url or 'wss://YOUR_WS_URL' }} \
+  --device-token YOUR_DEVICE_TOKEN</code></pre>
+
+        <h4 style="margin-bottom: var(--spacing-sm);">4. Verify</h4>
+        <p style="color: var(--color-gray-300);">Once the daemon connects, this device's status will change to <span class="badge badge-success" style="font-size: 0.75rem;"><i class="fas fa-circle"></i> Online</span> and the <strong>Ping Device</strong> button above will receive a response.</p>
+      </div>
+    </details>
     {% endif %}
   </div>
 </div>
