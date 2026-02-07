@@ -259,7 +259,9 @@ Visit `http://localhost:8084/` — you'll be redirected to Cognito for login.
 
 ## Run the realtime agent worker (local)
 
-This repo does not ship a full satellite app yet; it ships a worker skeleton.
+The agent worker is a fully functional LiveKit voice agent that connects to OpenAI's
+Realtime API, ingests transcripts to the Hub, and hydrates conversation context
+(recent events + recalled memories) on session start.
 
 ```bash
 cd apps/agent_worker
