@@ -232,6 +232,10 @@
       <button type="button" class="modal-close" onclick="hideCreateActionModal()">&times;</button>
     </div>
     <div class="modal-body">
+      <div style="margin-bottom:1rem;padding:0.75rem 1rem;background:var(--color-gray-700);border-radius:var(--radius-md);display:flex;align-items:center;gap:0.75rem;">
+        <i class="fas fa-question-circle" style="color:var(--color-highlight);font-size:1.1rem;"></i>
+        <span style="font-size:0.875rem;">Need help with payloads and action kinds? <a href="{{ url_for('gui_actions_guide') }}" style="color:var(--color-highlight);text-decoration:underline;">Read the Actions Guide</a></span>
+      </div>
       <form id="create-action-form" onsubmit="submitCreateAction(event)">
         <div class="form-group">
           <label for="action-agent">Agent <span class="required">*</span></label>
