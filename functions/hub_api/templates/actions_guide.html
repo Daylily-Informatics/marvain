@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+
+{% block title %}Actions Guide - Marvain{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title"><i class="fas fa-book"></i> Actions Guide</h1>
+    <p class="text-muted">How to configure and use Marvain actions</p>
+  </div>
+  <div class="page-actions">
+    <a href="{{ url_for('gui_actions') }}" class="btn btn-outline">
+      <i class="fas fa-arrow-left"></i> Back to Actions
+    </a>
+  </div>
+</div>
+
+<!-- Overview -->
+<div class="card mb-lg">
+  <div class="card-header"><h3 class="card-title"><i class="fas fa-info-circle"></i> Overview</h3></div>
+  <div class="card-body">
+    <p>Actions are tasks that an agent can propose or that you create manually. Each action goes through a lifecycle:</p>
+    <p>
+      <span class="badge badge-warning">proposed</span> →
+      <span class="badge badge-info">approved</span> →
+      <span class="badge badge-info">executing</span> →
+      <span class="badge badge-success">executed</span>
+    </p>
+    <p>Actions can also be <span class="badge badge-error">rejected</span> or <span class="badge badge-error">failed</span>.</p>
+    <p>When creating an action you must select an <strong>Agent</strong>, an <strong>Action Kind</strong>, and provide a valid <strong>JSON payload</strong>. Optionally scope-gate the action and auto-approve it.</p>
+  </div>
+</div>
+
+<!-- Action Kinds -->
+<div class="card mb-lg">
+  <div class="card-header"><h3 class="card-title"><i class="fas fa-tags"></i> Action Kinds</h3></div>
+  <div class="card-body">
+
+    <h4 style="margin-top:0;"><code>send_message</code></h4>
+    <p>Send a text message to a space on behalf of the agent.</p>
+    <pre style="background:var(--color-gray-900);padding:1rem;border-radius:var(--radius-md);color:var(--color-gray-200);font-family:'JetBrains Mono',monospace;font-size:0.8125rem;overflow-x:auto;">{
+  "message": "Hello from the action system!",
+  "target": "space"
+}</pre>
+
+    <hr style="border-color:var(--color-gray-600);margin:1.5rem 0;">
+
+    <h4><code>create_memory</code></h4>
+    <p>Create a new memory for the agent. Tier must be one of <code>episodic</code>, <code>semantic</code>, or <code>procedural</code>.</p>
+    <pre style="background:var(--color-gray-900);padding:1rem;border-radius:var(--radius-md);color:var(--color-gray-200);font-family:'JetBrains Mono',monospace;font-size:0.8125rem;overflow-x:auto;">{
+  "content": "User prefers dark mode interfaces.",
+  "tier": "semantic",
+  "tags": ["preference", "ui"]
+}</pre>
+
+    <hr style="border-color:var(--color-gray-600);margin:1.5rem 0;">
+
+    <h4><code>http_request</code></h4>
+    <p>Make an outbound HTTP request. Useful for webhooks and integrations.</p>
+    <pre style="background:var(--color-gray-900);padding:1rem;border-radius:var(--radius-md);color:var(--color-gray-200);font-family:'JetBrains Mono',monospace;font-size:0.8125rem;overflow-x:auto;">{
+  "url": "https://example.com/webhook",
+  "method": "POST",
+  "headers": {"Content-Type": "application/json"},
+  "body": {"event": "action_fired"}
+}</pre>
+
+    <hr style="border-color:var(--color-gray-600);margin:1.5rem 0;">
+
+    <h4><code>device_command</code></h4>
+    <p>Send a command to a connected satellite device. The device must be online and connected via WebSocket. Available device commands:</p>
+    <div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin:0.75rem 0;">
+      <span class="badge badge-info">ping</span>
+      <span class="badge badge-info">status</span>
+      <span class="badge badge-info">echo</span>
+      <span class="badge badge-info">device_status</span>
+      <span class="badge badge-info">capture_photo</span>
+      <span class="badge badge-info">capture_video</span>
+      <span class="badge badge-info">list_cameras</span>
+      <span class="badge badge-info">read_file</span>
+      <span class="badge badge-info">list_directory</span>
+      <span class="badge badge-info">file_info</span>
+      <span class="badge badge-info">shell_command</span>
+    </div>
+    <pre style="background:var(--color-gray-900);padding:1rem;border-radius:var(--radius-md);color:var(--color-gray-200);font-family:'JetBrains Mono',monospace;font-size:0.8125rem;overflow-x:auto;">{
+  "device_id": "&lt;device-uuid&gt;",
+  "command": "device_status",
+  "args": {"include_disk": true}
+}</pre>
+
+    <hr style="border-color:var(--color-gray-600);margin:1.5rem 0;">
+
+    <h4><code>shell_command</code></h4>
+    <p>Execute a read-only shell command on a satellite device. Only safe commands are allowed:</p>
+    <div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin:0.75rem 0;">
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">ls</span>
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">cat</span>
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">head</span>
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">tail</span>
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">grep</span>
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">find</span>
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">ps</span>
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">df</span>
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">du</span>
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">uptime</span>
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">ping</span>
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">uname</span>
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">hostname</span>
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">whoami</span>
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">date</span>
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">env</span>
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">ifconfig</span>
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">netstat</span>
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">free</span>
+      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">dig</span>
+    </div>
+    <pre style="background:var(--color-gray-900);padding:1rem;border-radius:var(--radius-md);color:var(--color-gray-200);font-family:'JetBrains Mono',monospace;font-size:0.8125rem;overflow-x:auto;">{
+  "command": "df -h",
+  "timeout": 30,
+  "working_dir": "/tmp"
+}</pre>
+  </div>
+</div>
+
+<!-- Scopes & Permissions -->
+<div class="card mb-lg">
+  <div class="card-header"><h3 class="card-title"><i class="fas fa-shield-alt"></i> Scopes &amp; Permissions</h3></div>
+  <div class="card-body">
+    <p>Actions can be scope-gated. When <strong>Required Scopes</strong> are set, only devices with matching scopes can execute the action. Common scopes:</p>
+    <div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin:0.75rem 0;">
+      <span class="badge badge-info">events:read</span>
+      <span class="badge badge-info">events:write</span>
+      <span class="badge badge-info">memories:read</span>
+      <span class="badge badge-info">memories:write</span>
+      <span class="badge badge-info">artifacts:write</span>
+      <span class="badge badge-info">presence:write</span>
+    </div>
+    <p>Leave the scopes field empty if the action does not require device-level scope gating.</p>
+    <p>You must have <strong>admin</strong> role on the agent to create actions. Use the <strong>Auto-approve</strong> checkbox to skip the approval step and execute immediately.</p>
+  </div>
+</div>
+{% endblock %}
+
