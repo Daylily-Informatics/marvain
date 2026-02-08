@@ -292,6 +292,7 @@ Resources:
           AUDIT_BUCKET: !Ref AuditBucket
           ARTIFACT_BUCKET: !Ref ArtifactBucket
           ADMIN_SECRET_ARN: !Ref AdminApiKeySecret
+          OPENAI_SECRET_ARN: !Ref OpenAISecret
           LIVEKIT_URL: !Ref LiveKitUrl
           LIVEKIT_SECRET_ARN: !Ref LiveKitSecret
           # Cognito settings
