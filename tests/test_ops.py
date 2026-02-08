@@ -117,6 +117,7 @@ class TestOps(unittest.TestCase):
             mock.patch("marvain_cli.ops._db_outputs", return_value=("db", "sec", "name")),
             mock.patch("marvain_cli.ops._rds_execute", side_effect=fake_rds_execute),
             mock.patch("marvain_cli.ops._eprint"),
+            mock.patch("marvain_cli.ops.save_config_dict") as mock_save,
             contextlib.redirect_stdout(io.StringIO()) as stdout,
         ):
             rc = examples_create(
@@ -136,9 +137,14 @@ class TestOps(unittest.TestCase):
         # Verify membership creation
         self.assertTrue(any("SELECT user_id FROM users" in s for s in captured_sql))
         self.assertTrue(any("INSERT INTO agent_memberships" in s for s in captured_sql))
-        # Verify 3 example memories were seeded
+        # Verify 3 example memories were seeded (without embeddings since no OpenAISecretArn)
         mem_inserts = [s for s in captured_sql if "INSERT INTO memories" in s]
         self.assertEqual(len(mem_inserts), 3)
+        # Verify config bootstrap was updated
+        mock_save.assert_called_once()
+        self.assertEqual(cfg["envs"]["dev"]["bootstrap"]["agent_id"], "aa111111-1111-1111-1111-111111111111")
+        self.assertEqual(cfg["envs"]["dev"]["bootstrap"]["device_name"], "test-dev")
+        self.assertIn("device_token", cfg["envs"]["dev"]["bootstrap"])
         # Verify JSON output
         import json
 
