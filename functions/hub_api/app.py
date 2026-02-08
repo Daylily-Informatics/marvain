@@ -2520,6 +2520,25 @@ def gui_actions(request: Request) -> Response:
     )
 
 
+@app.get("/actions/guide", name="gui_actions_guide")
+def gui_actions_guide(request: Request) -> Response:
+    """Actions guide - detailed documentation on configuring valid actions."""
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/actions/guide")
+
+    return templates.TemplateResponse(
+        request,
+        "actions_guide.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "actions",
+            **_get_ws_context(request),
+        },
+    )
+
+
 class ActionApproveReject(BaseModel):
     reason: str | None = None
 
