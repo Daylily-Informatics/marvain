@@ -1089,6 +1089,26 @@ class TestActionsGui(unittest.TestCase):
         self.assertEqual(data["message"], "Action rejected")
         self.assertEqual(data["status"], "rejected")
 
+    def test_actions_guide_redirects_to_login_when_unauthenticated(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.get("/actions/guide", follow_redirects=False)
+
+        self.assertIn(r.status_code, [302, 307])
+        self.assertIn("/login", r.headers.get("location", ""))
+
+    def test_actions_guide_renders_when_authenticated(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+
+        r = self.client.get("/actions/guide")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Actions Guide", r.text)
+        self.assertIn("send_message", r.text)
+        self.assertIn("device_command", r.text)
+
 
 class TestArtifactsGui(unittest.TestCase):
     """Tests for artifacts GUI routes."""
