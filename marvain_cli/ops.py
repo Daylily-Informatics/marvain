@@ -2414,6 +2414,39 @@ _EXAMPLE_MEMORIES = [
 ]
 
 
+def _generate_embedding_cli(
+    text: str,
+    *,
+    openai_api_key: str,
+    model: str = "text-embedding-3-small",
+) -> list[float] | None:
+    """Generate an embedding vector using the OpenAI API (CLI context).
+
+    Returns None on failure instead of raising, so callers can degrade gracefully.
+    """
+    payload = json.dumps({"model": model, "input": text}).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/embeddings",
+        data=payload,
+        method="POST",
+    )
+    req.add_header("Authorization", f"Bearer {openai_api_key}")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        data = body.get("data") or []
+        if not data:
+            return None
+        emb = data[0].get("embedding")
+        if not isinstance(emb, list):
+            return None
+        return [float(x) for x in emb]
+    except Exception as exc:
+        _eprint(f"  WARNING: Embedding generation failed: {exc}")
+        return None
+
+
 def examples_create(
     ctx: Ctx,
     *,
@@ -2536,31 +2569,75 @@ def examples_create(
     except Exception as exc:
         _eprint(f"  WARNING: Could not auto-create membership: {exc}")
 
-    # 5. Seed example memories
+    # 5. Seed example memories (with embeddings when OpenAI API key available)
     memories_created = 0
     if seed_memories:
+        # Try to get OpenAI API key for embedding generation
+        openai_api_key: str | None = None
+        resources = ctx.cfg.get("envs", {}).get(ctx.env.env, {}).get("resources", {})
+        openai_secret_arn = resources.get("OpenAISecretArn")
+        if openai_secret_arn:
+            try:
+                secret_data = _fetch_secret_json(
+                    openai_secret_arn, ctx.env.aws_profile, ctx.env.aws_region
+                )
+                key = secret_data.get("api_key", "")
+                if key and key != "REPLACE_ME":
+                    openai_api_key = key
+                else:
+                    _eprint("  WARNING: OpenAI API key not configured; seeding without embeddings")
+            except Exception as exc:
+                _eprint(f"  WARNING: Could not fetch OpenAI secret: {exc}")
+        else:
+            _eprint("  HINT: No OpenAISecretArn in config; seeding without embeddings")
+
         _eprint("Seeding example memories...")
         for mem in _EXAMPLE_MEMORIES:
             try:
+                emb_str: str | None = None
+                if openai_api_key:
+                    emb = _generate_embedding_cli(
+                        mem["content"], openai_api_key=openai_api_key
+                    )
+                    if emb:
+                        emb_str = "[" + ",".join(f"{x:.6f}" for x in emb) + "]"
+
+                if emb_str:
+                    sql = (
+                        "INSERT INTO memories (agent_id, space_id, tier, content, embedding)"
+                        " VALUES (CAST(:a AS uuid), CAST(:s AS uuid), :t, :c, CAST(:e AS vector))"
+                    )
+                    params = [
+                        {"name": "a", "value": {"stringValue": agent_id}},
+                        {"name": "s", "value": {"stringValue": space_id}},
+                        {"name": "t", "value": {"stringValue": mem["tier"]}},
+                        {"name": "c", "value": {"stringValue": mem["content"]}},
+                        {"name": "e", "value": {"stringValue": emb_str}},
+                    ]
+                else:
+                    sql = (
+                        "INSERT INTO memories (agent_id, space_id, tier, content)"
+                        " VALUES (CAST(:a AS uuid), CAST(:s AS uuid), :t, :c)"
+                    )
+                    params = [
+                        {"name": "a", "value": {"stringValue": agent_id}},
+                        {"name": "s", "value": {"stringValue": space_id}},
+                        {"name": "t", "value": {"stringValue": mem["tier"]}},
+                        {"name": "c", "value": {"stringValue": mem["content"]}},
+                    ]
+
                 _rds_execute(
                     ctx,
                     resource_arn=resource_arn,
                     secret_arn=secret_arn,
                     db_name=db_name,
-                    sql=(
-                        "INSERT INTO memories (agent_id, space_id, tier, content)"
-                        " VALUES (CAST(:a AS uuid), CAST(:s AS uuid), :t, :c)"
-                    ),
-                    parameters=[
-                        {"name": "a", "value": {"stringValue": agent_id}},
-                        {"name": "s", "value": {"stringValue": space_id}},
-                        {"name": "t", "value": {"stringValue": mem["tier"]}},
-                        {"name": "c", "value": {"stringValue": mem["content"]}},
-                    ],
+                    sql=sql,
+                    parameters=params,
                     dry_run=dry_run,
                 )
                 memories_created += 1
-                _eprint(f"  [{mem['tier']}] {mem['content'][:60]}...")
+                marker = " \u2713 embedding" if emb_str else ""
+                _eprint(f"  [{mem['tier']}] {mem['content'][:60]}...{marker}")
             except Exception as exc:
                 _eprint(f"  WARNING: Failed to create {mem['tier']} memory: {exc}")
 
@@ -2578,9 +2655,25 @@ def examples_create(
     }
     print(json.dumps(result, indent=2, sort_keys=True))
 
+    # 7. Update config bootstrap section
+    if not dry_run:
+        envs = ctx.cfg.get("envs")
+        if isinstance(envs, dict):
+            env_cfg = envs.get(ctx.env.env)
+            if isinstance(env_cfg, dict):
+                env_cfg["bootstrap"] = {
+                    "agent_id": agent_id,
+                    "space_id": space_id,
+                    "device_id": device_id,
+                    "device_name": d_name,
+                    "device_token": token,
+                }
+                save_config_dict(ctx.config_path, ctx.cfg)
+                _eprint(f"Updated config bootstrap block: {ctx.config_path}")
+
     _eprint("\n--- Next steps ---")
-    _eprint(f"1. Start the agent worker:  marvain agent start")
-    _eprint(f"2. Open GUI:                marvain gui start --no-https")
+    _eprint("1. Start the agent worker:  marvain agent start")
+    _eprint("2. Open GUI:                marvain gui start --no-https")
     _eprint(f"3. Navigate to agent:       http://localhost:8084/agents/{agent_id}")
     _eprint(f"4. Test voice interaction:   http://localhost:8084/livekit-test?space_id={space_id}")
     if not membership_created:
