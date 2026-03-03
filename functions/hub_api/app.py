@@ -3198,6 +3198,11 @@ def gui_actions(request: Request) -> Response:
             }
         )
 
+    # Merge registered tool names so new tools appear even before any actions use them.
+    from agent_hub.tools.registry import get_registry as _get_tool_registry
+
+    action_kinds_set.update(t.name for t in _get_tool_registry().list_tools())
+
     return templates.TemplateResponse(
         request,
         "actions.html",
@@ -3232,6 +3237,49 @@ def gui_actions_guide(request: Request) -> Response:
             **_get_ws_context(request),
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Tools (Tool Registry Catalog)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/tools", name="gui_tools")
+def gui_tools(request: Request) -> Response:
+    """Tool catalog - list all registered tools."""
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/tools")
+
+    from agent_hub.tools.registry import get_registry
+
+    registry = get_registry()
+    tools_data = [t.to_dict() for t in registry.list_tools()]
+
+    return templates.TemplateResponse(
+        request,
+        "tools.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "tools",
+            "tools": tools_data,
+            **_get_ws_context(request),
+        },
+    )
+
+
+@app.get("/api/tools", name="api_gui_tools")
+def api_gui_tools(request: Request) -> JSONResponse:
+    """Return all registered tools as JSON (GUI-authenticated)."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    from agent_hub.tools.registry import get_registry
+
+    registry = get_registry()
+    return JSONResponse({"tools": [t.to_dict() for t in registry.list_tools()]})
 
 
 class ActionApproveReject(BaseModel):
