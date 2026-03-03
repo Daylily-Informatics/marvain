@@ -8,8 +8,8 @@ Adapted from lsmc-hub patterns.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
@@ -18,6 +18,9 @@ if TYPE_CHECKING:
     from agent_hub.config import HubConfig
 
 logger = logging.getLogger(__name__)
+
+_daylily_jwks_cache: Any | None = None
+_daylily_jwks_cache_key: tuple[str, str] | None = None
 
 
 class CognitoAuthError(Exception):
@@ -43,37 +46,21 @@ class CognitoUserInfo:
         return self.name or self.email or self.sub
 
 
-class JWKSCache:
-    """Cache for Cognito JWKS (JSON Web Key Set)."""
+def _get_daylily_jwks_cache(cfg: HubConfig):
+    """Get a reusable daylily-cognito JWKS cache for the configured pool."""
+    global _daylily_jwks_cache, _daylily_jwks_cache_key
 
-    def __init__(self, ttl_seconds: int = 3600):
-        self._jwks: dict[str, Any] | None = None
-        self._fetched_at: float = 0
-        self._ttl = ttl_seconds
+    region = str(cfg.cognito_region or "").strip()
+    pool_id = str(cfg.cognito_user_pool_id or "").strip()
+    cache_key = (region, pool_id)
 
-    def _is_expired(self) -> bool:
-        return time.time() - self._fetched_at > self._ttl
+    if _daylily_jwks_cache is None or _daylily_jwks_cache_key != cache_key:
+        from daylily_cognito.jwks import JWKSCache
 
-    async def get_jwks(self, jwks_url: str) -> dict[str, Any]:
-        """Get JWKS, fetching from Cognito if expired or not cached."""
-        if self._jwks is None or self._is_expired():
-            await self._fetch_jwks(jwks_url)
-        return self._jwks  # type: ignore
+        _daylily_jwks_cache = JWKSCache(region, pool_id)
+        _daylily_jwks_cache_key = cache_key
 
-    async def _fetch_jwks(self, jwks_url: str) -> None:
-        """Fetch JWKS from Cognito."""
-        import httpx
-
-        async with httpx.AsyncClient() as client:
-            response = await client.get(jwks_url)
-            response.raise_for_status()
-            self._jwks = response.json()
-            self._fetched_at = time.time()
-            logger.debug(f"Fetched JWKS from {jwks_url}")
-
-
-# Global JWKS cache instance
-_jwks_cache = JWKSCache()
+    return _daylily_jwks_cache
 
 
 def build_login_url(cfg: HubConfig, state: str | None = None) -> str:
@@ -192,55 +179,31 @@ async def validate_id_token(cfg: HubConfig, id_token: str) -> dict[str, Any]:
     Raises:
         CognitoAuthError: If token validation fails
     """
-    from jose import JWTError, jwt
-    from jose.exceptions import ExpiredSignatureError
-
-    if not cfg.cognito_jwks_url or not cfg.cognito_issuer or not cfg.cognito_user_pool_client_id:
+    if not cfg.cognito_user_pool_id or not cfg.cognito_issuer or not cfg.cognito_user_pool_client_id:
         raise CognitoAuthError("Cognito is not fully configured")
 
     try:
-        # Get unverified header to find the key ID
-        unverified_header = jwt.get_unverified_header(id_token)
-        kid = unverified_header.get("kid")
+        from daylily_cognito.jwks import verify_token_with_jwks
 
-        if not kid:
-            raise CognitoAuthError("Token missing key ID (kid)")
-
-        # Get JWKS and find the matching key
-        jwks = await _jwks_cache.get_jwks(cfg.cognito_jwks_url)
-        key = None
-        for k in jwks.get("keys", []):
-            if k.get("kid") == kid:
-                key = k
-                break
-
-        if not key:
-            # Key not found - refresh cache and try again
-            await _jwks_cache._fetch_jwks(cfg.cognito_jwks_url)
-            jwks = await _jwks_cache.get_jwks(cfg.cognito_jwks_url)
-            for k in jwks.get("keys", []):
-                if k.get("kid") == kid:
-                    key = k
-                    break
-
-        if not key:
-            raise CognitoAuthError(f"Unable to find key with kid: {kid}")
-
-        # Validate the token
-        claims = jwt.decode(
+        claims = await asyncio.to_thread(
+            verify_token_with_jwks,
             id_token,
-            key,
-            algorithms=["RS256"],
-            audience=cfg.cognito_user_pool_client_id,
-            issuer=cfg.cognito_issuer,
-            options={"verify_at_hash": False},
+            str(cfg.cognito_region),
+            str(cfg.cognito_user_pool_id),
+            _get_daylily_jwks_cache(cfg),
         )
+        audience = str(claims.get("aud") or claims.get("client_id") or "").strip()
+        if audience != str(cfg.cognito_user_pool_client_id):
+            raise CognitoAuthError("Token validation failed: invalid audience")
 
         return claims
 
-    except ExpiredSignatureError:
-        raise CognitoAuthError("Token has expired")
-    except JWTError as e:
+    except CognitoAuthError:
+        raise
+    except Exception as e:
+        msg = str(e)
+        if "expired" in msg.lower():
+            raise CognitoAuthError("Token has expired")
         raise CognitoAuthError(f"Token validation failed: {e}")
 
 

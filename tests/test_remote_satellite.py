@@ -72,7 +72,7 @@ class TestDeviceActions:
         result = _run_async(handle_command(msg))
 
         assert result is not None
-        assert result["action"] == "action_result"
+        assert result["action"] == "device_action_result"
         assert result["kind"] == "ping"
         assert result["status"] == "success"
         assert "result" in result
@@ -86,7 +86,7 @@ class TestDeviceActions:
         result = _run_async(handle_command(msg))
 
         assert result is not None
-        assert result["action"] == "action_result"
+        assert result["action"] == "device_action_result"
         assert result["kind"] == "status"
         assert result["status"] == "success"
         assert "result" in result
@@ -103,7 +103,7 @@ class TestDeviceActions:
         result = _run_async(handle_command(msg))
 
         assert result is not None
-        assert result["action"] == "action_result"
+        assert result["action"] == "device_action_result"
         assert result["kind"] == "echo"
         assert result["status"] == "success"
         assert result["result"]["echoed"] == test_payload
@@ -114,11 +114,11 @@ class TestDeviceActions:
         result = _run_async(handle_command(msg))
 
         assert result is not None
-        assert result["action"] == "action_result"
+        assert result["action"] == "device_action_result"
         assert result["kind"] == "unknown_action"
         assert result["status"] == "unsupported"
-        assert "not supported" in result["message"].lower()
-        assert "ping" in result["message"]  # Should list available actions
+        assert "not supported" in result["error"].lower()
+        assert "ping" in result["error"]  # Should list available actions
 
 
 class TestConfigCommand:
@@ -201,7 +201,7 @@ class TestActionErrorHandling:
             result = _run_async(handle_command(msg))
 
             assert result is not None
-            assert result["action"] == "action_result"
+            assert result["action"] == "device_action_result"
             assert result["kind"] == "failing"
             assert result["status"] == "error"
             assert "Test error" in result["error"]

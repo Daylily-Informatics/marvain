@@ -1,0 +1,69 @@
+name: E2E Contracts
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 9 * * *"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  e2e:
+    name: Deployed Stack Contracts
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      MARVAIN_E2E_ENABLED: "1"
+      MARVAIN_HUB_REST_API_BASE: ${{ secrets.MARVAIN_HUB_REST_API_BASE }}
+      MARVAIN_HUB_WS_URL: ${{ secrets.MARVAIN_HUB_WS_URL }}
+      MARVAIN_ADMIN_API_KEY: ${{ secrets.MARVAIN_ADMIN_API_KEY }}
+      MARVAIN_COGNITO_USER_POOL_CLIENT_ID: ${{ secrets.MARVAIN_COGNITO_USER_POOL_CLIENT_ID }}
+      MARVAIN_COGNITO_TEST_USERNAME: ${{ secrets.MARVAIN_COGNITO_TEST_USERNAME }}
+      MARVAIN_COGNITO_TEST_PASSWORD: ${{ secrets.MARVAIN_COGNITO_TEST_PASSWORD }}
+      AWS_REGION: us-east-1
+      AWS_DEFAULT_REGION: us-east-1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Configure AWS credentials
+        if: ${{ secrets.MARVAIN_AWS_ROLE_TO_ASSUME != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.MARVAIN_AWS_ROLE_TO_ASSUME }}
+          aws-region: us-east-1
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install \
+            boto3 \
+            fastapi \
+            mangum \
+            uvicorn \
+            jinja2 \
+            requests \
+            httpx \
+            python-multipart \
+            python-dateutil \
+            python-jose[cryptography] \
+            jsonschema \
+            itsdangerous \
+            websockets \
+            python-dotenv \
+            pyyaml \
+            typer \
+            click \
+            pytest \
+            pytest-cov
+
+      - name: Run e2e contracts
+        env:
+          PYTHONPATH: .:layers/shared/python
+        run: pytest -q -m e2e tests/e2e

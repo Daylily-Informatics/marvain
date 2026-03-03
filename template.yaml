@@ -32,7 +32,7 @@ Parameters:
   CognitoDomainPrefix:
     Type: String
     Description: Prefix for Cognito Hosted UI domain (must be globally unique across all AWS accounts)
-    Default: marvain-dev
+    Default: daylily-cognito
 
 Conditions:
   IsDeploymentV1: !Equals [!Ref ApiDeploymentVersion, "1"]
@@ -253,6 +253,33 @@ Resources:
         AttributeName: ttl
         Enabled: true
 
+  WsSubscriptionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: topic_key
+          AttributeType: S
+        - AttributeName: connection_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: topic_key
+          KeyType: HASH
+        - AttributeName: connection_id
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: connection_id_index
+          KeySchema:
+            - AttributeName: connection_id
+              KeyType: HASH
+            - AttributeName: topic_key
+              KeyType: RANGE
+          Projection:
+            ProjectionType: KEYS_ONLY
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
   # -----------------------------
   # Lambda layer
   # -----------------------------
@@ -301,8 +328,19 @@ Resources:
           COGNITO_DOMAIN: !Sub ${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
           COGNITO_REDIRECT_URI: !Sub https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/auth/callback
           SESSION_SECRET_ARN: !Ref SessionSecret
+          STACK_NAME: !Ref AWS::StackName
+          WS_TABLE: !Ref WsConnectionsTable
+          WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
+          WS_SUBSCRIPTIONS_INDEX_ENABLED: "true"
+          WS_API_ENDPOINT: !Sub https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
+          AUTO_APPROVE_POLICY_MODE: "enforce"
+          MARVAIN_METRICS_NAMESPACE: "Marvain"
       Policies:
         - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WsConnectionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WsSubscriptionsTable
         - Statement:
             - Effect: Allow
               Action:
@@ -324,9 +362,16 @@ Resources:
             - Effect: Allow
               Action:
                 - sqs:SendMessage
+                - sqs:GetQueueAttributes
               Resource:
                 - !GetAtt TranscriptQueue.Arn
                 - !GetAtt ActionQueue.Arn
+            - Effect: Allow
+              Action:
+                - logs:FilterLogEvents
+                - logs:DescribeLogStreams
+              Resource:
+                - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}-ToolRunnerFunction*
             - Effect: Allow
               Action:
                 - s3:PutObject
@@ -334,6 +379,10 @@ Resources:
               Resource:
                 - !Sub ${AuditBucket.Arn}/*
                 - !Sub ${ArtifactBucket.Arn}/*
+            - Effect: Allow
+              Action:
+                - execute-api:ManageConnections
+              Resource: "*"
 
   # Explicit API Gateway integration (replaces Events section to avoid circular dependency)
   HubApiPermission:
@@ -483,8 +532,18 @@ Resources:
           AUDIT_BUCKET: !Ref AuditBucket
           OPENAI_SECRET_ARN: !Ref OpenAISecret
           PLANNER_MODEL: !Ref PlannerModel
+          WS_TABLE: !Ref WsConnectionsTable
+          WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
+          WS_SUBSCRIPTIONS_INDEX_ENABLED: "true"
+          WS_API_ENDPOINT: !Sub https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
+          AUTO_APPROVE_POLICY_MODE: "enforce"
+          MARVAIN_METRICS_NAMESPACE: "Marvain"
       Policies:
         - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WsConnectionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WsSubscriptionsTable
         - Statement:
             - Effect: Allow
               Action:
@@ -510,6 +569,10 @@ Resources:
                 - s3:PutObject
               Resource:
                 - !Sub ${AuditBucket.Arn}/*
+            - Effect: Allow
+              Action:
+                - execute-api:ManageConnections
+              Resource: "*"
       Events:
         TranscriptQueueEvent:
           Type: SQS
@@ -535,8 +598,18 @@ Resources:
           DB_SECRET_ARN: !Ref DbCredentialsSecret
           DB_NAME: !Ref DbName
           AUDIT_BUCKET: !Ref AuditBucket
+          WS_TABLE: !Ref WsConnectionsTable
+          WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
+          WS_SUBSCRIPTIONS_INDEX_ENABLED: "true"
+          WS_API_ENDPOINT: !Sub https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
+          DEVICE_RESULT_TIMEOUT_SECONDS: "90"
+          MARVAIN_METRICS_NAMESPACE: "Marvain"
       Policies:
         - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WsConnectionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WsSubscriptionsTable
         - Statement:
             - Effect: Allow
               Action:
@@ -556,12 +629,63 @@ Resources:
                 - s3:PutObject
               Resource:
                 - !Sub ${AuditBucket.Arn}/*
+            - Effect: Allow
+              Action:
+                - execute-api:ManageConnections
+              Resource: "*"
       Events:
         ActionQueueEvent:
           Type: SQS
           Properties:
             Queue: !GetAtt ActionQueue.Arn
             BatchSize: 5
+
+  ActionTimeoutSweeperFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/action_timeout_sweeper/
+      Handler: handler.handler
+      Timeout: 30
+      MemorySize: 256
+      Layers:
+        - !Ref SharedLayer
+      Environment:
+        Variables:
+          DB_RESOURCE_ARN: !GetAtt AuroraCluster.DBClusterArn
+          DB_SECRET_ARN: !Ref DbCredentialsSecret
+          DB_NAME: !Ref DbName
+          WS_TABLE: !Ref WsConnectionsTable
+          WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
+          WS_SUBSCRIPTIONS_INDEX_ENABLED: "true"
+          WS_API_ENDPOINT: !Sub https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
+          ACTION_TIMEOUT_SWEEPER_BATCH_SIZE: "200"
+          MARVAIN_METRICS_NAMESPACE: "Marvain"
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WsConnectionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WsSubscriptionsTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DbCredentialsSecret
+            - Effect: Allow
+              Action:
+                - execute-api:ManageConnections
+              Resource: "*"
+      Events:
+        SweepSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
 
   # -----------------------------
   # WebSocket API (sideband control channel)
@@ -583,10 +707,14 @@ Resources:
       Environment:
         Variables:
           WS_TABLE: !Ref WsConnectionsTable
+          WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
+          WS_SUBSCRIPTIONS_INDEX_ENABLED: "true"
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: !Ref WsConnectionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WsSubscriptionsTable
 
   WsDisconnectFunction:
     Type: AWS::Serverless::Function
@@ -598,10 +726,13 @@ Resources:
       Environment:
         Variables:
           WS_TABLE: !Ref WsConnectionsTable
+          WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: !Ref WsConnectionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WsSubscriptionsTable
 
   WsMessageFunction:
     Type: AWS::Serverless::Function
@@ -613,14 +744,19 @@ Resources:
       Environment:
         Variables:
           WS_TABLE: !Ref WsConnectionsTable
+          WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
+          WS_SUBSCRIPTIONS_INDEX_ENABLED: "true"
           WS_AUTH_TTL_SECONDS: "3600"
           DB_RESOURCE_ARN: !GetAtt AuroraCluster.DBClusterArn
           DB_SECRET_ARN: !Ref DbCredentialsSecret
           DB_NAME: !Ref DbName
+          MARVAIN_METRICS_NAMESPACE: "Marvain"
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: !Ref WsConnectionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref WsSubscriptionsTable
         - Statement:
             - Effect: Allow
               Action:
@@ -801,6 +937,75 @@ Resources:
         PasswordLength: 64
         ExcludeCharacters: '"@/\'
 
+  MarvainObservabilityDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub ${AWS::StackName}-observability
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Broadcast Delivery",
+                "metrics": [
+                  ["Marvain", "BroadcastDelivered"],
+                  [".", "BroadcastDropped"]
+                ],
+                "stat": "Sum",
+                "period": 300,
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Device Timeouts",
+                "metrics": [
+                  ["Marvain", "DeviceTimeout"]
+                ],
+                "stat": "Sum",
+                "period": 300,
+                "region": "${AWS::Region}"
+              }
+            }
+          ]
+        }
+
+  BroadcastDroppedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-broadcast-dropped
+      Namespace: Marvain
+      MetricName: BroadcastDropped
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  DeviceTimeoutAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-device-timeout
+      Namespace: Marvain
+      MetricName: DeviceTimeout
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
 Outputs:
   HubRestApiBase:
     Description: Base URL for Hub REST API
@@ -808,6 +1013,12 @@ Outputs:
   HubWebSocketUrl:
     Description: WebSocket URL for sideband control channel
     Value: !Sub wss://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
+  WsConnectionsTableName:
+    Description: DynamoDB table name for WebSocket connections
+    Value: !Ref WsConnectionsTable
+  WsSubscriptionsTableName:
+    Description: DynamoDB table name for topic subscription index
+    Value: !Ref WsSubscriptionsTable
   AdminApiKeySecretArn:
     Description: Secrets Manager ARN containing admin API key
     Value: !Ref AdminApiKeySecret

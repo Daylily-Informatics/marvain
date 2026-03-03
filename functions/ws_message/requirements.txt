@@ -1,1 +1,2 @@
-# No third-party deps; uses stdlib + boto3 (available in Lambda) + shared layer.
+# No third-party deps except shared contracts validation.
+pydantic

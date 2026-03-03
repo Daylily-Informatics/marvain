@@ -50,6 +50,7 @@ from agent_hub.memberships import (
     revoke_membership,
     update_membership,
 )
+from agent_hub.metrics import emit_count, emit_ms
 from agent_hub.openai_http import call_embeddings
 from agent_hub.policy import is_agent_disabled, is_privacy_mode
 from agent_hub.rds_data import RdsData, RdsDataEnv
@@ -194,6 +195,11 @@ class RegisterDeviceIn(BaseModel):
 
 
 class RegisterDeviceOut(BaseModel):
+    device_id: str
+    device_token: str
+
+
+class RotateDeviceTokenOut(BaseModel):
     device_id: str
     device_token: str
 
@@ -606,6 +612,154 @@ def delete_member(agent_id: str, member_user_id: str, user: AuthenticatedUser = 
     return {"ok": True}
 
 
+class AutoApprovePolicyIn(BaseModel):
+    name: str = Field(..., description="Human-readable policy name")
+    enabled: bool = Field(default=True)
+    priority: int = Field(default=100)
+    action_kind: str = Field(default="*")
+    required_scopes: list[str] = Field(default_factory=list)
+    time_window: dict[str, Any] = Field(default_factory=dict)
+
+
+def _as_json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return parsed
+        except Exception:
+            return []
+    return []
+
+
+def _as_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
+@api_app.get("/v1/agents/{agent_id}/auto-approve-policies", response_model=list[dict[str, Any]])
+def list_auto_approve_policies(agent_id: str, user: AuthenticatedUser = Depends(get_user)) -> list[dict[str, Any]]:
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+    rows = _get_db().query(
+        """
+        SELECT policy_id::TEXT as policy_id, name, enabled, priority, action_kind,
+               required_scopes::TEXT as required_scopes, time_window::TEXT as time_window,
+               created_by::TEXT as created_by, created_at::TEXT as created_at, updated_at::TEXT as updated_at
+        FROM action_auto_approve_policies
+        WHERE agent_id = :agent_id::uuid
+          AND revoked_at IS NULL
+        ORDER BY priority ASC, created_at DESC
+        """,
+        {"agent_id": agent_id},
+    )
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        out.append(
+            {
+                "policy_id": row.get("policy_id"),
+                "name": row.get("name"),
+                "enabled": bool(row.get("enabled")),
+                "priority": int(row.get("priority") or 100),
+                "action_kind": row.get("action_kind") or "*",
+                "required_scopes": _as_json_list(row.get("required_scopes")),
+                "time_window": _as_json_dict(row.get("time_window")),
+                "created_by": row.get("created_by"),
+                "created_at": row.get("created_at"),
+                "updated_at": row.get("updated_at"),
+            }
+        )
+    return out
+
+
+@api_app.post("/v1/agents/{agent_id}/auto-approve-policies")
+def create_auto_approve_policy(
+    agent_id: str, body: AutoApprovePolicyIn, user: AuthenticatedUser = Depends(get_user)
+) -> dict[str, Any]:
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+    policy_id = str(uuid.uuid4())
+    _get_db().execute(
+        """
+        INSERT INTO action_auto_approve_policies(
+          policy_id, agent_id, name, enabled, priority, action_kind, required_scopes, time_window, created_by
+        ) VALUES(
+          :policy_id::uuid, :agent_id::uuid, :name, :enabled, :priority, :action_kind,
+          :required_scopes::jsonb, :time_window::jsonb, :created_by::uuid
+        )
+        """,
+        {
+            "policy_id": policy_id,
+            "agent_id": agent_id,
+            "name": body.name.strip(),
+            "enabled": bool(body.enabled),
+            "priority": int(body.priority),
+            "action_kind": str(body.action_kind or "*").strip(),
+            "required_scopes": json.dumps([str(s) for s in (body.required_scopes or [])]),
+            "time_window": json.dumps(body.time_window or {}),
+            "created_by": str(user.user_id),
+        },
+    )
+    return {"ok": True, "policy_id": policy_id}
+
+
+@api_app.put("/v1/agents/{agent_id}/auto-approve-policies/{policy_id}")
+def update_auto_approve_policy(
+    agent_id: str, policy_id: str, body: AutoApprovePolicyIn, user: AuthenticatedUser = Depends(get_user)
+) -> dict[str, Any]:
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+    _get_db().execute(
+        """
+        UPDATE action_auto_approve_policies
+        SET name = :name,
+            enabled = :enabled,
+            priority = :priority,
+            action_kind = :action_kind,
+            required_scopes = :required_scopes::jsonb,
+            time_window = :time_window::jsonb,
+            updated_at = now()
+        WHERE policy_id = :policy_id::uuid
+          AND agent_id = :agent_id::uuid
+          AND revoked_at IS NULL
+        """,
+        {
+            "policy_id": policy_id,
+            "agent_id": agent_id,
+            "name": body.name.strip(),
+            "enabled": bool(body.enabled),
+            "priority": int(body.priority),
+            "action_kind": str(body.action_kind or "*").strip(),
+            "required_scopes": json.dumps([str(s) for s in (body.required_scopes or [])]),
+            "time_window": json.dumps(body.time_window or {}),
+        },
+    )
+    return {"ok": True}
+
+
+@api_app.delete("/v1/agents/{agent_id}/auto-approve-policies/{policy_id}")
+def delete_auto_approve_policy(agent_id: str, policy_id: str, user: AuthenticatedUser = Depends(get_user)) -> dict[str, Any]:
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+    _get_db().execute(
+        """
+        UPDATE action_auto_approve_policies
+        SET revoked_at = now(), updated_at = now()
+        WHERE policy_id = :policy_id::uuid
+          AND agent_id = :agent_id::uuid
+          AND revoked_at IS NULL
+        """,
+        {"policy_id": policy_id, "agent_id": agent_id},
+    )
+    return {"ok": True}
+
+
 @api_app.post("/v1/devices/register", response_model=RegisterDeviceOut)
 def register_device(body: RegisterDeviceIn, user: AuthenticatedUser = Depends(get_user)) -> RegisterDeviceOut:
     _require_agent_role(user=user, agent_id=body.agent_id, required_role="admin")
@@ -635,6 +789,48 @@ def register_device(body: RegisterDeviceIn, user: AuthenticatedUser = Depends(ge
             entry={"device_id": device_id, "name": body.name, "scopes": body.scopes, "by_user_id": user.user_id},
         )
     return RegisterDeviceOut(device_id=device_id, device_token=token)
+
+
+@api_app.post("/v1/devices/{device_id}/rotate-token", response_model=RotateDeviceTokenOut)
+def rotate_device_token(device_id: str, user: AuthenticatedUser = Depends(get_user)) -> RotateDeviceTokenOut:
+    """Rotate a device token and return the new token once."""
+    rows = _get_db().query(
+        """
+        SELECT d.device_id::TEXT as device_id, d.agent_id::TEXT as agent_id
+        FROM devices d
+        JOIN agent_memberships m ON d.agent_id = m.agent_id
+        WHERE d.device_id = :device_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.role IN ('admin', 'owner')
+          AND m.revoked_at IS NULL
+        """,
+        {"device_id": device_id, "user_id": user.user_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Device not found or permission denied")
+
+    device = rows[0]
+    new_token = generate_device_token()
+    token_hash = hash_token(new_token)
+    _get_db().execute(
+        """
+        UPDATE devices
+        SET token_hash = :token_hash, revoked_at = NULL
+        WHERE device_id = :device_id::uuid
+        """,
+        {"device_id": device_id, "token_hash": token_hash},
+    )
+
+    if _cfg.audit_bucket:
+        append_audit_entry(
+            _get_db(),
+            bucket=_cfg.audit_bucket,
+            agent_id=device["agent_id"],
+            entry_type="device_token_rotated",
+            entry={"device_id": device_id, "by_user_id": user.user_id},
+        )
+
+    return RotateDeviceTokenOut(device_id=device_id, device_token=new_token)
 
 
 @api_app.post("/v1/admin/bootstrap", response_model=BootstrapOut, dependencies=[Depends(require_admin)])
@@ -1141,6 +1337,17 @@ def device_heartbeat(
 
     db = _get_db()
 
+    prev_rows = db.query(
+        """
+        SELECT COALESCE(EXTRACT(EPOCH FROM (now() - last_heartbeat_at)) * 1000, 0) as lag_ms
+        FROM devices
+        WHERE device_id = :device_id::uuid
+        LIMIT 1
+        """,
+        {"device_id": device.device_id},
+    )
+    prev_lag_ms = float(prev_rows[0].get("lag_ms") or 0) if prev_rows else 0.0
+
     # Update last_heartbeat_at and optionally metadata
     if body and body.metadata:
         db.execute(
@@ -1177,6 +1384,9 @@ def device_heartbeat(
         )
     except Exception as e:
         logger.warning("Failed to broadcast presence: %s", e)
+
+    emit_count("PresenceHeartbeat", dimensions={"AgentId": str(device.agent_id)})
+    emit_ms("DeviceFreshnessLagMs", value_ms=prev_lag_ms, dimensions={"AgentId": str(device.agent_id)})
 
     return HeartbeatOut(ok=True, device_id=device.device_id, last_heartbeat_at=ts)
 

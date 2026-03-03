@@ -9,15 +9,26 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
+import uuid
 from typing import TYPE_CHECKING, Any
+
+from agent_hub.contracts import CmdRunAction
 
 if TYPE_CHECKING:
     from agent_hub.tools.registry import ToolContext, ToolRegistry, ToolResult
 
 logger = logging.getLogger(__name__)
 
-# DynamoDB table name for WebSocket connections
-_WS_TABLE_NAME = os.getenv("WS_CONNECTIONS_TABLE", "")
+# DynamoDB table name for WebSocket connections.
+_WS_TABLE_NAME = os.getenv("WS_TABLE", "")
+_DEVICE_RESULT_TIMEOUT_SECONDS = int(os.getenv("DEVICE_RESULT_TIMEOUT_SECONDS", "90"))
+
+
+def _model_dump(model: Any) -> dict[str, Any]:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()  # pragma: no cover - pydantic v1 fallback
 
 
 def _get_dynamodb():
@@ -78,8 +89,10 @@ def device_command_handler(payload: dict[str, Any], ctx: "ToolContext") -> "Tool
     from agent_hub.tools.registry import ToolResult
 
     device_id = payload.get("device_id")
-    command = payload.get("command", "run_action")
+    command = str(payload.get("command", "run_action")).strip()
     data = payload.get("data", {})
+    if not isinstance(data, dict):
+        data = {}
 
     if not device_id:
         return ToolResult(ok=False, error="missing_device_id")
@@ -101,19 +114,75 @@ def device_command_handler(payload: dict[str, Any], ctx: "ToolContext") -> "Tool
 
     device = rows[0]
 
-    # Get WebSocket connections for this device
+    # Enforce action-level target-device scope gate when configured.
+    required_scopes = list(getattr(ctx, "action_required_scopes", []) or [])
+    if required_scopes:
+        device_scopes = device.get("scopes") or []
+        if isinstance(device_scopes, str):
+            try:
+                device_scopes = json.loads(device_scopes)
+            except Exception:
+                device_scopes = []
+        missing_scopes = [s for s in required_scopes if str(s) not in {str(d) for d in device_scopes}]
+        if missing_scopes:
+            return ToolResult(ok=False, error=f"target_device_missing_scopes: {', '.join(missing_scopes)}")
+
+    # Get WebSocket connections for this device.
     connection_ids = _get_connections_for_device(device_id)
 
     if not connection_ids:
         return ToolResult(ok=False, error="device_not_connected")
 
-    # Build the command message
-    message = {
-        "type": f"cmd.{command}",
-        "action_id": ctx.action_id,
-        "device_id": device_id,
-        "payload": data,
-    }
+    # Normalize command shapes. Non-control commands are treated as run_action kinds.
+    message: dict[str, Any]
+    action_kind = ""
+    correlation_id = str(uuid.uuid4())
+    if command == "run_action":
+        action_kind = str(payload.get("kind") or data.get("kind") or "").strip()
+        if not action_kind:
+            return ToolResult(ok=False, error="missing_kind")
+        action_payload = payload.get("payload")
+        if not isinstance(action_payload, dict):
+            action_payload = data.get("payload")
+        if not isinstance(action_payload, dict):
+            action_payload = data.get("args")
+        if not isinstance(action_payload, dict):
+            action_payload = {}
+        message = CmdRunAction(
+            action_id=ctx.action_id,
+            correlation_id=correlation_id,
+            kind=action_kind,
+            payload=action_payload,
+            sent_at=int(time.time() * 1000),
+        )
+        message = _model_dump(message)
+    elif command == "config":
+        correlation_id = ""
+        message = {
+            "type": "cmd.config",
+            "action_id": ctx.action_id,
+            "device_id": device_id,
+            "config": data.get("config", data),
+            "sent_at": int(time.time() * 1000),
+        }
+    elif command == "ping":
+        correlation_id = ""
+        message = {
+            "type": "cmd.ping",
+            "action_id": ctx.action_id,
+            "device_id": device_id,
+            "sent_at": int(time.time() * 1000),
+        }
+    else:
+        action_kind = command
+        message = CmdRunAction(
+            action_id=ctx.action_id,
+            correlation_id=correlation_id,
+            kind=action_kind,
+            payload=data if isinstance(data, dict) else {"value": data},
+            sent_at=int(time.time() * 1000),
+        )
+        message = _model_dump(message)
 
     # Get WebSocket endpoint URL
     ws_endpoint = os.getenv("WS_API_ENDPOINT", "")
@@ -132,9 +201,13 @@ def device_command_handler(payload: dict[str, Any], ctx: "ToolContext") -> "Tool
     return ToolResult(
         ok=True,
         data={
+            "dispatched": True,
             "device_id": device_id,
             "device_name": device.get("name", ""),
             "command": command,
+            "kind": action_kind or None,
+            "correlation_id": correlation_id or None,
+            "timeout_seconds": _DEVICE_RESULT_TIMEOUT_SECONDS,
             "connections_sent": sent,
         },
     )

@@ -56,6 +56,8 @@ class ToolContext:
     space_id: str | None
     action_id: str
     device_scopes: list[str] = field(default_factory=list)
+    # Action-level target device scope gate from the action record.
+    action_required_scopes: list[str] = field(default_factory=list)
     # For send_message: WebSocket broadcast function
     broadcast_fn: Callable[[str, dict], None] | None = None
     # For http_request: config for allowed hosts
