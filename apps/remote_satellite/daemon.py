@@ -867,6 +867,9 @@ async def handle_command(msg: dict[str, Any]) -> dict[str, Any] | None:
     if msg_type == "cmd.run_action":
         kind = msg.get("kind", "")
         payload = msg.get("payload", {})
+        action_id = str(msg.get("action_id") or "")
+        correlation_id = str(msg.get("correlation_id") or "")
+        device_id = str(msg.get("device_id") or "")
         logger.info("Received run_action command: kind=%s", kind)
 
         if kind in DEVICE_ACTIONS:
@@ -874,25 +877,37 @@ async def handle_command(msg: dict[str, Any]) -> dict[str, Any] | None:
                 handler = DEVICE_ACTIONS[kind]
                 result = handler(payload)
                 return {
-                    "action": "action_result",
+                    "action": "device_action_result",
+                    "action_id": action_id,
+                    "correlation_id": correlation_id,
+                    "device_id": device_id,
                     "kind": kind,
                     "status": "success",
                     "result": result,
+                    "completed_at": int(time_module.time() * 1000),
                 }
             except Exception as e:
                 logger.exception("Error executing action %s", kind)
                 return {
-                    "action": "action_result",
+                    "action": "device_action_result",
+                    "action_id": action_id,
+                    "correlation_id": correlation_id,
+                    "device_id": device_id,
                     "kind": kind,
                     "status": "error",
                     "error": str(e),
+                    "completed_at": int(time_module.time() * 1000),
                 }
         else:
             return {
-                "action": "action_result",
+                "action": "device_action_result",
+                "action_id": action_id,
+                "correlation_id": correlation_id,
+                "device_id": device_id,
                 "kind": kind,
                 "status": "unsupported",
-                "message": f"Action kind '{kind}' not supported. Supported: {list(DEVICE_ACTIONS.keys())}",
+                "error": f"Action kind '{kind}' not supported. Supported: {list(DEVICE_ACTIONS.keys())}",
+                "completed_at": int(time_module.time() * 1000),
             }
 
     elif msg_type == "cmd.config":

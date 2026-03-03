@@ -4,18 +4,22 @@ import json
 import logging
 import os
 import time
+import uuid
 
 import boto3
 from agent_hub.audit import append_audit_entry
 from agent_hub.auth import authenticate_device, authenticate_user_access_token
+from agent_hub.contracts import CmdRunAction, DeviceActionAck, DeviceActionResult
 from agent_hub.config import load_config
 from agent_hub.memberships import check_agent_permission, list_agents_for_user
+from agent_hub.metrics import emit_count, emit_ms
 from agent_hub.rds_data import RdsData, RdsDataEnv
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 _TABLE = os.getenv("WS_TABLE")
+_WS_SUBSCRIPTIONS_TABLE = os.getenv("WS_SUBSCRIPTIONS_TABLE")
 _ACTION_QUEUE_URL = os.getenv("ACTION_QUEUE_URL")
 _WS_AUTH_TTL = int(os.getenv("WS_AUTH_TTL_SECONDS", "3600"))
 _dynamo = boto3.resource("dynamodb")
@@ -57,12 +61,59 @@ def _send(event, connection_id: str, payload: dict):
     _mgmt_api(event).post_to_connection(ConnectionId=connection_id, Data=data)
 
 
+def _model_dump(model) -> dict:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()  # pragma: no cover - pydantic v1 fallback
+
+
+def _subscription_table():
+    if not _WS_SUBSCRIPTIONS_TABLE:
+        return None
+    return _dynamo.Table(_WS_SUBSCRIPTIONS_TABLE)
+
+
+def _upsert_subscription_index(connection_id: str, topic_key: str, ttl: int | None) -> None:
+    subs_table = _subscription_table()
+    if subs_table is None:
+        return
+    item = {
+        "topic_key": topic_key,
+        "connection_id": connection_id,
+        "ttl": int(ttl or (int(time.time()) + _WS_AUTH_TTL)),
+    }
+    try:
+        subs_table.put_item(Item=item)
+    except Exception as exc:
+        logger.warning("Failed to update subscription index for %s: %s", topic_key, exc)
+
+
+def _load_action_with_execution(action_id: str) -> dict | None:
+    rows = _get_db().query(
+        """
+        SELECT action_id::TEXT as action_id,
+               agent_id::TEXT as agent_id,
+               space_id::TEXT as space_id,
+               kind,
+               status,
+               target_device_id::TEXT as target_device_id,
+               correlation_id::TEXT as correlation_id,
+               COALESCE(EXTRACT(EPOCH FROM (now() - created_at)) * 1000, 0) as age_ms
+        FROM actions
+        WHERE action_id = :action_id::uuid
+        LIMIT 1
+        """,
+        {"action_id": action_id},
+    )
+    if not rows:
+        return None
+    return rows[0]
+
+
 def _get_device_connections(table, target_device_id: str) -> list[str]:
     """Find all WebSocket connection IDs for a specific device.
 
-    Uses the ``device_id_index`` GSI for efficient lookup instead of a
-    full table scan.  Falls back to a scan if the GSI query fails (e.g.
-    index not yet provisioned).
+    Uses the ``device_id_index`` GSI for efficient lookup.
 
     Returns list of connection_ids where device_id matches and status is authenticated.
     """
@@ -79,20 +130,8 @@ def _get_device_connections(table, target_device_id: str) -> list[str]:
         )
         return [item["connection_id"] for item in response.get("Items", [])]
     except Exception as e:
-        logger.warning("GSI query failed for device %s, falling back to scan: %s", target_device_id, e)
-        try:
-            response = table.scan(
-                FilterExpression="device_id = :did AND #s = :status",
-                ExpressionAttributeNames={"#s": "status"},
-                ExpressionAttributeValues={
-                    ":did": target_device_id,
-                    ":status": "authenticated",
-                },
-            )
-            return [item["connection_id"] for item in response.get("Items", [])]
-        except Exception as e2:
-            logger.warning("Scan fallback also failed for device %s: %s", target_device_id, e2)
-            return []
+        logger.warning("Device connection index query failed for device %s: %s", target_device_id, e)
+        return []
 
 
 def _send_to_device(event, table, target_device_id: str, message: dict) -> tuple[int, int]:
@@ -237,6 +276,216 @@ def _handle_action_decision(
         )
 
     logger.info("Action %s %s by user %s", action_id, new_status, user_id)
+    return {"statusCode": 200, "body": "ok"}
+
+
+def _handle_device_action_ack(event, connection_id: str, conn_item: dict, msg: dict) -> dict:
+    """Handle device -> hub command acknowledgement."""
+    if str(conn_item.get("principal_type") or "") != "device":
+        _send(event, connection_id, {"type": "device_action_ack", "ok": False, "error": "device_only"})
+        return {"statusCode": 200, "body": "ok"}
+
+    try:
+        ack = DeviceActionAck(**msg)
+    except Exception as exc:
+        _send(event, connection_id, {"type": "device_action_ack", "ok": False, "error": f"invalid_payload: {exc}"})
+        return {"statusCode": 200, "body": "ok"}
+
+    action_row = _load_action_with_execution(ack.action_id)
+    if not action_row:
+        _send(event, connection_id, {"type": "device_action_ack", "ok": False, "error": "action_not_found"})
+        return {"statusCode": 200, "body": "ok"}
+
+    device_id = str(conn_item.get("device_id") or "")
+    target_device_id = str(action_row.get("target_device_id") or "")
+    if target_device_id and target_device_id != device_id:
+        _send(event, connection_id, {"type": "device_action_ack", "ok": False, "error": "permission_denied"})
+        return {"statusCode": 200, "body": "ok"}
+
+    action_corr = str(action_row.get("correlation_id") or "")
+    if action_corr and action_corr != ack.correlation_id:
+        _send(event, connection_id, {"type": "device_action_ack", "ok": False, "error": "correlation_mismatch"})
+        return {"statusCode": 200, "body": "ok"}
+
+    _get_db().execute(
+        """
+        UPDATE actions
+        SET status = 'device_acknowledged',
+            updated_at = now(),
+            device_acknowledged_at = now(),
+            execution_metadata = COALESCE(execution_metadata, '{}'::jsonb) || :meta::jsonb
+        WHERE action_id = :action_id::uuid
+          AND status IN ('awaiting_device_result', 'device_acknowledged')
+        """,
+        {
+            "action_id": ack.action_id,
+            "meta": json.dumps(
+                {
+                    "acknowledged_by_device_id": ack.device_id,
+                    "acknowledged_at_ms": ack.received_at,
+                }
+            ),
+        },
+    )
+
+    emit_count(
+        "ActionExecutionCount",
+        dimensions={
+            "ActionKind": str(action_row.get("kind") or "unknown"),
+            "Status": "device_acknowledged",
+        },
+    )
+
+    _send(event, connection_id, {"type": "device_action_ack", "ok": True, "action_id": ack.action_id})
+    return {"statusCode": 200, "body": "ok"}
+
+
+def _handle_device_action_result(event, connection_id: str, conn_item: dict, msg: dict) -> dict:
+    """Handle device -> hub command completion result."""
+    if str(conn_item.get("principal_type") or "") != "device":
+        _send(event, connection_id, {"type": "device_action_result", "ok": False, "error": "device_only"})
+        return {"statusCode": 200, "body": "ok"}
+
+    try:
+        result_in = DeviceActionResult(**msg)
+    except Exception as exc:
+        _send(event, connection_id, {"type": "device_action_result", "ok": False, "error": f"invalid_payload: {exc}"})
+        return {"statusCode": 200, "body": "ok"}
+
+    action_row = _load_action_with_execution(result_in.action_id)
+    if not action_row:
+        _send(event, connection_id, {"type": "device_action_result", "ok": False, "error": "action_not_found"})
+        return {"statusCode": 200, "body": "ok"}
+
+    device_id = str(conn_item.get("device_id") or "")
+    target_device_id = str(action_row.get("target_device_id") or "")
+    if target_device_id and target_device_id != device_id:
+        _send(event, connection_id, {"type": "device_action_result", "ok": False, "error": "permission_denied"})
+        return {"statusCode": 200, "body": "ok"}
+
+    action_corr = str(action_row.get("correlation_id") or "")
+    if action_corr and action_corr != result_in.correlation_id:
+        _send(event, connection_id, {"type": "device_action_result", "ok": False, "error": "correlation_mismatch"})
+        return {"statusCode": 200, "body": "ok"}
+
+    new_status = "executed" if result_in.status == "success" else "failed"
+    err_text = None if result_in.status == "success" else (result_in.error or f"device_{result_in.status}")
+    result_json = json.dumps(result_in.result or {})
+
+    _get_db().execute(
+        """
+        UPDATE actions
+        SET status = :status,
+            updated_at = now(),
+            executed_at = now(),
+            completed_at = now(),
+            device_response_at = now(),
+            awaiting_result_until = NULL,
+            result = :result::jsonb,
+            error = :error
+        WHERE action_id = :action_id::uuid
+          AND status IN ('awaiting_device_result', 'device_acknowledged')
+        """,
+        {
+            "action_id": result_in.action_id,
+            "status": new_status,
+            "result": result_json,
+            "error": err_text,
+        },
+    )
+
+    try:
+        from agent_hub.broadcast import broadcast_event
+
+        broadcast_event(
+            event_type="actions.updated",
+            agent_id=str(action_row.get("agent_id") or ""),
+            space_id=action_row.get("space_id"),
+            payload={
+                "action_id": result_in.action_id,
+                "kind": str(action_row.get("kind") or result_in.kind),
+                "status": new_status,
+                "error": err_text,
+            },
+        )
+    except Exception as exc:
+        logger.warning("Failed to broadcast device action result: %s", exc)
+
+    emit_count(
+        "ActionExecutionCount",
+        dimensions={
+            "ActionKind": str(action_row.get("kind") or "unknown"),
+            "Status": new_status,
+        },
+    )
+    emit_ms(
+        "CommandResultLatencyMs",
+        value_ms=float(action_row.get("age_ms") or 0),
+        dimensions={"ActionKind": str(action_row.get("kind") or "unknown")},
+    )
+
+    _send(event, connection_id, {"type": "device_action_result", "ok": True, "action_id": result_in.action_id})
+    return {"statusCode": 200, "body": "ok"}
+
+
+def _handle_topic_subscription(
+    *,
+    event,
+    connection_id: str,
+    table,
+    conn_item: dict,
+    principal_type: str,
+    user_id: str | None,
+    msg: dict,
+    topic: str,
+) -> dict:
+    """Handle topic subscription for events/actions/presence/memories."""
+    action_name = f"subscribe_{topic}"
+    agent_id = str(msg.get("agent_id") or "").strip()
+    space_id = str(msg.get("space_id") or "").strip()
+
+    if not agent_id:
+        _send(event, connection_id, {"type": action_name, "ok": False, "error": "missing_agent_id"})
+        return {"statusCode": 200, "body": "ok"}
+
+    if principal_type == "user":
+        if not check_agent_permission(_get_db(), agent_id=agent_id, user_id=user_id, required_role="member"):
+            _send(event, connection_id, {"type": action_name, "ok": False, "error": "permission_denied"})
+            return {"statusCode": 200, "body": "ok"}
+    else:
+        dev_agent = str(conn_item.get("agent_id") or "")
+        if dev_agent != agent_id:
+            _send(event, connection_id, {"type": action_name, "ok": False, "error": "permission_denied"})
+            return {"statusCode": 200, "body": "ok"}
+
+    subscriptions = conn_item.get("subscriptions") or []
+    sub_key = f"{topic}:{agent_id}" if not space_id else f"{topic}:{agent_id}:{space_id}"
+    if sub_key not in subscriptions:
+        subscriptions.append(sub_key)
+        table.update_item(
+            Key={"connection_id": connection_id},
+            UpdateExpression="SET subscriptions = :subs",
+            ExpressionAttributeValues={":subs": subscriptions},
+        )
+    _upsert_subscription_index(connection_id, sub_key, conn_item.get("ttl"))
+
+    _send(
+        event,
+        connection_id,
+        {
+            "type": action_name,
+            "ok": True,
+            "subscription": sub_key,
+            "agent_id": agent_id,
+            "space_id": space_id or None,
+        },
+    )
+    emit_count(
+        "SubscriptionAdded",
+        dimensions={
+            "Topic": topic,
+        },
+    )
     return {"statusCode": 200, "body": "ok"}
 
 
@@ -509,6 +758,8 @@ def handler(event, context):
         target_device_id = str(msg.get("target_device_id") or "").strip()
         action_kind = str(msg.get("kind") or "").strip()
         action_payload = msg.get("payload") or {}
+        run_action_id = str(msg.get("action_id") or str(uuid.uuid4()))
+        correlation_id = str(msg.get("correlation_id") or str(uuid.uuid4()))
 
         if not target_device_id or not action_kind:
             _send(
@@ -537,13 +788,15 @@ def handler(event, context):
 
         # Broadcast cmd.run_action to the target device via WebSocket
         sent_at = int(time.time() * 1000)
-        device_message = {
-            "type": "cmd.run_action",
-            "from_connection_id": connection_id,
-            "kind": action_kind,
-            "payload": action_payload,
-            "sent_at": sent_at,
-        }
+        cmd = CmdRunAction(
+            action_id=run_action_id,
+            correlation_id=correlation_id,
+            kind=action_kind,
+            payload=action_payload,
+            sent_at=sent_at,
+            from_connection_id=connection_id,
+        )
+        device_message = _model_dump(cmd)
         sent_count, stale_count = _send_to_device(event, table, target_device_id, device_message)
 
         if sent_count == 0:
@@ -567,6 +820,8 @@ def handler(event, context):
                 "ok": True,
                 "target_device_id": target_device_id,
                 "kind": action_kind,
+                "action_id": run_action_id,
+                "correlation_id": correlation_id,
                 "sent_at": sent_at,
                 "device_connections": sent_count,
             },
@@ -633,6 +888,19 @@ def handler(event, context):
                 "device_connections": sent_count,
             },
         )
+        return {"statusCode": 200, "body": "ok"}
+
+    # -------------------------------------------------------------------------
+    # DEVICE -> HUB execution callbacks
+    # -------------------------------------------------------------------------
+    if action == "device_action_ack":
+        return _handle_device_action_ack(event, connection_id, conn_item, msg)
+
+    if action == "device_action_result":
+        return _handle_device_action_result(event, connection_id, conn_item, msg)
+
+    if action == "config_ack":
+        _send(event, connection_id, {"type": "config_ack", "ok": True})
         return {"statusCode": 200, "body": "ok"}
 
     # -------------------------------------------------------------------------
@@ -706,97 +974,51 @@ def handler(event, context):
 
         return _handle_action_decision(event, connection_id, table, conn_item, action_id, approve=False, reason=reason)
 
-    # -------------------------------------------------------------------------
-    # subscribe_presence - subscribe to presence updates for a space
-    # -------------------------------------------------------------------------
+    # Topic subscriptions.
     if action == "subscribe_presence":
-        agent_id = str(msg.get("agent_id") or "").strip()
-        space_id = str(msg.get("space_id") or "").strip()
-
-        if not agent_id:
-            _send(event, connection_id, {"type": "subscribe_presence", "ok": False, "error": "missing_agent_id"})
-            return {"statusCode": 200, "body": "ok"}
-
-        # Check permission
-        if principal_type == "user":
-            if not check_agent_permission(_get_db(), agent_id=agent_id, user_id=user_id, required_role="member"):
-                _send(event, connection_id, {"type": "subscribe_presence", "ok": False, "error": "permission_denied"})
-                return {"statusCode": 200, "body": "ok"}
-        else:
-            dev_agent = conn_item.get("agent_id")
-            if dev_agent != agent_id:
-                _send(event, connection_id, {"type": "subscribe_presence", "ok": False, "error": "permission_denied"})
-                return {"statusCode": 200, "body": "ok"}
-
-        # Store subscription in connection record
-        subscriptions = conn_item.get("subscriptions") or []
-        sub_key = f"presence:{agent_id}" if not space_id else f"presence:{agent_id}:{space_id}"
-        if sub_key not in subscriptions:
-            subscriptions.append(sub_key)
-            table.update_item(
-                Key={"connection_id": connection_id},
-                UpdateExpression="SET subscriptions = :subs",
-                ExpressionAttributeValues={":subs": subscriptions},
-            )
-
-        _send(
-            event,
-            connection_id,
-            {
-                "type": "subscribe_presence",
-                "ok": True,
-                "subscription": sub_key,
-            },
+        return _handle_topic_subscription(
+            event=event,
+            connection_id=connection_id,
+            table=table,
+            conn_item=conn_item,
+            principal_type=principal_type,
+            user_id=user_id,
+            msg=msg,
+            topic="presence",
         )
-        return {"statusCode": 200, "body": "ok"}
-
-    # -------------------------------------------------------------------------
-    # subscribe_events - subscribe to real-time event stream for an agent
-    # -------------------------------------------------------------------------
     if action == "subscribe_events":
-        agent_id = str(msg.get("agent_id") or "").strip()
-        space_id = str(msg.get("space_id") or "").strip()
-        event_types = msg.get("event_types") or []  # Optional filter
-
-        if not agent_id:
-            _send(event, connection_id, {"type": "subscribe_events", "ok": False, "error": "missing_agent_id"})
-            return {"statusCode": 200, "body": "ok"}
-
-        # Check permission
-        if principal_type == "user":
-            if not check_agent_permission(_get_db(), agent_id=agent_id, user_id=user_id, required_role="member"):
-                _send(event, connection_id, {"type": "subscribe_events", "ok": False, "error": "permission_denied"})
-                return {"statusCode": 200, "body": "ok"}
-        else:
-            dev_agent = conn_item.get("agent_id")
-            if dev_agent != agent_id:
-                _send(event, connection_id, {"type": "subscribe_events", "ok": False, "error": "permission_denied"})
-                return {"statusCode": 200, "body": "ok"}
-
-        # Store subscription in connection record
-        subscriptions = conn_item.get("subscriptions") or []
-        sub_key = f"events:{agent_id}" if not space_id else f"events:{agent_id}:{space_id}"
-        if sub_key not in subscriptions:
-            subscriptions.append(sub_key)
-            table.update_item(
-                Key={"connection_id": connection_id},
-                UpdateExpression="SET subscriptions = :subs",
-                ExpressionAttributeValues={":subs": subscriptions},
-            )
-
-        _send(
-            event,
-            connection_id,
-            {
-                "type": "subscribe_events",
-                "ok": True,
-                "subscription": sub_key,
-                "agent_id": agent_id,
-                "space_id": space_id or None,
-                "event_types": event_types if event_types else None,
-            },
+        return _handle_topic_subscription(
+            event=event,
+            connection_id=connection_id,
+            table=table,
+            conn_item=conn_item,
+            principal_type=principal_type,
+            user_id=user_id,
+            msg=msg,
+            topic="events",
         )
-        return {"statusCode": 200, "body": "ok"}
+    if action == "subscribe_actions":
+        return _handle_topic_subscription(
+            event=event,
+            connection_id=connection_id,
+            table=table,
+            conn_item=conn_item,
+            principal_type=principal_type,
+            user_id=user_id,
+            msg=msg,
+            topic="actions",
+        )
+    if action == "subscribe_memories":
+        return _handle_topic_subscription(
+            event=event,
+            connection_id=connection_id,
+            table=table,
+            conn_item=conn_item,
+            principal_type=principal_type,
+            user_id=user_id,
+            msg=msg,
+            topic="memories",
+        )
 
     # Default: unknown action
     _send(event, connection_id, {"type": "error", "error": "unknown_action", "action": action})

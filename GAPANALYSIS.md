@@ -1,5 +1,8 @@
 # Gap Analysis: ADVANCED_FEATURE_PLAN.md vs Implementation
 
+> Status note: this file is historical analysis and not the source of truth for current implementation state.
+> Current verifiable status is generated in `docs/IMPLEMENTATION_STATUS.generated.md`.
+
 **Branch:** `feature/review-fixes-r1-r10`
 **Date:** 2026-02-06 (updated — all gaps closed)
 **Auditor:** Forge (Augment Agent)
@@ -180,4 +183,3 @@ If agent deletion is desired:
 1. Add `archived_at` column to agents table
 2. Add `POST /api/agents/{agent_id}/archive` endpoint
 3. Archived agents are hidden from listings but data is preserved
-

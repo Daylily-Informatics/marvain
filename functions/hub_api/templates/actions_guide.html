@@ -39,18 +39,22 @@
     <h4 style="margin-top:0;"><code>send_message</code></h4>
     <p>Send a text message to a space on behalf of the agent.</p>
     <pre style="background:var(--color-gray-900);padding:1rem;border-radius:var(--radius-md);color:var(--color-gray-200);font-family:'JetBrains Mono',monospace;font-size:0.8125rem;overflow-x:auto;">{
-  "message": "Hello from the action system!",
-  "target": "space"
+  "recipient_type": "space",
+  "recipient_id": "&lt;space-uuid&gt;",
+  "message_type": "notification",
+  "content": "Hello from the action system!"
 }</pre>
 
     <hr style="border-color:var(--color-gray-600);margin:1.5rem 0;">
 
     <h4><code>create_memory</code></h4>
-    <p>Create a new memory for the agent. Tier must be one of <code>episodic</code>, <code>semantic</code>, or <code>procedural</code>.</p>
+    <p>Create a new memory for the agent. Tier must be one of <code>episodic</code> or <code>semantic</code>.</p>
     <pre style="background:var(--color-gray-900);padding:1rem;border-radius:var(--radius-md);color:var(--color-gray-200);font-family:'JetBrains Mono',monospace;font-size:0.8125rem;overflow-x:auto;">{
   "content": "User prefers dark mode interfaces.",
   "tier": "semantic",
-  "tags": ["preference", "ui"]
+  "participants": ["user"],
+  "provenance": {"source": "manual_action"},
+  "retention": {"policy": "v1"}
 }</pre>
 
     <hr style="border-color:var(--color-gray-600);margin:1.5rem 0;">
@@ -84,7 +88,7 @@
     <pre style="background:var(--color-gray-900);padding:1rem;border-radius:var(--radius-md);color:var(--color-gray-200);font-family:'JetBrains Mono',monospace;font-size:0.8125rem;overflow-x:auto;">{
   "device_id": "&lt;device-uuid&gt;",
   "command": "device_status",
-  "args": {"include_disk": true}
+  "data": {"include_disk": true}
 }</pre>
 
     <hr style="border-color:var(--color-gray-600);margin:1.5rem 0;">
@@ -114,6 +118,7 @@
       <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">dig</span>
     </div>
     <pre style="background:var(--color-gray-900);padding:1rem;border-radius:var(--radius-md);color:var(--color-gray-200);font-family:'JetBrains Mono',monospace;font-size:0.8125rem;overflow-x:auto;">{
+  "device_id": "&lt;device-uuid&gt;",
   "command": "df -h",
   "timeout": 30,
   "working_dir": "/tmp"
@@ -127,11 +132,11 @@
   <div class="card-body">
     <p>Actions can be scope-gated. When <strong>Required Scopes</strong> are set, only devices with matching scopes can execute the action. Common scopes:</p>
     <div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin:0.75rem 0;">
-      <span class="badge badge-info">events:read</span>
-      <span class="badge badge-info">events:write</span>
-      <span class="badge badge-info">memories:read</span>
-      <span class="badge badge-info">memories:write</span>
-      <span class="badge badge-info">artifacts:write</span>
+      <span class="badge badge-info">message:send</span>
+      <span class="badge badge-info">memory:write</span>
+      <span class="badge badge-info">http:request</span>
+      <span class="badge badge-info">devices:write</span>
+      <span class="badge badge-info">shell:execute</span>
       <span class="badge badge-info">presence:write</span>
     </div>
     <p>Leave the scopes field empty if the action does not require device-level scope gating.</p>
@@ -139,4 +144,3 @@
   </div>
 </div>
 {% endblock %}
-

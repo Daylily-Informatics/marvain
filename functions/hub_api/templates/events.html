@@ -161,9 +161,9 @@ function subscribeToEvents() {
 // Handle incoming events from WebSocket
 function handleWsEvent(msg) {
   if (isPaused) return;
-  if (msg.type !== 'event' && msg.type !== 'push_event') return;
+  if (msg.type !== 'events.new' && msg.type !== 'event' && msg.type !== 'push_event') return;
 
-  const event = msg.event || msg;
+  const event = (msg.payload && msg.payload.event) || msg.event || msg;
   if (!event.event_id) return;
 
   // Check if event already exists
@@ -346,4 +346,3 @@ async function viewEvent(eventId) {
 }
 </script>
 {% endblock %}
-

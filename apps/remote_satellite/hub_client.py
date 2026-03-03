@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine
 
+import aiohttp
 import websockets
 from websockets.client import WebSocketClientProtocol
 
@@ -92,9 +94,21 @@ class HubClient:
             logger.debug("Responded to cmd.ping")
 
         elif msg_type.startswith("cmd.") and self.on_command:
+            if msg_type == "cmd.run_action":
+                await self._send(
+                    {
+                        "action": "device_action_ack",
+                        "action_id": msg.get("action_id"),
+                        "correlation_id": msg.get("correlation_id"),
+                        "device_id": self._device_id,
+                        "received_at": int(time.time() * 1000),
+                    }
+                )
             # Delegate to command handler
             result = await self.on_command(msg)
             if result:
+                if msg_type == "cmd.run_action" and not result.get("device_id"):
+                    result["device_id"] = self._device_id
                 await self._send(result)
 
         elif msg_type == "pong":
@@ -112,10 +126,31 @@ class HubClient:
             try:
                 await self._send({"action": "ping"})
                 logger.debug("Sent heartbeat ping")
+                await self._send_rest_heartbeat()
             except Exception as e:
                 logger.error("Heartbeat failed: %s", e)
                 break
             await asyncio.sleep(self.config.heartbeat_interval)
+
+    async def _send_rest_heartbeat(self) -> None:
+        """Send REST heartbeat when rest_url is configured."""
+        if not self.config.rest_url:
+            return
+        url = str(self.config.rest_url).rstrip("/") + "/v1/devices/heartbeat"
+        headers = {
+            "Authorization": f"Bearer {self.config.device_token}",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, headers=headers, json={}, timeout=10) as resp:
+                    if resp.status >= 400:
+                        body = await resp.text()
+                        logger.warning("REST heartbeat failed: status=%s body=%s", resp.status, body[:300])
+                    else:
+                        logger.debug("REST heartbeat sent")
+        except Exception as e:
+            logger.warning("REST heartbeat request failed: %s", e)
 
     async def _message_loop(self) -> None:
         """Listen for incoming messages."""
