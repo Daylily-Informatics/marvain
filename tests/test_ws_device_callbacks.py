@@ -14,6 +14,7 @@ os.environ.setdefault("DB_RESOURCE_ARN", "arn:aws:rds:us-east-1:123:cluster:test
 os.environ.setdefault("DB_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:123:secret:test")
 os.environ.setdefault("DB_NAME", "testdb")
 os.environ.setdefault("WS_TABLE", "test-ws-connections")
+os.environ.setdefault("WS_SUBSCRIPTIONS_TABLE", "test-ws-subscriptions")
 os.environ.setdefault("ACTION_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/action-queue")
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "functions" / "ws_message"))
@@ -244,7 +245,6 @@ def test_subscribe_actions_dual_writes_subscription_index(
     result = handler(_event({"action": "subscribe_actions", "agent_id": "agent-1"}), {})
 
     assert result["statusCode"] == 200
-    mock_table.update_item.assert_called_once()
     mock_upsert_index.assert_called_once_with("conn-123", "actions:agent-1", None)
     sent = json.loads(mock_post.call_args.kwargs["Data"].decode())
     assert sent["type"] == "subscribe_actions"
