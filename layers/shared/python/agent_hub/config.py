@@ -16,6 +16,16 @@ def _req(name: str) -> str:
     return v
 
 
+def _int_with_default(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return int(str(raw).strip())
+    except ValueError as exc:
+        raise ConfigError(f"Invalid integer env var {name}={raw!r}") from exc
+
+
 @dataclass(frozen=True)
 class HubConfig:
     stage: str
@@ -45,6 +55,8 @@ class HubConfig:
     livekit_secret_arn: str | None
     # WebSocket API settings
     ws_api_url: str | None  # WebSocket API Gateway URL for real-time updates
+    # Limits
+    max_spaces_per_agent: int
 
     @property
     def cognito_issuer(self) -> str | None:
@@ -129,4 +141,6 @@ def load_config() -> HubConfig:
         livekit_secret_arn=os.getenv("LIVEKIT_SECRET_ARN"),
         # WebSocket API settings
         ws_api_url=os.getenv("WS_API_URL"),
+        # Limits
+        max_spaces_per_agent=max(1, _int_with_default("MAX_SPACES_PER_AGENT", 5)),
     )

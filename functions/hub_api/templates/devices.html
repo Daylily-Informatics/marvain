@@ -156,12 +156,14 @@
         <div class="form-group">
           <label>Scopes</label>
           <div class="scopes-checklist">
-            <label class="checkbox-label"><input type="checkbox" name="scopes" value="events:read"> events:read</label>
-            <label class="checkbox-label"><input type="checkbox" name="scopes" value="events:write"> events:write</label>
-            <label class="checkbox-label"><input type="checkbox" name="scopes" value="presence:write"> presence:write</label>
-            <label class="checkbox-label"><input type="checkbox" name="scopes" value="memories:read"> memories:read</label>
+            <label class="checkbox-label"><input type="checkbox" name="scopes" value="events:read" checked> events:read</label>
+            <label class="checkbox-label"><input type="checkbox" name="scopes" value="events:write" checked> events:write</label>
+            <label class="checkbox-label"><input type="checkbox" name="scopes" value="presence:write" checked> presence:write</label>
+            <label class="checkbox-label"><input type="checkbox" name="scopes" value="memories:read" checked> memories:read</label>
+            <label class="checkbox-label"><input type="checkbox" name="scopes" value="memories:write" checked> memories:write</label>
+            <label class="checkbox-label"><input type="checkbox" name="scopes" value="artifacts:write"> artifacts:write</label>
           </div>
-          <small class="text-muted">Select which permissions this device will have</small>
+          <small class="text-muted">Recommended defaults are pre-selected for agent worker memory + event ingestion.</small>
         </div>
       </div>
       <div class="modal-footer">

@@ -709,6 +709,15 @@ class SpaceResponse(BaseModel):
     privacy_mode: bool
 
 
+def _max_spaces_per_agent() -> int:
+    raw = getattr(_cfg, "max_spaces_per_agent", 5)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 5
+    return max(1, value)
+
+
 @app.post("/api/spaces", name="api_create_space")
 def api_create_space(request: Request, body: SpaceCreate) -> SpaceResponse:
     """Create a new space."""
@@ -721,6 +730,21 @@ def api_create_space(request: Request, body: SpaceCreate) -> SpaceResponse:
     # Check user has admin permission on the agent
     if not check_agent_permission(db, user_id=user.user_id, agent_id=body.agent_id, required_role="admin"):
         raise HTTPException(status_code=403, detail="Requires admin permission on the agent")
+
+    # Enforce per-agent space limit.
+    try:
+        rows = db.query(
+            "SELECT COUNT(*)::INT AS count FROM spaces WHERE agent_id = :agent_id::uuid",
+            {"agent_id": body.agent_id},
+        )
+        existing_count = int((rows[0].get("count") if rows else 0) or 0)
+    except Exception as e:
+        logger.error("Failed to count existing spaces for agent %s: %s", body.agent_id, e)
+        raise HTTPException(status_code=500, detail="Failed to validate space limit")
+
+    space_limit = _max_spaces_per_agent()
+    if existing_count >= space_limit:
+        raise HTTPException(status_code=409, detail=f"Space limit reached ({space_limit}) for this agent")
 
     # Create the space
     space_id = str(uuid.uuid4())
