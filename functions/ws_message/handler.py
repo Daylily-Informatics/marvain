@@ -458,15 +458,7 @@ def _handle_topic_subscription(
             _send(event, connection_id, {"type": action_name, "ok": False, "error": "permission_denied"})
             return {"statusCode": 200, "body": "ok"}
 
-    subscriptions = conn_item.get("subscriptions") or []
     sub_key = f"{topic}:{agent_id}" if not space_id else f"{topic}:{agent_id}:{space_id}"
-    if sub_key not in subscriptions:
-        subscriptions.append(sub_key)
-        table.update_item(
-            Key={"connection_id": connection_id},
-            UpdateExpression="SET subscriptions = :subs",
-            ExpressionAttributeValues={":subs": subscriptions},
-        )
     _upsert_subscription_index(connection_id, sub_key, conn_item.get("ttl"))
 
     _send(

@@ -361,7 +361,6 @@ Resources:
           STACK_NAME: !Ref AWS::StackName
           WS_TABLE: !Ref WsConnectionsTable
           WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
-          WS_SUBSCRIPTIONS_INDEX_ENABLED: "true"
           WS_API_ENDPOINT: !Sub https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
           AUTO_APPROVE_POLICY_MODE: "enforce"
           MARVAIN_METRICS_NAMESPACE: "Marvain"
@@ -566,7 +565,6 @@ Resources:
           PLANNER_MODEL: !Ref PlannerModel
           WS_TABLE: !Ref WsConnectionsTable
           WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
-          WS_SUBSCRIPTIONS_INDEX_ENABLED: "true"
           WS_API_ENDPOINT: !Sub https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
           AUTO_APPROVE_POLICY_MODE: "enforce"
           MARVAIN_METRICS_NAMESPACE: "Marvain"
@@ -632,7 +630,6 @@ Resources:
           AUDIT_BUCKET: !Ref AuditBucket
           WS_TABLE: !Ref WsConnectionsTable
           WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
-          WS_SUBSCRIPTIONS_INDEX_ENABLED: "true"
           WS_API_ENDPOINT: !Sub https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
           DEVICE_RESULT_TIMEOUT_SECONDS: "90"
           MARVAIN_METRICS_NAMESPACE: "Marvain"
@@ -688,7 +685,6 @@ Resources:
           DB_NAME: !Ref DbName
           WS_TABLE: !Ref WsConnectionsTable
           WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
-          WS_SUBSCRIPTIONS_INDEX_ENABLED: "true"
           WS_API_ENDPOINT: !Sub https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
           ACTION_TIMEOUT_SWEEPER_BATCH_SIZE: "200"
           MARVAIN_METRICS_NAMESPACE: "Marvain"
@@ -740,7 +736,6 @@ Resources:
         Variables:
           WS_TABLE: !Ref WsConnectionsTable
           WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
-          WS_SUBSCRIPTIONS_INDEX_ENABLED: "true"
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
@@ -777,7 +772,6 @@ Resources:
         Variables:
           WS_TABLE: !Ref WsConnectionsTable
           WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
-          WS_SUBSCRIPTIONS_INDEX_ENABLED: "true"
           WS_AUTH_TTL_SECONDS: "3600"
           DB_RESOURCE_ARN: !GetAtt AuroraCluster.DBClusterArn
           DB_SECRET_ARN: !Ref DbCredentialsSecret
