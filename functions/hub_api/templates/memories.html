@@ -2,22 +2,7 @@
 
 {% block title %}Memories - Marvain{% endblock %}
 
-{% block head %}
-<style>
-.detail-section { margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid var(--color-gray-600); }
-.detail-section:last-child { border-bottom: none; margin-bottom: 0; }
-.detail-section h4 { margin: 0 0 1rem 0; color: var(--color-gray-200); font-size: 1rem; }
-.detail-section h4 i { margin-right: 0.5rem; color: var(--color-highlight); }
-.detail-grid { display: grid; gap: 0.75rem; }
-.detail-row { display: flex; align-items: center; gap: 1rem; }
-.detail-label { color: var(--color-gray-400); min-width: 120px; font-size: 0.875rem; }
-.detail-value { color: var(--color-gray-200); }
-.json-display { background: var(--color-gray-900); padding: 1rem; border-radius: var(--radius-md); overflow-x: auto; font-family: 'JetBrains Mono', monospace; font-size: 0.8125rem; color: var(--color-gray-200); max-height: 300px; overflow-y: auto; margin: 0; white-space: pre-wrap; word-wrap: break-word; }
-.loading-spinner { text-align: center; padding: 2rem; color: var(--color-gray-400); }
-.error-message { text-align: center; padding: 2rem; color: var(--color-error); }
-.participant-list { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-</style>
-{% endblock %}
+{# Styles moved to marvain.css: detail-section, detail-grid, json-display, participant-list #}
 
 {% block content %}
 <div class="page-header">

@@ -116,7 +116,7 @@
   </div>
   {% endfor %}
   {% else %}
-  <div class="empty-state" style="grid-column: 1 / -1;">
+  <div class="empty-state grid-full">
     <i class="fas fa-microchip fa-3x"></i>
     <h3>No Devices Registered</h3>
     <p>Register a device to allow programmatic access to your agents.</p>
@@ -322,8 +322,7 @@ function showDeviceTokenResult(result) {
   if (!container) {
     container = document.createElement('div');
     container.id = 'device-token-result';
-    container.className = 'card';
-    container.style.cssText = 'margin-bottom: 2rem; border: 2px solid var(--color-success); background: var(--color-gray-800);';
+    container.className = 'card token-result-card';
 
     // Insert at the top of the page content
     const pageHeader = document.querySelector('.page-header');
@@ -331,14 +330,14 @@ function showDeviceTokenResult(result) {
   }
 
   container.innerHTML = `
-    <div class="card-header" style="background: var(--color-success); color: white;">
-      <h3 class="card-title" style="color: white;"><i class="fas fa-check-circle"></i> Device Registered Successfully</h3>
-      <button type="button" class="btn btn-sm" onclick="dismissTokenResult()" style="color: white;">
+    <div class="card-header token-result-header">
+      <h3 class="card-title"><i class="fas fa-check-circle"></i> Device Registered Successfully</h3>
+      <button type="button" class="btn btn-sm token-result-header" onclick="dismissTokenResult()">
         <i class="fas fa-times"></i>
       </button>
     </div>
     <div class="card-body">
-      <div class="alert alert-warning" style="margin-bottom: 1rem;">
+      <div class="alert alert-warning alert-warning-box">
         <i class="fas fa-exclamation-triangle"></i>
         <strong>Important:</strong> Copy this token now. It will not be shown again!
       </div>
@@ -356,8 +355,7 @@ function showDeviceTokenResult(result) {
       <div class="form-group">
         <label>Device Token</label>
         <div class="input-group">
-          <input type="text" class="form-control" value="${result.token}" readonly id="device-token-input"
-                 style="font-family: monospace; font-size: 0.9rem;">
+          <input type="text" class="form-control font-mono" value="${result.token}" readonly id="device-token-input">
           <button type="button" class="btn btn-primary" onclick="copyToClipboard('device-token-input', 'Device Token')">
             <i class="fas fa-copy"></i> Copy Token
           </button>
