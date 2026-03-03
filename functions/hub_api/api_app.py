@@ -61,6 +61,9 @@ from starlette.middleware.sessions import SessionMiddleware
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+# Avoid leaking AWS response payloads (can include secrets) in local logs.
+for _name in ("botocore", "urllib3", "httpcore", "httpx"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 
 api_app = FastAPI(title="AgentHub API")
 

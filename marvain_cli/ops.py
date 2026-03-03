@@ -1067,7 +1067,7 @@ def gui_run(
 
     # Local development settings
     env["ENVIRONMENT"] = "local"
-    env["LOG_LEVEL"] = env.get("LOG_LEVEL", "DEBUG")
+    env["LOG_LEVEL"] = env.get("LOG_LEVEL", "INFO")
     # For local dev, use a static session secret (Lambda uses SESSION_SECRET_ARN)
     if "SESSION_SECRET_KEY" not in env:
         env["SESSION_SECRET_KEY"] = "local-dev-session-secret-key-change-in-production-123456"
@@ -1550,7 +1550,7 @@ def gui_start(
 
     # Local development settings
     env["ENVIRONMENT"] = "local"
-    env["LOG_LEVEL"] = env.get("LOG_LEVEL", "DEBUG")
+    env["LOG_LEVEL"] = env.get("LOG_LEVEL", "INFO")
     # Tell the app whether HTTPS is enabled (for SameSite cookie settings)
     env["HTTPS_ENABLED"] = "true" if https else "false"
     # For local dev, use a static session secret (Lambda uses SESSION_SECRET_ARN)
