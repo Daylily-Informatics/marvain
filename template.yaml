@@ -38,6 +38,16 @@ Parameters:
     Description: Prefix for Cognito Hosted UI domain (must be globally unique across all AWS accounts)
     Default: daylily-cognito
 
+  GuiCallbackUrls:
+    Type: CommaDelimitedList
+    Description: Allowed Cognito callback URLs for the (local) GUI OAuth flow
+    Default: "http://localhost:8084/auth/callback,https://localhost:8084/auth/callback"
+
+  GuiLogoutUrls:
+    Type: CommaDelimitedList
+    Description: Allowed Cognito logout URLs for the (local) GUI OAuth flow
+    Default: "http://localhost:8084/logged-out,https://localhost:8084/logged-out"
+
 Conditions:
   IsDeploymentV1: !Equals [!Ref ApiDeploymentVersion, "1"]
   IsDeploymentV2: !Equals [!Ref ApiDeploymentVersion, "2"]
@@ -197,6 +207,16 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireRecognitionArtifacts
+            Status: Enabled
+            Filter:
+              Prefix: recognition/
+            ExpirationInDays: 1
+            NoncurrentVersionExpirationInDays: 1
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
 
   AuditBucket:
     Type: AWS::S3::Bucket
@@ -227,6 +247,11 @@ Resources:
       VisibilityTimeout: 60
 
   ActionQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 60
+
+  RecognitionQueue:
     Type: AWS::SQS::Queue
     Properties:
       VisibilityTimeout: 60
@@ -320,6 +345,7 @@ Resources:
           DB_NAME: !Ref DbName
           TRANSCRIPT_QUEUE_URL: !Ref TranscriptQueue
           ACTION_QUEUE_URL: !Ref ActionQueue
+          RECOGNITION_QUEUE_URL: !Ref RecognitionQueue
           AUDIT_BUCKET: !Ref AuditBucket
           ARTIFACT_BUCKET: !Ref ArtifactBucket
           ADMIN_SECRET_ARN: !Ref AdminApiKeySecret
@@ -372,6 +398,7 @@ Resources:
               Resource:
                 - !GetAtt TranscriptQueue.Arn
                 - !GetAtt ActionQueue.Arn
+                - !GetAtt RecognitionQueue.Arn
             - Effect: Allow
               Action:
                 - logs:FilterLogEvents
@@ -910,14 +937,8 @@ Resources:
         - email
         - profile
         - aws.cognito.signin.user.admin
-      CallbackURLs:
-        # GUI runs locally only - no deployed GUI endpoint
-        - http://localhost:8084/auth/callback
-        - https://localhost:8084/auth/callback
-      LogoutURLs:
-        # GUI runs locally only - no deployed GUI endpoint
-        - http://localhost:8084/logged-out
-        - https://localhost:8084/logged-out
+      CallbackURLs: !Ref GuiCallbackUrls
+      LogoutURLs: !Ref GuiLogoutUrls
       SupportedIdentityProviders:
         - COGNITO
       ExplicitAuthFlows:
@@ -1049,6 +1070,9 @@ Outputs:
   ArtifactBucketName:
     Description: Bucket for artifacts
     Value: !Ref ArtifactBucket
+  RecognitionQueueUrl:
+    Description: SQS queue URL for recognition events (voice.sample / face.snapshot)
+    Value: !Ref RecognitionQueue
   AuditBucketName:
     Description: Bucket for tamper-evident audit log (Object Lock)
     Value: !Ref AuditBucket
@@ -1062,8 +1086,10 @@ Outputs:
     Description: Cognito Hosted UI domain
     Value: !Sub ${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
   CognitoLoginUrl:
-    Description: Cognito Hosted UI login URL (for local GUI at localhost:8084)
-    Value: !Sub https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com/login?client_id=${CognitoUserPoolClient}&response_type=code&scope=openid+email+profile&redirect_uri=http://localhost:8084/auth/callback
+    Description: Cognito Hosted UI login URL (uses the first GUI callback URL)
+    Value: !Sub
+      - https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com/login?client_id=${CognitoUserPoolClient}&response_type=code&scope=openid+email+profile&redirect_uri=${RedirectUri}
+      - RedirectUri: !Select [0, !Ref GuiCallbackUrls]
   SessionSecretArn:
     Description: Secrets Manager ARN containing session secret key
     Value: !Ref SessionSecret

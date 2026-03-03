@@ -101,6 +101,12 @@
         <button class="btn btn-sm btn-primary" onclick="manageConsent('{{ person.person_id }}', '{{ person.display_name }}')">
           <i class="fas fa-shield-alt"></i> Consent
         </button>
+        <button class="btn btn-sm btn-outline" onclick="openEnrollModal('{{ person.person_id }}', '{{ person.agent_id }}', '{{ person.display_name }}')">
+          <i class="fas fa-id-badge"></i> Enroll
+        </button>
+        <button class="btn btn-sm btn-outline" onclick="openLinkModal('{{ person.person_id }}', '{{ person.display_name }}')">
+          <i class="fas fa-link"></i> Link
+        </button>
       </div>
     </div>
   </div>
@@ -236,6 +242,97 @@
         <button type="submit" class="btn btn-primary">Save Consent</button>
       </div>
     </form>
+  </div>
+</div>
+
+<!-- Link Account Modal -->
+<div id="link-account-modal" class="modal" style="display: none;">
+  <div class="modal-backdrop" onclick="closeLinkModal()"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>Link Account for <span id="link-person-name"></span></h3>
+      <button type="button" class="btn btn-sm" onclick="closeLinkModal()">
+        <i class="fas fa-times"></i>
+      </button>
+    </div>
+    <form onsubmit="submitLinkAccount(event)">
+      <input type="hidden" id="link-person-id" name="person_id">
+      <div class="modal-body">
+        <p class="text-muted mb-md">Link a Cognito user (by email) to this Person so transcripts/memories can be attributed over time.</p>
+        <div class="form-group">
+          <label for="link-email">User Email *</label>
+          <input type="email" id="link-email" name="email" required placeholder="john@example.com">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" onclick="closeLinkModal()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Link Account</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Enrollment Modal (Voice / Face) -->
+<div id="enroll-modal" class="modal" style="display: none;">
+  <div class="modal-backdrop" onclick="closeEnrollModal()"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>Enroll Biometrics for <span id="enroll-person-name"></span></h3>
+      <button type="button" class="btn btn-sm" onclick="closeEnrollModal()">
+        <i class="fas fa-times"></i>
+      </button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="enroll-person-id">
+      <input type="hidden" id="enroll-agent-id">
+
+      <div class="card" style="background: var(--color-gray-800); margin-bottom: var(--spacing-md);">
+        <div class="card-header">
+          <h4 class="card-title"><i class="fas fa-microphone"></i> Voice</h4>
+        </div>
+        <div class="card-body">
+          <p class="text-muted">Record a short voice clip in the browser. (For best results, capture a clean sample.)</p>
+          <div style="display:flex; gap: var(--spacing-sm); flex-wrap: wrap; align-items: center;">
+            <button class="btn btn-outline btn-sm" type="button" onclick="startVoiceRecording()" id="voice-start-btn">
+              <i class="fas fa-circle"></i> Start
+            </button>
+            <button class="btn btn-outline btn-sm" type="button" onclick="stopVoiceRecording()" id="voice-stop-btn" disabled>
+              <i class="fas fa-stop"></i> Stop
+            </button>
+            <button class="btn btn-primary btn-sm" type="button" onclick="uploadVoiceEnrollment()" id="voice-upload-btn" disabled>
+              <i class="fas fa-upload"></i> Upload
+            </button>
+            <span class="text-muted text-sm" id="voice-status"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="background: var(--color-gray-800);">
+        <div class="card-header">
+          <h4 class="card-title"><i class="fas fa-camera"></i> Face</h4>
+        </div>
+        <div class="card-body">
+          <p class="text-muted">Capture a quick selfie snapshot for face recognition enrollment.</p>
+          <video id="face-video" autoplay playsinline style="width: 100%; max-height: 240px; background: #000; border-radius: var(--radius-sm);"></video>
+          <canvas id="face-canvas" style="display:none;"></canvas>
+          <div style="display:flex; gap: var(--spacing-sm); flex-wrap: wrap; align-items: center; margin-top: var(--spacing-sm);">
+            <button class="btn btn-outline btn-sm" type="button" onclick="startFaceCamera()" id="face-start-btn">
+              <i class="fas fa-video"></i> Start Camera
+            </button>
+            <button class="btn btn-outline btn-sm" type="button" onclick="takeFaceSnapshot()" id="face-snap-btn" disabled>
+              <i class="fas fa-camera"></i> Snapshot
+            </button>
+            <button class="btn btn-primary btn-sm" type="button" onclick="uploadFaceEnrollment()" id="face-upload-btn" disabled>
+              <i class="fas fa-upload"></i> Upload
+            </button>
+            <span class="text-muted text-sm" id="face-status"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-outline" onclick="closeEnrollModal()">Close</button>
+    </div>
   </div>
 </div>
 {% endblock %}
@@ -388,6 +485,210 @@ async function submitConsent(event) {
     Marvain.showToast('error', 'Error', error.message);
   }
 }
+
+function openLinkModal(personId, displayName) {
+  document.getElementById('link-person-id').value = personId;
+  document.getElementById('link-person-name').textContent = displayName;
+  document.getElementById('link-email').value = '';
+  Marvain.showModal('link-account-modal');
+}
+
+function closeLinkModal() {
+  Marvain.hideModal('link-account-modal');
+}
+
+async function submitLinkAccount(event) {
+  event.preventDefault();
+  const personId = document.getElementById('link-person-id').value;
+  const email = document.getElementById('link-email').value;
+  try {
+    Marvain.showLoading('Linking account...');
+    const response = await fetch(`/api/people/${personId}/link-account`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({email: email})
+    });
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to link account');
+    }
+    Marvain.hideLoading();
+    closeLinkModal();
+    Marvain.showToast('success', 'Success', 'Account linked');
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+}
+
+let _voiceRecorder = null;
+let _voiceChunks = [];
+let _voiceBlob = null;
+let _faceStream = null;
+let _faceBlob = null;
+
+function openEnrollModal(personId, agentId, displayName) {
+  document.getElementById('enroll-person-id').value = personId;
+  document.getElementById('enroll-agent-id').value = agentId;
+  document.getElementById('enroll-person-name').textContent = displayName;
+  document.getElementById('voice-status').textContent = '';
+  document.getElementById('face-status').textContent = '';
+  document.getElementById('voice-start-btn').disabled = false;
+  document.getElementById('voice-stop-btn').disabled = true;
+  document.getElementById('voice-upload-btn').disabled = true;
+  document.getElementById('face-start-btn').disabled = false;
+  document.getElementById('face-snap-btn').disabled = true;
+  document.getElementById('face-upload-btn').disabled = true;
+  _voiceChunks = [];
+  _voiceBlob = null;
+  _faceBlob = null;
+  Marvain.showModal('enroll-modal');
+}
+
+function closeEnrollModal() {
+  try { if (_voiceRecorder && _voiceRecorder.state !== 'inactive') _voiceRecorder.stop(); } catch (e) {}
+  _voiceRecorder = null;
+  _voiceChunks = [];
+  _voiceBlob = null;
+  if (_faceStream) {
+    _faceStream.getTracks().forEach(t => t.stop());
+    _faceStream = null;
+  }
+  const vid = document.getElementById('face-video');
+  if (vid) vid.srcObject = null;
+  Marvain.hideModal('enroll-modal');
+}
+
+async function startVoiceRecording() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    _voiceChunks = [];
+    _voiceBlob = null;
+    _voiceRecorder = new MediaRecorder(stream);
+    _voiceRecorder.ondataavailable = (e) => { if (e.data && e.data.size) _voiceChunks.push(e.data); };
+    _voiceRecorder.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      _voiceBlob = new Blob(_voiceChunks, {type: _voiceRecorder.mimeType || 'audio/webm'});
+      document.getElementById('voice-status').textContent = `Recorded ${Math.round(_voiceBlob.size/1024)} KB`;
+      document.getElementById('voice-upload-btn').disabled = false;
+      document.getElementById('voice-start-btn').disabled = false;
+      document.getElementById('voice-stop-btn').disabled = true;
+    };
+    _voiceRecorder.start();
+    document.getElementById('voice-status').textContent = 'Recording...';
+    document.getElementById('voice-start-btn').disabled = true;
+    document.getElementById('voice-stop-btn').disabled = false;
+    document.getElementById('voice-upload-btn').disabled = true;
+  } catch (error) {
+    Marvain.showToast('error', 'Error', error.message || 'Failed to start recording');
+  }
+}
+
+function stopVoiceRecording() {
+  try {
+    if (_voiceRecorder && _voiceRecorder.state !== 'inactive') _voiceRecorder.stop();
+  } catch (e) {}
+}
+
+async function uploadVoiceEnrollment() {
+  const personId = document.getElementById('enroll-person-id').value;
+  const agentId = document.getElementById('enroll-agent-id').value;
+  if (!_voiceBlob) return;
+  const contentType = _voiceBlob.type || 'audio/webm';
+  const filename = `voice_enroll_${personId}_${Date.now()}.webm`;
+  try {
+    Marvain.showLoading('Uploading voice clip...');
+    const presignResp = await fetch('/api/artifacts/presign', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({agent_id: agentId, filename: filename, content_type: contentType, purpose: 'recognition'})
+    });
+    if (!presignResp.ok) throw new Error('Failed to presign upload');
+    const presign = await presignResp.json();
+    const putResp = await fetch(presign.upload_url, {method:'PUT', headers:{'Content-Type': contentType}, body:_voiceBlob});
+    if (!putResp.ok) throw new Error('Failed to upload to S3');
+    const enrollResp = await fetch(`/api/people/${personId}/enroll/voice`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({artifact_key: presign.key, artifact_bucket: presign.bucket, content_type: contentType})
+    });
+    if (!enrollResp.ok) {
+      const err = await enrollResp.json();
+      throw new Error(err.detail || 'Failed to enqueue enrollment');
+    }
+    Marvain.hideLoading();
+    document.getElementById('voice-status').textContent = 'Uploaded and queued';
+    Marvain.showToast('success', 'Queued', 'Voice enrollment queued');
+    document.getElementById('voice-upload-btn').disabled = true;
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+}
+
+async function startFaceCamera() {
+  try {
+    _faceBlob = null;
+    const stream = await navigator.mediaDevices.getUserMedia({video: true});
+    _faceStream = stream;
+    const vid = document.getElementById('face-video');
+    vid.srcObject = stream;
+    document.getElementById('face-status').textContent = 'Camera ready';
+    document.getElementById('face-snap-btn').disabled = false;
+  } catch (error) {
+    Marvain.showToast('error', 'Error', error.message || 'Failed to start camera');
+  }
+}
+
+function takeFaceSnapshot() {
+  const vid = document.getElementById('face-video');
+  const canvas = document.getElementById('face-canvas');
+  if (!vid || !canvas) return;
+  canvas.width = vid.videoWidth || 640;
+  canvas.height = vid.videoHeight || 480;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
+  canvas.toBlob((blob) => {
+    _faceBlob = blob;
+    document.getElementById('face-status').textContent = blob ? `Snapshot ${Math.round(blob.size/1024)} KB` : 'Snapshot failed';
+    document.getElementById('face-upload-btn').disabled = !blob;
+  }, 'image/jpeg', 0.9);
+}
+
+async function uploadFaceEnrollment() {
+  const personId = document.getElementById('enroll-person-id').value;
+  const agentId = document.getElementById('enroll-agent-id').value;
+  if (!_faceBlob) return;
+  const contentType = 'image/jpeg';
+  const filename = `face_enroll_${personId}_${Date.now()}.jpg`;
+  try {
+    Marvain.showLoading('Uploading snapshot...');
+    const presignResp = await fetch('/api/artifacts/presign', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({agent_id: agentId, filename: filename, content_type: contentType, purpose: 'recognition'})
+    });
+    if (!presignResp.ok) throw new Error('Failed to presign upload');
+    const presign = await presignResp.json();
+    const putResp = await fetch(presign.upload_url, {method:'PUT', headers:{'Content-Type': contentType}, body:_faceBlob});
+    if (!putResp.ok) throw new Error('Failed to upload to S3');
+    const enrollResp = await fetch(`/api/people/${personId}/enroll/face`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({artifact_key: presign.key, artifact_bucket: presign.bucket, content_type: contentType})
+    });
+    if (!enrollResp.ok) {
+      const err = await enrollResp.json();
+      throw new Error(err.detail || 'Failed to enqueue enrollment');
+    }
+    Marvain.hideLoading();
+    document.getElementById('face-status').textContent = 'Uploaded and queued';
+    Marvain.showToast('success', 'Queued', 'Face enrollment queued');
+    document.getElementById('face-upload-btn').disabled = true;
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+}
 </script>
 {% endblock %}
-

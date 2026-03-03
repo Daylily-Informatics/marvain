@@ -59,6 +59,11 @@
           <i class="fas fa-lock"></i> Private
         </span>
         {% endif %}
+        {% if (space.livekit_room_mode or '') == 'stable' %}
+        <span class="badge badge-info" title="Stable LiveKit room (location space)">
+          <i class="fas fa-map-marker-alt"></i> Location
+        </span>
+        {% endif %}
       </div>
       <div class="space-details">
         <div class="detail-row">
@@ -68,6 +73,10 @@
         <div class="detail-row">
           <span class="detail-label">Created</span>
           <span class="detail-value">{{ space.created_at_relative or 'N/A' }}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Room Mode</span>
+          <span class="detail-value">{{ space.livekit_room_mode or 'ephemeral' }}</span>
         </div>
       </div>
       <div class="space-actions">
@@ -126,6 +135,14 @@
             <span>Enable Privacy Mode</span>
           </label>
           <small class="text-muted">When enabled, the planner will not save memories from this space</small>
+        </div>
+        <div class="form-group">
+          <label for="space-room-mode">LiveKit Room Mode</label>
+          <select id="space-room-mode" name="livekit_room_mode">
+            <option value="ephemeral" selected>Ephemeral (new room per join)</option>
+            <option value="stable">Stable (location space)</option>
+          </select>
+          <small class="text-muted">Stable rooms let devices and remote viewers join the same live stream over time</small>
         </div>
       </div>
       <div class="modal-footer">
@@ -300,7 +317,8 @@ async function submitCreateSpace(event) {
   const data = {
     agent_id: formData.get('agent_id'),
     name: formData.get('name'),
-    privacy_mode: formData.get('privacy_mode') === 'on'
+    privacy_mode: formData.get('privacy_mode') === 'on',
+    livekit_room_mode: formData.get('livekit_room_mode') || 'ephemeral'
   };
 
   try {

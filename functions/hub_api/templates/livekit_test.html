@@ -35,7 +35,7 @@
         <option value="">-- Select a space --</option>
         {% for space in spaces %}
         <option value="{{ space.space_id }}" {% if space.space_id == selected_space %}selected{% endif %}>
-          {{ space.name }} ({{ space.agent_name }}) - {{ space.space_id[:8] }}...
+          {{ space.name }} ({{ space.agent_name }}) - {{ space.space_id[:8] }}... [{{ space.livekit_room_mode|default('ephemeral') }}]
         </option>
         {% endfor %}
       </select>
@@ -1201,4 +1201,3 @@ python worker.py dev
 })();
 </script>
 {% endblock %}
-

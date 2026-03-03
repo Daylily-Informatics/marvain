@@ -106,6 +106,7 @@ api_app.add_middleware(
 _db: RdsData | None = None
 _sqs: Any = None
 _s3: Any = None
+_recognition_queue_url: str | None = os.getenv("RECOGNITION_QUEUE_URL")
 
 
 def _get_db() -> RdsData:
@@ -276,6 +277,16 @@ class UpdateMemberIn(BaseModel):
 
 class LiveKitTokenIn(BaseModel):
     space_id: str
+    room_mode: str | None = Field(
+        default=None,
+        description="Optional room mode override: 'ephemeral' (default) or 'stable'. If omitted, uses spaces.livekit_room_mode.",
+    )
+
+
+class LiveKitDeviceTokenIn(BaseModel):
+    space_id: str
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+    room_mode: str | None = Field(default="stable", description="Only 'stable' is supported for device tokens.")
 
 
 class LiveKitTokenOut(BaseModel):
@@ -288,6 +299,7 @@ class LiveKitTokenOut(BaseModel):
 class PresignIn(BaseModel):
     filename: str
     content_type: str = Field(default="application/octet-stream")
+    purpose: str | None = Field(default="general", description="general|recognition")
 
 
 # -----------------------------
@@ -329,6 +341,25 @@ def _space_agent_id(*, space_id: str) -> str | None:
     return str(v) if v else None
 
 
+def _space_livekit_room_mode(*, space_id: str) -> str:
+    """Return the LiveKit room mode for a space.
+
+    Back-compat: if the DB schema predates 015_spaces_livekit_room_mode.sql,
+    fall back to 'ephemeral'.
+    """
+    try:
+        rows = _get_db().query(
+            "SELECT livekit_room_mode FROM spaces WHERE space_id = CAST(:space_id AS uuid)",
+            params={"space_id": str(space_id)},
+        )
+        if not rows:
+            return "ephemeral"
+        v = str(rows[0].get("livekit_room_mode") or "").strip().lower()
+        return v if v in {"ephemeral", "stable"} else "ephemeral"
+    except Exception:
+        return "ephemeral"
+
+
 def _device_is_admin(device: AuthenticatedDevice) -> bool:
     kind = str((device.capabilities or {}).get("kind") or "").strip().lower()
     # Local agent workers are trusted orchestrators and must access any space
@@ -354,7 +385,9 @@ def _resolve_space_agent_for_device(
     return agent_id
 
 
-async def _mint_livekit_token_for_user(*, user: AuthenticatedUser, space_id: str) -> LiveKitTokenOut:
+async def _mint_livekit_token_for_user(
+    *, user: AuthenticatedUser, space_id: str, room_mode: str | None = None
+) -> LiveKitTokenOut:
     """Mint a LiveKit token with a unique room name per session.
 
     Architecture:
@@ -378,9 +411,17 @@ async def _mint_livekit_token_for_user(*, user: AuthenticatedUser, space_id: str
         raise HTTPException(status_code=403, detail="Forbidden")
     url, api_key, api_secret = _require_livekit_config()
 
-    # Generate a unique room name for this session - guarantees room creation event
+    resolved_mode = str(room_mode or _space_livekit_room_mode(space_id=space_id) or "ephemeral").strip().lower()
+    if resolved_mode not in {"ephemeral", "stable"}:
+        resolved_mode = "ephemeral"
+
+    # Always generate a session id for metadata/debugging, even in stable mode.
     room_session_id = uuid.uuid4().hex[:12]
-    room = f"{space_id}:{room_session_id}"
+    if resolved_mode == "stable":
+        room = str(space_id)
+    else:
+        # Ephemeral mode: guarantees a new room per join for reliable dispatch.
+        room = f"{space_id}:{room_session_id}"
 
     identity = f"user:{user.user_id}"
     token = mint_livekit_join_token(
@@ -541,7 +582,60 @@ def update_agent(agent_id: str, body: UpdateAgentIn, user: AuthenticatedUser = D
 @api_app.post("/v1/livekit/token", response_model=LiveKitTokenOut)
 async def livekit_token(body: LiveKitTokenIn, user: AuthenticatedUser = Depends(get_user)) -> LiveKitTokenOut:
     """Mint a short-lived LiveKit token for a user to join the room for a space."""
-    return await _mint_livekit_token_for_user(user=user, space_id=body.space_id)
+    return await _mint_livekit_token_for_user(user=user, space_id=body.space_id, room_mode=body.room_mode)
+
+
+@api_app.post("/v1/livekit/device-token", response_model=LiveKitTokenOut)
+async def livekit_device_token(
+    body: LiveKitDeviceTokenIn, device: AuthenticatedDevice = Depends(get_device)
+) -> LiveKitTokenOut:
+    """Mint a short-lived LiveKit token for a device to join a stable room for a space.
+
+    Intended for always-on Location Nodes that publish/consume AV in LiveKit.
+    """
+    require_scope(device, "events:write")
+
+    if str(body.room_mode or "stable").strip().lower() != "stable":
+        raise HTTPException(status_code=400, detail="Only room_mode='stable' is supported for device tokens")
+
+    agent_id = _resolve_space_agent_for_device(
+        device=device,
+        space_id=body.space_id,
+        not_found_detail="Space not found",
+        mismatch_status=404,
+        mismatch_detail="Space not found",
+    )
+    if is_agent_disabled(_get_db(), agent_id):
+        raise HTTPException(status_code=403, detail="Agent is disabled")
+
+    url, api_key, api_secret = _require_livekit_config()
+
+    room_session_id = uuid.uuid4().hex[:12]
+    room = str(body.space_id)
+    identity = f"device:{device.device_id}"
+
+    caps = body.capabilities or {}
+    publish_audio = bool(caps.get("publish_audio", True))
+    publish_video = bool(caps.get("publish_video", True))
+    subscribe_audio = bool(caps.get("subscribe_audio", True))
+
+    # LiveKit grants do not separate audio/video publish; treat any publish as can_publish.
+    token = mint_livekit_join_token(
+        api_key=api_key,
+        api_secret=api_secret,
+        identity=identity,
+        room=room,
+        name=(caps.get("name") or device.device_id),
+        ttl_seconds=3600,
+        can_publish=bool(publish_audio or publish_video),
+        can_subscribe=bool(subscribe_audio),
+        agent_metadata={
+            "space_id": str(body.space_id),
+            "agent_id": str(agent_id),
+            "room_session_id": room_session_id,
+        },
+    )
+    return LiveKitTokenOut(url=url, token=token, room=room, identity=identity)
 
 
 @api_app.post("/v1/agents/{agent_id}/claim_owner")
@@ -1001,6 +1095,622 @@ def api_update_device_location(device_id: str, body: DeviceLocationUpdateIn,
     }
 
 
+# -----------------------------------------------------------------------------
+# People & Consent v1 (machine-usable parity with GUI)
+# -----------------------------------------------------------------------------
+
+
+class PersonCreateV1In(BaseModel):
+    display_name: str = Field(..., min_length=1, max_length=255)
+    aliases: list[str] = Field(default_factory=list)
+
+
+class PersonPatchV1In(BaseModel):
+    display_name: str | None = Field(default=None, min_length=1, max_length=255)
+    aliases: list[str] | None = None
+
+
+class PersonV1Out(BaseModel):
+    person_id: str
+    agent_id: str
+    display_name: str
+    aliases: list[str] = Field(default_factory=list)
+    created_at: str | None = None
+
+
+def _parse_json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return parsed
+        except Exception:
+            return []
+    return []
+
+
+@api_app.get("/v1/agents/{agent_id}/people", response_model=list[PersonV1Out])
+def v1_list_people(agent_id: str, user: AuthenticatedUser = Depends(get_user)) -> list[PersonV1Out]:
+    _require_agent_role(user=user, agent_id=agent_id, required_role="member")
+    rows = _get_db().query(
+        """
+        SELECT person_id::TEXT as person_id,
+               agent_id::TEXT as agent_id,
+               display_name,
+               aliases::TEXT as aliases_json,
+               created_at::TEXT as created_at
+        FROM people
+        WHERE agent_id = :agent_id::uuid
+        ORDER BY created_at DESC
+        """,
+        {"agent_id": agent_id},
+    )
+    out: list[PersonV1Out] = []
+    for r in rows:
+        aliases_raw = _parse_json_list(r.get("aliases_json") or "[]")
+        aliases = [str(a).strip() for a in aliases_raw if str(a).strip()]
+        out.append(
+            PersonV1Out(
+                person_id=str(r.get("person_id") or ""),
+                agent_id=str(r.get("agent_id") or ""),
+                display_name=str(r.get("display_name") or ""),
+                aliases=aliases,
+                created_at=r.get("created_at"),
+            )
+        )
+    return out
+
+
+@api_app.post("/v1/agents/{agent_id}/people", response_model=PersonV1Out)
+def v1_create_person(agent_id: str, body: PersonCreateV1In, user: AuthenticatedUser = Depends(get_user)) -> PersonV1Out:
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+    person_id = str(uuid.uuid4())
+    display_name = str(body.display_name or "").strip()
+    if not display_name:
+        raise HTTPException(status_code=400, detail="display_name is required")
+    aliases = [str(a).strip() for a in (body.aliases or []) if str(a).strip()]
+    _get_db().execute(
+        """
+        INSERT INTO people(person_id, agent_id, display_name, aliases)
+        VALUES(:person_id::uuid, :agent_id::uuid, :display_name, :aliases::jsonb)
+        """,
+        {"person_id": person_id, "agent_id": agent_id, "display_name": display_name, "aliases": json.dumps(aliases)},
+    )
+    return PersonV1Out(person_id=person_id, agent_id=agent_id, display_name=display_name, aliases=aliases)
+
+
+def _get_person_agent_id_for_user(*, person_id: str, user: AuthenticatedUser) -> str:
+    rows = _get_db().query(
+        """
+        SELECT p.agent_id::TEXT as agent_id
+        FROM people p
+        JOIN agent_memberships m ON p.agent_id = m.agent_id
+        WHERE p.person_id = :person_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.revoked_at IS NULL
+        LIMIT 1
+        """,
+        {"person_id": person_id, "user_id": user.user_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Person not found")
+    return str(rows[0].get("agent_id") or "").strip()
+
+
+@api_app.get("/v1/people/{person_id}", response_model=PersonV1Out)
+def v1_get_person(person_id: str, user: AuthenticatedUser = Depends(get_user)) -> PersonV1Out:
+    agent_id = _get_person_agent_id_for_user(person_id=person_id, user=user)
+    rows = _get_db().query(
+        """
+        SELECT person_id::TEXT as person_id,
+               agent_id::TEXT as agent_id,
+               display_name,
+               aliases::TEXT as aliases_json,
+               created_at::TEXT as created_at
+        FROM people
+        WHERE person_id = :person_id::uuid
+          AND agent_id = :agent_id::uuid
+        LIMIT 1
+        """,
+        {"person_id": person_id, "agent_id": agent_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Person not found")
+    r = rows[0]
+    aliases_raw = _parse_json_list(r.get("aliases_json") or "[]")
+    aliases = [str(a).strip() for a in aliases_raw if str(a).strip()]
+    return PersonV1Out(
+        person_id=str(r.get("person_id") or ""),
+        agent_id=str(r.get("agent_id") or ""),
+        display_name=str(r.get("display_name") or ""),
+        aliases=aliases,
+        created_at=r.get("created_at"),
+    )
+
+
+@api_app.patch("/v1/people/{person_id}", response_model=PersonV1Out)
+def v1_patch_person(person_id: str, body: PersonPatchV1In, user: AuthenticatedUser = Depends(get_user)) -> PersonV1Out:
+    agent_id = _get_person_agent_id_for_user(person_id=person_id, user=user)
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+
+    updates: list[str] = []
+    params: dict[str, Any] = {"person_id": person_id, "agent_id": agent_id}
+
+    if body.display_name is not None:
+        display_name = str(body.display_name or "").strip()
+        if not display_name:
+            raise HTTPException(status_code=400, detail="display_name cannot be empty")
+        updates.append("display_name = :display_name")
+        params["display_name"] = display_name
+
+    if body.aliases is not None:
+        aliases = [str(a).strip() for a in (body.aliases or []) if str(a).strip()]
+        updates.append("aliases = :aliases::jsonb")
+        params["aliases"] = json.dumps(aliases)
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    _get_db().execute(
+        f"UPDATE people SET {', '.join(updates)} WHERE person_id = :person_id::uuid AND agent_id = :agent_id::uuid",
+        params,
+    )
+    return v1_get_person(person_id=person_id, user=user)
+
+
+class ConsentGrantV1In(BaseModel):
+    type: str = Field(..., description="voice|face|recording")
+    expires_at: str | None = None
+
+
+class ConsentUpdateV1In(BaseModel):
+    consents: list[ConsentGrantV1In] = Field(default_factory=list)
+
+
+class ConsentGrantV1Out(BaseModel):
+    consent_id: str
+    agent_id: str
+    person_id: str
+    consent_type: str
+    granted_at: str
+    expires_at: str | None
+    revoked_at: str | None
+
+
+@api_app.get("/v1/people/{person_id}/consent", response_model=list[ConsentGrantV1Out])
+def v1_list_consent(person_id: str, user: AuthenticatedUser = Depends(get_user)) -> list[ConsentGrantV1Out]:
+    # Requires membership on the owning agent.
+    _ = _get_person_agent_id_for_user(person_id=person_id, user=user)
+    rows = _get_db().query(
+        """
+        SELECT cg.consent_id::TEXT as consent_id,
+               cg.agent_id::TEXT as agent_id,
+               cg.person_id::TEXT as person_id,
+               cg.consent_type,
+               cg.granted_at::TEXT as granted_at,
+               cg.expires_at::TEXT as expires_at,
+               cg.revoked_at::TEXT as revoked_at
+        FROM consent_grants cg
+        WHERE cg.person_id = :person_id::uuid
+        ORDER BY cg.granted_at DESC
+        """,
+        {"person_id": person_id},
+    )
+    return [
+        ConsentGrantV1Out(
+            consent_id=str(r.get("consent_id") or ""),
+            agent_id=str(r.get("agent_id") or ""),
+            person_id=str(r.get("person_id") or ""),
+            consent_type=str(r.get("consent_type") or ""),
+            granted_at=str(r.get("granted_at") or ""),
+            expires_at=r.get("expires_at"),
+            revoked_at=r.get("revoked_at"),
+        )
+        for r in rows
+    ]
+
+
+@api_app.post("/v1/people/{person_id}/consent")
+def v1_update_consent(person_id: str, body: ConsentUpdateV1In, user: AuthenticatedUser = Depends(get_user)) -> dict[str, Any]:
+    agent_id = _get_person_agent_id_for_user(person_id=person_id, user=user)
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+
+    valid_types = {"voice", "face", "recording"}
+    for c in body.consents or []:
+        ctype = str(c.type or "").strip().lower()
+        if ctype not in valid_types:
+            raise HTTPException(status_code=400, detail=f"Invalid consent type: {ctype!r}")
+
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    tx = _get_db().begin()
+    try:
+        # Revoke all active grants and replace with the provided set.
+        _get_db().execute(
+            "UPDATE consent_grants SET revoked_at = :now::timestamptz WHERE person_id = :person_id::uuid AND revoked_at IS NULL",
+            {"person_id": person_id, "now": now},
+            transaction_id=tx,
+        )
+
+        for c in body.consents or []:
+            consent_id = str(uuid.uuid4())
+            expires_at = None
+            if c.expires_at:
+                try:
+                    expires_at = datetime.fromisoformat(str(c.expires_at).replace("Z", "+00:00"))
+                except Exception:
+                    expires_at = None
+            _get_db().execute(
+                """
+                INSERT INTO consent_grants(consent_id, agent_id, person_id, consent_type, expires_at)
+                VALUES(
+                  :consent_id::uuid,
+                  :agent_id::uuid,
+                  :person_id::uuid,
+                  :consent_type,
+                  CASE WHEN :expires_at IS NULL THEN NULL ELSE :expires_at::timestamptz END
+                )
+                """,
+                {
+                    "consent_id": consent_id,
+                    "agent_id": agent_id,
+                    "person_id": person_id,
+                    "consent_type": str(c.type).strip().lower(),
+                    "expires_at": expires_at.isoformat() if expires_at else None,
+                },
+                transaction_id=tx,
+            )
+        _get_db().commit(tx)
+    except Exception:
+        _get_db().rollback(tx)
+        raise
+
+    return {"ok": True, "person_id": person_id}
+
+
+class LinkPersonAccountV1In(BaseModel):
+    email: str | None = None
+    user_id: str | None = None
+
+
+@api_app.post("/v1/people/{person_id}/link-account")
+def v1_link_person_account(
+    person_id: str, body: LinkPersonAccountV1In, user: AuthenticatedUser = Depends(get_user)
+) -> dict[str, Any]:
+    """Link a Cognito user account (users.user_id) to a Person for an agent."""
+    agent_id = _get_person_agent_id_for_user(person_id=person_id, user=user)
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+
+    link_user_id = str(body.user_id or "").strip()
+    email = str(body.email or "").strip()
+    if not link_user_id and not email:
+        raise HTTPException(status_code=400, detail="email or user_id is required")
+
+    if email:
+        if not _cfg.cognito_user_pool_id:
+            raise HTTPException(status_code=500, detail="COGNITO_USER_POOL_ID not configured")
+        try:
+            cognito_sub, resolved_email = lookup_cognito_user_by_email(
+                user_pool_id=_cfg.cognito_user_pool_id,
+                email=email,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        link_user_id = ensure_user_row(_get_db(), cognito_sub=cognito_sub, email=(resolved_email or email))
+
+    if not link_user_id:
+        raise HTTPException(status_code=400, detail="Could not resolve user_id")
+
+    # Ensure the user exists.
+    urows = _get_db().query(
+        "SELECT 1 FROM users WHERE user_id = :user_id::uuid LIMIT 1",
+        {"user_id": link_user_id},
+    )
+    if not urows:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    tx = _get_db().begin()
+    try:
+        # Enforce uniqueness by deleting any prior mappings for this user or person.
+        _get_db().execute(
+            """
+            DELETE FROM person_accounts
+            WHERE agent_id = :agent_id::uuid
+              AND (user_id = :user_id::uuid OR person_id = :person_id::uuid)
+            """,
+            {"agent_id": agent_id, "user_id": link_user_id, "person_id": person_id},
+            transaction_id=tx,
+        )
+        _get_db().execute(
+            """
+            INSERT INTO person_accounts(person_account_id, agent_id, user_id, person_id)
+            VALUES(:person_account_id::uuid, :agent_id::uuid, :user_id::uuid, :person_id::uuid)
+            """,
+            {
+                "person_account_id": str(uuid.uuid4()),
+                "agent_id": agent_id,
+                "user_id": link_user_id,
+                "person_id": person_id,
+            },
+            transaction_id=tx,
+        )
+        _get_db().commit(tx)
+    except Exception:
+        _get_db().rollback(tx)
+        raise
+
+    return {"ok": True, "agent_id": agent_id, "person_id": person_id, "user_id": link_user_id}
+
+
+# -----------------------------------------------------------------------------
+# Biometrics (voiceprints/faceprints) and identification
+# -----------------------------------------------------------------------------
+
+
+def _vector_literal(values: list[float], expected_dim: int) -> str:
+    if len(values) != expected_dim:
+        raise HTTPException(status_code=400, detail=f"Invalid embedding dim (expected {expected_dim}, got {len(values)})")
+    # Limit precision to keep payloads smaller and stable.
+    return "[" + ",".join(f"{float(x):.6f}" for x in values) + "]"
+
+
+def _require_person_consent(*, agent_id: str, person_id: str, consent_type: str) -> None:
+    rows = _get_db().query(
+        """
+        SELECT 1
+        FROM consent_grants
+        WHERE agent_id = :agent_id::uuid
+          AND person_id = :person_id::uuid
+          AND consent_type = :consent_type
+          AND revoked_at IS NULL
+          AND (expires_at IS NULL OR expires_at > now())
+        LIMIT 1
+        """,
+        {"agent_id": agent_id, "person_id": person_id, "consent_type": consent_type},
+    )
+    if not rows:
+        raise HTTPException(status_code=403, detail=f"Missing active consent for {consent_type}")
+
+
+def _require_device_agent_access(*, device: AuthenticatedDevice, agent_id: str) -> None:
+    if str(device.agent_id) == str(agent_id):
+        return
+    if _device_is_admin(device):
+        return
+    raise HTTPException(status_code=403, detail="Forbidden")
+
+
+class VoiceprintCreateIn(BaseModel):
+    embedding: list[float] = Field(..., min_length=256, max_length=256)
+    model: str = Field(default="resemblyzer")
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class FaceprintCreateIn(BaseModel):
+    embedding: list[float] = Field(..., min_length=512, max_length=512)
+    model: str = Field(default="insightface-arcface")
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+@api_app.post("/v1/people/{person_id}/voiceprints")
+def v1_create_voiceprint(person_id: str, body: VoiceprintCreateIn, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
+    require_scope(device, "biometrics:write")
+    rows = _get_db().query(
+        "SELECT agent_id::TEXT as agent_id FROM people WHERE person_id = :person_id::uuid LIMIT 1",
+        {"person_id": person_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Person not found")
+    agent_id = str(rows[0].get("agent_id") or "")
+    _require_device_agent_access(device=device, agent_id=agent_id)
+    _require_person_consent(agent_id=agent_id, person_id=person_id, consent_type="voice")
+
+    voiceprint_id = str(uuid.uuid4())
+    _get_db().execute(
+        """
+        INSERT INTO voiceprints(voiceprint_id, agent_id, person_id, embedding, model, metadata)
+        VALUES(
+          :voiceprint_id::uuid,
+          :agent_id::uuid,
+          :person_id::uuid,
+          CAST(:embedding AS vector),
+          :model,
+          :metadata::jsonb
+        )
+        """,
+        {
+            "voiceprint_id": voiceprint_id,
+            "agent_id": agent_id,
+            "person_id": person_id,
+            "embedding": _vector_literal(body.embedding, 256),
+            "model": str(body.model or "resemblyzer").strip(),
+            "metadata": json.dumps(body.metadata or {}),
+        },
+    )
+    return {"ok": True, "voiceprint_id": voiceprint_id}
+
+
+@api_app.post("/v1/people/{person_id}/faceprints")
+def v1_create_faceprint(person_id: str, body: FaceprintCreateIn, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
+    require_scope(device, "biometrics:write")
+    rows = _get_db().query(
+        "SELECT agent_id::TEXT as agent_id FROM people WHERE person_id = :person_id::uuid LIMIT 1",
+        {"person_id": person_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Person not found")
+    agent_id = str(rows[0].get("agent_id") or "")
+    _require_device_agent_access(device=device, agent_id=agent_id)
+    _require_person_consent(agent_id=agent_id, person_id=person_id, consent_type="face")
+
+    faceprint_id = str(uuid.uuid4())
+    _get_db().execute(
+        """
+        INSERT INTO faceprints(faceprint_id, agent_id, person_id, embedding, model, metadata)
+        VALUES(
+          :faceprint_id::uuid,
+          :agent_id::uuid,
+          :person_id::uuid,
+          CAST(:embedding AS vector),
+          :model,
+          :metadata::jsonb
+        )
+        """,
+        {
+            "faceprint_id": faceprint_id,
+            "agent_id": agent_id,
+            "person_id": person_id,
+            "embedding": _vector_literal(body.embedding, 512),
+            "model": str(body.model or "insightface-arcface").strip(),
+            "metadata": json.dumps(body.metadata or {}),
+        },
+    )
+    return {"ok": True, "faceprint_id": faceprint_id}
+
+
+@api_app.delete("/v1/voiceprints/{voiceprint_id}")
+def v1_revoke_voiceprint(voiceprint_id: str, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
+    require_scope(device, "biometrics:write")
+    rows = _get_db().query(
+        "SELECT agent_id::TEXT as agent_id FROM voiceprints WHERE voiceprint_id = :id::uuid LIMIT 1",
+        {"id": voiceprint_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Voiceprint not found")
+    agent_id = str(rows[0].get("agent_id") or "")
+    _require_device_agent_access(device=device, agent_id=agent_id)
+    _get_db().execute(
+        "UPDATE voiceprints SET revoked_at = now() WHERE voiceprint_id = :id::uuid",
+        {"id": voiceprint_id},
+    )
+    return {"ok": True, "voiceprint_id": voiceprint_id, "revoked": True}
+
+
+@api_app.delete("/v1/faceprints/{faceprint_id}")
+def v1_revoke_faceprint(faceprint_id: str, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
+    require_scope(device, "biometrics:write")
+    rows = _get_db().query(
+        "SELECT agent_id::TEXT as agent_id FROM faceprints WHERE faceprint_id = :id::uuid LIMIT 1",
+        {"id": faceprint_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Faceprint not found")
+    agent_id = str(rows[0].get("agent_id") or "")
+    _require_device_agent_access(device=device, agent_id=agent_id)
+    _get_db().execute(
+        "UPDATE faceprints SET revoked_at = now() WHERE faceprint_id = :id::uuid",
+        {"id": faceprint_id},
+    )
+    return {"ok": True, "faceprint_id": faceprint_id, "revoked": True}
+
+
+class IdentifyEmbeddingIn(BaseModel):
+    agent_id: str
+    embedding: list[float]
+    k: int = Field(default=1, ge=1, le=10)
+
+
+@api_app.post("/v1/identify/voice")
+def v1_identify_voice(body: IdentifyEmbeddingIn, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
+    require_scope(device, "biometrics:read")
+    agent_id = str(body.agent_id or "").strip()
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="agent_id is required")
+    _require_device_agent_access(device=device, agent_id=agent_id)
+
+    thr = float(os.getenv("VOICE_MATCH_THRESHOLD", "0.35"))
+    q = _vector_literal([float(x) for x in (body.embedding or [])], 256)
+
+    rows = _get_db().query(
+        """
+        SELECT vp.person_id::TEXT as person_id,
+               p.display_name,
+               (vp.embedding <=> CAST(:q AS vector))::DOUBLE PRECISION as distance
+        FROM voiceprints vp
+        JOIN people p ON p.person_id = vp.person_id
+        WHERE vp.agent_id = :agent_id::uuid
+          AND vp.revoked_at IS NULL
+          AND EXISTS (
+            SELECT 1 FROM consent_grants cg
+            WHERE cg.agent_id = vp.agent_id
+              AND cg.person_id = vp.person_id
+              AND cg.consent_type = 'voice'
+              AND cg.revoked_at IS NULL
+              AND (cg.expires_at IS NULL OR cg.expires_at > now())
+          )
+        ORDER BY vp.embedding <=> CAST(:q AS vector)
+        LIMIT :limit
+        """,
+        {"agent_id": agent_id, "q": q, "limit": int(body.k or 1)},
+    )
+    candidates: list[dict[str, Any]] = []
+    for r in rows:
+        d = float(r.get("distance") or 0.0)
+        candidates.append(
+            {
+                "person_id": r.get("person_id"),
+                "display_name": r.get("display_name"),
+                "distance": d,
+                "confidence": max(0.0, min(1.0, 1.0 - d)),
+            }
+        )
+    best = candidates[0] if candidates else None
+    matched = bool(best) and float(best.get("distance") or 999) <= thr
+    return {"matched": matched, "threshold": thr, "best": best, "candidates": candidates}
+
+
+@api_app.post("/v1/identify/face")
+def v1_identify_face(body: IdentifyEmbeddingIn, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
+    require_scope(device, "biometrics:read")
+    agent_id = str(body.agent_id or "").strip()
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="agent_id is required")
+    _require_device_agent_access(device=device, agent_id=agent_id)
+
+    thr = float(os.getenv("FACE_MATCH_THRESHOLD", "0.50"))
+    q = _vector_literal([float(x) for x in (body.embedding or [])], 512)
+
+    rows = _get_db().query(
+        """
+        SELECT fp.person_id::TEXT as person_id,
+               p.display_name,
+               (fp.embedding <=> CAST(:q AS vector))::DOUBLE PRECISION as distance
+        FROM faceprints fp
+        JOIN people p ON p.person_id = fp.person_id
+        WHERE fp.agent_id = :agent_id::uuid
+          AND fp.revoked_at IS NULL
+          AND EXISTS (
+            SELECT 1 FROM consent_grants cg
+            WHERE cg.agent_id = fp.agent_id
+              AND cg.person_id = fp.person_id
+              AND cg.consent_type = 'face'
+              AND cg.revoked_at IS NULL
+              AND (cg.expires_at IS NULL OR cg.expires_at > now())
+          )
+        ORDER BY fp.embedding <=> CAST(:q AS vector)
+        LIMIT :limit
+        """,
+        {"agent_id": agent_id, "q": q, "limit": int(body.k or 1)},
+    )
+    candidates: list[dict[str, Any]] = []
+    for r in rows:
+        d = float(r.get("distance") or 0.0)
+        candidates.append(
+            {
+                "person_id": r.get("person_id"),
+                "display_name": r.get("display_name"),
+                "distance": d,
+                "confidence": max(0.0, min(1.0, 1.0 - d)),
+            }
+        )
+    best = candidates[0] if candidates else None
+    matched = bool(best) and float(best.get("distance") or 999) <= thr
+    return {"matched": matched, "threshold": thr, "best": best, "candidates": candidates}
+
+
 @api_app.post("/v1/admin/spaces/{space_id}/privacy", dependencies=[Depends(require_admin)])
 def admin_set_privacy(space_id: str, body: SetPrivacyIn) -> dict[str, Any]:
     rows = _get_db().query(
@@ -1039,6 +1749,31 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
     if is_privacy_mode(_get_db(), body.space_id):
         return IngestEventOut(event_id="privacy_mode", queued=False)
     event_id = str(uuid.uuid4())
+    resolved_person_id = str(body.person_id or "").strip()
+
+    # Best-effort: attribute transcript events to a person when we can map a
+    # LiveKit participant identity -> user_id -> person_id.
+    if not resolved_person_id and body.type == "transcript_chunk":
+        participant_identity = body.payload.get("participant_identity")
+        if isinstance(participant_identity, str) and participant_identity.startswith("user:"):
+            user_id = participant_identity.split(":", 1)[1].strip()
+            if user_id:
+                try:
+                    rows = _get_db().query(
+                        """
+                        SELECT person_id::TEXT as person_id
+                        FROM person_accounts
+                        WHERE agent_id = :agent_id::uuid
+                          AND user_id = :user_id::uuid
+                        LIMIT 1
+                        """,
+                        {"agent_id": space_agent_id, "user_id": user_id},
+                    )
+                    if rows and rows[0].get("person_id"):
+                        resolved_person_id = str(rows[0]["person_id"])
+                except Exception:
+                    # Back-compat: table not present or query failed.
+                    pass
     _get_db().execute(
         """INSERT INTO events(event_id, agent_id, space_id, device_id, person_id, type, payload)
            VALUES (:event_id::uuid, :agent_id::uuid, :space_id::uuid, :device_id::uuid,
@@ -1048,7 +1783,7 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
             "agent_id": space_agent_id,
             "space_id": body.space_id,
             "device_id": device.device_id,
-            "person_id": body.person_id or "",
+            "person_id": resolved_person_id or "",
             "type": body.type,
             "payload": json.dumps(body.payload),
         },
@@ -1067,6 +1802,25 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
             ),
         )
         queued = True
+    if body.type in {"voice.sample", "face.snapshot"} and _recognition_queue_url:
+        try:
+            _get_sqs().send_message(
+                QueueUrl=str(_recognition_queue_url),
+                MessageBody=json.dumps(
+                    {
+                        "event_id": event_id,
+                        "agent_id": space_agent_id,
+                        "space_id": body.space_id,
+                        "device_id": device.device_id,
+                        "person_id": resolved_person_id or None,
+                        "type": body.type,
+                        "payload": body.payload,
+                    }
+                ),
+            )
+            queued = True
+        except Exception as exc:
+            logger.warning("Failed to enqueue recognition event: %s", exc)
     if _cfg.audit_bucket:
         append_audit_entry(
             _get_db(),
@@ -1087,7 +1841,7 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
                     "event_id": event_id,
                     "type": body.type,
                     "payload": body.payload,
-                    "person_id": body.person_id,
+                    "person_id": resolved_person_id or None,
                 }
             },
         )
@@ -1241,6 +1995,10 @@ class RecallIn(BaseModel):
 
     agent_id: str
     space_id: str | None = None
+    person_id: str | None = Field(
+        default=None,
+        description="Optional filter: only memories about/including this person (subject_person_id or participants contains person:<id>)",
+    )
     query: str = Field(..., min_length=1, max_length=2000)
     k: int = Field(default=8, ge=1, le=50)
     tiers: list[str] | None = None
@@ -1266,6 +2024,7 @@ def _recall_recent_fallback(
     *,
     agent_id: str,
     space_id: str | None,
+    person_id: str | None,
     tiers: list[str] | None,
     limit: int,
 ) -> RecallOut:
@@ -1282,6 +2041,12 @@ def _recall_recent_fallback(
         space_clause = "AND (space_id = :space_id::uuid OR space_id IS NULL)"
         params["space_id"] = space_id
 
+    person_clause = ""
+    if person_id:
+        person_clause = "AND (subject_person_id = :person_id::uuid OR participants @> :person_ref::jsonb)"
+        params["person_id"] = person_id
+        params["person_ref"] = json.dumps([f"person:{person_id}"])
+
     rows = _get_db().query(
         f"""
         SELECT memory_id::TEXT as memory_id,
@@ -1292,6 +2057,7 @@ def _recall_recent_fallback(
         WHERE agent_id = :agent_id::uuid
           {tier_clause}
           {space_clause}
+          {person_clause}
         ORDER BY created_at DESC
         LIMIT :limit
         """,
@@ -1340,6 +2106,7 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
         return _recall_recent_fallback(
             agent_id=target_agent_id,
             space_id=body.space_id,
+            person_id=body.person_id,
             tiers=body.tiers,
             limit=body.k,
         )
@@ -1358,6 +2125,7 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
         return _recall_recent_fallback(
             agent_id=target_agent_id,
             space_id=body.space_id,
+            person_id=body.person_id,
             tiers=body.tiers,
             limit=body.k,
         )
@@ -1379,6 +2147,12 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
         space_clause = "AND (space_id = :space_id::uuid OR space_id IS NULL)"
         params["space_id"] = body.space_id
 
+    person_clause = ""
+    if body.person_id:
+        person_clause = "AND (subject_person_id = :person_id::uuid OR participants @> :person_ref::jsonb)"
+        params["person_id"] = body.person_id
+        params["person_ref"] = json.dumps([f"person:{body.person_id}"])
+
     # Query with pgvector cosine distance
     rows = _get_db().query(
         f"""
@@ -1392,6 +2166,7 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
           AND embedding IS NOT NULL
           {tier_clause}
           {space_clause}
+          {person_clause}
         ORDER BY embedding <=> CAST(:q AS vector)
         LIMIT :limit
         """,
@@ -1413,6 +2188,7 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
         return _recall_recent_fallback(
             agent_id=target_agent_id,
             space_id=body.space_id,
+            person_id=body.person_id,
             tiers=body.tiers,
             limit=body.k,
         )
@@ -1507,13 +2283,17 @@ def presign_upload(body: PresignIn, device: AuthenticatedDevice = Depends(get_de
     require_scope(device, "artifacts:write")
     if not _cfg.artifact_bucket:
         raise HTTPException(status_code=500, detail="Artifact bucket not configured")
-    key = f"artifacts/agent_id={device.agent_id}/{uuid.uuid4()}_{body.filename}"
+    purpose = str(body.purpose or "general").strip().lower()
+    if purpose not in {"general", "recognition"}:
+        purpose = "general"
+    prefix = "recognition" if purpose == "recognition" else "artifacts"
+    key = f"{prefix}/agent_id={device.agent_id}/{uuid.uuid4()}_{body.filename}"
     url = _get_s3().generate_presigned_url(
         ClientMethod="put_object",
         Params={"Bucket": _cfg.artifact_bucket, "Key": key, "ContentType": body.content_type},
         ExpiresIn=900,
     )
-    return {"upload_url": url, "bucket": _cfg.artifact_bucket, "key": key}
+    return {"upload_url": url, "bucket": _cfg.artifact_bucket, "key": key, "purpose": purpose}
 
 
 # -----------------------------------------------------------------------------
@@ -1600,6 +2380,153 @@ def device_heartbeat(
     emit_ms("DeviceFreshnessLagMs", value_ms=prev_lag_ms, dimensions={"AgentId": str(device.agent_id)})
 
     return HeartbeatOut(ok=True, device_id=device.device_id, last_heartbeat_at=ts)
+
+
+# -----------------------------------------------------------------------------
+# Human Presence Endpoint (people presence within a space)
+# -----------------------------------------------------------------------------
+
+
+class PresenceUpdateIn(BaseModel):
+    person_id: str
+    status: str = Field(..., description="present|absent")
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    modality: str = Field(default="manual", description="voice|face|manual")
+    observed_at: str | None = None
+    source_device_id: str | None = None
+
+
+class PresenceIn(BaseModel):
+    updates: list[PresenceUpdateIn] = Field(default_factory=list)
+
+
+@api_app.post("/v1/spaces/{space_id}/presence")
+def update_space_presence(space_id: str, body: PresenceIn, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
+    """Upsert presence records for people in a space (requires presence:write)."""
+    require_scope(device, "presence:write")
+
+    agent_id = _resolve_space_agent_for_device(
+        device=device,
+        space_id=space_id,
+        not_found_detail="Space not found",
+        mismatch_status=404,
+        mismatch_detail="Space not found",
+    )
+
+    db = _get_db()
+    applied: list[dict[str, Any]] = []
+    for upd in body.updates or []:
+        person_id = str(upd.person_id or "").strip()
+        if not person_id:
+            continue
+        status = str(upd.status or "").strip().lower()
+        if status not in {"present", "absent"}:
+            raise HTTPException(status_code=400, detail="Invalid presence status (expected present|absent)")
+        modality = str(upd.modality or "manual").strip().lower()
+        if modality not in {"voice", "face", "manual"}:
+            modality = "manual"
+
+        # Ensure person belongs to this agent.
+        prow = db.query(
+            """
+            SELECT 1
+            FROM people
+            WHERE person_id = :person_id::uuid
+              AND agent_id = :agent_id::uuid
+            LIMIT 1
+            """,
+            {"person_id": person_id, "agent_id": agent_id},
+        )
+        if not prow:
+            raise HTTPException(status_code=404, detail="Person not found")
+
+        source_device_id = str(upd.source_device_id or device.device_id or "").strip() or device.device_id
+        # Upsert (select then update/insert) to avoid requiring a unique constraint.
+        existing = db.query(
+            """
+            SELECT presence_id::TEXT as presence_id
+            FROM presence
+            WHERE agent_id = :agent_id::uuid
+              AND space_id = :space_id::uuid
+              AND person_id = :person_id::uuid
+            LIMIT 1
+            """,
+            {"agent_id": agent_id, "space_id": space_id, "person_id": person_id},
+        )
+        if existing:
+            db.execute(
+                """
+                UPDATE presence
+                SET status = :status,
+                    confidence = :confidence,
+                    device_id = :device_id::uuid,
+                    last_update = COALESCE(:observed_at::timestamptz, now())
+                WHERE presence_id = :presence_id::uuid
+                """,
+                {
+                    "presence_id": existing[0]["presence_id"],
+                    "status": status,
+                    "confidence": float(upd.confidence or 0),
+                    "device_id": source_device_id,
+                    "observed_at": upd.observed_at,
+                },
+            )
+        else:
+            presence_id = str(uuid.uuid4())
+            db.execute(
+                """
+                INSERT INTO presence(presence_id, agent_id, space_id, person_id, device_id, status, confidence, last_update)
+                VALUES(
+                  :presence_id::uuid,
+                  :agent_id::uuid,
+                  :space_id::uuid,
+                  :person_id::uuid,
+                  :device_id::uuid,
+                  :status,
+                  :confidence,
+                  COALESCE(:observed_at::timestamptz, now())
+                )
+                """,
+                {
+                    "presence_id": presence_id,
+                    "agent_id": agent_id,
+                    "space_id": space_id,
+                    "person_id": person_id,
+                    "device_id": source_device_id,
+                    "status": status,
+                    "confidence": float(upd.confidence or 0),
+                    "observed_at": upd.observed_at,
+                },
+            )
+
+        applied.append(
+            {
+                "person_id": person_id,
+                "status": status,
+                "confidence": float(upd.confidence or 0),
+                "modality": modality,
+                "device_id": source_device_id,
+            }
+        )
+
+        # Broadcast presence update
+        try:
+            broadcast_event(
+                event_type="presence.updated",
+                agent_id=agent_id,
+                space_id=space_id,
+                payload={
+                    "person_id": person_id,
+                    "status": status,
+                    "confidence": float(upd.confidence or 0),
+                    "modality": modality,
+                    "device_id": source_device_id,
+                },
+            )
+        except Exception as exc:
+            logger.warning("Failed to broadcast human presence: %s", exc)
+
+    return {"ok": True, "space_id": space_id, "updates_applied": applied}
 
 
 # -----------------------------------------------------------------------------
