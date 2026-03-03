@@ -121,6 +121,34 @@ marvain gui status
 
 Open **http://localhost:8084** in your browser. You'll be redirected to Cognito for login.
 
+## 8b) Remote Access via Tailscale (Recommended)
+
+If you want to access the GUI from your phone/laptop when you're not on the same network:
+
+1. Install and log into Tailscale on the machine running Marvain GUI.
+2. Serve the local GUI port over Tailscale HTTPS:
+
+```sh
+tailscale serve https / http://localhost:8084
+```
+
+3. Restart the GUI with `PUBLIC_BASE_URL` set to your Tailscale URL (so Cognito redirects back correctly):
+
+```sh
+export PUBLIC_BASE_URL="https://<your-machine>.<your-tailnet>.ts.net"
+marvain gui restart --no-https
+```
+
+4. Update Cognito callback/logout URLs to include the Tailscale URL (redeploy stack with parameter overrides):
+
+```sh
+marvain deploy --no-guided --parameter-overrides \\
+  GuiCallbackUrls="http://localhost:8084/auth/callback,https://localhost:8084/auth/callback,${PUBLIC_BASE_URL}/auth/callback" \\
+  GuiLogoutUrls="http://localhost:8084/logged-out,https://localhost:8084/logged-out,${PUBLIC_BASE_URL}/logged-out"
+```
+
+After this, login should work from any Tailscale-connected device.
+
 ### GUI Pages at a Glance
 
 | Page | URL | What It Does |
@@ -302,6 +330,51 @@ Then create actions in `/actions` (or via API):
 - `device_command` + payload `{"device_id":"<device-id>","command":"list_cameras","data":{}}`
 - `device_command` + payload `{"device_id":"<device-id>","command":"capture_photo","data":{"device":0}}`
 - `shell_command` + payload `{"device_id":"<device-id>","command":"ls -lah","timeout":30}`
+
+## Location Spaces + Location Nodes (Always-On Rooms)
+
+To represent a physical place (mic/speaker/camera) as a stable room:
+
+1. Create a new Space in `/spaces` with **LiveKit Room Mode = stable**.
+   - Stable mode uses `room == space_id` so remote viewers and Location Nodes can always join the same room.
+
+2. Register a device for the location with scopes:
+   - `events:write` (required to mint LiveKit device tokens)
+   - `presence:write` (recommended)
+   - `artifacts:write` (for snapshots/clips)
+   - `biometrics:read` + `biometrics:write` (for recognition worker writes)
+
+3. Run the remote satellite daemon in Location Node mode:
+
+```sh
+cd apps/remote_satellite
+python daemon.py \\
+  --hub-ws-url "<HubWebSocketUrl>" \\
+  --hub-rest-url "<HubRestApiBase>" \\
+  --device-token "<device-token>" \\
+  --space-id "<space-id>" \\
+  --publish-audio \\
+  --subscribe-audio
+```
+
+This will join the stable LiveKit room as `device:<device_id>` and publish microphone audio (audio-only by default).
+
+## Recognition Worker (Voice/Face -> Presence)
+
+If you are emitting `voice.sample` / `face.snapshot` events that reference S3 artifacts, run the home-server worker:
+
+```sh
+AWS_PROFILE=<your-profile> AWS_REGION=<your-region> AWS_DEFAULT_REGION=<your-region> \\
+HUB_API_BASE="<HubRestApiBase>" \\
+HUB_DEVICE_TOKEN="<device-token-with-biometrics+presence+events>" \\
+ARTIFACT_BUCKET="<ArtifactBucketName>" \\
+RECOGNITION_QUEUE_URL="<RecognitionQueueUrl>" \\
+python apps/recognition_worker/worker.py
+```
+
+Notes:
+- If `resemblyzer` / `insightface` aren’t installed, the worker falls back to deterministic dummy embeddings so you can validate wiring end-to-end.
+- Enrollment can be triggered from `/people` -> **Enroll** (browser capture uploads to `recognition/` S3 prefix and enqueues).
 
 ## Agent Worker Lifecycle Commands
 

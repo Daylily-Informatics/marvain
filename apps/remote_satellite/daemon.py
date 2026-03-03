@@ -31,6 +31,7 @@ from typing import Any
 import click
 import yaml
 from hub_client import HubClient, HubClientConfig
+from location_node import LocationNode, LocationNodeConfig
 
 # Configure logging
 logging.basicConfig(
@@ -973,6 +974,34 @@ def load_config_file(path: str) -> dict[str, Any]:
     default=None,
     help="Human-readable location label for this device (e.g., Kitchen, Lab Bench 3)",
 )
+@click.option(
+    "--space-id",
+    envvar="MARVAIN_SPACE_ID",
+    default=None,
+    help="If set, run Location Node mode for this space (stable LiveKit room == space_id)",
+)
+@click.option(
+    "--location-mode",
+    envvar="MARVAIN_LOCATION_MODE",
+    default="persistent",
+    type=click.Choice(["triggered", "persistent"], case_sensitive=False),
+    help="Location node mode (default: persistent)",
+)
+@click.option("--publish-audio/--no-publish-audio", default=True, help="Publish microphone audio to LiveKit")
+@click.option("--publish-video/--no-publish-video", default=False, help="Publish camera video to LiveKit (requires OpenCV)")
+@click.option("--subscribe-audio/--no-subscribe-audio", default=True, help="Play remote audio tracks (agent speech)")
+@click.option(
+    "--audio-in-device",
+    envvar="MARVAIN_AUDIO_IN_DEVICE",
+    default=None,
+    help="sounddevice input device (index or name)",
+)
+@click.option(
+    "--audio-out-device",
+    envvar="MARVAIN_AUDIO_OUT_DEVICE",
+    default=None,
+    help="sounddevice output device (index or name)",
+)
 @click.option("--debug", is_flag=True, help="Enable debug logging")
 def main(
     hub_ws_url: str,
@@ -981,6 +1010,13 @@ def main(
     heartbeat_interval: int,
     config_file: str | None,
     location_label: str | None,
+    space_id: str | None,
+    location_mode: str,
+    publish_audio: bool,
+    publish_video: bool,
+    subscribe_audio: bool,
+    audio_in_device: str | None,
+    audio_out_device: str | None,
     debug: bool,
 ) -> None:
     """Marvain Remote Satellite Daemon.
@@ -999,12 +1035,21 @@ def main(
         device_token = file_config.get("device_token", device_token)
         heartbeat_interval = file_config.get("heartbeat_interval", heartbeat_interval)
         location_label = file_config.get("location_label", location_label)
+        space_id = file_config.get("space_id", space_id)
+        location_mode = file_config.get("mode", location_mode)
+        publish_audio = bool(file_config.get("publish_audio", publish_audio))
+        publish_video = bool(file_config.get("publish_video", publish_video))
+        subscribe_audio = bool(file_config.get("subscribe_audio", subscribe_audio))
+        audio_in_device = file_config.get("audio_in_device", audio_in_device)
+        audio_out_device = file_config.get("audio_out_device", audio_out_device)
 
     logger.info("Starting Marvain Remote Satellite Daemon")
     logger.info("Hub WebSocket URL: %s", hub_ws_url)
     logger.info("Heartbeat interval: %d seconds", heartbeat_interval)
     if location_label:
         logger.info("Location label: %s", location_label)
+    if space_id:
+        logger.info("Location Node enabled for space_id: %s (mode=%s)", space_id, location_mode)
 
     config = HubClientConfig(
         ws_url=hub_ws_url,
@@ -1016,6 +1061,24 @@ def main(
 
     client = HubClient(config, on_command=handle_command)
 
+    location_node: LocationNode | None = None
+    if space_id:
+        if not hub_rest_url:
+            raise click.ClickException("--hub-rest-url is required when --space-id is set")
+        location_node = LocationNode(
+            LocationNodeConfig(
+                rest_url=hub_rest_url,
+                device_token=device_token,
+                space_id=space_id,
+                mode=location_mode,
+                publish_audio=publish_audio,
+                publish_video=publish_video,
+                subscribe_audio=subscribe_audio,
+                audio_in_device=audio_in_device,
+                audio_out_device=audio_out_device,
+            )
+        )
+
     # Handle shutdown gracefully
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -1023,12 +1086,17 @@ def main(
     def shutdown_handler(sig: signal.Signals) -> None:
         logger.info("Received signal %s, shutting down...", sig.name)
         loop.create_task(client.stop())
+        if location_node:
+            loop.create_task(location_node.stop())
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, shutdown_handler, sig)
 
     try:
-        loop.run_until_complete(client.run())
+        if location_node:
+            loop.run_until_complete(asyncio.gather(client.run(), location_node.run()))
+        else:
+            loop.run_until_complete(client.run())
     finally:
         loop.close()
         logger.info("Satellite daemon stopped")

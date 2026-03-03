@@ -10,6 +10,7 @@ For Lambda deployment, use api_app.py instead (via lambda_handler.py).
 from __future__ import annotations
 
 import base64
+import dataclasses
 import html
 import json
 import logging
@@ -35,6 +36,7 @@ from agent_hub.cognito import (
     exchange_code_for_tokens,
     get_user_info_from_tokens,
 )
+from agent_hub.broadcast import broadcast_event
 from agent_hub.livekit_tokens import mint_livekit_join_token  # noqa: F401 — used via module attr in tests
 from agent_hub.memberships import (
     SpaceInfo,  # noqa: F401 — used via module attr in tests
@@ -256,11 +258,30 @@ def _get_ws_context(request: Request) -> dict[str, str | None]:
 
 
 def _cookie_secure(request: Request) -> bool:
-    # In Lambda behind API Gateway we expect HTTPS; in local dev/tests use http.
+    # Prefer explicit config for reverse-proxy/Tailscale setups.
+    if str(os.getenv("HTTPS_ENABLED", "")).strip().lower() in ("true", "1", "yes"):
+        return True
+    xf_proto = str(request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    if xf_proto == "https":
+        return True
     try:
         return str(request.url.scheme).lower() == "https"
     except Exception:
         return False
+
+
+def _public_base_url(request: Request) -> str:
+    """Resolve the externally-reachable base URL for OAuth redirects.
+
+    For remote access (e.g. via Tailscale serve), the GUI may be reachable at a
+    different hostname/scheme than the local bind address. Set PUBLIC_BASE_URL
+    to the externally reachable origin (no path), e.g.:
+      https://my-host.tailnet-123.ts.net
+    """
+    raw = str(os.getenv("PUBLIC_BASE_URL", "")).strip()
+    if raw:
+        return raw.rstrip("/")
+    return str(request.base_url).rstrip("/")
 
 
 def _safe_next_path(next_path: str | None) -> str:
@@ -410,7 +431,10 @@ def gui_login(request: Request, next: str | None = None) -> Response:
         request.session["oauth_next"] = _safe_next_app_path(request, next)
 
     try:
-        login_url = build_login_url(_cfg, state=state)
+        redirect_uri = f"{_public_base_url(request)}/auth/callback"
+        request.session["oauth_redirect_uri"] = redirect_uri
+        cfg = dataclasses.replace(_cfg, cognito_redirect_uri=redirect_uri)
+        login_url = build_login_url(cfg, state=state)
         return RedirectResponse(url=login_url, status_code=302)
     except CognitoAuthError as e:
         logger.error(f"Failed to build login URL: {e}")
@@ -464,8 +488,12 @@ async def gui_auth_callback(
     request.session.pop("oauth_state", None)
 
     try:
+        redirect_uri = (
+            str(request.session.pop("oauth_redirect_uri", "")).strip() or f"{_public_base_url(request)}/auth/callback"
+        )
+        cfg = dataclasses.replace(_cfg, cognito_redirect_uri=redirect_uri)
         # Exchange code for tokens
-        tokens = await exchange_code_for_tokens(_cfg, code)
+        tokens = await exchange_code_for_tokens(cfg, code)
         id_token = tokens.get("id_token")
         access_token = tokens.get("access_token")
 
@@ -478,7 +506,7 @@ async def gui_auth_callback(
             )
 
         # Get user info from tokens
-        cognito_user = await get_user_info_from_tokens(_cfg, id_token)
+        cognito_user = await get_user_info_from_tokens(cfg, id_token)
 
         # Ensure user exists in database
         user_id = ensure_user_row(
@@ -552,7 +580,7 @@ def gui_logout(request: Request) -> Response:
     if _cfg.cognito_domain and _cfg.cognito_user_pool_client_id:
         # Redirect to Cognito logout
         try:
-            logout_url = build_logout_url(_cfg)
+            logout_url = build_logout_url(_cfg, redirect_uri=f"{_public_base_url(request)}/logged-out")
             resp = RedirectResponse(url=logout_url, status_code=302)
         except CognitoAuthError:
             resp = RedirectResponse(url=_gui_path(request, "/logged-out"), status_code=302)
@@ -998,6 +1026,10 @@ class SpaceCreate(BaseModel):
     agent_id: str = Field(..., description="ID of the agent that owns this space")
     name: str = Field(..., description="Name of the space")
     privacy_mode: bool = Field(False, description="Whether privacy mode is enabled")
+    livekit_room_mode: str = Field(
+        default="ephemeral",
+        description="LiveKit room mode: 'ephemeral' (default) or 'stable' (location spaces).",
+    )
 
 
 class SpaceResponse(BaseModel):
@@ -1048,19 +1080,38 @@ def api_create_space(request: Request, body: SpaceCreate) -> SpaceResponse:
 
     # Create the space
     space_id = str(uuid.uuid4())
+    room_mode = str(body.livekit_room_mode or "ephemeral").strip().lower()
+    if room_mode not in ("ephemeral", "stable"):
+        raise HTTPException(status_code=400, detail="Invalid livekit_room_mode (expected 'ephemeral' or 'stable')")
     try:
-        db.execute(
-            """
-            INSERT INTO spaces (space_id, agent_id, name, privacy_mode)
-            VALUES (:space_id::uuid, :agent_id::uuid, :name, :privacy_mode)
-        """,
-            {
-                "space_id": space_id,
-                "agent_id": body.agent_id,
-                "name": body.name,
-                "privacy_mode": body.privacy_mode,
-            },
-        )
+        try:
+            db.execute(
+                """
+                INSERT INTO spaces (space_id, agent_id, name, privacy_mode, livekit_room_mode)
+                VALUES (:space_id::uuid, :agent_id::uuid, :name, :privacy_mode, :livekit_room_mode)
+            """,
+                {
+                    "space_id": space_id,
+                    "agent_id": body.agent_id,
+                    "name": body.name,
+                    "privacy_mode": body.privacy_mode,
+                    "livekit_room_mode": room_mode,
+                },
+            )
+        except Exception:
+            # Back-compat: before 015_spaces_livekit_room_mode.sql.
+            db.execute(
+                """
+                INSERT INTO spaces (space_id, agent_id, name, privacy_mode)
+                VALUES (:space_id::uuid, :agent_id::uuid, :name, :privacy_mode)
+            """,
+                {
+                    "space_id": space_id,
+                    "agent_id": body.agent_id,
+                    "name": body.name,
+                    "privacy_mode": body.privacy_mode,
+                },
+            )
     except Exception as e:
         logger.error(f"Failed to create space: {e}")
         raise HTTPException(status_code=500, detail="Failed to create space")
@@ -2543,6 +2594,7 @@ def gui_spaces(request: Request) -> Response:
                 "agent_name": space.agent_name,
                 "privacy_mode": extra.get("privacy_mode", False),
                 "created_at_relative": created_at_relative,
+                "livekit_room_mode": getattr(space, "livekit_room_mode", "ephemeral"),
             }
         )
 
@@ -2985,6 +3037,238 @@ def api_get_person(request: Request, person_id: str) -> dict:
         "display_name": row["display_name"],
         "created_at": row["created_at"],
     }
+
+
+class PersonLinkAccount(BaseModel):
+    email: str | None = None
+    user_id: str | None = None
+
+
+@app.post("/api/people/{person_id}/link-account", name="api_link_person_account")
+def api_link_person_account(request: Request, person_id: str, body: PersonLinkAccount) -> dict:
+    """Link a Cognito user (users.user_id) to a Person for the owning agent."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    rows = db.query(
+        """
+        SELECT p.agent_id::TEXT as agent_id
+        FROM people p
+        JOIN agent_memberships m ON p.agent_id = m.agent_id
+        WHERE p.person_id = :person_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.role IN ('admin', 'owner')
+          AND m.revoked_at IS NULL
+        LIMIT 1
+        """,
+        {"person_id": person_id, "user_id": str(user.user_id)},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Person not found or permission denied")
+
+    agent_id = str(rows[0].get("agent_id") or "").strip()
+    link_user_id = str(body.user_id or "").strip()
+    email = str(body.email or "").strip()
+    if not link_user_id and not email:
+        raise HTTPException(status_code=400, detail="email or user_id is required")
+
+    if email:
+        if not _cfg.cognito_user_pool_id:
+            raise HTTPException(status_code=500, detail="COGNITO_USER_POOL_ID not configured")
+        try:
+            cognito_sub, resolved_email = lookup_cognito_user_by_email(
+                user_pool_id=_cfg.cognito_user_pool_id,
+                email=email,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        link_user_id = ensure_user_row(db, cognito_sub=cognito_sub, email=(resolved_email or email))
+
+    urows = db.query("SELECT 1 FROM users WHERE user_id = :user_id::uuid LIMIT 1", {"user_id": link_user_id})
+    if not urows:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    tx = db.begin()
+    try:
+        db.execute(
+            """
+            DELETE FROM person_accounts
+            WHERE agent_id = :agent_id::uuid
+              AND (user_id = :user_id::uuid OR person_id = :person_id::uuid)
+            """,
+            {"agent_id": agent_id, "user_id": link_user_id, "person_id": person_id},
+            transaction_id=tx,
+        )
+        db.execute(
+            """
+            INSERT INTO person_accounts(person_account_id, agent_id, user_id, person_id)
+            VALUES(:id::uuid, :agent_id::uuid, :user_id::uuid, :person_id::uuid)
+            """,
+            {"id": str(uuid.uuid4()), "agent_id": agent_id, "user_id": link_user_id, "person_id": person_id},
+            transaction_id=tx,
+        )
+        db.commit(tx)
+    except Exception:
+        db.rollback(tx)
+        raise
+
+    return {"ok": True, "agent_id": agent_id, "person_id": person_id, "user_id": link_user_id}
+
+
+class EnrollmentArtifactIn(BaseModel):
+    artifact_key: str
+    artifact_bucket: str | None = None
+    content_type: str | None = None
+    space_id: str | None = None
+
+
+def _pick_space_for_agent(*, db, agent_id: str) -> str:
+    rows = db.query(
+        "SELECT space_id::TEXT as space_id FROM spaces WHERE agent_id = :agent_id::uuid ORDER BY created_at ASC LIMIT 1",
+        {"agent_id": agent_id},
+    )
+    if not rows or not rows[0].get("space_id"):
+        raise HTTPException(status_code=400, detail="Agent has no spaces (create a space first)")
+    return str(rows[0]["space_id"])
+
+
+def _enqueue_recognition_event(*, event_id: str, agent_id: str, space_id: str, person_id: str, event_type: str, payload: dict) -> bool:
+    qurl = str(os.getenv("RECOGNITION_QUEUE_URL", "")).strip()
+    if not qurl:
+        return False
+    try:
+        _get_sqs().send_message(
+            QueueUrl=qurl,
+            MessageBody=json.dumps(
+                {
+                    "event_id": event_id,
+                    "agent_id": agent_id,
+                    "space_id": space_id,
+                    "device_id": None,
+                    "person_id": person_id,
+                    "type": event_type,
+                    "payload": payload,
+                }
+            ),
+        )
+        return True
+    except Exception as exc:
+        logger.warning("Failed to enqueue recognition event: %s", exc)
+        return False
+
+
+def _create_recognition_event(
+    *, request: Request, person_id: str, event_type: str, artifact: EnrollmentArtifactIn
+) -> dict[str, Any]:
+    """Server-side ingestion for enrollment events (browser -> S3 -> queue)."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    rows = db.query(
+        """
+        SELECT p.person_id::TEXT as person_id,
+               p.agent_id::TEXT as agent_id
+        FROM people p
+        JOIN agent_memberships m ON p.agent_id = m.agent_id
+        WHERE p.person_id = :person_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.role IN ('admin', 'owner')
+          AND m.revoked_at IS NULL
+        LIMIT 1
+        """,
+        {"person_id": person_id, "user_id": str(user.user_id)},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Person not found or permission denied")
+    agent_id = str(rows[0].get("agent_id") or "").strip()
+
+    # Choose a space for anchoring the event (events require space_id).
+    space_id = str(artifact.space_id or "").strip()
+    if space_id:
+        # Ensure the space belongs to the same agent and the user can access it.
+        srows = db.query(
+            """
+            SELECT 1
+            FROM spaces s
+            JOIN agent_memberships m ON s.agent_id = m.agent_id
+            WHERE s.space_id = :space_id::uuid
+              AND s.agent_id = :agent_id::uuid
+              AND m.user_id = :user_id::uuid
+              AND m.revoked_at IS NULL
+            LIMIT 1
+            """,
+            {"space_id": space_id, "agent_id": agent_id, "user_id": str(user.user_id)},
+        )
+        if not srows:
+            raise HTTPException(status_code=404, detail="Space not found")
+    else:
+        space_id = _pick_space_for_agent(db=db, agent_id=agent_id)
+
+    artifact_key = str(artifact.artifact_key or "").strip()
+    if not artifact_key:
+        raise HTTPException(status_code=400, detail="artifact_key is required")
+    artifact_bucket = str(artifact.artifact_bucket or "").strip() or str(_cfg.artifact_bucket or "").strip()
+    if not artifact_bucket:
+        raise HTTPException(status_code=500, detail="Artifact bucket not configured")
+
+    payload = {
+        "artifact_bucket": artifact_bucket,
+        "artifact_key": artifact_key,
+        "content_type": artifact.content_type,
+        "enroll_person_id": person_id,
+        "source": "browser_enrollment",
+    }
+
+    event_id = str(uuid.uuid4())
+    db.execute(
+        """
+        INSERT INTO events(event_id, agent_id, space_id, person_id, type, payload)
+        VALUES(:event_id::uuid, :agent_id::uuid, :space_id::uuid, :person_id::uuid, :type, :payload::jsonb)
+        """,
+        {
+            "event_id": event_id,
+            "agent_id": agent_id,
+            "space_id": space_id,
+            "person_id": person_id,
+            "type": event_type,
+            "payload": json.dumps(payload),
+        },
+    )
+
+    queued = _enqueue_recognition_event(
+        event_id=event_id,
+        agent_id=agent_id,
+        space_id=space_id,
+        person_id=person_id,
+        event_type=event_type,
+        payload=payload,
+    )
+
+    try:
+        broadcast_event(
+            event_type="events.new",
+            agent_id=agent_id,
+            space_id=space_id,
+            payload={"event": {"event_id": event_id, "type": event_type, "payload": payload, "person_id": person_id}},
+        )
+    except Exception:
+        pass
+
+    return {"ok": True, "event_id": event_id, "queued": queued, "space_id": space_id}
+
+
+@app.post("/api/people/{person_id}/enroll/voice", name="api_enroll_voice")
+def api_enroll_voice(request: Request, person_id: str, body: EnrollmentArtifactIn) -> dict[str, Any]:
+    return _create_recognition_event(request=request, person_id=person_id, event_type="voice.sample", artifact=body)
+
+
+@app.post("/api/people/{person_id}/enroll/face", name="api_enroll_face")
+def api_enroll_face(request: Request, person_id: str, body: EnrollmentArtifactIn) -> dict[str, Any]:
+    return _create_recognition_event(request=request, person_id=person_id, event_type="face.snapshot", artifact=body)
 
 
 @app.get("/people", name="gui_people")
@@ -4409,6 +4693,7 @@ class ArtifactPresign(BaseModel):
     agent_id: str
     filename: str
     content_type: str = "application/octet-stream"
+    purpose: str | None = Field(default="general", description="general|recognition")
 
 
 @app.post("/api/artifacts/presign", name="api_presign_upload")
@@ -4429,7 +4714,11 @@ def api_presign_upload(request: Request, body: ArtifactPresign) -> dict:
 
     import uuid as uuid_mod
 
-    key = f"artifacts/agent_id={body.agent_id}/{uuid_mod.uuid4()}_{body.filename}"
+    purpose = str(body.purpose or "general").strip().lower()
+    if purpose not in {"general", "recognition"}:
+        purpose = "general"
+    prefix = "recognition" if purpose == "recognition" else "artifacts"
+    key = f"{prefix}/agent_id={body.agent_id}/{uuid_mod.uuid4()}_{body.filename}"
     s3 = _get_s3()
     url = s3.generate_presigned_url(
         ClientMethod="put_object",
@@ -4437,7 +4726,7 @@ def api_presign_upload(request: Request, body: ArtifactPresign) -> dict:
         ExpiresIn=900,
     )
 
-    return {"upload_url": url, "key": key, "bucket": _cfg.artifact_bucket}
+    return {"upload_url": url, "key": key, "bucket": _cfg.artifact_bucket, "purpose": purpose}
 
 
 @app.post("/api/artifacts/upload", name="api_upload_artifact")
@@ -4738,6 +5027,7 @@ def gui_livekit_test(request: Request, space_id: str | None = None) -> Response:
             "space_id": sp.space_id,
             "name": sp.name,
             "agent_name": sp.agent_name,
+            "livekit_room_mode": getattr(sp, "livekit_room_mode", "ephemeral"),
         }
         for sp in spaces
     ]
@@ -4765,7 +5055,7 @@ async def gui_livekit_token(request: Request, body: LiveKitTokenIn) -> LiveKitTo
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return await _mint_livekit_token_for_user(user=user, space_id=body.space_id)
+    return await _mint_livekit_token_for_user(user=user, space_id=body.space_id, room_mode=body.room_mode)
 
 
 @app.get("/agents/{agent_id}", name="gui_agent_detail")
