@@ -1035,6 +1035,12 @@ def load_config_file(path: str) -> dict[str, Any]:
     help="Minimum seconds between face.snapshot uploads (default: 30)",
 )
 @click.option(
+    "--enroll-person-id",
+    envvar="MARVAIN_ENROLL_PERSON_ID",
+    default=None,
+    help="If set, emitted voice.sample/face.snapshot events include enroll_person_id for enrollment",
+)
+@click.option(
     "--video-fps",
     envvar="MARVAIN_VIDEO_FPS",
     default=10,
@@ -1087,6 +1093,7 @@ def main(
     voice_sample_seconds: int,
     voice_sample_interval_seconds: int,
     face_snapshot_interval_seconds: int,
+    enroll_person_id: str | None,
     video_fps: int,
     camera_usb_index: int | None,
     camera_rtsp_url: str | None,
@@ -1123,6 +1130,7 @@ def main(
         voice_sample_seconds = int(file_config.get("voice_sample_seconds", voice_sample_seconds))
         voice_sample_interval_seconds = int(file_config.get("voice_sample_interval_seconds", voice_sample_interval_seconds))
         face_snapshot_interval_seconds = int(file_config.get("face_snapshot_interval_seconds", face_snapshot_interval_seconds))
+        enroll_person_id = file_config.get("enroll_person_id", enroll_person_id)
         video_fps = int(file_config.get("video_fps", video_fps))
         camera_usb_index = file_config.get("camera_usb_index", camera_usb_index)
         camera_rtsp_url = file_config.get("camera_rtsp_url", camera_rtsp_url)
@@ -1168,6 +1176,7 @@ def main(
                 voice_sample_seconds=voice_sample_seconds,
                 voice_sample_interval_seconds=voice_sample_interval_seconds,
                 face_snapshot_interval_seconds=face_snapshot_interval_seconds,
+                enroll_person_id=enroll_person_id,
                 video_fps=video_fps,
                 camera_usb_index=camera_usb_index,
                 camera_rtsp_url=camera_rtsp_url,
