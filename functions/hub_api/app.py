@@ -10,6 +10,7 @@ For Lambda deployment, use api_app.py instead (via lambda_handler.py).
 from __future__ import annotations
 
 import base64
+import dataclasses
 import html
 import json
 import logging
@@ -35,6 +36,7 @@ from agent_hub.cognito import (
     exchange_code_for_tokens,
     get_user_info_from_tokens,
 )
+from agent_hub.broadcast import broadcast_event
 from agent_hub.livekit_tokens import mint_livekit_join_token  # noqa: F401 — used via module attr in tests
 from agent_hub.memberships import (
     SpaceInfo,  # noqa: F401 — used via module attr in tests
@@ -256,11 +258,30 @@ def _get_ws_context(request: Request) -> dict[str, str | None]:
 
 
 def _cookie_secure(request: Request) -> bool:
-    # In Lambda behind API Gateway we expect HTTPS; in local dev/tests use http.
+    # Prefer explicit config for reverse-proxy/Tailscale setups.
+    if str(os.getenv("HTTPS_ENABLED", "")).strip().lower() in ("true", "1", "yes"):
+        return True
+    xf_proto = str(request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    if xf_proto == "https":
+        return True
     try:
         return str(request.url.scheme).lower() == "https"
     except Exception:
         return False
+
+
+def _public_base_url(request: Request) -> str:
+    """Resolve the externally-reachable base URL for OAuth redirects.
+
+    For remote access (e.g. via Tailscale serve), the GUI may be reachable at a
+    different hostname/scheme than the local bind address. Set PUBLIC_BASE_URL
+    to the externally reachable origin (no path), e.g.:
+      https://my-host.tailnet-123.ts.net
+    """
+    raw = str(os.getenv("PUBLIC_BASE_URL", "")).strip()
+    if raw:
+        return raw.rstrip("/")
+    return str(request.base_url).rstrip("/")
 
 
 def _safe_next_path(next_path: str | None) -> str:
@@ -410,7 +431,10 @@ def gui_login(request: Request, next: str | None = None) -> Response:
         request.session["oauth_next"] = _safe_next_app_path(request, next)
 
     try:
-        login_url = build_login_url(_cfg, state=state)
+        redirect_uri = f"{_public_base_url(request)}/auth/callback"
+        request.session["oauth_redirect_uri"] = redirect_uri
+        cfg = dataclasses.replace(_cfg, cognito_redirect_uri=redirect_uri)
+        login_url = build_login_url(cfg, state=state)
         return RedirectResponse(url=login_url, status_code=302)
     except CognitoAuthError as e:
         logger.error(f"Failed to build login URL: {e}")
@@ -464,8 +488,12 @@ async def gui_auth_callback(
     request.session.pop("oauth_state", None)
 
     try:
+        redirect_uri = (
+            str(request.session.pop("oauth_redirect_uri", "")).strip() or f"{_public_base_url(request)}/auth/callback"
+        )
+        cfg = dataclasses.replace(_cfg, cognito_redirect_uri=redirect_uri)
         # Exchange code for tokens
-        tokens = await exchange_code_for_tokens(_cfg, code)
+        tokens = await exchange_code_for_tokens(cfg, code)
         id_token = tokens.get("id_token")
         access_token = tokens.get("access_token")
 
@@ -478,7 +506,7 @@ async def gui_auth_callback(
             )
 
         # Get user info from tokens
-        cognito_user = await get_user_info_from_tokens(_cfg, id_token)
+        cognito_user = await get_user_info_from_tokens(cfg, id_token)
 
         # Ensure user exists in database
         user_id = ensure_user_row(
@@ -552,7 +580,7 @@ def gui_logout(request: Request) -> Response:
     if _cfg.cognito_domain and _cfg.cognito_user_pool_client_id:
         # Redirect to Cognito logout
         try:
-            logout_url = build_logout_url(_cfg)
+            logout_url = build_logout_url(_cfg, redirect_uri=f"{_public_base_url(request)}/logged-out")
             resp = RedirectResponse(url=logout_url, status_code=302)
         except CognitoAuthError:
             resp = RedirectResponse(url=_gui_path(request, "/logged-out"), status_code=302)
@@ -669,6 +697,104 @@ def gui_home(request: Request) -> Response:
         except Exception as e:
             logger.warning(f"Failed to fetch devices for home: {e}")
 
+    # --- Dense dashboard: recent actions (last 10) ---
+    recent_actions: list[dict] = []
+    if agent_ids:
+        try:
+            placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+            params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+            act_rows = db.query(
+                f"""SELECT ac.action_id::TEXT as action_id, ac.kind, ac.status,
+                           ac.created_at::TEXT as created_at,
+                           a.name as agent_name
+                    FROM actions ac
+                    JOIN agents a ON a.agent_id = ac.agent_id
+                    WHERE ac.agent_id::TEXT IN ({placeholders})
+                    ORDER BY ac.created_at DESC LIMIT 10""",
+                params,
+            )
+            for row in act_rows:
+                recent_actions.append(
+                    {
+                        "action_id": row.get("action_id", ""),
+                        "kind": row.get("kind", ""),
+                        "status": row.get("status", ""),
+                        "created_at": row.get("created_at", ""),
+                        "agent_name": row.get("agent_name", ""),
+                    }
+                )
+        except Exception as e:
+            logger.warning(f"Failed to fetch recent actions for home: {e}")
+
+    # --- Dense dashboard: agent online/offline via device heartbeats ---
+    agents_status: list[dict] = []
+    if agent_ids:
+        try:
+            placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+            params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+            status_rows = db.query(
+                f"""SELECT a.agent_id::TEXT as agent_id, a.name, a.disabled,
+                           COALESCE(d.online_count, 0) as online_devices,
+                           COALESCE(d.total_count, 0) as total_devices
+                    FROM agents a
+                    LEFT JOIN (
+                        SELECT agent_id,
+                               COUNT(*) FILTER (
+                                   WHERE last_heartbeat_at > now() - interval '60 seconds'
+                                     AND revoked_at IS NULL
+                               ) as online_count,
+                               COUNT(*) FILTER (WHERE revoked_at IS NULL) as total_count
+                        FROM devices
+                        GROUP BY agent_id
+                    ) d ON d.agent_id = a.agent_id
+                    WHERE a.agent_id::TEXT IN ({placeholders})""",
+                params,
+            )
+            for row in status_rows:
+                online = (row.get("online_devices") or 0) > 0
+                agents_status.append(
+                    {
+                        "agent_id": row.get("agent_id", ""),
+                        "name": row.get("name", ""),
+                        "disabled": row.get("disabled", False),
+                        "online": online and not row.get("disabled", False),
+                        "online_devices": row.get("online_devices", 0),
+                        "total_devices": row.get("total_devices", 0),
+                    }
+                )
+        except Exception as e:
+            logger.warning(f"Failed to fetch agent status for home: {e}")
+
+    # --- Dense dashboard: recent events (last 10) ---
+    recent_events: list[dict] = []
+    if agent_ids:
+        try:
+            placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+            params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+            evt_rows = db.query(
+                f"""SELECT e.event_id::TEXT as event_id, e.type,
+                           e.created_at::TEXT as created_at,
+                           a.name as agent_name, s.name as space_name
+                    FROM events e
+                    JOIN agents a ON a.agent_id = e.agent_id
+                    LEFT JOIN spaces s ON s.space_id = e.space_id
+                    WHERE e.agent_id::TEXT IN ({placeholders})
+                    ORDER BY e.created_at DESC LIMIT 10""",
+                params,
+            )
+            for row in evt_rows:
+                recent_events.append(
+                    {
+                        "event_id": row.get("event_id", ""),
+                        "type": row.get("type", ""),
+                        "created_at": row.get("created_at", ""),
+                        "agent_name": row.get("agent_name", ""),
+                        "space_name": row.get("space_name") or "",
+                    }
+                )
+        except Exception as e:
+            logger.warning(f"Failed to fetch recent events for home: {e}")
+
     return templates.TemplateResponse(
         request,
         "home.html",
@@ -682,9 +808,211 @@ def gui_home(request: Request) -> Response:
             "pending_actions": pending_actions,
             "devices_count": devices_count,
             "devices": devices_data,
+            "recent_actions": recent_actions,
+            "agents_status": agents_status,
+            "recent_events": recent_events,
             **_get_ws_context(request),
         },
     )
+
+
+
+# ---------------------------------------------------------------------------
+# Dashboard HTMX partial endpoints (auto-refresh fragments)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/dashboard/kpi-strip", name="gui_dashboard_kpi")
+def gui_dashboard_kpi(request: Request) -> Response:
+    """HTMX partial: compact KPI strip for dashboard auto-refresh."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    agents = list_agents_for_user(db, user_id=user.user_id)
+    spaces = list_spaces_for_user(db, user_id=user.user_id)
+    agent_ids = [str(a.agent_id) for a in agents]
+
+    pending_actions = 0
+    devices_count = 0
+    online_agents = 0
+
+    if agent_ids:
+        placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+        params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+        try:
+            rows = db.query(
+                f"""SELECT
+                      (SELECT COUNT(*) FROM actions ac
+                       WHERE ac.agent_id::TEXT IN ({placeholders}) AND ac.status = 'proposed') as pending,
+                      (SELECT COUNT(*) FROM devices
+                       WHERE agent_id::TEXT IN ({placeholders}) AND revoked_at IS NULL) as devices,
+                      (SELECT COUNT(DISTINCT agent_id) FROM devices
+                       WHERE agent_id::TEXT IN ({placeholders}) AND revoked_at IS NULL
+                         AND last_heartbeat_at > now() - interval '60 seconds') as online""",
+                params,
+            )
+            if rows:
+                pending_actions = rows[0].get("pending", 0) or 0
+                devices_count = rows[0].get("devices", 0) or 0
+                online_agents = rows[0].get("online", 0) or 0
+        except Exception as e:
+            logger.warning(f"Dashboard KPI query failed: {e}")
+
+    from starlette.responses import HTMLResponse
+
+    warn = "kpi-warn" if pending_actions > 0 else ""
+    html = (
+        '<div class="kpi-strip">'
+        f'<div class="kpi-item"><span class="kpi-value">{online_agents}</span>'
+        '<span class="kpi-label">Agents Online</span></div>'
+        f'<div class="kpi-item {warn}"><span class="kpi-value">'
+        f'{pending_actions}</span>'
+        '<span class="kpi-label">Pending Actions</span></div>'
+        f'<div class="kpi-item"><span class="kpi-value">{devices_count}'
+        '</span><span class="kpi-label">Devices</span></div>'
+        f'<div class="kpi-item"><span class="kpi-value">{len(spaces)}'
+        '</span><span class="kpi-label">Spaces</span></div>'
+        f'<div class="kpi-item"><span class="kpi-value">{len(agents)}'
+        '</span><span class="kpi-label">Agents</span></div>'
+        "</div>"
+    )
+    return HTMLResponse(content=html)
+
+
+@app.get("/dashboard/activity-feed", name="gui_dashboard_activity")
+def gui_dashboard_activity(request: Request) -> Response:
+    """HTMX partial: recent events activity feed."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    agents = list_agents_for_user(db, user_id=user.user_id)
+    agent_ids = [str(a.agent_id) for a in agents]
+
+    events_html = ""
+    if agent_ids:
+        try:
+            placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+            params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+            rows = db.query(
+                f"""SELECT e.type, e.created_at::TEXT as created_at,
+                           a.name as agent_name, s.name as space_name
+                    FROM events e
+                    JOIN agents a ON a.agent_id = e.agent_id
+                    LEFT JOIN spaces s ON s.space_id = e.space_id
+                    WHERE e.agent_id::TEXT IN ({placeholders})
+                    ORDER BY e.created_at DESC LIMIT 15""",
+                params,
+            )
+            for row in rows:
+                etype = row.get("type", "")
+                ts = (row.get("created_at") or "")[:19]
+                agent = row.get("agent_name", "")
+                space = row.get("space_name") or ""
+                space_tag = (
+                    f' <span class="badge badge-outline">'
+                    f"{space}</span>" if space else ""
+                )
+                events_html += (
+                    f'<div class="feed-item">'
+                    f'<span class="feed-time">{ts}</span>'
+                    f'<span class="badge badge-info">{agent}</span>'
+                    f"{space_tag}"
+                    f'<span class="feed-type">{etype}</span>'
+                    f"</div>"
+                )
+        except Exception as e:
+            logger.warning(f"Dashboard activity feed query failed: {e}")
+
+    if not events_html:
+        events_html = '<div class="text-muted text-sm" style="padding:0.5rem">No recent events</div>'
+
+    from starlette.responses import HTMLResponse
+
+    return HTMLResponse(content=events_html)
+
+
+@app.get("/dashboard/recent-actions", name="gui_dashboard_actions")
+def gui_dashboard_actions(request: Request) -> Response:
+    """HTMX partial: recent actions table with inline approve/reject."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    agents = list_agents_for_user(db, user_id=user.user_id)
+    agent_ids = [str(a.agent_id) for a in agents]
+
+    rows_html = ""
+    if agent_ids:
+        try:
+            placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+            params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+            rows = db.query(
+                f"""SELECT ac.action_id::TEXT as action_id, ac.kind, ac.status,
+                           ac.created_at::TEXT as created_at,
+                           a.name as agent_name
+                    FROM actions ac
+                    JOIN agents a ON a.agent_id = ac.agent_id
+                    WHERE ac.agent_id::TEXT IN ({placeholders})
+                    ORDER BY ac.created_at DESC LIMIT 10""",
+                params,
+            )
+            for row in rows:
+                aid = row.get("action_id", "")
+                status = row.get("status", "")
+                _bcls = {
+                    "proposed": "warning", "approved": "info",
+                    "executed": "success", "failed": "error",
+                    "rejected": "error",
+                }
+                badge_cls = _bcls.get(status, "info")
+                ts = (row.get("created_at") or "")[:19]
+                actions_col = ""
+                if status == "proposed":
+                    actions_col = (
+                        '<button class="btn btn-sm btn-success" '
+                        f'hx-post="/api/actions/{aid}/approve" '
+                        'hx-target="#dashboard-actions" '
+                        'hx-swap="innerHTML" '
+                        'hx-confirm="Approve this action?">'
+                        '<i class="fas fa-check"></i></button> '
+                        '<button class="btn btn-sm btn-danger-outline" '
+                        f'hx-post="/api/actions/{aid}/reject" '
+                        'hx-target="#dashboard-actions" '
+                        'hx-swap="innerHTML" '
+                        'hx-confirm="Reject this action?">'
+                        '<i class="fas fa-times"></i></button>'
+                    )
+                aname = row.get("agent_name", "")
+                akind = row.get("kind", "")
+                rows_html += (
+                    f'<tr><td class="text-sm">{ts}</td>'
+                    f"<td>{aname}</td>"
+                    f"<td><code>{akind}</code></td>"
+                    f'<td><span class="badge badge-{badge_cls}">'
+                    f"{status}</span></td>"
+                    f"<td>{actions_col}</td></tr>"
+                )
+        except Exception as e:
+            logger.warning(f"Dashboard recent actions query failed: {e}")
+
+    if not rows_html:
+        rows_html = '<tr><td colspan="5" class="text-muted text-sm">No recent actions</td></tr>'
+
+    from starlette.responses import HTMLResponse
+
+    table_html = (
+        "<table class='table table-dense'><thead><tr>"
+        "<th>Time</th><th>Agent</th><th>Kind</th>"
+        "<th>Status</th><th></th></tr></thead>"
+        f"<tbody>{rows_html}</tbody></table>"
+    )
+    return HTMLResponse(content=table_html)
+
 
 
 # ---------------------------------------------------------------------------
@@ -698,6 +1026,10 @@ class SpaceCreate(BaseModel):
     agent_id: str = Field(..., description="ID of the agent that owns this space")
     name: str = Field(..., description="Name of the space")
     privacy_mode: bool = Field(False, description="Whether privacy mode is enabled")
+    livekit_room_mode: str = Field(
+        default="ephemeral",
+        description="LiveKit room mode: 'ephemeral' (default) or 'stable' (location spaces).",
+    )
 
 
 class SpaceResponse(BaseModel):
@@ -707,6 +1039,15 @@ class SpaceResponse(BaseModel):
     agent_id: str
     name: str
     privacy_mode: bool
+
+
+def _max_spaces_per_agent() -> int:
+    raw = getattr(_cfg, "max_spaces_per_agent", 5)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 5
+    return max(1, value)
 
 
 @app.post("/api/spaces", name="api_create_space")
@@ -722,21 +1063,55 @@ def api_create_space(request: Request, body: SpaceCreate) -> SpaceResponse:
     if not check_agent_permission(db, user_id=user.user_id, agent_id=body.agent_id, required_role="admin"):
         raise HTTPException(status_code=403, detail="Requires admin permission on the agent")
 
+    # Enforce per-agent space limit.
+    try:
+        rows = db.query(
+            "SELECT COUNT(*)::INT AS count FROM spaces WHERE agent_id = :agent_id::uuid",
+            {"agent_id": body.agent_id},
+        )
+        existing_count = int((rows[0].get("count") if rows else 0) or 0)
+    except Exception as e:
+        logger.error("Failed to count existing spaces for agent %s: %s", body.agent_id, e)
+        raise HTTPException(status_code=500, detail="Failed to validate space limit")
+
+    space_limit = _max_spaces_per_agent()
+    if existing_count >= space_limit:
+        raise HTTPException(status_code=409, detail=f"Space limit reached ({space_limit}) for this agent")
+
     # Create the space
     space_id = str(uuid.uuid4())
+    room_mode = str(body.livekit_room_mode or "ephemeral").strip().lower()
+    if room_mode not in ("ephemeral", "stable"):
+        raise HTTPException(status_code=400, detail="Invalid livekit_room_mode (expected 'ephemeral' or 'stable')")
     try:
-        db.execute(
-            """
-            INSERT INTO spaces (space_id, agent_id, name, privacy_mode)
-            VALUES (:space_id::uuid, :agent_id::uuid, :name, :privacy_mode)
-        """,
-            {
-                "space_id": space_id,
-                "agent_id": body.agent_id,
-                "name": body.name,
-                "privacy_mode": body.privacy_mode,
-            },
-        )
+        try:
+            db.execute(
+                """
+                INSERT INTO spaces (space_id, agent_id, name, privacy_mode, livekit_room_mode)
+                VALUES (:space_id::uuid, :agent_id::uuid, :name, :privacy_mode, :livekit_room_mode)
+            """,
+                {
+                    "space_id": space_id,
+                    "agent_id": body.agent_id,
+                    "name": body.name,
+                    "privacy_mode": body.privacy_mode,
+                    "livekit_room_mode": room_mode,
+                },
+            )
+        except Exception:
+            # Back-compat: before 015_spaces_livekit_room_mode.sql.
+            db.execute(
+                """
+                INSERT INTO spaces (space_id, agent_id, name, privacy_mode)
+                VALUES (:space_id::uuid, :agent_id::uuid, :name, :privacy_mode)
+            """,
+                {
+                    "space_id": space_id,
+                    "agent_id": body.agent_id,
+                    "name": body.name,
+                    "privacy_mode": body.privacy_mode,
+                },
+            )
     except Exception as e:
         logger.error(f"Failed to create space: {e}")
         raise HTTPException(status_code=500, detail="Failed to create space")
@@ -903,6 +1278,8 @@ class DeviceCreate(BaseModel):
     agent_id: str = Field(..., description="ID of the agent this device belongs to")
     name: str = Field(..., description="Name of the device")
     scopes: list[str] = Field(default_factory=list, description="Scopes assigned to the device")
+    location_label: str | None = Field(default=None, description="Human-readable location label (e.g., Kitchen, Lab Bench 3)")
+    location_coords: dict | None = Field(default=None, description="Optional geographic coordinates: {lat, lng}")
 
 
 class DeviceResponse(BaseModel):
@@ -913,6 +1290,8 @@ class DeviceResponse(BaseModel):
     name: str
     scopes: list[str]
     token: str  # Only returned on creation, not stored
+    location_label: str | None = None
+    location_coords: dict | None = None
 
 
 class DeviceRotateTokenResponse(BaseModel):
@@ -948,8 +1327,10 @@ def api_create_device(request: Request, body: DeviceCreate) -> DeviceResponse:
 
         db.execute(
             """
-            INSERT INTO devices (device_id, agent_id, name, scopes, token_hash)
-            VALUES (:device_id::uuid, :agent_id::uuid, :name, :scopes::jsonb, :token_hash)
+            INSERT INTO devices (device_id, agent_id, name, scopes, token_hash,
+                                 location_label, location_coords, provisioned_at, provisioned_by)
+            VALUES (:device_id::uuid, :agent_id::uuid, :name, :scopes::jsonb, :token_hash,
+                    :location_label, :location_coords::jsonb, NOW(), :provisioned_by)
         """,
             {
                 "device_id": device_id,
@@ -957,6 +1338,9 @@ def api_create_device(request: Request, body: DeviceCreate) -> DeviceResponse:
                 "name": body.name,
                 "scopes": json.dumps(body.scopes),
                 "token_hash": token_hash,
+                "location_label": body.location_label,
+                "location_coords": json.dumps(body.location_coords) if body.location_coords else None,
+                "provisioned_by": str(user.user_id),
             },
         )
     except Exception as e:
@@ -969,6 +1353,8 @@ def api_create_device(request: Request, body: DeviceCreate) -> DeviceResponse:
         name=body.name,
         scopes=body.scopes,
         token=device_token,  # Return token only on creation
+        location_label=body.location_label,
+        location_coords=body.location_coords,
     )
 
 
@@ -1087,6 +1473,64 @@ def api_delete_device(request: Request, device_id: str) -> dict:
         raise HTTPException(status_code=500, detail="Failed to delete device")
 
     return {"message": "Device deleted", "device_id": device_id}
+
+
+class DeviceLocationUpdate(BaseModel):
+    """Request body for updating device location."""
+
+    location_label: str | None = Field(default=None, description="Human-readable location label")
+    location_coords: dict | None = Field(default=None, description="Optional geographic coordinates: {lat, lng}")
+
+
+@app.patch("/api/devices/{device_id}/location", name="api_update_device_location")
+def api_update_device_location(request: Request, device_id: str, body: DeviceLocationUpdate) -> dict:
+    """Update a device's location information."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Check permission
+    rows = db.query(
+        """
+        SELECT d.device_id, d.agent_id
+        FROM devices d
+        INNER JOIN agent_memberships m ON d.agent_id = m.agent_id
+        WHERE d.device_id = :device_id::uuid AND m.user_id = :user_id::uuid AND m.role IN ('admin', 'owner') AND m.revoked_at IS NULL
+    """,
+        {"device_id": device_id, "user_id": str(user.user_id)},
+    )
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Device not found or permission denied")
+
+    import json as json_module
+
+    try:
+        db.execute(
+            """
+            UPDATE devices
+            SET location_label = :location_label,
+                location_coords = :location_coords::jsonb
+            WHERE device_id = :device_id::uuid
+        """,
+            {
+                "device_id": device_id,
+                "location_label": body.location_label,
+                "location_coords": json_module.dumps(body.location_coords) if body.location_coords else None,
+            },
+        )
+    except Exception as e:
+        logger.error(f"Failed to update device location: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update device location")
+
+    return {
+        "message": "Location updated",
+        "device_id": device_id,
+        "location_label": body.location_label,
+        "location_coords": body.location_coords,
+    }
 
 
 class DeviceLaunchSatellite(BaseModel):
@@ -2150,6 +2594,7 @@ def gui_spaces(request: Request) -> Response:
                 "agent_name": space.agent_name,
                 "privacy_mode": extra.get("privacy_mode", False),
                 "created_at_relative": created_at_relative,
+                "livekit_room_mode": getattr(space, "livekit_room_mode", "ephemeral"),
             }
         )
 
@@ -2189,7 +2634,7 @@ def gui_devices(request: Request) -> Response:
         rows = db.query(
             f"""SELECT d.device_id::TEXT as device_id, d.agent_id::TEXT as agent_id,
                        d.name, d.scopes, d.revoked_at, d.created_at, d.last_seen,
-                       d.last_heartbeat_at,
+                       d.last_heartbeat_at, d.location_label, d.location_coords,
                        CASE
                            WHEN d.last_heartbeat_at > now() - interval '60 seconds' THEN true
                            ELSE false
@@ -2198,7 +2643,7 @@ def gui_devices(request: Request) -> Response:
                 FROM devices d
                 JOIN agents a ON a.agent_id = d.agent_id
                 WHERE d.agent_id::TEXT IN ({placeholders})
-                ORDER BY d.created_at DESC""",
+                ORDER BY d.location_label NULLS LAST, d.created_at DESC""",
             params,
         )
         for row in rows:
@@ -2232,6 +2677,16 @@ def gui_devices(request: Request) -> Response:
                 except Exception:
                     scopes = []
 
+            # Parse location_coords if it's a string
+            location_coords = row.get("location_coords")
+            if isinstance(location_coords, str):
+                import json as json_mod
+
+                try:
+                    location_coords = json_mod.loads(location_coords)
+                except Exception:
+                    location_coords = None
+
             devices_data.append(
                 {
                     "device_id": str(row.get("device_id", "")),
@@ -2243,6 +2698,8 @@ def gui_devices(request: Request) -> Response:
                     "is_online": bool(row.get("is_online")),
                     "last_heartbeat_at": str(row.get("last_heartbeat_at") or ""),
                     "last_seen_relative": last_seen_relative,
+                    "location_label": row.get("location_label") or "",
+                    "location_coords": location_coords,
                 }
             )
 
@@ -2277,6 +2734,8 @@ def gui_device_detail(request: Request, device_id: str) -> Response:
         """
         SELECT d.device_id::TEXT, d.agent_id::TEXT, d.name, d.scopes,
                d.revoked_at, d.created_at, d.last_seen, d.last_heartbeat_at,
+               d.location_label, d.location_coords,
+               d.provisioned_at, d.provisioned_by,
                a.name as agent_name,
                CASE
                    WHEN d.last_heartbeat_at > now() - interval '60 seconds' THEN true
@@ -2316,6 +2775,20 @@ def gui_device_detail(request: Request, device_id: str) -> Response:
     if last_seen:
         last_seen = str(last_seen)[:19] if hasattr(last_seen, "isoformat") else str(last_seen)[:19]
 
+    # Parse location_coords
+    location_coords = row.get("location_coords")
+    if isinstance(location_coords, str):
+        import json as json_mod2
+
+        try:
+            location_coords = json_mod2.loads(location_coords)
+        except Exception:
+            location_coords = None
+
+    provisioned_at = row.get("provisioned_at")
+    if provisioned_at:
+        provisioned_at = str(provisioned_at)[:19] if hasattr(provisioned_at, "isoformat") else str(provisioned_at)[:19]
+
     device_data = {
         "device_id": str(row.get("device_id", "")),
         "agent_id": str(row.get("agent_id", "")),
@@ -2326,6 +2799,10 @@ def gui_device_detail(request: Request, device_id: str) -> Response:
         "created_at": created_at,
         "last_seen": last_seen,
         "is_online": bool(row.get("is_online")),
+        "location_label": row.get("location_label") or "",
+        "location_coords": location_coords,
+        "provisioned_at": provisioned_at,
+        "provisioned_by": row.get("provisioned_by") or "",
     }
 
     return templates.TemplateResponse(
@@ -2562,6 +3039,238 @@ def api_get_person(request: Request, person_id: str) -> dict:
     }
 
 
+class PersonLinkAccount(BaseModel):
+    email: str | None = None
+    user_id: str | None = None
+
+
+@app.post("/api/people/{person_id}/link-account", name="api_link_person_account")
+def api_link_person_account(request: Request, person_id: str, body: PersonLinkAccount) -> dict:
+    """Link a Cognito user (users.user_id) to a Person for the owning agent."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    rows = db.query(
+        """
+        SELECT p.agent_id::TEXT as agent_id
+        FROM people p
+        JOIN agent_memberships m ON p.agent_id = m.agent_id
+        WHERE p.person_id = :person_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.role IN ('admin', 'owner')
+          AND m.revoked_at IS NULL
+        LIMIT 1
+        """,
+        {"person_id": person_id, "user_id": str(user.user_id)},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Person not found or permission denied")
+
+    agent_id = str(rows[0].get("agent_id") or "").strip()
+    link_user_id = str(body.user_id or "").strip()
+    email = str(body.email or "").strip()
+    if not link_user_id and not email:
+        raise HTTPException(status_code=400, detail="email or user_id is required")
+
+    if email:
+        if not _cfg.cognito_user_pool_id:
+            raise HTTPException(status_code=500, detail="COGNITO_USER_POOL_ID not configured")
+        try:
+            cognito_sub, resolved_email = lookup_cognito_user_by_email(
+                user_pool_id=_cfg.cognito_user_pool_id,
+                email=email,
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        link_user_id = ensure_user_row(db, cognito_sub=cognito_sub, email=(resolved_email or email))
+
+    urows = db.query("SELECT 1 FROM users WHERE user_id = :user_id::uuid LIMIT 1", {"user_id": link_user_id})
+    if not urows:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    tx = db.begin()
+    try:
+        db.execute(
+            """
+            DELETE FROM person_accounts
+            WHERE agent_id = :agent_id::uuid
+              AND (user_id = :user_id::uuid OR person_id = :person_id::uuid)
+            """,
+            {"agent_id": agent_id, "user_id": link_user_id, "person_id": person_id},
+            transaction_id=tx,
+        )
+        db.execute(
+            """
+            INSERT INTO person_accounts(person_account_id, agent_id, user_id, person_id)
+            VALUES(:id::uuid, :agent_id::uuid, :user_id::uuid, :person_id::uuid)
+            """,
+            {"id": str(uuid.uuid4()), "agent_id": agent_id, "user_id": link_user_id, "person_id": person_id},
+            transaction_id=tx,
+        )
+        db.commit(tx)
+    except Exception:
+        db.rollback(tx)
+        raise
+
+    return {"ok": True, "agent_id": agent_id, "person_id": person_id, "user_id": link_user_id}
+
+
+class EnrollmentArtifactIn(BaseModel):
+    artifact_key: str
+    artifact_bucket: str | None = None
+    content_type: str | None = None
+    space_id: str | None = None
+
+
+def _pick_space_for_agent(*, db, agent_id: str) -> str:
+    rows = db.query(
+        "SELECT space_id::TEXT as space_id FROM spaces WHERE agent_id = :agent_id::uuid ORDER BY created_at ASC LIMIT 1",
+        {"agent_id": agent_id},
+    )
+    if not rows or not rows[0].get("space_id"):
+        raise HTTPException(status_code=400, detail="Agent has no spaces (create a space first)")
+    return str(rows[0]["space_id"])
+
+
+def _enqueue_recognition_event(*, event_id: str, agent_id: str, space_id: str, person_id: str, event_type: str, payload: dict) -> bool:
+    qurl = str(os.getenv("RECOGNITION_QUEUE_URL", "")).strip()
+    if not qurl:
+        return False
+    try:
+        _get_sqs().send_message(
+            QueueUrl=qurl,
+            MessageBody=json.dumps(
+                {
+                    "event_id": event_id,
+                    "agent_id": agent_id,
+                    "space_id": space_id,
+                    "device_id": None,
+                    "person_id": person_id,
+                    "type": event_type,
+                    "payload": payload,
+                }
+            ),
+        )
+        return True
+    except Exception as exc:
+        logger.warning("Failed to enqueue recognition event: %s", exc)
+        return False
+
+
+def _create_recognition_event(
+    *, request: Request, person_id: str, event_type: str, artifact: EnrollmentArtifactIn
+) -> dict[str, Any]:
+    """Server-side ingestion for enrollment events (browser -> S3 -> queue)."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    rows = db.query(
+        """
+        SELECT p.person_id::TEXT as person_id,
+               p.agent_id::TEXT as agent_id
+        FROM people p
+        JOIN agent_memberships m ON p.agent_id = m.agent_id
+        WHERE p.person_id = :person_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.role IN ('admin', 'owner')
+          AND m.revoked_at IS NULL
+        LIMIT 1
+        """,
+        {"person_id": person_id, "user_id": str(user.user_id)},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Person not found or permission denied")
+    agent_id = str(rows[0].get("agent_id") or "").strip()
+
+    # Choose a space for anchoring the event (events require space_id).
+    space_id = str(artifact.space_id or "").strip()
+    if space_id:
+        # Ensure the space belongs to the same agent and the user can access it.
+        srows = db.query(
+            """
+            SELECT 1
+            FROM spaces s
+            JOIN agent_memberships m ON s.agent_id = m.agent_id
+            WHERE s.space_id = :space_id::uuid
+              AND s.agent_id = :agent_id::uuid
+              AND m.user_id = :user_id::uuid
+              AND m.revoked_at IS NULL
+            LIMIT 1
+            """,
+            {"space_id": space_id, "agent_id": agent_id, "user_id": str(user.user_id)},
+        )
+        if not srows:
+            raise HTTPException(status_code=404, detail="Space not found")
+    else:
+        space_id = _pick_space_for_agent(db=db, agent_id=agent_id)
+
+    artifact_key = str(artifact.artifact_key or "").strip()
+    if not artifact_key:
+        raise HTTPException(status_code=400, detail="artifact_key is required")
+    artifact_bucket = str(artifact.artifact_bucket or "").strip() or str(_cfg.artifact_bucket or "").strip()
+    if not artifact_bucket:
+        raise HTTPException(status_code=500, detail="Artifact bucket not configured")
+
+    payload = {
+        "artifact_bucket": artifact_bucket,
+        "artifact_key": artifact_key,
+        "content_type": artifact.content_type,
+        "enroll_person_id": person_id,
+        "source": "browser_enrollment",
+    }
+
+    event_id = str(uuid.uuid4())
+    db.execute(
+        """
+        INSERT INTO events(event_id, agent_id, space_id, person_id, type, payload)
+        VALUES(:event_id::uuid, :agent_id::uuid, :space_id::uuid, :person_id::uuid, :type, :payload::jsonb)
+        """,
+        {
+            "event_id": event_id,
+            "agent_id": agent_id,
+            "space_id": space_id,
+            "person_id": person_id,
+            "type": event_type,
+            "payload": json.dumps(payload),
+        },
+    )
+
+    queued = _enqueue_recognition_event(
+        event_id=event_id,
+        agent_id=agent_id,
+        space_id=space_id,
+        person_id=person_id,
+        event_type=event_type,
+        payload=payload,
+    )
+
+    try:
+        broadcast_event(
+            event_type="events.new",
+            agent_id=agent_id,
+            space_id=space_id,
+            payload={"event": {"event_id": event_id, "type": event_type, "payload": payload, "person_id": person_id}},
+        )
+    except Exception:
+        pass
+
+    return {"ok": True, "event_id": event_id, "queued": queued, "space_id": space_id}
+
+
+@app.post("/api/people/{person_id}/enroll/voice", name="api_enroll_voice")
+def api_enroll_voice(request: Request, person_id: str, body: EnrollmentArtifactIn) -> dict[str, Any]:
+    return _create_recognition_event(request=request, person_id=person_id, event_type="voice.sample", artifact=body)
+
+
+@app.post("/api/people/{person_id}/enroll/face", name="api_enroll_face")
+def api_enroll_face(request: Request, person_id: str, body: EnrollmentArtifactIn) -> dict[str, Any]:
+    return _create_recognition_event(request=request, person_id=person_id, event_type="face.snapshot", artifact=body)
+
+
 @app.get("/people", name="gui_people")
 def gui_people(request: Request) -> Response:
     """People & consent management."""
@@ -2773,6 +3482,11 @@ def gui_actions(request: Request) -> Response:
             }
         )
 
+    # Merge registered tool names so new tools appear even before any actions use them.
+    from agent_hub.tools.registry import get_registry as _get_tool_registry
+
+    action_kinds_set.update(t.name for t in _get_tool_registry().list_tools())
+
     return templates.TemplateResponse(
         request,
         "actions.html",
@@ -2807,6 +3521,49 @@ def gui_actions_guide(request: Request) -> Response:
             **_get_ws_context(request),
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Tools (Tool Registry Catalog)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/tools", name="gui_tools")
+def gui_tools(request: Request) -> Response:
+    """Tool catalog - list all registered tools."""
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/tools")
+
+    from agent_hub.tools.registry import get_registry
+
+    registry = get_registry()
+    tools_data = [t.to_dict() for t in registry.list_tools()]
+
+    return templates.TemplateResponse(
+        request,
+        "tools.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "tools",
+            "tools": tools_data,
+            **_get_ws_context(request),
+        },
+    )
+
+
+@app.get("/api/tools", name="api_gui_tools")
+def api_gui_tools(request: Request) -> JSONResponse:
+    """Return all registered tools as JSON (GUI-authenticated)."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    from agent_hub.tools.registry import get_registry
+
+    registry = get_registry()
+    return JSONResponse({"tools": [t.to_dict() for t in registry.list_tools()]})
 
 
 class ActionApproveReject(BaseModel):
@@ -3466,10 +4223,15 @@ def gui_memories(request: Request) -> Response:
             f"""SELECT m.memory_id::TEXT as memory_id, m.agent_id::TEXT as agent_id,
                        m.space_id::TEXT as space_id, m.tier, m.content,
                        m.participants, m.provenance, m.created_at,
-                       a.name as agent_name, s.name as space_name
+                       a.name as agent_name, s.name as space_name,
+                       m.subject_person_id::TEXT as subject_person_id,
+                       p.display_name as subject_person_name,
+                       m.tags, m.scene_context, m.modality, m.confidence,
+                       m.related_memory_ids::TEXT[] as related_memory_ids
                 FROM memories m
                 JOIN agents a ON a.agent_id = m.agent_id
                 LEFT JOIN spaces s ON s.space_id = m.space_id
+                LEFT JOIN people p ON p.person_id = m.subject_person_id
                 WHERE m.agent_id::TEXT IN ({placeholders})
                 ORDER BY m.created_at DESC
                 LIMIT 100""",
@@ -3511,6 +4273,9 @@ def gui_memories(request: Request) -> Response:
                 except Exception:
                     provenance = {}
 
+            # Parse tags (may come as list or None)
+            tags = row.get("tags") or []
+
             memories_data.append(
                 {
                     "memory_id": str(row.get("memory_id", "")),
@@ -3523,11 +4288,35 @@ def gui_memories(request: Request) -> Response:
                     "participants": participants,
                     "provenance_source": provenance.get("source", ""),
                     "created_at_relative": created_at_relative,
+                    "subject_person_id": row.get("subject_person_id"),
+                    "subject_person_name": row.get("subject_person_name"),
+                    "tags": tags,
+                    "scene_context": row.get("scene_context"),
+                    "modality": row.get("modality", "text"),
+                    "confidence": row.get("confidence", 1.0),
+                    "related_memory_ids": row.get("related_memory_ids") or [],
                 }
             )
 
     agents_data = [{"agent_id": a.agent_id, "name": a.name, "role": a.role} for a in agents]
     spaces_data = [{"space_id": s.space_id, "name": s.name} for s in spaces]
+
+    # Collect people for all user's agents (for filters and creation form)
+    people_data: list[dict[str, str]] = []
+    if agent_ids:
+        people_placeholders = ", ".join(f":pid{i}" for i in range(len(agent_ids)))
+        people_params = {f"pid{i}": aid for i, aid in enumerate(agent_ids)}
+        people_rows = db.query(
+            f"""SELECT person_id::TEXT as person_id, display_name
+                FROM people WHERE agent_id::TEXT IN ({people_placeholders})
+                ORDER BY display_name""",
+            people_params,
+        )
+        people_data = [{"person_id": r["person_id"], "display_name": r["display_name"]} for r in people_rows]
+
+    # Collect unique modalities and tags for filters
+    all_modalities = sorted({m.get("modality", "text") for m in memories_data})
+    all_tags = sorted({t for m in memories_data for t in m.get("tags", [])})
 
     return templates.TemplateResponse(
         request,
@@ -3540,9 +4329,105 @@ def gui_memories(request: Request) -> Response:
             "tier_counts": tier_counts,
             "agents": agents_data,
             "spaces": spaces_data,
+            "people": people_data,
+            "all_modalities": all_modalities,
+            "all_tags": all_tags,
             **_get_ws_context(request),
         },
     )
+
+
+
+@app.post("/api/memories", name="api_create_memory")
+def api_create_memory(request: Request) -> dict:
+    """Create a memory from the GUI."""
+    import json as _json
+
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Parse JSON body
+    import asyncio
+
+    async def _read_body() -> bytes:
+        return await request.body()
+
+    body_bytes = asyncio.get_event_loop().run_until_complete(_read_body())
+    try:
+        body = _json.loads(body_bytes)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    agent_id = body.get("agent_id")
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="agent_id required")
+
+    content = body.get("content", "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content required")
+
+    # Verify user has access to this agent
+    rows = db.query(
+        """SELECT 1 FROM agent_memberships
+           WHERE agent_id = :agent_id::uuid AND user_id = :user_id::uuid
+             AND revoked_at IS NULL""",
+        {"agent_id": agent_id, "user_id": str(user.user_id)},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Agent not found or no access")
+
+    import uuid as _uuid
+
+    memory_id = str(_uuid.uuid4())
+    tier = body.get("tier", "semantic")
+    space_id = body.get("space_id") or None
+    subject_person_id = body.get("subject_person_id") or None
+    tags = body.get("tags", [])
+    scene_context = body.get("scene_context") or None
+    modality = body.get("modality", "text")
+    confidence = float(body.get("confidence", 1.0))
+    related_memory_ids = body.get("related_memory_ids", [])
+
+    db.execute(
+        """
+        INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants, provenance,
+                              subject_person_id, tags, scene_context, modality, confidence, related_memory_ids)
+        VALUES (
+            :memory_id::uuid,
+            :agent_id::uuid,
+            CASE WHEN :space_id IS NULL THEN NULL ELSE :space_id::uuid END,
+            :tier,
+            :content,
+            '[]'::jsonb,
+            :provenance::jsonb,
+            CASE WHEN :subject_person_id IS NULL THEN NULL ELSE :subject_person_id::uuid END,
+            :tags::text[],
+            :scene_context,
+            :modality,
+            :confidence,
+            :related_memory_ids::uuid[]
+        )
+        """,
+        {
+            "memory_id": memory_id,
+            "agent_id": agent_id,
+            "space_id": space_id,
+            "tier": tier,
+            "content": content,
+            "provenance": _json.dumps({"source": "gui", "user_id": str(user.user_id)}),
+            "subject_person_id": subject_person_id,
+            "tags": "{" + ",".join(tags) + "}" if tags else "{}",
+            "scene_context": scene_context,
+            "modality": modality,
+            "confidence": confidence,
+            "related_memory_ids": "{" + ",".join(related_memory_ids) + "}" if related_memory_ids else "{}",
+        },
+    )
+
+    return {"memory_id": memory_id, "created": True}
 
 
 @app.delete("/api/memories/{memory_id}", name="api_delete_memory")
@@ -3600,10 +4485,15 @@ def api_get_memory(request: Request, memory_id: str) -> dict:
                m.provenance::TEXT as provenance,
                m.retention::TEXT as retention,
                m.created_at::TEXT as created_at,
-               a.name as agent_name, s.name as space_name
+               a.name as agent_name, s.name as space_name,
+               m.subject_person_id::TEXT as subject_person_id,
+               p.display_name as subject_person_name,
+               m.tags, m.scene_context, m.modality, m.confidence,
+               m.related_memory_ids::TEXT[] as related_memory_ids
         FROM memories m
         INNER JOIN agents a ON m.agent_id = a.agent_id
         LEFT JOIN spaces s ON m.space_id = s.space_id
+        LEFT JOIN people p ON p.person_id = m.subject_person_id
         INNER JOIN agent_memberships mb ON m.agent_id = mb.agent_id
         WHERE m.memory_id = :memory_id::uuid
           AND mb.user_id = :user_id::uuid
@@ -3644,6 +4534,13 @@ def api_get_memory(request: Request, memory_id: str) -> dict:
         "provenance": provenance,
         "retention": retention,
         "created_at": row["created_at"],
+        "subject_person_id": row.get("subject_person_id"),
+        "subject_person_name": row.get("subject_person_name"),
+        "tags": row.get("tags") or [],
+        "scene_context": row.get("scene_context"),
+        "modality": row.get("modality", "text"),
+        "confidence": row.get("confidence", 1.0),
+        "related_memory_ids": row.get("related_memory_ids") or [],
     }
 
 
@@ -3796,6 +4693,7 @@ class ArtifactPresign(BaseModel):
     agent_id: str
     filename: str
     content_type: str = "application/octet-stream"
+    purpose: str | None = Field(default="general", description="general|recognition")
 
 
 @app.post("/api/artifacts/presign", name="api_presign_upload")
@@ -3816,7 +4714,11 @@ def api_presign_upload(request: Request, body: ArtifactPresign) -> dict:
 
     import uuid as uuid_mod
 
-    key = f"artifacts/agent_id={body.agent_id}/{uuid_mod.uuid4()}_{body.filename}"
+    purpose = str(body.purpose or "general").strip().lower()
+    if purpose not in {"general", "recognition"}:
+        purpose = "general"
+    prefix = "recognition" if purpose == "recognition" else "artifacts"
+    key = f"{prefix}/agent_id={body.agent_id}/{uuid_mod.uuid4()}_{body.filename}"
     s3 = _get_s3()
     url = s3.generate_presigned_url(
         ClientMethod="put_object",
@@ -3824,7 +4726,7 @@ def api_presign_upload(request: Request, body: ArtifactPresign) -> dict:
         ExpiresIn=900,
     )
 
-    return {"upload_url": url, "key": key, "bucket": _cfg.artifact_bucket}
+    return {"upload_url": url, "key": key, "bucket": _cfg.artifact_bucket, "purpose": purpose}
 
 
 @app.post("/api/artifacts/upload", name="api_upload_artifact")
@@ -4125,6 +5027,7 @@ def gui_livekit_test(request: Request, space_id: str | None = None) -> Response:
             "space_id": sp.space_id,
             "name": sp.name,
             "agent_name": sp.agent_name,
+            "livekit_room_mode": getattr(sp, "livekit_room_mode", "ephemeral"),
         }
         for sp in spaces
     ]
@@ -4152,7 +5055,7 @@ async def gui_livekit_token(request: Request, body: LiveKitTokenIn) -> LiveKitTo
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return await _mint_livekit_token_for_user(user=user, space_id=body.space_id)
+    return await _mint_livekit_token_for_user(user=user, space_id=body.space_id, room_mode=body.room_mode)
 
 
 @app.get("/agents/{agent_id}", name="gui_agent_detail")

@@ -2,111 +2,7 @@
 
 {% block title %}Actions - Marvain{% endblock %}
 
-{% block head %}
-<style>
-.detail-section {
-  margin-bottom: 1.5rem;
-  padding-bottom: 1rem;
-  border-bottom: 1px solid var(--color-gray-600);
-}
-.detail-section:last-child {
-  border-bottom: none;
-  margin-bottom: 0;
-}
-.detail-section h4 {
-  margin: 0 0 1rem 0;
-  color: var(--color-gray-200);
-  font-size: 1rem;
-}
-.detail-section h4 i {
-  margin-right: 0.5rem;
-  color: var(--color-highlight);
-}
-.detail-grid {
-  display: grid;
-  gap: 0.75rem;
-}
-.detail-row {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-.detail-label {
-  color: var(--color-gray-400);
-  min-width: 120px;
-  font-size: 0.875rem;
-}
-.detail-value {
-  color: var(--color-gray-200);
-}
-.json-display {
-  background: var(--color-gray-900);
-  padding: 1rem;
-  border-radius: var(--radius-md);
-  overflow-x: auto;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 0.8125rem;
-  color: var(--color-gray-200);
-  max-height: 300px;
-  overflow-y: auto;
-  margin: 0;
-}
-.json-display.error {
-  color: var(--color-error);
-}
-.scope-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-.badge-outline {
-  background: transparent;
-  border: 1px solid var(--color-gray-500);
-  color: var(--color-gray-300);
-}
-.loading-spinner {
-  text-align: center;
-  padding: 2rem;
-  color: var(--color-gray-400);
-}
-.error-message {
-  text-align: center;
-  padding: 2rem;
-  color: var(--color-error);
-}
-/* Diagnostics panel */
-.diag-panel { margin-bottom: 1.5rem; }
-.diag-toggle {
-  display: flex; align-items: center; gap: 0.5rem;
-  cursor: pointer; padding: 0.75rem 1rem;
-  background: var(--color-gray-800); border-radius: var(--radius-md);
-  color: var(--color-gray-200); font-size: 0.9rem; font-weight: 500;
-  border: 1px solid var(--color-gray-600);
-}
-.diag-toggle:hover { background: var(--color-gray-700); }
-.diag-toggle .chevron { transition: transform 0.2s; }
-.diag-toggle.open .chevron { transform: rotate(90deg); }
-.diag-body { display: none; padding: 1rem; background: var(--color-gray-800); border: 1px solid var(--color-gray-600); border-top: none; border-radius: 0 0 var(--radius-md) var(--radius-md); }
-.diag-body.open { display: block; }
-.diag-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; margin-bottom: 1rem; }
-.diag-metric { background: var(--color-gray-900); padding: 1rem; border-radius: var(--radius-md); text-align: center; }
-.diag-metric .metric-value { font-size: 1.75rem; font-weight: 700; color: var(--color-gray-200); font-family: 'JetBrains Mono', monospace; }
-.diag-metric .metric-label { font-size: 0.75rem; color: var(--color-gray-400); margin-top: 0.25rem; }
-.diag-metric.warn .metric-value { color: var(--color-warning); }
-.diag-metric.ok .metric-value { color: var(--color-success); }
-.diag-metric.err .metric-value { color: var(--color-error); }
-.diag-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
-.diag-table th { text-align: left; color: var(--color-gray-400); padding: 0.5rem; border-bottom: 1px solid var(--color-gray-600); font-weight: 500; }
-.diag-table td { padding: 0.5rem; color: var(--color-gray-300); border-bottom: 1px solid var(--color-gray-700); font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; }
-.diag-table tr:last-child td { border-bottom: none; }
-.diag-section-title { color: var(--color-gray-300); font-size: 0.875rem; font-weight: 600; margin: 1rem 0 0.5rem; display: flex; align-items: center; gap: 0.5rem; }
-.diag-refresh { background: none; border: 1px solid var(--color-gray-500); color: var(--color-gray-300); padding: 0.25rem 0.75rem; border-radius: var(--radius-sm); cursor: pointer; font-size: 0.75rem; }
-.diag-refresh:hover { background: var(--color-gray-700); }
-.diag-status-ok { color: var(--color-success); }
-.diag-status-err { color: var(--color-error); }
-.diag-status-warn { color: var(--color-warning); }
-</style>
-{% endblock %}
+{# Styles moved to marvain.css: detail-section, detail-grid, json-display, badge-outline, diag-* #}
 
 {% block content %}
 <div class="page-header">
@@ -284,9 +180,9 @@
       <button type="button" class="modal-close" onclick="hideCreateActionModal()">&times;</button>
     </div>
     <div class="modal-body">
-      <div style="margin-bottom:1rem;padding:0.75rem 1rem;background:var(--color-gray-700);border-radius:var(--radius-md);display:flex;align-items:center;gap:0.75rem;">
-        <i class="fas fa-question-circle" style="color:var(--color-highlight);font-size:1.1rem;"></i>
-        <span style="font-size:0.875rem;">Need help with payloads and action kinds? <a href="{{ url_for('gui_actions_guide') }}" style="color:var(--color-highlight);text-decoration:underline;">Read the Actions Guide</a></span>
+      <div class="guide-help-box">
+        <i class="fas fa-question-circle"></i>
+        <span>Need help with payloads and action kinds? <a href="{{ url_for('gui_actions_guide') }}">Read the Actions Guide</a></span>
       </div>
       <form id="create-action-form" onsubmit="submitCreateAction(event)">
         <div class="form-group">
@@ -309,11 +205,9 @@
           <label for="action-kind">Action Kind <span class="required">*</span></label>
           <select id="action-kind" name="kind" required>
             <option value="">Select action type...</option>
-            <option value="send_message">send_message</option>
-            <option value="create_memory">create_memory</option>
-            <option value="http_request">http_request</option>
-            <option value="device_command">device_command</option>
-            <option value="shell_command">shell_command</option>
+            {% for k in action_kinds %}
+            <option value="{{ k }}">{{ k }}</option>
+            {% endfor %}
           </select>
         </div>
         <div class="form-group">

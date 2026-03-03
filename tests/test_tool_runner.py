@@ -23,14 +23,25 @@ class TestToolRegistry:
         assert tool.required_scopes == ["scope:a"]
 
     def test_list_tools(self):
-        """list_tools returns all registered tool names."""
+        """list_tools returns all registered ToolSpec objects."""
         registry = ToolRegistry()
         registry.register("tool_a", required_scopes=[], handler=MagicMock())
         registry.register("tool_b", required_scopes=[], handler=MagicMock())
 
         tools = registry.list_tools()
-        assert "tool_a" in tools
-        assert "tool_b" in tools
+        names = [t.name for t in tools]
+        assert "tool_a" in names
+        assert "tool_b" in names
+
+    def test_list_tool_names(self):
+        """list_tool_names returns all registered tool names as strings."""
+        registry = ToolRegistry()
+        registry.register("tool_a", required_scopes=[], handler=MagicMock())
+        registry.register("tool_b", required_scopes=[], handler=MagicMock())
+
+        names = registry.list_tool_names()
+        assert "tool_a" in names
+        assert "tool_b" in names
 
     def test_check_scopes_passes_with_all_required(self):
         """check_scopes returns True when all required scopes are granted."""

@@ -1022,7 +1022,11 @@ def gui_run(
     if reload:
         cmd.append("--reload")
 
-    redirect_uri = f"http://localhost:{port}/auth/callback"
+    public_base_url = str(os.environ.get("PUBLIC_BASE_URL", "")).strip().rstrip("/")
+    if public_base_url:
+        redirect_uri = f"{public_base_url}/auth/callback"
+    else:
+        redirect_uri = f"http://localhost:{port}/auth/callback"
 
     _eprint(f"Starting local GUI server at http://{host}:{port}")
     _eprint(f"Using config: {ctx.config_path} (env: {ctx.env.env})")
@@ -1049,6 +1053,7 @@ def gui_run(
         "HubWebSocketUrl": "WS_API_URL",
         "AuditBucketName": "AUDIT_BUCKET",
         "ArtifactBucketName": "ARTIFACT_BUCKET",
+        "RecognitionQueueUrl": "RECOGNITION_QUEUE_URL",
         "SessionSecretArn": "SESSION_SECRET_ARN",
     }
 
@@ -1493,7 +1498,13 @@ def gui_start(
         cmd.extend(["--ssl-certfile", str(cert_path)])
 
     scheme = "https" if https else "http"
-    redirect_uri = f"{scheme}://localhost:{port}/auth/callback"
+    public_base_url = str(os.environ.get("PUBLIC_BASE_URL", "")).strip().rstrip("/")
+    if public_base_url:
+        redirect_uri = f"{public_base_url}/auth/callback"
+        https_enabled_for_cookies = public_base_url.lower().startswith("https://")
+    else:
+        redirect_uri = f"{scheme}://localhost:{port}/auth/callback"
+        https_enabled_for_cookies = https
 
     _eprint(f"Starting local GUI server at {scheme}://{host}:{port}")
     _eprint(f"Using config: {ctx.config_path} (env: {ctx.env.env})")
@@ -1523,6 +1534,7 @@ def gui_start(
         "HubWebSocketUrl": "WS_API_URL",
         "AuditBucketName": "AUDIT_BUCKET",
         "ArtifactBucketName": "ARTIFACT_BUCKET",
+        "RecognitionQueueUrl": "RECOGNITION_QUEUE_URL",
         "SessionSecretArn": "SESSION_SECRET_ARN",
     }
 
@@ -1552,7 +1564,7 @@ def gui_start(
     env["ENVIRONMENT"] = "local"
     env["LOG_LEVEL"] = env.get("LOG_LEVEL", "INFO")
     # Tell the app whether HTTPS is enabled (for SameSite cookie settings)
-    env["HTTPS_ENABLED"] = "true" if https else "false"
+    env["HTTPS_ENABLED"] = "true" if https_enabled_for_cookies else "false"
     # For local dev, use a static session secret (Lambda uses SESSION_SECRET_ARN)
     if "SESSION_SECRET_KEY" not in env:
         env["SESSION_SECRET_KEY"] = "local-dev-session-secret-key-change-in-production-123456"

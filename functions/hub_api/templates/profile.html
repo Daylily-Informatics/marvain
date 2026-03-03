@@ -42,7 +42,7 @@
 
 <!-- Agent Memberships -->
 {% if agents %}
-<div class="card" style="margin-top: var(--spacing-lg);">
+<div class="card mt-lg">
   <div class="card-header">
     <h3 class="card-title"><i class="fas fa-robot"></i> Agent Memberships</h3>
   </div>
@@ -76,20 +76,20 @@
 {% endif %}
 
 <!-- Infrastructure — S3 Buckets -->
-<div class="card" style="margin-top: var(--spacing-lg);">
+<div class="card mt-lg">
   <div class="card-header">
     <h3 class="card-title"><i class="fas fa-cloud"></i> Infrastructure — S3 Buckets</h3>
   </div>
   <div class="card-body">
     <div class="profile-info">
       <!-- Artifact Bucket -->
-      <div class="profile-row" style="flex-wrap: wrap; gap: var(--spacing-sm);">
+      <div class="profile-row flex-wrap gap-sm">
         <span class="profile-label">Artifact Bucket</span>
-        <div style="flex: 1; display: flex; align-items: center; gap: var(--spacing-sm); flex-wrap: wrap;">
+        <div class="flex-grow d-flex align-center gap-sm flex-wrap">
           {% if artifact_bucket.name %}
-            <code class="profile-value" style="flex: unset;">{{ artifact_bucket.name }}</code>
+            <code class="profile-value flex-unset">{{ artifact_bucket.name }}</code>
           {% else %}
-            <span class="text-muted" style="font-style: italic;">Not configured</span>
+            <span class="text-muted text-italic">Not configured</span>
           {% endif %}
           {% if artifact_bucket.exists %}
             <span class="badge badge-success"><i class="fas fa-check-circle"></i> Active</span>
@@ -102,13 +102,13 @@
         </div>
       </div>
       <!-- Audit Bucket -->
-      <div class="profile-row" style="flex-wrap: wrap; gap: var(--spacing-sm);">
+      <div class="profile-row flex-wrap gap-sm">
         <span class="profile-label">Audit Bucket</span>
-        <div style="flex: 1; display: flex; align-items: center; gap: var(--spacing-sm); flex-wrap: wrap;">
+        <div class="flex-grow d-flex align-center gap-sm flex-wrap">
           {% if audit_bucket.name %}
-            <code class="profile-value" style="flex: unset;">{{ audit_bucket.name }}</code>
+            <code class="profile-value flex-unset">{{ audit_bucket.name }}</code>
           {% else %}
-            <span class="text-muted" style="font-style: italic;">Not configured</span>
+            <span class="text-muted text-italic">Not configured</span>
           {% endif %}
           {% if audit_bucket.exists %}
             <span class="badge badge-success"><i class="fas fa-check-circle"></i> Active</span>
@@ -133,14 +133,14 @@
     </div>
 
     {% if not artifact_bucket.exists or not audit_bucket.exists %}
-    <div style="margin-top: var(--spacing-lg); padding: var(--spacing-md); background: var(--color-gray-700); border-radius: var(--radius-md); border-left: 3px solid var(--color-warning);">
-      <p style="margin: 0 0 var(--spacing-sm) 0; color: var(--color-warning); font-weight: 500;">
+    <div class="callout-warning mt-lg">
+      <p class="callout-title">
         <i class="fas fa-exclamation-triangle"></i> Missing Buckets
       </p>
-      <p class="text-muted" style="margin: 0 0 var(--spacing-sm) 0; font-size: 0.875rem;">
+      <p class="callout-body text-muted">
         S3 buckets are provisioned by the SAM/CloudFormation stack. To create missing buckets, redeploy the stack:
       </p>
-      <code style="display: block; background: var(--color-gray-900); padding: var(--spacing-sm) var(--spacing-md); border-radius: var(--radius-sm); font-size: 0.8rem; color: var(--color-gray-200);">
+      <code>
         source marvain_activate && ./bin/marvain build && ./bin/marvain deploy --no-guided
       </code>
     </div>
@@ -149,12 +149,12 @@
 </div>
 
 <!-- Session Actions -->
-<div class="card" style="margin-top: var(--spacing-lg);">
+<div class="card mt-lg">
   <div class="card-header">
     <h3 class="card-title"><i class="fas fa-cog"></i> Session</h3>
   </div>
   <div class="card-body">
-    <div style="display: flex; gap: var(--spacing-md); flex-wrap: wrap;">
+    <div class="d-flex gap-md flex-wrap">
       <a href="{{ url_for('logout') }}" class="btn btn-outline">
         <i class="fas fa-sign-out-alt"></i> Logout
       </a>
@@ -162,35 +162,6 @@
   </div>
 </div>
 
-<style>
-.profile-info {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-md);
-}
-.profile-row {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-lg);
-  padding: var(--spacing-sm) 0;
-  border-bottom: 1px solid var(--color-gray-600);
-}
-.profile-row:last-child {
-  border-bottom: none;
-}
-.profile-label {
-  min-width: 150px;
-  font-weight: 500;
-  color: var(--color-gray-300);
-}
-.profile-value {
-  flex: 1;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 0.9rem;
-  background: var(--color-gray-700);
-  padding: var(--spacing-xs) var(--spacing-sm);
-  border-radius: var(--radius-sm);
-}
-</style>
+{# Styles moved to marvain.css: profile-info, profile-row, profile-label, profile-value #}
 {% endblock %}
 

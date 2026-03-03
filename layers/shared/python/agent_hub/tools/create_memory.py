@@ -35,6 +35,12 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
     participants = payload.get("participants", [])
     provenance = payload.get("provenance", {})
     retention = payload.get("retention", {})
+    subject_person_id = payload.get("subject_person_id")
+    tags = payload.get("tags", [])
+    scene_context = payload.get("scene_context")
+    modality = str(payload.get("modality", "text")).strip().lower()
+    confidence = float(payload.get("confidence", 1.0))
+    related_memory_ids = payload.get("related_memory_ids", [])
 
     # Validate tier
     if tier not in ("episodic", "semantic"):
@@ -67,12 +73,28 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
     provenance["source_action_id"] = ctx.action_id
     provenance["source_tool"] = TOOL_NAME
 
+    # Validate modality
+    valid_modalities = ("text", "image", "audio", "video", "sensor")
+    if modality not in valid_modalities:
+        modality = "text"
+
+    # Clamp confidence
+    confidence = max(0.0, min(1.0, confidence))
+
     try:
         # Insert the memory
         rows = ctx.db.query(
             """
-            INSERT INTO memories (agent_id, space_id, tier, content, participants, provenance, retention)
-            VALUES (:agent_id::uuid, :space_id::uuid, :tier, :content, :participants::jsonb, :provenance::jsonb, :retention::jsonb)
+            INSERT INTO memories (agent_id, space_id, tier, content, participants, provenance, retention,
+                                  subject_person_id, tags, scene_context, modality, confidence, related_memory_ids)
+            VALUES (
+                :agent_id::uuid, :space_id::uuid, :tier, :content,
+                :participants::jsonb, :provenance::jsonb, :retention::jsonb,
+                CASE WHEN :subject_person_id IS NULL
+                    THEN NULL ELSE :subject_person_id::uuid END,
+                :tags::text[], :scene_context, :modality, :confidence,
+                :related_memory_ids::uuid[]
+            )
             RETURNING memory_id::TEXT as memory_id
             """,
             {
@@ -83,6 +105,15 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
                 "participants": json.dumps(participants),
                 "provenance": json.dumps(provenance),
                 "retention": json.dumps(retention),
+                "subject_person_id": subject_person_id,
+                "tags": "{" + ",".join(str(t) for t in tags) + "}" if tags else "{}",
+                "scene_context": scene_context,
+                "modality": modality,
+                "confidence": confidence,
+                "related_memory_ids": (
+                    "{" + ",".join(str(r) for r in related_memory_ids) + "}"
+                    if related_memory_ids else "{}"
+                ),
             },
         )
 
