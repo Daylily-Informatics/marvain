@@ -200,6 +200,23 @@ app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
 
+@app.middleware("http")
+async def _gui_cache_control_middleware(request: Request, call_next):
+    """Disable caching for dynamic GUI pages to avoid stale auth/script state."""
+    response = await call_next(request)
+    path = str(request.url.path or "")
+    if path.startswith("/static/"):
+        return response
+    if path.startswith("/api/"):
+        if path == "/api/ws-auth-token":
+            response.headers["Cache-Control"] = "no-store"
+        return response
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
 # -----------------------------
 # Startup Event - Validate Configuration
 # -----------------------------

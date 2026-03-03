@@ -151,6 +151,13 @@ class TestGuiApp(unittest.TestCase):
         self.assertEqual(r.status_code, 302)
         self.assertEqual(r.headers.get("location"), "/login?next=%2Flivekit-test")
 
+    def test_logged_out_page_is_not_cacheable(self) -> None:
+        r = self.client.get("/logged-out")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.headers.get("cache-control"), "no-store")
+        self.assertEqual(r.headers.get("pragma"), "no-cache")
+        self.assertEqual(r.headers.get("expires"), "0")
+
     def test_auth_callback_rejects_invalid_state(self) -> None:
         r = self.client.get("/auth/callback?code=c1&state=s1", follow_redirects=False)
         self.assertEqual(r.status_code, 400)
