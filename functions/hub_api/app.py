@@ -1227,6 +1227,8 @@ class DeviceCreate(BaseModel):
     agent_id: str = Field(..., description="ID of the agent this device belongs to")
     name: str = Field(..., description="Name of the device")
     scopes: list[str] = Field(default_factory=list, description="Scopes assigned to the device")
+    location_label: str | None = Field(default=None, description="Human-readable location label (e.g., Kitchen, Lab Bench 3)")
+    location_coords: dict | None = Field(default=None, description="Optional geographic coordinates: {lat, lng}")
 
 
 class DeviceResponse(BaseModel):
@@ -1237,6 +1239,8 @@ class DeviceResponse(BaseModel):
     name: str
     scopes: list[str]
     token: str  # Only returned on creation, not stored
+    location_label: str | None = None
+    location_coords: dict | None = None
 
 
 class DeviceRotateTokenResponse(BaseModel):
@@ -1272,8 +1276,10 @@ def api_create_device(request: Request, body: DeviceCreate) -> DeviceResponse:
 
         db.execute(
             """
-            INSERT INTO devices (device_id, agent_id, name, scopes, token_hash)
-            VALUES (:device_id::uuid, :agent_id::uuid, :name, :scopes::jsonb, :token_hash)
+            INSERT INTO devices (device_id, agent_id, name, scopes, token_hash,
+                                 location_label, location_coords, provisioned_at, provisioned_by)
+            VALUES (:device_id::uuid, :agent_id::uuid, :name, :scopes::jsonb, :token_hash,
+                    :location_label, :location_coords::jsonb, NOW(), :provisioned_by)
         """,
             {
                 "device_id": device_id,
@@ -1281,6 +1287,9 @@ def api_create_device(request: Request, body: DeviceCreate) -> DeviceResponse:
                 "name": body.name,
                 "scopes": json.dumps(body.scopes),
                 "token_hash": token_hash,
+                "location_label": body.location_label,
+                "location_coords": json.dumps(body.location_coords) if body.location_coords else None,
+                "provisioned_by": str(user.user_id),
             },
         )
     except Exception as e:
@@ -1293,6 +1302,8 @@ def api_create_device(request: Request, body: DeviceCreate) -> DeviceResponse:
         name=body.name,
         scopes=body.scopes,
         token=device_token,  # Return token only on creation
+        location_label=body.location_label,
+        location_coords=body.location_coords,
     )
 
 
@@ -1411,6 +1422,64 @@ def api_delete_device(request: Request, device_id: str) -> dict:
         raise HTTPException(status_code=500, detail="Failed to delete device")
 
     return {"message": "Device deleted", "device_id": device_id}
+
+
+class DeviceLocationUpdate(BaseModel):
+    """Request body for updating device location."""
+
+    location_label: str | None = Field(default=None, description="Human-readable location label")
+    location_coords: dict | None = Field(default=None, description="Optional geographic coordinates: {lat, lng}")
+
+
+@app.patch("/api/devices/{device_id}/location", name="api_update_device_location")
+def api_update_device_location(request: Request, device_id: str, body: DeviceLocationUpdate) -> dict:
+    """Update a device's location information."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Check permission
+    rows = db.query(
+        """
+        SELECT d.device_id, d.agent_id
+        FROM devices d
+        INNER JOIN agent_memberships m ON d.agent_id = m.agent_id
+        WHERE d.device_id = :device_id::uuid AND m.user_id = :user_id::uuid AND m.role IN ('admin', 'owner') AND m.revoked_at IS NULL
+    """,
+        {"device_id": device_id, "user_id": str(user.user_id)},
+    )
+
+    if not rows:
+        raise HTTPException(status_code=404, detail="Device not found or permission denied")
+
+    import json as json_module
+
+    try:
+        db.execute(
+            """
+            UPDATE devices
+            SET location_label = :location_label,
+                location_coords = :location_coords::jsonb
+            WHERE device_id = :device_id::uuid
+        """,
+            {
+                "device_id": device_id,
+                "location_label": body.location_label,
+                "location_coords": json_module.dumps(body.location_coords) if body.location_coords else None,
+            },
+        )
+    except Exception as e:
+        logger.error(f"Failed to update device location: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update device location")
+
+    return {
+        "message": "Location updated",
+        "device_id": device_id,
+        "location_label": body.location_label,
+        "location_coords": body.location_coords,
+    }
 
 
 class DeviceLaunchSatellite(BaseModel):
@@ -2513,7 +2582,7 @@ def gui_devices(request: Request) -> Response:
         rows = db.query(
             f"""SELECT d.device_id::TEXT as device_id, d.agent_id::TEXT as agent_id,
                        d.name, d.scopes, d.revoked_at, d.created_at, d.last_seen,
-                       d.last_heartbeat_at,
+                       d.last_heartbeat_at, d.location_label, d.location_coords,
                        CASE
                            WHEN d.last_heartbeat_at > now() - interval '60 seconds' THEN true
                            ELSE false
@@ -2522,7 +2591,7 @@ def gui_devices(request: Request) -> Response:
                 FROM devices d
                 JOIN agents a ON a.agent_id = d.agent_id
                 WHERE d.agent_id::TEXT IN ({placeholders})
-                ORDER BY d.created_at DESC""",
+                ORDER BY d.location_label NULLS LAST, d.created_at DESC""",
             params,
         )
         for row in rows:
@@ -2556,6 +2625,16 @@ def gui_devices(request: Request) -> Response:
                 except Exception:
                     scopes = []
 
+            # Parse location_coords if it's a string
+            location_coords = row.get("location_coords")
+            if isinstance(location_coords, str):
+                import json as json_mod
+
+                try:
+                    location_coords = json_mod.loads(location_coords)
+                except Exception:
+                    location_coords = None
+
             devices_data.append(
                 {
                     "device_id": str(row.get("device_id", "")),
@@ -2567,6 +2646,8 @@ def gui_devices(request: Request) -> Response:
                     "is_online": bool(row.get("is_online")),
                     "last_heartbeat_at": str(row.get("last_heartbeat_at") or ""),
                     "last_seen_relative": last_seen_relative,
+                    "location_label": row.get("location_label") or "",
+                    "location_coords": location_coords,
                 }
             )
 
@@ -2601,6 +2682,8 @@ def gui_device_detail(request: Request, device_id: str) -> Response:
         """
         SELECT d.device_id::TEXT, d.agent_id::TEXT, d.name, d.scopes,
                d.revoked_at, d.created_at, d.last_seen, d.last_heartbeat_at,
+               d.location_label, d.location_coords,
+               d.provisioned_at, d.provisioned_by,
                a.name as agent_name,
                CASE
                    WHEN d.last_heartbeat_at > now() - interval '60 seconds' THEN true
@@ -2640,6 +2723,20 @@ def gui_device_detail(request: Request, device_id: str) -> Response:
     if last_seen:
         last_seen = str(last_seen)[:19] if hasattr(last_seen, "isoformat") else str(last_seen)[:19]
 
+    # Parse location_coords
+    location_coords = row.get("location_coords")
+    if isinstance(location_coords, str):
+        import json as json_mod2
+
+        try:
+            location_coords = json_mod2.loads(location_coords)
+        except Exception:
+            location_coords = None
+
+    provisioned_at = row.get("provisioned_at")
+    if provisioned_at:
+        provisioned_at = str(provisioned_at)[:19] if hasattr(provisioned_at, "isoformat") else str(provisioned_at)[:19]
+
     device_data = {
         "device_id": str(row.get("device_id", "")),
         "agent_id": str(row.get("agent_id", "")),
@@ -2650,6 +2747,10 @@ def gui_device_detail(request: Request, device_id: str) -> Response:
         "created_at": created_at,
         "last_seen": last_seen,
         "is_online": bool(row.get("is_online")),
+        "location_label": row.get("location_label") or "",
+        "location_coords": location_coords,
+        "provisioned_at": provisioned_at,
+        "provisioned_by": row.get("provisioned_by") or "",
     }
 
     return templates.TemplateResponse(

@@ -74,6 +74,40 @@
           <span class="info-label">Last Seen</span>
           <span class="info-value">{{ device.last_seen or 'Never' }}</span>
         </div>
+        <div class="info-row">
+          <span class="info-label">Location</span>
+          <span class="info-value" id="location-display">
+            {% if device.location_label %}
+            <span class="badge badge-info"><i class="fas fa-map-marker-alt"></i> {{ device.location_label }}</span>
+            {% else %}
+            <span class="text-muted">Not set</span>
+            {% endif %}
+            <button type="button" class="btn btn-sm btn-outline" onclick="toggleLocationEdit()" title="Edit location">
+              <i class="fas fa-pencil-alt"></i>
+            </button>
+          </span>
+        </div>
+        <div class="info-row" id="location-edit-row" style="display: none;">
+          <span class="info-label">Edit Location</span>
+          <span class="info-value">
+            <div class="d-flex gap-sm align-center">
+              <input type="text" id="location-label-input" value="{{ device.location_label or '' }}"
+                     placeholder="e.g., Kitchen, Lab Bench 3" class="form-control" style="max-width: 250px;">
+              <button type="button" class="btn btn-sm btn-primary" onclick="saveLocation('{{ device.device_id }}')">
+                <i class="fas fa-check"></i> Save
+              </button>
+              <button type="button" class="btn btn-sm btn-outline" onclick="toggleLocationEdit()">
+                <i class="fas fa-times"></i>
+              </button>
+            </div>
+          </span>
+        </div>
+        {% if device.provisioned_at %}
+        <div class="info-row">
+          <span class="info-label">Provisioned</span>
+          <span class="info-value">{{ device.provisioned_at }}{% if device.provisioned_by %} by {{ device.provisioned_by }}{% endif %}</span>
+        </div>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -212,6 +246,37 @@ source marvain_activate</code></pre>
 
 {% block extra_js %}
 <script>
+function toggleLocationEdit() {
+  const display = document.getElementById('location-display');
+  const editRow = document.getElementById('location-edit-row');
+  if (editRow.style.display === 'none') {
+    editRow.style.display = '';
+    display.parentElement.style.display = 'none';
+  } else {
+    editRow.style.display = 'none';
+    display.parentElement.style.display = '';
+  }
+}
+
+async function saveLocation(deviceId) {
+  const label = document.getElementById('location-label-input').value.trim() || null;
+  try {
+    const resp = await fetch(`/api/devices/${deviceId}/location`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({location_label: label}),
+    });
+    if (!resp.ok) {
+      const err = await resp.json();
+      throw new Error(err.detail || 'Failed to update location');
+    }
+    Marvain.showToast('success', 'Updated', 'Location updated successfully');
+    setTimeout(() => location.reload(), 500);
+  } catch (e) {
+    Marvain.showToast('error', 'Error', e.message);
+  }
+}
+
 function copyText(text, label) {
   navigator.clipboard.writeText(text).then(() => {
     Marvain.showToast('success', 'Copied', label + ' copied to clipboard');

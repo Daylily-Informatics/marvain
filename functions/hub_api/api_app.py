@@ -195,6 +195,8 @@ class RegisterDeviceIn(BaseModel):
     name: Optional[str] = None
     scopes: list[str] = Field(default_factory=list)
     capabilities: dict[str, Any] = Field(default_factory=dict)
+    location_label: Optional[str] = Field(default=None, description="Human-readable location label")
+    location_coords: Optional[dict[str, Any]] = Field(default=None, description="Optional geographic coordinates: {lat, lng}")
 
 
 class RegisterDeviceOut(BaseModel):
@@ -205,6 +207,13 @@ class RegisterDeviceOut(BaseModel):
 class RotateDeviceTokenOut(BaseModel):
     device_id: str
     device_token: str
+
+
+class DeviceLocationUpdateIn(BaseModel):
+    """Request body for updating device location."""
+
+    location_label: Optional[str] = Field(default=None, description="Human-readable location label")
+    location_coords: Optional[dict[str, Any]] = Field(default=None, description="Optional geographic coordinates: {lat, lng}")
 
 
 class SetPrivacyIn(BaseModel):
@@ -797,8 +806,10 @@ def register_device(body: RegisterDeviceIn, user: AuthenticatedUser = Depends(ge
     token = generate_device_token()
     token_hash = hash_token(token)
     _get_db().execute(
-        """INSERT INTO devices(device_id, agent_id, name, scopes, capabilities, token_hash)
-           VALUES (:device_id::uuid, :agent_id::uuid, :name, :scopes::jsonb, :capabilities::jsonb, :token_hash)""",
+        """INSERT INTO devices(device_id, agent_id, name, scopes, capabilities, token_hash,
+                               location_label, location_coords, provisioned_at, provisioned_by)
+           VALUES (:device_id::uuid, :agent_id::uuid, :name, :scopes::jsonb, :capabilities::jsonb, :token_hash,
+                   :location_label, :location_coords::jsonb, NOW(), :provisioned_by)""",
         {
             "device_id": device_id,
             "agent_id": body.agent_id,
@@ -806,6 +817,9 @@ def register_device(body: RegisterDeviceIn, user: AuthenticatedUser = Depends(ge
             "scopes": json.dumps(body.scopes),
             "capabilities": json.dumps(body.capabilities),
             "token_hash": token_hash,
+            "location_label": body.location_label,
+            "location_coords": json.dumps(body.location_coords) if body.location_coords else None,
+            "provisioned_by": user.user_id,
         },
     )
     if _cfg.audit_bucket:
@@ -814,7 +828,8 @@ def register_device(body: RegisterDeviceIn, user: AuthenticatedUser = Depends(ge
             bucket=_cfg.audit_bucket,
             agent_id=body.agent_id,
             entry_type="device_registered",
-            entry={"device_id": device_id, "name": body.name, "scopes": body.scopes, "by_user_id": user.user_id},
+            entry={"device_id": device_id, "name": body.name, "scopes": body.scopes, "by_user_id": user.user_id,
+                    "location_label": body.location_label},
         )
     return RegisterDeviceOut(device_id=device_id, device_token=token)
 
@@ -914,8 +929,10 @@ def admin_register_device(body: RegisterDeviceIn) -> RegisterDeviceOut:
     token = generate_device_token()
     token_hash = hash_token(token)
     _get_db().execute(
-        """INSERT INTO devices(device_id, agent_id, name, scopes, capabilities, token_hash)
-           VALUES (:device_id::uuid, :agent_id::uuid, :name, :scopes::jsonb, :capabilities::jsonb, :token_hash)""",
+        """INSERT INTO devices(device_id, agent_id, name, scopes, capabilities, token_hash,
+                               location_label, location_coords)
+           VALUES (:device_id::uuid, :agent_id::uuid, :name, :scopes::jsonb, :capabilities::jsonb, :token_hash,
+                   :location_label, :location_coords::jsonb)""",
         {
             "device_id": device_id,
             "agent_id": body.agent_id,
@@ -923,6 +940,8 @@ def admin_register_device(body: RegisterDeviceIn) -> RegisterDeviceOut:
             "scopes": json.dumps(body.scopes),
             "capabilities": json.dumps(body.capabilities),
             "token_hash": token_hash,
+            "location_label": body.location_label,
+            "location_coords": json.dumps(body.location_coords) if body.location_coords else None,
         },
     )
     if _cfg.audit_bucket:
@@ -931,9 +950,46 @@ def admin_register_device(body: RegisterDeviceIn) -> RegisterDeviceOut:
             bucket=_cfg.audit_bucket,
             agent_id=body.agent_id,
             entry_type="device_registered",
-            entry={"device_id": device_id, "name": body.name, "scopes": body.scopes},
+            entry={"device_id": device_id, "name": body.name, "scopes": body.scopes,
+                    "location_label": body.location_label},
         )
     return RegisterDeviceOut(device_id=device_id, device_token=token)
+
+
+@api_app.patch("/v1/devices/{device_id}/location")
+def api_update_device_location(device_id: str, body: DeviceLocationUpdateIn,
+                                user: AuthenticatedUser = Depends(get_user)) -> dict[str, Any]:
+    """Update a device's location information."""
+    db = _get_db()
+    rows = db.query(
+        """SELECT d.agent_id::TEXT as agent_id
+           FROM devices d
+           JOIN agent_memberships m ON d.agent_id = m.agent_id
+           WHERE d.device_id = :device_id::uuid
+             AND m.user_id = :user_id::uuid
+             AND m.role IN ('admin', 'owner')
+             AND m.revoked_at IS NULL""",
+        {"device_id": device_id, "user_id": user.user_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Device not found or permission denied")
+    db.execute(
+        """UPDATE devices
+           SET location_label = :location_label,
+               location_coords = :location_coords::jsonb
+           WHERE device_id = :device_id::uuid""",
+        {
+            "device_id": device_id,
+            "location_label": body.location_label,
+            "location_coords": json.dumps(body.location_coords) if body.location_coords else None,
+        },
+    )
+    return {
+        "ok": True,
+        "device_id": device_id,
+        "location_label": body.location_label,
+        "location_coords": body.location_coords,
+    }
 
 
 @api_app.post("/v1/admin/spaces/{space_id}/privacy", dependencies=[Depends(require_admin)])

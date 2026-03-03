@@ -967,6 +967,12 @@ def load_config_file(path: str) -> dict[str, Any]:
     type=click.Path(exists=False),
     help="Path to YAML configuration file",
 )
+@click.option(
+    "--location-label",
+    envvar="MARVAIN_LOCATION_LABEL",
+    default=None,
+    help="Human-readable location label for this device (e.g., Kitchen, Lab Bench 3)",
+)
 @click.option("--debug", is_flag=True, help="Enable debug logging")
 def main(
     hub_ws_url: str,
@@ -974,6 +980,7 @@ def main(
     device_token: str,
     heartbeat_interval: int,
     config_file: str | None,
+    location_label: str | None,
     debug: bool,
 ) -> None:
     """Marvain Remote Satellite Daemon.
@@ -991,16 +998,20 @@ def main(
         hub_rest_url = file_config.get("hub_rest_url", hub_rest_url)
         device_token = file_config.get("device_token", device_token)
         heartbeat_interval = file_config.get("heartbeat_interval", heartbeat_interval)
+        location_label = file_config.get("location_label", location_label)
 
     logger.info("Starting Marvain Remote Satellite Daemon")
     logger.info("Hub WebSocket URL: %s", hub_ws_url)
     logger.info("Heartbeat interval: %d seconds", heartbeat_interval)
+    if location_label:
+        logger.info("Location label: %s", location_label)
 
     config = HubClientConfig(
         ws_url=hub_ws_url,
         rest_url=hub_rest_url,
         device_token=device_token,
         heartbeat_interval=heartbeat_interval,
+        location_label=location_label,
     )
 
     client = HubClient(config, on_command=handle_command)
