@@ -357,7 +357,64 @@ python daemon.py \\
   --subscribe-audio
 ```
 
-This will join the stable LiveKit room as `device:<device_id>` and publish microphone audio (audio-only by default).
+This will join the stable LiveKit room as `device:<device_id>` and publish microphone audio.
+
+### Location Node: Video + Motion (USB or RTSP)
+
+To publish camera video (and optionally emit `motion.detected` / `face.snapshot`):
+
+```sh
+cd apps/remote_satellite
+python daemon.py \\
+  --hub-ws-url "<HubWebSocketUrl>" \\
+  --hub-rest-url "<HubRestApiBase>" \\
+  --device-token "<device-token>" \\
+  --space-id "<space-id>" \\
+  --publish-audio \\
+  --publish-video \\
+  --motion-enabled \\
+  --camera-usb-index 0 \\
+  --video-fps 10
+```
+
+RTSP cameras:
+
+```sh
+python daemon.py ... \\
+  --publish-video \\
+  --motion-enabled \\
+  --camera-rtsp-url "rtsp://user:pass@host/stream"
+```
+
+Notes:
+- Video publishing requires OpenCV (`cv2`) on the device.
+
+### Location Node: Triggered Mode (Join Only When Someone Is There)
+
+Triggered mode keeps capturing locally and joins LiveKit only when sound/motion crosses a threshold:
+
+```sh
+python daemon.py ... \\
+  --location-mode triggered \\
+  --vad-enabled \\
+  --motion-enabled \\
+  --idle-disconnect-seconds 60
+```
+
+While running, it can emit:
+- `sound.detected` and `motion.detected` events (timeline visibility)
+- `voice.sample` and `face.snapshot` (S3 artifacts) for recognition worker processing
+
+### Location Node: Enrollment From Device (Optional)
+
+If you want the device to emit enrollment samples (instead of identification samples), pass:
+
+```sh
+python daemon.py ... \\
+  --enroll-person-id "<person-id>"
+```
+
+This will include `enroll_person_id` in `voice.sample` / `face.snapshot` payloads so the Recognition Worker stores prints.
 
 ## Recognition Worker (Voice/Face -> Presence)
 
