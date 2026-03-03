@@ -669,6 +669,104 @@ def gui_home(request: Request) -> Response:
         except Exception as e:
             logger.warning(f"Failed to fetch devices for home: {e}")
 
+    # --- Dense dashboard: recent actions (last 10) ---
+    recent_actions: list[dict] = []
+    if agent_ids:
+        try:
+            placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+            params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+            act_rows = db.query(
+                f"""SELECT ac.action_id::TEXT as action_id, ac.kind, ac.status,
+                           ac.created_at::TEXT as created_at,
+                           a.name as agent_name
+                    FROM actions ac
+                    JOIN agents a ON a.agent_id = ac.agent_id
+                    WHERE ac.agent_id::TEXT IN ({placeholders})
+                    ORDER BY ac.created_at DESC LIMIT 10""",
+                params,
+            )
+            for row in act_rows:
+                recent_actions.append(
+                    {
+                        "action_id": row.get("action_id", ""),
+                        "kind": row.get("kind", ""),
+                        "status": row.get("status", ""),
+                        "created_at": row.get("created_at", ""),
+                        "agent_name": row.get("agent_name", ""),
+                    }
+                )
+        except Exception as e:
+            logger.warning(f"Failed to fetch recent actions for home: {e}")
+
+    # --- Dense dashboard: agent online/offline via device heartbeats ---
+    agents_status: list[dict] = []
+    if agent_ids:
+        try:
+            placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+            params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+            status_rows = db.query(
+                f"""SELECT a.agent_id::TEXT as agent_id, a.name, a.disabled,
+                           COALESCE(d.online_count, 0) as online_devices,
+                           COALESCE(d.total_count, 0) as total_devices
+                    FROM agents a
+                    LEFT JOIN (
+                        SELECT agent_id,
+                               COUNT(*) FILTER (
+                                   WHERE last_heartbeat_at > now() - interval '60 seconds'
+                                     AND revoked_at IS NULL
+                               ) as online_count,
+                               COUNT(*) FILTER (WHERE revoked_at IS NULL) as total_count
+                        FROM devices
+                        GROUP BY agent_id
+                    ) d ON d.agent_id = a.agent_id
+                    WHERE a.agent_id::TEXT IN ({placeholders})""",
+                params,
+            )
+            for row in status_rows:
+                online = (row.get("online_devices") or 0) > 0
+                agents_status.append(
+                    {
+                        "agent_id": row.get("agent_id", ""),
+                        "name": row.get("name", ""),
+                        "disabled": row.get("disabled", False),
+                        "online": online and not row.get("disabled", False),
+                        "online_devices": row.get("online_devices", 0),
+                        "total_devices": row.get("total_devices", 0),
+                    }
+                )
+        except Exception as e:
+            logger.warning(f"Failed to fetch agent status for home: {e}")
+
+    # --- Dense dashboard: recent events (last 10) ---
+    recent_events: list[dict] = []
+    if agent_ids:
+        try:
+            placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+            params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+            evt_rows = db.query(
+                f"""SELECT e.event_id::TEXT as event_id, e.type,
+                           e.created_at::TEXT as created_at,
+                           a.name as agent_name, s.name as space_name
+                    FROM events e
+                    JOIN agents a ON a.agent_id = e.agent_id
+                    LEFT JOIN spaces s ON s.space_id = e.space_id
+                    WHERE e.agent_id::TEXT IN ({placeholders})
+                    ORDER BY e.created_at DESC LIMIT 10""",
+                params,
+            )
+            for row in evt_rows:
+                recent_events.append(
+                    {
+                        "event_id": row.get("event_id", ""),
+                        "type": row.get("type", ""),
+                        "created_at": row.get("created_at", ""),
+                        "agent_name": row.get("agent_name", ""),
+                        "space_name": row.get("space_name") or "",
+                    }
+                )
+        except Exception as e:
+            logger.warning(f"Failed to fetch recent events for home: {e}")
+
     return templates.TemplateResponse(
         request,
         "home.html",
@@ -682,9 +780,211 @@ def gui_home(request: Request) -> Response:
             "pending_actions": pending_actions,
             "devices_count": devices_count,
             "devices": devices_data,
+            "recent_actions": recent_actions,
+            "agents_status": agents_status,
+            "recent_events": recent_events,
             **_get_ws_context(request),
         },
     )
+
+
+
+# ---------------------------------------------------------------------------
+# Dashboard HTMX partial endpoints (auto-refresh fragments)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/dashboard/kpi-strip", name="gui_dashboard_kpi")
+def gui_dashboard_kpi(request: Request) -> Response:
+    """HTMX partial: compact KPI strip for dashboard auto-refresh."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    agents = list_agents_for_user(db, user_id=user.user_id)
+    spaces = list_spaces_for_user(db, user_id=user.user_id)
+    agent_ids = [str(a.agent_id) for a in agents]
+
+    pending_actions = 0
+    devices_count = 0
+    online_agents = 0
+
+    if agent_ids:
+        placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+        params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+        try:
+            rows = db.query(
+                f"""SELECT
+                      (SELECT COUNT(*) FROM actions ac
+                       WHERE ac.agent_id::TEXT IN ({placeholders}) AND ac.status = 'proposed') as pending,
+                      (SELECT COUNT(*) FROM devices
+                       WHERE agent_id::TEXT IN ({placeholders}) AND revoked_at IS NULL) as devices,
+                      (SELECT COUNT(DISTINCT agent_id) FROM devices
+                       WHERE agent_id::TEXT IN ({placeholders}) AND revoked_at IS NULL
+                         AND last_heartbeat_at > now() - interval '60 seconds') as online""",
+                params,
+            )
+            if rows:
+                pending_actions = rows[0].get("pending", 0) or 0
+                devices_count = rows[0].get("devices", 0) or 0
+                online_agents = rows[0].get("online", 0) or 0
+        except Exception as e:
+            logger.warning(f"Dashboard KPI query failed: {e}")
+
+    from starlette.responses import HTMLResponse
+
+    warn = "kpi-warn" if pending_actions > 0 else ""
+    html = (
+        '<div class="kpi-strip">'
+        f'<div class="kpi-item"><span class="kpi-value">{online_agents}</span>'
+        '<span class="kpi-label">Agents Online</span></div>'
+        f'<div class="kpi-item {warn}"><span class="kpi-value">'
+        f'{pending_actions}</span>'
+        '<span class="kpi-label">Pending Actions</span></div>'
+        f'<div class="kpi-item"><span class="kpi-value">{devices_count}'
+        '</span><span class="kpi-label">Devices</span></div>'
+        f'<div class="kpi-item"><span class="kpi-value">{len(spaces)}'
+        '</span><span class="kpi-label">Spaces</span></div>'
+        f'<div class="kpi-item"><span class="kpi-value">{len(agents)}'
+        '</span><span class="kpi-label">Agents</span></div>'
+        "</div>"
+    )
+    return HTMLResponse(content=html)
+
+
+@app.get("/dashboard/activity-feed", name="gui_dashboard_activity")
+def gui_dashboard_activity(request: Request) -> Response:
+    """HTMX partial: recent events activity feed."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    agents = list_agents_for_user(db, user_id=user.user_id)
+    agent_ids = [str(a.agent_id) for a in agents]
+
+    events_html = ""
+    if agent_ids:
+        try:
+            placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+            params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+            rows = db.query(
+                f"""SELECT e.type, e.created_at::TEXT as created_at,
+                           a.name as agent_name, s.name as space_name
+                    FROM events e
+                    JOIN agents a ON a.agent_id = e.agent_id
+                    LEFT JOIN spaces s ON s.space_id = e.space_id
+                    WHERE e.agent_id::TEXT IN ({placeholders})
+                    ORDER BY e.created_at DESC LIMIT 15""",
+                params,
+            )
+            for row in rows:
+                etype = row.get("type", "")
+                ts = (row.get("created_at") or "")[:19]
+                agent = row.get("agent_name", "")
+                space = row.get("space_name") or ""
+                space_tag = (
+                    f' <span class="badge badge-outline">'
+                    f"{space}</span>" if space else ""
+                )
+                events_html += (
+                    f'<div class="feed-item">'
+                    f'<span class="feed-time">{ts}</span>'
+                    f'<span class="badge badge-info">{agent}</span>'
+                    f"{space_tag}"
+                    f'<span class="feed-type">{etype}</span>'
+                    f"</div>"
+                )
+        except Exception as e:
+            logger.warning(f"Dashboard activity feed query failed: {e}")
+
+    if not events_html:
+        events_html = '<div class="text-muted text-sm" style="padding:0.5rem">No recent events</div>'
+
+    from starlette.responses import HTMLResponse
+
+    return HTMLResponse(content=events_html)
+
+
+@app.get("/dashboard/recent-actions", name="gui_dashboard_actions")
+def gui_dashboard_actions(request: Request) -> Response:
+    """HTMX partial: recent actions table with inline approve/reject."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    agents = list_agents_for_user(db, user_id=user.user_id)
+    agent_ids = [str(a.agent_id) for a in agents]
+
+    rows_html = ""
+    if agent_ids:
+        try:
+            placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+            params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+            rows = db.query(
+                f"""SELECT ac.action_id::TEXT as action_id, ac.kind, ac.status,
+                           ac.created_at::TEXT as created_at,
+                           a.name as agent_name
+                    FROM actions ac
+                    JOIN agents a ON a.agent_id = ac.agent_id
+                    WHERE ac.agent_id::TEXT IN ({placeholders})
+                    ORDER BY ac.created_at DESC LIMIT 10""",
+                params,
+            )
+            for row in rows:
+                aid = row.get("action_id", "")
+                status = row.get("status", "")
+                _bcls = {
+                    "proposed": "warning", "approved": "info",
+                    "executed": "success", "failed": "error",
+                    "rejected": "error",
+                }
+                badge_cls = _bcls.get(status, "info")
+                ts = (row.get("created_at") or "")[:19]
+                actions_col = ""
+                if status == "proposed":
+                    actions_col = (
+                        '<button class="btn btn-sm btn-success" '
+                        f'hx-post="/api/actions/{aid}/approve" '
+                        'hx-target="#dashboard-actions" '
+                        'hx-swap="innerHTML" '
+                        'hx-confirm="Approve this action?">'
+                        '<i class="fas fa-check"></i></button> '
+                        '<button class="btn btn-sm btn-danger-outline" '
+                        f'hx-post="/api/actions/{aid}/reject" '
+                        'hx-target="#dashboard-actions" '
+                        'hx-swap="innerHTML" '
+                        'hx-confirm="Reject this action?">'
+                        '<i class="fas fa-times"></i></button>'
+                    )
+                aname = row.get("agent_name", "")
+                akind = row.get("kind", "")
+                rows_html += (
+                    f'<tr><td class="text-sm">{ts}</td>'
+                    f"<td>{aname}</td>"
+                    f"<td><code>{akind}</code></td>"
+                    f'<td><span class="badge badge-{badge_cls}">'
+                    f"{status}</span></td>"
+                    f"<td>{actions_col}</td></tr>"
+                )
+        except Exception as e:
+            logger.warning(f"Dashboard recent actions query failed: {e}")
+
+    if not rows_html:
+        rows_html = '<tr><td colspan="5" class="text-muted text-sm">No recent actions</td></tr>'
+
+    from starlette.responses import HTMLResponse
+
+    table_html = (
+        "<table class='table table-dense'><thead><tr>"
+        "<th>Time</th><th>Agent</th><th>Kind</th>"
+        "<th>Status</th><th></th></tr></thead>"
+        f"<tbody>{rows_html}</tbody></table>"
+    )
+    return HTMLResponse(content=table_html)
+
 
 
 # ---------------------------------------------------------------------------
