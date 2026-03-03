@@ -54,6 +54,7 @@ class LocationNodeConfig:
     face_snapshot_interval_seconds: int = 30
     sound_event_interval_seconds: int = 5
     motion_event_interval_seconds: int = 5
+    enroll_person_id: str | None = None
 
     # Video capture.
     camera_usb_index: int | None = None
@@ -359,6 +360,8 @@ class LocationNode:
                 "artifact_key": key,
                 "content_type": content_type,
             }
+            if self.cfg.enroll_person_id:
+                payload["enroll_person_id"] = str(self.cfg.enroll_person_id)
             if extra_payload:
                 payload.update(extra_payload)
             await self._emit_simple_event(ev_type, payload)
