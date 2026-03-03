@@ -123,9 +123,9 @@
   <script>
     (function() {
       const wsUrl = '{{ ws_url }}';
-      const accessToken = '{{ access_token | default("") }}';
+      const wsAuthTokenPath = '{{ url_for("api_ws_auth_token") }}';
 
-      if (wsUrl && accessToken) {
+      if (wsUrl) {
         const wsAgentSubscriptions = new Set();
         function subscribeAgentTopics(agentId) {
           if (!agentId) return;
@@ -168,9 +168,31 @@
           }
         });
 
+        async function connectWebSocket() {
+          try {
+            const resp = await fetch(wsAuthTokenPath, {
+              credentials: 'same-origin',
+              headers: { 'Accept': 'application/json' },
+            });
+            if (!resp.ok) {
+              console.warn('[Marvain] Failed to fetch WS auth token:', resp.status);
+              return;
+            }
+            const data = await resp.json();
+            const accessToken = String(data.access_token || '');
+            if (!accessToken) {
+              console.warn('[Marvain] Missing WS auth token');
+              return;
+            }
+            Marvain.wsConnect(wsUrl, accessToken);
+          } catch (err) {
+            console.error('[Marvain] Failed to initialize WebSocket:', err);
+          }
+        }
+
         // Connect after DOM ready
         document.addEventListener('DOMContentLoaded', function() {
-          Marvain.wsConnect(wsUrl, accessToken);
+          connectWebSocket();
         });
       }
     })();

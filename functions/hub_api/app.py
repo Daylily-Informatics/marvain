@@ -59,7 +59,7 @@ from api_app import (
     get_config,
 )
 from fastapi import HTTPException, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -230,16 +230,11 @@ _GUI_OAUTH_NEXT_COOKIE = "marvain_oauth_next"
 def _get_ws_context(request: Request) -> dict[str, str | None]:
     """Get WebSocket context for template rendering.
 
-    Returns dict with ws_url and access_token for WebSocket connection.
+    Returns dict with ws_url only; token is fetched via authenticated API call.
     """
     ws_url = _cfg.ws_api_url
-    access_token = request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE)
-    logger.debug(
-        f"_get_ws_context: ws_url={ws_url}, access_token present={bool(access_token)}, length={len(access_token) if access_token else 0}"
-    )
     return {
         "ws_url": ws_url,
-        "access_token": access_token if ws_url else None,
     }
 
 
@@ -560,6 +555,20 @@ def gui_logout(request: Request) -> Response:
 def gui_logged_out(request: Request) -> HTMLResponse:
     login_href = html.escape(_gui_path(request, "/login"))
     return _gui_html_page(title="Logged out", body_html=f"<h1>Logged out</h1><p><a href='{login_href}'>Log in</a></p>")
+
+
+@app.get("/api/ws-auth-token", name="api_ws_auth_token")
+def api_ws_auth_token(request: Request) -> JSONResponse:
+    """Return current user's WS auth token from secure cookie (GUI only)."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    access_token = str(request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or "").strip()
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Missing access token")
+    resp = JSONResponse({"access_token": access_token})
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @app.get("/", name="gui_home")
