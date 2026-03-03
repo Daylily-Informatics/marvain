@@ -639,6 +639,7 @@ class TestSpacesGui(unittest.TestCase):
             return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
         )
         mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[{"count": 0}])
         mock_db.execute = mock.Mock()
         self.mod._get_db = mock.Mock(return_value=mock_db)
         self.mod.check_agent_permission = mock.Mock(return_value=True)
@@ -651,6 +652,23 @@ class TestSpacesGui(unittest.TestCase):
         self.assertEqual(data["agent_id"], "agent-1")
         self.assertTrue(data["privacy_mode"])
         self.assertIn("space_id", data)
+
+    def test_create_space_enforces_max_spaces_limit(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        self.mod._cfg = dataclasses.replace(self.mod._cfg, max_spaces_per_agent=5)
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[{"count": 5}])
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+        self.mod.check_agent_permission = mock.Mock(return_value=True)
+
+        r = self.client.post("/api/spaces", json={"agent_id": "agent-1", "name": "Overflow Space", "privacy_mode": False})
+
+        self.assertEqual(r.status_code, 409)
+        self.assertIn("Space limit reached (5)", r.text)
+        mock_db.execute.assert_not_called()
 
 
 class TestDevicesGui(unittest.TestCase):

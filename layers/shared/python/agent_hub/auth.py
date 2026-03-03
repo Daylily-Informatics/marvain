@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from agent_hub.rds_data import RdsData
@@ -22,6 +22,7 @@ class AuthenticatedDevice:
     device_id: str
     agent_id: str
     scopes: list[str]
+    capabilities: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -124,7 +125,8 @@ def authenticate_device(db: RdsData, bearer_token: str) -> AuthenticatedDevice |
         """
         SELECT device_id::TEXT as device_id,
                agent_id::TEXT as agent_id,
-               COALESCE(scopes, '[]'::jsonb)::TEXT as scopes_json
+               COALESCE(scopes, '[]'::jsonb)::TEXT as scopes_json,
+               COALESCE(capabilities, '{}'::jsonb)::TEXT as capabilities_json
         FROM devices
         WHERE token_hash = :token_hash
           AND revoked_at IS NULL
@@ -139,10 +141,17 @@ def authenticate_device(db: RdsData, bearer_token: str) -> AuthenticatedDevice |
         scopes = __import__("json").loads(row.get("scopes_json") or "[]")
     except Exception:
         scopes = []
+    try:
+        capabilities = __import__("json").loads(row.get("capabilities_json") or "{}")
+        if not isinstance(capabilities, dict):
+            capabilities = {}
+    except Exception:
+        capabilities = {}
     return AuthenticatedDevice(
         device_id=row["device_id"],
         agent_id=row["agent_id"],
         scopes=[str(s) for s in scopes],
+        capabilities={str(k): v for k, v in capabilities.items()},
     )
 
 

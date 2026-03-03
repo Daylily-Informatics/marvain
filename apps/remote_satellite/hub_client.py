@@ -26,6 +26,7 @@ class HubClientConfig:
     heartbeat_interval: int = 20  # seconds
     reconnect_delay: int = 5  # seconds
     max_reconnect_delay: int = 60  # seconds
+    location_label: str | None = None  # Human-readable location label
 
 
 class HubClient:
@@ -141,9 +142,12 @@ class HubClient:
             "Authorization": f"Bearer {self.config.device_token}",
             "Content-Type": "application/json",
         }
+        payload: dict[str, Any] = {}
+        if self.config.location_label:
+            payload["metadata"] = {"location_label": self.config.location_label}
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, headers=headers, json={}, timeout=10) as resp:
+                async with session.post(url, headers=headers, json=payload, timeout=10) as resp:
                     if resp.status >= 400:
                         body = await resp.text()
                         logger.warning("REST heartbeat failed: status=%s body=%s", resp.status, body[:300])

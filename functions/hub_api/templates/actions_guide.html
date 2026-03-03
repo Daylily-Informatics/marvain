@@ -36,20 +36,20 @@
   <div class="card-header"><h3 class="card-title"><i class="fas fa-tags"></i> Action Kinds</h3></div>
   <div class="card-body">
 
-    <h4 style="margin-top:0;"><code>send_message</code></h4>
+    <h4 class="mt-0"><code>send_message</code></h4>
     <p>Send a text message to a space on behalf of the agent.</p>
-    <pre style="background:var(--color-gray-900);padding:1rem;border-radius:var(--radius-md);color:var(--color-gray-200);font-family:'JetBrains Mono',monospace;font-size:0.8125rem;overflow-x:auto;">{
+    <pre class="code-block">{
   "recipient_type": "space",
   "recipient_id": "&lt;space-uuid&gt;",
   "message_type": "notification",
   "content": "Hello from the action system!"
 }</pre>
 
-    <hr style="border-color:var(--color-gray-600);margin:1.5rem 0;">
+    <hr class="hr-guide">
 
     <h4><code>create_memory</code></h4>
     <p>Create a new memory for the agent. Tier must be one of <code>episodic</code> or <code>semantic</code>.</p>
-    <pre style="background:var(--color-gray-900);padding:1rem;border-radius:var(--radius-md);color:var(--color-gray-200);font-family:'JetBrains Mono',monospace;font-size:0.8125rem;overflow-x:auto;">{
+    <pre class="code-block">{
   "content": "User prefers dark mode interfaces.",
   "tier": "semantic",
   "participants": ["user"],
@@ -57,22 +57,22 @@
   "retention": {"policy": "v1"}
 }</pre>
 
-    <hr style="border-color:var(--color-gray-600);margin:1.5rem 0;">
+    <hr class="hr-guide">
 
     <h4><code>http_request</code></h4>
     <p>Make an outbound HTTP request. Useful for webhooks and integrations.</p>
-    <pre style="background:var(--color-gray-900);padding:1rem;border-radius:var(--radius-md);color:var(--color-gray-200);font-family:'JetBrains Mono',monospace;font-size:0.8125rem;overflow-x:auto;">{
+    <pre class="code-block">{
   "url": "https://example.com/webhook",
   "method": "POST",
   "headers": {"Content-Type": "application/json"},
   "body": {"event": "action_fired"}
 }</pre>
 
-    <hr style="border-color:var(--color-gray-600);margin:1.5rem 0;">
+    <hr class="hr-guide">
 
     <h4><code>device_command</code></h4>
     <p>Send a command to a connected satellite device. The device must be online and connected via WebSocket. Available device commands:</p>
-    <div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin:0.75rem 0;">
+    <div class="badge-list">
       <span class="badge badge-info">ping</span>
       <span class="badge badge-info">status</span>
       <span class="badge badge-info">echo</span>
@@ -85,39 +85,39 @@
       <span class="badge badge-info">file_info</span>
       <span class="badge badge-info">shell_command</span>
     </div>
-    <pre style="background:var(--color-gray-900);padding:1rem;border-radius:var(--radius-md);color:var(--color-gray-200);font-family:'JetBrains Mono',monospace;font-size:0.8125rem;overflow-x:auto;">{
+    <pre class="code-block">{
   "device_id": "&lt;device-uuid&gt;",
   "command": "device_status",
   "data": {"include_disk": true}
 }</pre>
 
-    <hr style="border-color:var(--color-gray-600);margin:1.5rem 0;">
+    <hr class="hr-guide">
 
     <h4><code>shell_command</code></h4>
     <p>Execute a read-only shell command on a satellite device. Only safe commands are allowed:</p>
-    <div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin:0.75rem 0;">
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">ls</span>
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">cat</span>
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">head</span>
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">tail</span>
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">grep</span>
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">find</span>
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">ps</span>
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">df</span>
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">du</span>
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">uptime</span>
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">ping</span>
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">uname</span>
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">hostname</span>
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">whoami</span>
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">date</span>
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">env</span>
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">ifconfig</span>
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">netstat</span>
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">free</span>
-      <span class="badge badge-outline" style="background:transparent;border:1px solid var(--color-gray-500);color:var(--color-gray-300);">dig</span>
+    <div class="badge-list">
+      <span class="badge badge-outline">ls</span>
+      <span class="badge badge-outline">cat</span>
+      <span class="badge badge-outline">head</span>
+      <span class="badge badge-outline">tail</span>
+      <span class="badge badge-outline">grep</span>
+      <span class="badge badge-outline">find</span>
+      <span class="badge badge-outline">ps</span>
+      <span class="badge badge-outline">df</span>
+      <span class="badge badge-outline">du</span>
+      <span class="badge badge-outline">uptime</span>
+      <span class="badge badge-outline">ping</span>
+      <span class="badge badge-outline">uname</span>
+      <span class="badge badge-outline">hostname</span>
+      <span class="badge badge-outline">whoami</span>
+      <span class="badge badge-outline">date</span>
+      <span class="badge badge-outline">env</span>
+      <span class="badge badge-outline">ifconfig</span>
+      <span class="badge badge-outline">netstat</span>
+      <span class="badge badge-outline">free</span>
+      <span class="badge badge-outline">dig</span>
     </div>
-    <pre style="background:var(--color-gray-900);padding:1rem;border-radius:var(--radius-md);color:var(--color-gray-200);font-family:'JetBrains Mono',monospace;font-size:0.8125rem;overflow-x:auto;">{
+    <pre class="code-block">{
   "device_id": "&lt;device-uuid&gt;",
   "command": "df -h",
   "timeout": 30,
@@ -131,7 +131,7 @@
   <div class="card-header"><h3 class="card-title"><i class="fas fa-shield-alt"></i> Scopes &amp; Permissions</h3></div>
   <div class="card-body">
     <p>Actions can be scope-gated. When <strong>Required Scopes</strong> are set, only devices with matching scopes can execute the action. Common scopes:</p>
-    <div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin:0.75rem 0;">
+    <div class="badge-list">
       <span class="badge badge-info">message:send</span>
       <span class="badge badge-info">memory:write</span>
       <span class="badge badge-info">http:request</span>

@@ -34,6 +34,17 @@
       <option value="revoked">Revoked</option>
     </select>
   </div>
+  <div class="filter-group">
+    <label for="location-filter">Location</label>
+    <select id="location-filter" onchange="filterDevices()">
+      <option value="">All Locations</option>
+      <option value="__unassigned__">Unassigned</option>
+      {% set locations = devices|map(attribute='location_label')|reject('equalto', '')|unique|sort %}
+      {% for loc in locations %}
+      <option value="{{ loc }}">{{ loc }}</option>
+      {% endfor %}
+    </select>
+  </div>
   <div class="filter-group flex-grow">
     <label for="search-filter">Search</label>
     <input type="text" id="search-filter" placeholder="Search devices..." oninput="filterDevices()">
@@ -44,7 +55,7 @@
 <div class="grid grid-3" id="devices-grid">
   {% if devices %}
   {% for device in devices %}
-  <div class="device-card card" data-agent="{{ device.agent_id }}" data-status="{{ 'revoked' if device.revoked else 'active' }}" data-name="{{ device.name|lower }}" data-device-id="{{ device.device_id }}">
+  <div class="device-card card" data-agent="{{ device.agent_id }}" data-status="{{ 'revoked' if device.revoked else 'active' }}" data-name="{{ device.name|lower }}" data-device-id="{{ device.device_id }}" data-location="{{ device.location_label|lower if device.location_label else '' }}">
     <div class="card-body">
       <div class="device-header">
         <div class="device-icon {{ 'revoked' if device.revoked else '' }}">
@@ -60,6 +71,11 @@
         <span class="badge badge-success">Active</span>
         {% endif %}
       </div>
+      {% if device.location_label %}
+      <div class="device-location mb-sm">
+        <span class="badge badge-info"><i class="fas fa-map-marker-alt"></i> {{ device.location_label }}</span>
+      </div>
+      {% endif %}
       <div class="device-details">
         <div class="detail-row">
           <span class="detail-label">Device ID</span>
@@ -116,7 +132,7 @@
   </div>
   {% endfor %}
   {% else %}
-  <div class="empty-state" style="grid-column: 1 / -1;">
+  <div class="empty-state grid-full">
     <i class="fas fa-microchip fa-3x"></i>
     <h3>No Devices Registered</h3>
     <p>Register a device to allow programmatic access to your agents.</p>
@@ -127,18 +143,31 @@
   {% endif %}
 </div>
 
-<!-- Register Device Modal -->
+<!-- Provision Device Wizard Modal -->
 <div id="create-device-modal" class="modal" style="display: none;">
   <div class="modal-backdrop" onclick="Marvain.hideModal('create-device-modal')"></div>
-  <div class="modal-content">
+  <div class="modal-content" style="max-width: 560px;">
     <div class="modal-header">
-      <h3>Register New Device</h3>
+      <h3><i class="fas fa-magic"></i> Provision Device</h3>
       <button type="button" class="btn btn-sm" onclick="Marvain.hideModal('create-device-modal')">
         <i class="fas fa-times"></i>
       </button>
     </div>
+
+    <!-- Step indicators -->
+    <div class="wizard-steps" style="display:flex; gap:0; padding: 0 var(--spacing-lg); margin-bottom: var(--spacing-md);">
+      <div class="wizard-step active" id="ws-ind-1" style="flex:1; text-align:center; padding:var(--spacing-sm); border-bottom:3px solid var(--color-primary); font-size:0.85rem; font-weight:600;">1. Name &amp; Agent</div>
+      <div class="wizard-step" id="ws-ind-2" style="flex:1; text-align:center; padding:var(--spacing-sm); border-bottom:3px solid var(--color-gray-600); font-size:0.85rem; color:var(--color-gray-400);">2. Location &amp; Scopes</div>
+      <div class="wizard-step" id="ws-ind-3" style="flex:1; text-align:center; padding:var(--spacing-sm); border-bottom:3px solid var(--color-gray-600); font-size:0.85rem; color:var(--color-gray-400);">3. Confirm</div>
+    </div>
+
     <form onsubmit="submitCreateDevice(event)">
-      <div class="modal-body">
+      <!-- Step 1: Name & Agent -->
+      <div class="modal-body wizard-page" id="wizard-step-1">
+        <div class="form-group">
+          <label for="device-name">Device Name *</label>
+          <input type="text" id="device-name" name="name" required placeholder="Kitchen Speaker">
+        </div>
         <div class="form-group">
           <label for="device-agent">Agent *</label>
           <select id="device-agent" name="agent_id" required>
@@ -149,24 +178,52 @@
             {% endfor %}
           </select>
         </div>
+      </div>
+
+      <!-- Step 2: Location & Scopes -->
+      <div class="modal-body wizard-page" id="wizard-step-2" style="display:none;">
         <div class="form-group">
-          <label for="device-name">Device Name *</label>
-          <input type="text" id="device-name" name="name" required placeholder="Kitchen Speaker">
+          <label for="device-location"><i class="fas fa-map-marker-alt"></i> Location</label>
+          <input type="text" id="device-location" name="location_label" placeholder="e.g., Kitchen, Lab Bench 3, Office 201">
+          <small class="text-muted">Optional. Helps organize devices by physical location.</small>
         </div>
         <div class="form-group">
           <label>Scopes</label>
           <div class="scopes-checklist">
-            <label class="checkbox-label"><input type="checkbox" name="scopes" value="events:read"> events:read</label>
-            <label class="checkbox-label"><input type="checkbox" name="scopes" value="events:write"> events:write</label>
-            <label class="checkbox-label"><input type="checkbox" name="scopes" value="presence:write"> presence:write</label>
-            <label class="checkbox-label"><input type="checkbox" name="scopes" value="memories:read"> memories:read</label>
+            <label class="checkbox-label"><input type="checkbox" name="scopes" value="events:read" checked> events:read</label>
+            <label class="checkbox-label"><input type="checkbox" name="scopes" value="events:write" checked> events:write</label>
+            <label class="checkbox-label"><input type="checkbox" name="scopes" value="presence:write" checked> presence:write</label>
+            <label class="checkbox-label"><input type="checkbox" name="scopes" value="memories:read" checked> memories:read</label>
+            <label class="checkbox-label"><input type="checkbox" name="scopes" value="memories:write" checked> memories:write</label>
+            <label class="checkbox-label"><input type="checkbox" name="scopes" value="artifacts:write"> artifacts:write</label>
           </div>
-          <small class="text-muted">Select which permissions this device will have</small>
+          <small class="text-muted">Recommended defaults are pre-selected.</small>
         </div>
       </div>
+
+      <!-- Step 3: Confirm -->
+      <div class="modal-body wizard-page" id="wizard-step-3" style="display:none;">
+        <h4 style="margin-bottom: var(--spacing-md);">Review &amp; Confirm</h4>
+        <div class="info-grid">
+          <div class="info-row"><span class="info-label">Name</span><span class="info-value" id="confirm-name">—</span></div>
+          <div class="info-row"><span class="info-label">Agent</span><span class="info-value" id="confirm-agent">—</span></div>
+          <div class="info-row"><span class="info-label">Location</span><span class="info-value" id="confirm-location">—</span></div>
+          <div class="info-row"><span class="info-label">Scopes</span><span class="info-value" id="confirm-scopes">—</span></div>
+        </div>
+      </div>
+
       <div class="modal-footer">
+        <button type="button" class="btn btn-outline" id="wizard-back-btn" onclick="wizardBack()" style="display:none;">
+          <i class="fas fa-arrow-left"></i> Back
+        </button>
+        <div style="flex:1;"></div>
         <button type="button" class="btn btn-outline" onclick="Marvain.hideModal('create-device-modal')">Cancel</button>
-        <button type="submit" class="btn btn-primary">Register Device</button>
+        <button type="button" class="btn btn-primary" id="wizard-next-btn" onclick="wizardNext()">
+          Next <i class="fas fa-arrow-right"></i>
+        </button>
+        <button type="submit" class="btn btn-primary" id="wizard-submit-btn" style="display:none;">
+          <i class="fas fa-check"></i> Provision Device
+        </button>
       </div>
     </form>
   </div>
@@ -175,16 +232,68 @@
 
 {% block extra_js %}
 <script>
+// --- Wizard state ---
+let wizardStep = 1;
+const WIZARD_TOTAL = 3;
+
+function wizardGoTo(step) {
+  wizardStep = step;
+  for (let i = 1; i <= WIZARD_TOTAL; i++) {
+    const page = document.getElementById('wizard-step-' + i);
+    const ind = document.getElementById('ws-ind-' + i);
+    if (page) page.style.display = i === step ? '' : 'none';
+    if (ind) {
+      ind.style.borderBottomColor = i <= step ? 'var(--color-primary)' : 'var(--color-gray-600)';
+      ind.style.color = i <= step ? '' : 'var(--color-gray-400)';
+      ind.style.fontWeight = i === step ? '600' : '400';
+    }
+  }
+  document.getElementById('wizard-back-btn').style.display = step > 1 ? '' : 'none';
+  document.getElementById('wizard-next-btn').style.display = step < WIZARD_TOTAL ? '' : 'none';
+  document.getElementById('wizard-submit-btn').style.display = step === WIZARD_TOTAL ? '' : 'none';
+
+  // Populate confirm step
+  if (step === WIZARD_TOTAL) {
+    document.getElementById('confirm-name').textContent = document.getElementById('device-name').value || '—';
+    const agentSel = document.getElementById('device-agent');
+    document.getElementById('confirm-agent').textContent = agentSel.options[agentSel.selectedIndex]?.text || '—';
+    document.getElementById('confirm-location').textContent = document.getElementById('device-location').value || 'Not set';
+    const scopes = [];
+    document.querySelectorAll('#wizard-step-2 input[name="scopes"]:checked').forEach(cb => scopes.push(cb.value));
+    document.getElementById('confirm-scopes').textContent = scopes.length ? scopes.join(', ') : 'None';
+  }
+}
+
+function wizardNext() {
+  // Validate current step
+  if (wizardStep === 1) {
+    const name = document.getElementById('device-name').value.trim();
+    if (!name) { Marvain.showToast('warning', 'Required', 'Device name is required'); return; }
+  }
+  if (wizardStep < WIZARD_TOTAL) wizardGoTo(wizardStep + 1);
+}
+
+function wizardBack() {
+  if (wizardStep > 1) wizardGoTo(wizardStep - 1);
+}
+
 function filterDevices() {
   const agent = document.getElementById('agent-filter').value;
   const status = document.getElementById('status-filter').value;
+  const location = document.getElementById('location-filter').value;
   const search = document.getElementById('search-filter').value.toLowerCase();
 
   document.querySelectorAll('.device-card').forEach(card => {
     const matchAgent = !agent || card.dataset.agent === agent;
     const matchStatus = !status || card.dataset.status === status;
     const matchSearch = !search || card.dataset.name.includes(search);
-    card.style.display = matchAgent && matchStatus && matchSearch ? '' : 'none';
+    let matchLocation = true;
+    if (location === '__unassigned__') {
+      matchLocation = !card.dataset.location;
+    } else if (location) {
+      matchLocation = card.dataset.location === location.toLowerCase();
+    }
+    card.style.display = matchAgent && matchStatus && matchSearch && matchLocation ? '' : 'none';
   });
 }
 
@@ -283,10 +392,12 @@ async function submitCreateDevice(event) {
     scopes.push(cb.value);
   });
 
+  const locationLabel = formData.get('location_label') || null;
   const data = {
     agent_id: formData.get('agent_id'),
     name: formData.get('name'),
-    scopes: scopes
+    scopes: scopes,
+    location_label: locationLabel
   };
 
   try {
@@ -320,8 +431,7 @@ function showDeviceTokenResult(result) {
   if (!container) {
     container = document.createElement('div');
     container.id = 'device-token-result';
-    container.className = 'card';
-    container.style.cssText = 'margin-bottom: 2rem; border: 2px solid var(--color-success); background: var(--color-gray-800);';
+    container.className = 'card token-result-card';
 
     // Insert at the top of the page content
     const pageHeader = document.querySelector('.page-header');
@@ -329,14 +439,14 @@ function showDeviceTokenResult(result) {
   }
 
   container.innerHTML = `
-    <div class="card-header" style="background: var(--color-success); color: white;">
-      <h3 class="card-title" style="color: white;"><i class="fas fa-check-circle"></i> Device Registered Successfully</h3>
-      <button type="button" class="btn btn-sm" onclick="dismissTokenResult()" style="color: white;">
+    <div class="card-header token-result-header">
+      <h3 class="card-title"><i class="fas fa-check-circle"></i> Device Registered Successfully</h3>
+      <button type="button" class="btn btn-sm token-result-header" onclick="dismissTokenResult()">
         <i class="fas fa-times"></i>
       </button>
     </div>
     <div class="card-body">
-      <div class="alert alert-warning" style="margin-bottom: 1rem;">
+      <div class="alert alert-warning alert-warning-box">
         <i class="fas fa-exclamation-triangle"></i>
         <strong>Important:</strong> Copy this token now. It will not be shown again!
       </div>
@@ -354,8 +464,7 @@ function showDeviceTokenResult(result) {
       <div class="form-group">
         <label>Device Token</label>
         <div class="input-group">
-          <input type="text" class="form-control" value="${result.token}" readonly id="device-token-input"
-                 style="font-family: monospace; font-size: 0.9rem;">
+          <input type="text" class="form-control font-mono" value="${result.token}" readonly id="device-token-input">
           <button type="button" class="btn btn-primary" onclick="copyToClipboard('device-token-input', 'Device Token')">
             <i class="fas fa-copy"></i> Copy Token
           </button>
@@ -452,8 +561,9 @@ function copyToClipboard(inputId, label) {
   });
 }
 
-// Register modal show function
+// Register modal show function — resets wizard to step 1
 Marvain.showCreateDeviceModal = function() {
+  wizardGoTo(1);
   Marvain.showModal('create-device-modal');
 };
 </script>
