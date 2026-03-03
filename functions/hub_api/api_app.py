@@ -1103,7 +1103,9 @@ def list_memories(limit: int = 50, device: AuthenticatedDevice = Depends(get_dev
     limit = max(1, min(200, limit))
     rows = _get_db().query(
         """SELECT memory_id::TEXT as memory_id, tier, content, created_at::TEXT as created_at,
-                  participants::TEXT as participants, provenance::TEXT as provenance
+                  participants::TEXT as participants, provenance::TEXT as provenance,
+                  subject_person_id::TEXT as subject_person_id, tags, scene_context,
+                  modality, confidence, related_memory_ids::TEXT[] as related_memory_ids
            FROM memories WHERE agent_id = :agent_id::uuid ORDER BY created_at DESC LIMIT :limit""",
         {"agent_id": device.agent_id, "limit": limit},
     )
@@ -1136,6 +1138,12 @@ class MemoryCreateIn(BaseModel):
     content: str = Field(..., min_length=1, max_length=10000)
     metadata: dict[str, Any] = Field(default_factory=dict, description="Arbitrary metadata (input_modality, room_name, etc.)")
     participants: list[str] = Field(default_factory=list)
+    subject_person_id: str | None = Field(default=None, description="Person this memory is about")
+    tags: list[str] = Field(default_factory=list, description="Freeform tags")
+    scene_context: str | None = Field(default=None, description="Where/when context")
+    modality: str = Field(default="text", description="text, image, audio, video, sensor")
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="Confidence score 0.0-1.0")
+    related_memory_ids: list[str] = Field(default_factory=list, description="Related memory UUIDs")
 
 
 @api_app.post("/v1/memories")
@@ -1174,7 +1182,8 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
 
     _get_db().execute(
         """
-        INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants, provenance, embedding)
+        INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants, provenance, embedding,
+                              subject_person_id, tags, scene_context, modality, confidence, related_memory_ids)
         VALUES (
             :memory_id::uuid,
             :agent_id::uuid,
@@ -1183,7 +1192,13 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
             :content,
             :participants::jsonb,
             :provenance::jsonb,
-            CASE WHEN :embedding IS NULL THEN NULL ELSE CAST(:embedding AS vector) END
+            CASE WHEN :embedding IS NULL THEN NULL ELSE CAST(:embedding AS vector) END,
+            CASE WHEN :subject_person_id IS NULL THEN NULL ELSE :subject_person_id::uuid END,
+            :tags::text[],
+            :scene_context,
+            :modality,
+            :confidence,
+            :related_memory_ids::uuid[]
         )
         """,
         {
@@ -1195,6 +1210,12 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
             "participants": json.dumps(body.participants),
             "provenance": json.dumps(provenance),
             "embedding": embedding,
+            "subject_person_id": body.subject_person_id,
+            "tags": "{" + ",".join(body.tags) + "}" if body.tags else "{}",
+            "scene_context": body.scene_context,
+            "modality": body.modality,
+            "confidence": body.confidence,
+            "related_memory_ids": "{" + ",".join(body.related_memory_ids) + "}" if body.related_memory_ids else "{}",
         },
     )
 
@@ -1806,7 +1827,13 @@ def delegate_read_memories(
             tier,
             content,
             participants::TEXT as participants,
-            created_at::TEXT as created_at
+            created_at::TEXT as created_at,
+            subject_person_id::TEXT as subject_person_id,
+            tags,
+            scene_context,
+            modality,
+            confidence,
+            related_memory_ids::TEXT[] as related_memory_ids
         FROM memories
         WHERE agent_id = :agent_id::uuid
     """
@@ -1828,6 +1855,12 @@ def delegate_read_memories(
             "content": r.get("content"),
             "participants": json.loads(r.get("participants") or "[]"),
             "created_at": r.get("created_at"),
+            "subject_person_id": r.get("subject_person_id"),
+            "tags": r.get("tags") or [],
+            "scene_context": r.get("scene_context"),
+            "modality": r.get("modality", "text"),
+            "confidence": r.get("confidence", 1.0),
+            "related_memory_ids": r.get("related_memory_ids") or [],
         }
         for r in rows
     ]
@@ -1965,6 +1998,12 @@ class DelegateMemoryIn(BaseModel):
     tier: str = "short"
     content: str
     participants: list[str] = Field(default_factory=list)
+    subject_person_id: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    scene_context: str | None = None
+    modality: str = "text"
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    related_memory_ids: list[str] = Field(default_factory=list)
 
 
 @api_app.post("/v1/delegate/memories")
@@ -1994,7 +2033,8 @@ def delegate_write_memory(
 
     _get_db().execute(
         """
-        INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants, embedding)
+        INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants, embedding,
+                              subject_person_id, tags, scene_context, modality, confidence, related_memory_ids)
         VALUES (
             :memory_id::uuid,
             :agent_id::uuid,
@@ -2002,7 +2042,13 @@ def delegate_write_memory(
             :tier,
             :content,
             :participants::jsonb,
-            CASE WHEN :embedding IS NULL THEN NULL ELSE CAST(:embedding AS vector) END
+            CASE WHEN :embedding IS NULL THEN NULL ELSE CAST(:embedding AS vector) END,
+            CASE WHEN :subject_person_id IS NULL THEN NULL ELSE :subject_person_id::uuid END,
+            :tags::text[],
+            :scene_context,
+            :modality,
+            :confidence,
+            :related_memory_ids::uuid[]
         )
         """,
         {
@@ -2013,6 +2059,12 @@ def delegate_write_memory(
             "content": body.content,
             "participants": json.dumps(body.participants),
             "embedding": embedding,
+            "subject_person_id": body.subject_person_id,
+            "tags": "{" + ",".join(body.tags) + "}" if body.tags else "{}",
+            "scene_context": body.scene_context,
+            "modality": body.modality,
+            "confidence": body.confidence,
+            "related_memory_ids": "{" + ",".join(body.related_memory_ids) + "}" if body.related_memory_ids else "{}",
         },
     )
 

@@ -10,6 +10,11 @@
     <h1 class="page-title"><i class="fas fa-brain"></i> Memories</h1>
     <p class="text-muted">Browse and manage agent memories</p>
   </div>
+  <div>
+    <button class="btn btn-primary" onclick="Marvain.showModal('create-memory-modal')">
+      <i class="fas fa-plus"></i> New Memory
+    </button>
+  </div>
 </div>
 
 <!-- Filter Bar -->
@@ -38,6 +43,33 @@
       <option value="">All Spaces</option>
       {% for space in spaces %}
       <option value="{{ space.space_id }}">{{ space.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="filter-group">
+    <label for="modality-filter">Modality</label>
+    <select id="modality-filter" onchange="filterMemories()">
+      <option value="">All Modalities</option>
+      {% for mod in all_modalities %}
+      <option value="{{ mod }}">{{ mod|capitalize }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="filter-group">
+    <label for="person-filter">Subject</label>
+    <select id="person-filter" onchange="filterMemories()">
+      <option value="">All Subjects</option>
+      {% for person in people %}
+      <option value="{{ person.person_id }}">{{ person.display_name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="filter-group">
+    <label for="tag-filter">Tag</label>
+    <select id="tag-filter" onchange="filterMemories()">
+      <option value="">All Tags</option>
+      {% for tag in all_tags %}
+      <option value="{{ tag }}">{{ tag }}</option>
       {% endfor %}
     </select>
   </div>
@@ -71,21 +103,56 @@
 <div class="memories-list" id="memories-list">
   {% if memories %}
   {% for memory in memories %}
-  <div class="memory-card card" data-agent="{{ memory.agent_id }}" data-tier="{{ memory.tier }}" data-space="{{ memory.space_id or '' }}" data-content="{{ memory.content|lower }}">
+  <div class="memory-card card"
+       data-agent="{{ memory.agent_id }}"
+       data-tier="{{ memory.tier }}"
+       data-space="{{ memory.space_id or '' }}"
+       data-modality="{{ memory.modality or 'text' }}"
+       data-person="{{ memory.subject_person_id or '' }}"
+       data-tags="{{ memory.tags|join(',') }}"
+       data-content="{{ memory.content|lower }}">
     <div class="card-body">
       <div class="memory-header">
         <div class="memory-meta">
+          {% set modality_icons = {'text': 'fa-file-alt', 'image': 'fa-image', 'audio': 'fa-microphone', 'video': 'fa-video', 'sensor': 'fa-satellite-dish'} %}
+          <i class="fas {{ modality_icons.get(memory.modality, 'fa-file-alt') }} text-muted" title="{{ memory.modality or 'text' }}"></i>
           <span class="tier-badge tier-{{ memory.tier }}">{{ memory.tier }}</span>
           <span class="text-muted">{{ memory.agent_name }}</span>
           {% if memory.space_name %}
           <span class="text-muted">• {{ memory.space_name }}</span>
           {% endif %}
+          {% if memory.subject_person_name %}
+          <span class="badge badge-outline"><i class="fas fa-user"></i> {{ memory.subject_person_name }}</span>
+          {% endif %}
         </div>
-        <div class="memory-time">{{ memory.created_at_relative or 'Unknown' }}</div>
+        <div class="memory-time">
+          {% if memory.confidence is not none and memory.confidence < 1.0 %}
+          <span class="text-muted" title="Confidence: {{ '%.0f'|format(memory.confidence * 100) }}%">
+            <i class="fas fa-signal" style="opacity: {{ memory.confidence }}"></i>
+            {{ '%.0f'|format(memory.confidence * 100) }}%
+          </span>
+          {% endif %}
+          {{ memory.created_at_relative or 'Unknown' }}
+        </div>
       </div>
       <div class="memory-content">
         {{ memory.content[:500] }}{% if memory.content|length > 500 %}...{% endif %}
       </div>
+      {% if memory.tags %}
+      <div class="memory-tags" style="margin-top: var(--space-xs);">
+        {% for tag in memory.tags[:6] %}
+        <span class="badge badge-info" style="margin-right: var(--space-xs); cursor: pointer;" onclick="filterByTag('{{ tag }}')">{{ tag }}</span>
+        {% endfor %}
+        {% if memory.tags|length > 6 %}
+        <span class="badge badge-outline">+{{ memory.tags|length - 6 }}</span>
+        {% endif %}
+      </div>
+      {% endif %}
+      {% if memory.scene_context %}
+      <div class="memory-scene text-muted" style="margin-top: var(--space-xs); font-size: var(--text-sm);">
+        <i class="fas fa-map-marker-alt"></i> {{ memory.scene_context[:100] }}{% if memory.scene_context|length > 100 %}...{% endif %}
+      </div>
+      {% endif %}
       {% if memory.participants %}
       <div class="memory-participants">
         <i class="fas fa-users"></i>
@@ -138,6 +205,88 @@
     </div>
   </div>
 </div>
+
+<!-- Create Memory Modal -->
+<div class="modal-overlay" id="create-memory-modal" style="display: none;">
+  <div class="modal" style="max-width: 600px;">
+    <div class="modal-header">
+      <h3><i class="fas fa-plus-circle"></i> Create Memory</h3>
+      <button type="button" class="modal-close" onclick="Marvain.hideModal('create-memory-modal')">&times;</button>
+    </div>
+    <div class="modal-body">
+      <form id="create-memory-form" onsubmit="return createMemory(event)">
+        <div class="form-group">
+          <label for="cm-agent">Agent *</label>
+          <select id="cm-agent" required>
+            {% for agent in agents %}
+            <option value="{{ agent.agent_id }}">{{ agent.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="cm-content">Content *</label>
+          <textarea id="cm-content" rows="4" required placeholder="Memory content..."></textarea>
+        </div>
+        <div class="form-row" style="display: flex; gap: var(--space-md);">
+          <div class="form-group" style="flex: 1;">
+            <label for="cm-tier">Tier</label>
+            <select id="cm-tier">
+              <option value="semantic">Semantic</option>
+              <option value="episodic">Episodic</option>
+              <option value="procedural">Procedural</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex: 1;">
+            <label for="cm-modality">Modality</label>
+            <select id="cm-modality">
+              <option value="text">Text</option>
+              <option value="image">Image</option>
+              <option value="audio">Audio</option>
+              <option value="video">Video</option>
+              <option value="sensor">Sensor</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row" style="display: flex; gap: var(--space-md);">
+          <div class="form-group" style="flex: 1;">
+            <label for="cm-space">Space</label>
+            <select id="cm-space">
+              <option value="">None</option>
+              {% for space in spaces %}
+              <option value="{{ space.space_id }}">{{ space.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="form-group" style="flex: 1;">
+            <label for="cm-person">Subject Person</label>
+            <select id="cm-person">
+              <option value="">None</option>
+              {% for person in people %}
+              <option value="{{ person.person_id }}">{{ person.display_name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="cm-tags">Tags <span class="text-muted">(comma-separated)</span></label>
+          <input type="text" id="cm-tags" placeholder="e.g. important, weather, kitchen">
+        </div>
+        <div class="form-group">
+          <label for="cm-scene">Scene Context</label>
+          <input type="text" id="cm-scene" placeholder="Where/when this happened...">
+        </div>
+        <div class="form-group">
+          <label for="cm-confidence">Confidence: <span id="cm-confidence-val">100%</span></label>
+          <input type="range" id="cm-confidence" min="0" max="100" value="100" oninput="document.getElementById('cm-confidence-val').textContent = this.value + '%'">
+        </div>
+        <div class="form-actions" style="display: flex; justify-content: flex-end; gap: var(--space-sm); margin-top: var(--space-md);">
+          <button type="button" class="btn btn-outline" onclick="Marvain.hideModal('create-memory-modal')">Cancel</button>
+          <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Create</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
@@ -146,15 +295,26 @@ function filterMemories() {
   const agent = document.getElementById('agent-filter').value;
   const tier = document.getElementById('tier-filter').value;
   const space = document.getElementById('space-filter').value;
+  const modality = document.getElementById('modality-filter').value;
+  const person = document.getElementById('person-filter').value;
+  const tag = document.getElementById('tag-filter').value;
   const search = document.getElementById('search-filter').value.toLowerCase();
-  
+
   document.querySelectorAll('.memory-card').forEach(card => {
     const matchAgent = !agent || card.dataset.agent === agent;
     const matchTier = !tier || card.dataset.tier === tier;
     const matchSpace = !space || card.dataset.space === space;
+    const matchModality = !modality || card.dataset.modality === modality;
+    const matchPerson = !person || card.dataset.person === person;
+    const matchTag = !tag || (card.dataset.tags || '').split(',').includes(tag);
     const matchSearch = !search || card.dataset.content.includes(search);
-    card.style.display = matchAgent && matchTier && matchSpace && matchSearch ? '' : 'none';
+    card.style.display = matchAgent && matchTier && matchSpace && matchModality && matchPerson && matchTag && matchSearch ? '' : 'none';
   });
+}
+
+function filterByTag(tag) {
+  document.getElementById('tag-filter').value = tag;
+  filterMemories();
 }
 
 async function viewMemory(memoryId) {
@@ -180,6 +340,11 @@ async function viewMemory(memoryId) {
     const provenance = memory.provenance || {};
     const retention = memory.retention || {};
 
+    const modalityIcons = {text:'fa-file-alt', image:'fa-image', audio:'fa-microphone', video:'fa-video', sensor:'fa-satellite-dish'};
+    const modalityIcon = modalityIcons[memory.modality] || 'fa-file-alt';
+    const tags = memory.tags || [];
+    const confidence = memory.confidence != null ? memory.confidence : 1.0;
+
     content.innerHTML = `
       <div class="detail-section">
         <h4><i class="fas fa-info-circle"></i> Basic Info</h4>
@@ -193,6 +358,14 @@ async function viewMemory(memoryId) {
             <span class="badge badge-${tierBadge}">${memory.tier}</span>
           </div>
           <div class="detail-row">
+            <span class="detail-label">Modality</span>
+            <span class="detail-value"><i class="fas ${modalityIcon}"></i> ${memory.modality || 'text'}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Confidence</span>
+            <span class="detail-value">${Math.round(confidence * 100)}%</span>
+          </div>
+          <div class="detail-row">
             <span class="detail-label">Agent</span>
             <span class="detail-value">${memory.agent_name || memory.agent_id}</span>
           </div>
@@ -201,12 +374,29 @@ async function viewMemory(memoryId) {
             <span class="detail-label">Space</span>
             <span class="detail-value">${memory.space_name}</span>
           </div>` : ''}
+          ${memory.subject_person_name ? `
+          <div class="detail-row">
+            <span class="detail-label">Subject</span>
+            <span class="detail-value"><i class="fas fa-user"></i> ${memory.subject_person_name}</span>
+          </div>` : ''}
           <div class="detail-row">
             <span class="detail-label">Created</span>
             <span class="detail-value">${memory.created_at || 'N/A'}</span>
           </div>
         </div>
       </div>
+
+      ${tags.length > 0 ? `
+      <div class="detail-section">
+        <h4><i class="fas fa-tags"></i> Tags</h4>
+        <div>${tags.map(t => '<span class="badge badge-info" style="margin-right:4px">' + t + '</span>').join('')}</div>
+      </div>` : ''}
+
+      ${memory.scene_context ? `
+      <div class="detail-section">
+        <h4><i class="fas fa-map-marker-alt"></i> Scene Context</h4>
+        <p>${memory.scene_context}</p>
+      </div>` : ''}
 
       <div class="detail-section">
         <h4><i class="fas fa-file-alt"></i> Content</h4>
@@ -217,7 +407,7 @@ async function viewMemory(memoryId) {
       <div class="detail-section">
         <h4><i class="fas fa-users"></i> Participants</h4>
         <div class="participant-list">
-          ${participants.map(p => `<span class="badge badge-outline">${p}</span>`).join(' ')}
+          ${participants.map(p => '<span class="badge badge-outline">' + p + '</span>').join(' ')}
         </div>
       </div>` : ''}
 
@@ -261,6 +451,49 @@ async function deleteMemory(memoryId) {
     Marvain.hideLoading();
     Marvain.showToast('error', 'Error', error.message);
   }
+}
+
+async function createMemory(event) {
+  event.preventDefault();
+  const agentId = document.getElementById('cm-agent').value;
+  const content = document.getElementById('cm-content').value.trim();
+  if (!agentId || !content) return false;
+
+  const tagsRaw = document.getElementById('cm-tags').value.trim();
+  const tags = tagsRaw ? tagsRaw.split(',').map(t => t.trim()).filter(Boolean) : [];
+
+  const body = {
+    agent_id: agentId,
+    content: content,
+    tier: document.getElementById('cm-tier').value,
+    modality: document.getElementById('cm-modality').value,
+    space_id: document.getElementById('cm-space').value || null,
+    subject_person_id: document.getElementById('cm-person').value || null,
+    tags: tags,
+    scene_context: document.getElementById('cm-scene').value.trim() || null,
+    confidence: parseInt(document.getElementById('cm-confidence').value) / 100,
+  };
+
+  try {
+    Marvain.showLoading('Creating memory...');
+    const response = await fetch('/api/memories', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Failed to create memory');
+    }
+    Marvain.hideLoading();
+    Marvain.hideModal('create-memory-modal');
+    Marvain.showToast('success', 'Success', 'Memory created');
+    setTimeout(() => location.reload(), 1000);
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+  return false;
 }
 </script>
 {% endblock %}
