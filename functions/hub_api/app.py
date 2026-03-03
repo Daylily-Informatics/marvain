@@ -3939,10 +3939,15 @@ def gui_memories(request: Request) -> Response:
             f"""SELECT m.memory_id::TEXT as memory_id, m.agent_id::TEXT as agent_id,
                        m.space_id::TEXT as space_id, m.tier, m.content,
                        m.participants, m.provenance, m.created_at,
-                       a.name as agent_name, s.name as space_name
+                       a.name as agent_name, s.name as space_name,
+                       m.subject_person_id::TEXT as subject_person_id,
+                       p.display_name as subject_person_name,
+                       m.tags, m.scene_context, m.modality, m.confidence,
+                       m.related_memory_ids::TEXT[] as related_memory_ids
                 FROM memories m
                 JOIN agents a ON a.agent_id = m.agent_id
                 LEFT JOIN spaces s ON s.space_id = m.space_id
+                LEFT JOIN people p ON p.person_id = m.subject_person_id
                 WHERE m.agent_id::TEXT IN ({placeholders})
                 ORDER BY m.created_at DESC
                 LIMIT 100""",
@@ -3984,6 +3989,9 @@ def gui_memories(request: Request) -> Response:
                 except Exception:
                     provenance = {}
 
+            # Parse tags (may come as list or None)
+            tags = row.get("tags") or []
+
             memories_data.append(
                 {
                     "memory_id": str(row.get("memory_id", "")),
@@ -3996,11 +4004,35 @@ def gui_memories(request: Request) -> Response:
                     "participants": participants,
                     "provenance_source": provenance.get("source", ""),
                     "created_at_relative": created_at_relative,
+                    "subject_person_id": row.get("subject_person_id"),
+                    "subject_person_name": row.get("subject_person_name"),
+                    "tags": tags,
+                    "scene_context": row.get("scene_context"),
+                    "modality": row.get("modality", "text"),
+                    "confidence": row.get("confidence", 1.0),
+                    "related_memory_ids": row.get("related_memory_ids") or [],
                 }
             )
 
     agents_data = [{"agent_id": a.agent_id, "name": a.name, "role": a.role} for a in agents]
     spaces_data = [{"space_id": s.space_id, "name": s.name} for s in spaces]
+
+    # Collect people for all user's agents (for filters and creation form)
+    people_data: list[dict[str, str]] = []
+    if agent_ids:
+        people_placeholders = ", ".join(f":pid{i}" for i in range(len(agent_ids)))
+        people_params = {f"pid{i}": aid for i, aid in enumerate(agent_ids)}
+        people_rows = db.query(
+            f"""SELECT person_id::TEXT as person_id, display_name
+                FROM people WHERE agent_id::TEXT IN ({people_placeholders})
+                ORDER BY display_name""",
+            people_params,
+        )
+        people_data = [{"person_id": r["person_id"], "display_name": r["display_name"]} for r in people_rows]
+
+    # Collect unique modalities and tags for filters
+    all_modalities = sorted({m.get("modality", "text") for m in memories_data})
+    all_tags = sorted({t for m in memories_data for t in m.get("tags", [])})
 
     return templates.TemplateResponse(
         request,
@@ -4013,9 +4045,105 @@ def gui_memories(request: Request) -> Response:
             "tier_counts": tier_counts,
             "agents": agents_data,
             "spaces": spaces_data,
+            "people": people_data,
+            "all_modalities": all_modalities,
+            "all_tags": all_tags,
             **_get_ws_context(request),
         },
     )
+
+
+
+@app.post("/api/memories", name="api_create_memory")
+def api_create_memory(request: Request) -> dict:
+    """Create a memory from the GUI."""
+    import json as _json
+
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Parse JSON body
+    import asyncio
+
+    async def _read_body() -> bytes:
+        return await request.body()
+
+    body_bytes = asyncio.get_event_loop().run_until_complete(_read_body())
+    try:
+        body = _json.loads(body_bytes)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    agent_id = body.get("agent_id")
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="agent_id required")
+
+    content = body.get("content", "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content required")
+
+    # Verify user has access to this agent
+    rows = db.query(
+        """SELECT 1 FROM agent_memberships
+           WHERE agent_id = :agent_id::uuid AND user_id = :user_id::uuid
+             AND revoked_at IS NULL""",
+        {"agent_id": agent_id, "user_id": str(user.user_id)},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Agent not found or no access")
+
+    import uuid as _uuid
+
+    memory_id = str(_uuid.uuid4())
+    tier = body.get("tier", "semantic")
+    space_id = body.get("space_id") or None
+    subject_person_id = body.get("subject_person_id") or None
+    tags = body.get("tags", [])
+    scene_context = body.get("scene_context") or None
+    modality = body.get("modality", "text")
+    confidence = float(body.get("confidence", 1.0))
+    related_memory_ids = body.get("related_memory_ids", [])
+
+    db.execute(
+        """
+        INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants, provenance,
+                              subject_person_id, tags, scene_context, modality, confidence, related_memory_ids)
+        VALUES (
+            :memory_id::uuid,
+            :agent_id::uuid,
+            CASE WHEN :space_id IS NULL THEN NULL ELSE :space_id::uuid END,
+            :tier,
+            :content,
+            '[]'::jsonb,
+            :provenance::jsonb,
+            CASE WHEN :subject_person_id IS NULL THEN NULL ELSE :subject_person_id::uuid END,
+            :tags::text[],
+            :scene_context,
+            :modality,
+            :confidence,
+            :related_memory_ids::uuid[]
+        )
+        """,
+        {
+            "memory_id": memory_id,
+            "agent_id": agent_id,
+            "space_id": space_id,
+            "tier": tier,
+            "content": content,
+            "provenance": _json.dumps({"source": "gui", "user_id": str(user.user_id)}),
+            "subject_person_id": subject_person_id,
+            "tags": "{" + ",".join(tags) + "}" if tags else "{}",
+            "scene_context": scene_context,
+            "modality": modality,
+            "confidence": confidence,
+            "related_memory_ids": "{" + ",".join(related_memory_ids) + "}" if related_memory_ids else "{}",
+        },
+    )
+
+    return {"memory_id": memory_id, "created": True}
 
 
 @app.delete("/api/memories/{memory_id}", name="api_delete_memory")
@@ -4073,10 +4201,15 @@ def api_get_memory(request: Request, memory_id: str) -> dict:
                m.provenance::TEXT as provenance,
                m.retention::TEXT as retention,
                m.created_at::TEXT as created_at,
-               a.name as agent_name, s.name as space_name
+               a.name as agent_name, s.name as space_name,
+               m.subject_person_id::TEXT as subject_person_id,
+               p.display_name as subject_person_name,
+               m.tags, m.scene_context, m.modality, m.confidence,
+               m.related_memory_ids::TEXT[] as related_memory_ids
         FROM memories m
         INNER JOIN agents a ON m.agent_id = a.agent_id
         LEFT JOIN spaces s ON m.space_id = s.space_id
+        LEFT JOIN people p ON p.person_id = m.subject_person_id
         INNER JOIN agent_memberships mb ON m.agent_id = mb.agent_id
         WHERE m.memory_id = :memory_id::uuid
           AND mb.user_id = :user_id::uuid
@@ -4117,6 +4250,13 @@ def api_get_memory(request: Request, memory_id: str) -> dict:
         "provenance": provenance,
         "retention": retention,
         "created_at": row["created_at"],
+        "subject_person_id": row.get("subject_person_id"),
+        "subject_person_name": row.get("subject_person_name"),
+        "tags": row.get("tags") or [],
+        "scene_context": row.get("scene_context"),
+        "modality": row.get("modality", "text"),
+        "confidence": row.get("confidence", 1.0),
+        "related_memory_ids": row.get("related_memory_ids") or [],
     }
 
 
