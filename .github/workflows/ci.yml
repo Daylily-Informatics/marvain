@@ -34,7 +34,7 @@ jobs:
     name: Tests (pytest)
     runs-on: ubuntu-latest
     env:
-      PYTHONPATH: layers/shared/python
+      PYTHONPATH: .:layers/shared/python
       HTTPS_ENABLED: "false"
       AWS_DEFAULT_REGION: us-east-1
 
@@ -58,6 +58,7 @@ jobs:
             httpx \
             python-multipart \
             python-dateutil \
+            daylily-cognito==0.1.24 \
             python-jose[cryptography] \
 	            jsonschema \
             itsdangerous \
@@ -69,6 +70,11 @@ jobs:
             pytest \
             pytest-cov
 
+      - name: Docs contract check
+        run: python scripts/verify_docs_contracts.py
+
+      - name: Implementation status check
+        run: python scripts/generate_implementation_status.py --check
+
       - name: Run tests
         run: python -m pytest tests/ -q --tb=short
-

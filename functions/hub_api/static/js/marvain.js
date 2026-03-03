@@ -336,7 +336,7 @@
      */
     _handleBroadcast: function(msg) {
       const type = msg.type;
-      const payload = msg.payload || {};
+      const payload = msg.payload || msg || {};
 
       // Debounce rapid updates (max 1 refresh per 500ms per type)
       if (!this._broadcastTimers) {
@@ -426,19 +426,23 @@
      * @private
      */
     _updatePresenceIndicator: function(payload) {
-      if (!payload.device_id) return;
+      const deviceId = payload.device_id || '';
+      if (!deviceId) return;
 
       // Find the device row and update the status badge
-      const row = document.querySelector('[data-device-id="' + payload.device_id + '"]');
+      const row = document.querySelector('[data-device-id="' + deviceId + '"]');
       if (row) {
         const statusBadge = row.querySelector('.status-badge');
         if (statusBadge) {
-          statusBadge.className = 'status-badge badge badge-success';
-          statusBadge.textContent = 'online';
+          const status = String(payload.status || 'online').toLowerCase();
+          statusBadge.className = status === 'offline'
+            ? 'status-badge badge badge-warning'
+            : 'status-badge badge badge-success';
+          statusBadge.textContent = status;
         }
         const heartbeatCell = row.querySelector('.heartbeat-time');
         if (heartbeatCell && payload.last_heartbeat_at) {
-          heartbeatCell.textContent = payload.last_heartbeat_at;
+          heartbeatCell.textContent = this.relativeTime(payload.last_heartbeat_at);
         }
       }
     },
@@ -472,4 +476,3 @@
   window.Marvain = Marvain;
 
 })(window);
-

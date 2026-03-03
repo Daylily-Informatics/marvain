@@ -22,7 +22,7 @@ if str(shared) not in sys.path:
 
 # Set required environment variables
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
-os.environ.setdefault("WS_CONNECTIONS_TABLE", "test-ws-connections")
+os.environ.setdefault("WS_TABLE", "test-ws-connections")
 os.environ.setdefault("WS_API_ENDPOINT", "https://test.execute-api.us-east-1.amazonaws.com/prod")
 
 
@@ -111,7 +111,10 @@ class TestDeviceCommandHandler:
         # First two succeed, third fails
         mock_send.side_effect = [True, True, False]
 
-        result = device_command_handler({"device_id": "device-xyz", "command": "run_action"}, ctx)
+        result = device_command_handler(
+            {"device_id": "device-xyz", "command": "run_action", "kind": "device_status"},
+            ctx,
+        )
 
         assert result.ok is True
         assert result.data["connections_sent"] == 2
@@ -197,7 +200,7 @@ class TestGetConnectionsForDevice:
     """Tests for _get_connections_for_device helper."""
 
     def test_returns_empty_list_when_no_table_configured(self):
-        """Should return empty list if WS_CONNECTIONS_TABLE not set."""
+        """Should return empty list if WS_TABLE not set."""
         from agent_hub.tools import device_command
 
         # Temporarily unset table name

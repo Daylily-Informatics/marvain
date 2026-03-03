@@ -18,8 +18,10 @@ import secrets
 import urllib.parse
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
+from agent_hub.auto_approve_policy import evaluate_auto_approve
+from agent_hub.contracts import validate_tool_payload
 from agent_hub.auth import (
     AuthenticatedUser,
     ensure_user_row,
@@ -51,6 +53,7 @@ from api_app import (
     LiveKitTokenOut,
     _get_db,
     _get_s3,
+    _get_sqs,
     _mint_livekit_token_for_user,
     api_app,
     get_config,
@@ -883,6 +886,13 @@ class DeviceResponse(BaseModel):
     token: str  # Only returned on creation, not stored
 
 
+class DeviceRotateTokenResponse(BaseModel):
+    """Response for token rotation."""
+
+    device_id: str
+    token: str
+
+
 @app.post("/api/devices", name="api_create_device")
 def api_create_device(request: Request, body: DeviceCreate) -> DeviceResponse:
     """Register a new device."""
@@ -970,6 +980,49 @@ def api_revoke_device(request: Request, device_id: str) -> dict:
     return {"message": "Device revoked", "device_id": device_id}
 
 
+@app.post("/api/devices/{device_id}/rotate-token", name="api_rotate_device_token")
+def api_rotate_device_token(request: Request, device_id: str) -> DeviceRotateTokenResponse:
+    """Rotate a device token and return the new token once."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    rows = db.query(
+        """
+        SELECT d.device_id::TEXT as device_id
+        FROM devices d
+        INNER JOIN agent_memberships m ON d.agent_id = m.agent_id
+        WHERE d.device_id = :device_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.role IN ('admin', 'owner')
+          AND m.revoked_at IS NULL
+    """,
+        {"device_id": device_id, "user_id": str(user.user_id)},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Device not found or permission denied")
+
+    import hashlib
+
+    new_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(new_token.encode()).hexdigest()
+    try:
+        db.execute(
+            """
+            UPDATE devices
+            SET token_hash = :token_hash, revoked_at = NULL
+            WHERE device_id = :device_id::uuid
+        """,
+            {"device_id": device_id, "token_hash": token_hash},
+        )
+    except Exception as e:
+        logger.error(f"Failed to rotate token for device {device_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to rotate token")
+
+    return DeviceRotateTokenResponse(device_id=device_id, token=new_token)
+
+
 @app.post("/api/devices/{device_id}/delete", name="api_delete_device")
 def api_delete_device(request: Request, device_id: str) -> dict:
     """Delete a device permanently."""
@@ -1050,6 +1103,7 @@ def api_launch_satellite(request: Request, device_id: str, body: DeviceLaunchSat
     ws_url = _cfg.ws_api_url
     if not ws_url:
         raise HTTPException(status_code=500, detail="WebSocket URL not configured (WS_API_URL)")
+    hub_rest_url = str(request.base_url).rstrip("/")
 
     # Resolve the daemon script path relative to the repo root
     repo_root = Path(__file__).resolve().parent.parent.parent
@@ -1066,6 +1120,8 @@ def api_launch_satellite(request: Request, device_id: str, body: DeviceLaunchSat
         str(daemon_script),
         "--hub-ws-url",
         ws_url,
+        "--hub-rest-url",
+        hub_rest_url,
     ]
     env = {**os.environ, "MARVAIN_DEVICE_TOKEN": body.device_token}
 
@@ -1780,6 +1836,183 @@ def api_delete_member(request: Request, agent_id: str, member_user_id: str) -> d
     return {"ok": True}
 
 
+class AutoApprovePolicyIn(BaseModel):
+    name: str
+    enabled: bool = True
+    priority: int = 100
+    action_kind: str = "*"
+    required_scopes: list[str] = []
+    time_window: dict[str, Any] = {}
+
+
+def _as_json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return parsed
+        except Exception:
+            return []
+    return []
+
+
+def _as_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
+@app.get("/api/agents/{agent_id}/auto-approve-policies", name="api_list_auto_approve_policies")
+def api_list_auto_approve_policies(request: Request, agent_id: str) -> list[dict[str, Any]]:
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    if not check_agent_permission(db, agent_id=agent_id, user_id=user.user_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    rows = db.query(
+        """
+        SELECT policy_id::TEXT as policy_id, name, enabled, priority, action_kind,
+               required_scopes::TEXT as required_scopes,
+               time_window::TEXT as time_window,
+               created_by::TEXT as created_by,
+               created_at::TEXT as created_at,
+               updated_at::TEXT as updated_at
+        FROM action_auto_approve_policies
+        WHERE agent_id = :agent_id::uuid
+          AND revoked_at IS NULL
+        ORDER BY priority ASC, created_at DESC
+        """,
+        {"agent_id": agent_id},
+    )
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        out.append(
+            {
+                "policy_id": row.get("policy_id"),
+                "name": row.get("name"),
+                "enabled": bool(row.get("enabled")),
+                "priority": int(row.get("priority") or 100),
+                "action_kind": row.get("action_kind") or "*",
+                "required_scopes": _as_json_list(row.get("required_scopes")),
+                "time_window": _as_json_dict(row.get("time_window")),
+                "created_by": row.get("created_by"),
+                "created_at": row.get("created_at"),
+                "updated_at": row.get("updated_at"),
+            }
+        )
+    return out
+
+
+@app.post("/api/agents/{agent_id}/auto-approve-policies", name="api_create_auto_approve_policy")
+def api_create_auto_approve_policy(request: Request, agent_id: str, body: AutoApprovePolicyIn) -> dict[str, Any]:
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    if not check_agent_permission(db, agent_id=agent_id, user_id=user.user_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    policy_id = str(uuid.uuid4())
+    db.execute(
+        """
+        INSERT INTO action_auto_approve_policies(
+          policy_id, agent_id, name, enabled, priority, action_kind, required_scopes, time_window, created_by
+        ) VALUES(
+          :policy_id::uuid, :agent_id::uuid, :name, :enabled, :priority, :action_kind,
+          :required_scopes::jsonb, :time_window::jsonb, :created_by::uuid
+        )
+        """,
+        {
+            "policy_id": policy_id,
+            "agent_id": agent_id,
+            "name": body.name.strip(),
+            "enabled": bool(body.enabled),
+            "priority": int(body.priority),
+            "action_kind": str(body.action_kind or "*").strip(),
+            "required_scopes": json.dumps([str(s) for s in (body.required_scopes or [])]),
+            "time_window": json.dumps(body.time_window or {}),
+            "created_by": str(user.user_id),
+        },
+    )
+    return {"ok": True, "policy_id": policy_id}
+
+
+@app.put("/api/agents/{agent_id}/auto-approve-policies/{policy_id}", name="api_update_auto_approve_policy")
+def api_update_auto_approve_policy(
+    request: Request, agent_id: str, policy_id: str, body: AutoApprovePolicyIn
+) -> dict[str, Any]:
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    if not check_agent_permission(db, agent_id=agent_id, user_id=user.user_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    db.execute(
+        """
+        UPDATE action_auto_approve_policies
+        SET name = :name,
+            enabled = :enabled,
+            priority = :priority,
+            action_kind = :action_kind,
+            required_scopes = :required_scopes::jsonb,
+            time_window = :time_window::jsonb,
+            updated_at = now()
+        WHERE policy_id = :policy_id::uuid
+          AND agent_id = :agent_id::uuid
+          AND revoked_at IS NULL
+        """,
+        {
+            "policy_id": policy_id,
+            "agent_id": agent_id,
+            "name": body.name.strip(),
+            "enabled": bool(body.enabled),
+            "priority": int(body.priority),
+            "action_kind": str(body.action_kind or "*").strip(),
+            "required_scopes": json.dumps([str(s) for s in (body.required_scopes or [])]),
+            "time_window": json.dumps(body.time_window or {}),
+        },
+    )
+    return {"ok": True}
+
+
+@app.delete("/api/agents/{agent_id}/auto-approve-policies/{policy_id}", name="api_delete_auto_approve_policy")
+def api_delete_auto_approve_policy(request: Request, agent_id: str, policy_id: str) -> dict[str, Any]:
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    if not check_agent_permission(db, agent_id=agent_id, user_id=user.user_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    db.execute(
+        """
+        UPDATE action_auto_approve_policies
+        SET revoked_at = now(), updated_at = now()
+        WHERE policy_id = :policy_id::uuid
+          AND agent_id = :agent_id::uuid
+          AND revoked_at IS NULL
+        """,
+        {"policy_id": policy_id, "agent_id": agent_id},
+    )
+    return {"ok": True}
+
+
 @app.get("/agents", name="gui_agents")
 def gui_agents(request: Request) -> Response:
     """Agents management - list all agents."""
@@ -1927,6 +2160,11 @@ def gui_devices(request: Request) -> Response:
         rows = db.query(
             f"""SELECT d.device_id::TEXT as device_id, d.agent_id::TEXT as agent_id,
                        d.name, d.scopes, d.revoked_at, d.created_at, d.last_seen,
+                       d.last_heartbeat_at,
+                       CASE
+                           WHEN d.last_heartbeat_at > now() - interval '60 seconds' THEN true
+                           ELSE false
+                       END as is_online,
                        a.name as agent_name
                 FROM devices d
                 JOIN agents a ON a.agent_id = d.agent_id
@@ -1973,6 +2211,8 @@ def gui_devices(request: Request) -> Response:
                     "name": row.get("name") or "Unnamed Device",
                     "scopes": scopes,
                     "revoked": row.get("revoked_at") is not None,
+                    "is_online": bool(row.get("is_online")),
+                    "last_heartbeat_at": str(row.get("last_heartbeat_at") or ""),
                     "last_seen_relative": last_seen_relative,
                 }
             )
@@ -2067,6 +2307,7 @@ def gui_device_detail(request: Request, device_id: str) -> Response:
             "stage": _cfg.stage,
             "active_page": "devices",
             "device": device_data,
+            "rest_url": str(request.base_url).rstrip("/"),
             **_get_ws_context(request),
         },
     )
@@ -2543,6 +2784,138 @@ class ActionApproveReject(BaseModel):
     reason: str | None = None
 
 
+@app.get("/api/actions/diagnostics", name="api_actions_diagnostics")
+def api_actions_diagnostics(request: Request) -> dict:
+    """Return Action Queue health and recent Tool Runner Lambda executions."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    import boto3 as _boto3
+
+    region = _cfg.cognito_region or os.getenv("AWS_REGION", "us-east-1")
+
+    # --- SQS queue health ---
+    queue_health: dict = {"messages_available": None, "messages_in_flight": None, "error": None}
+    if _cfg.action_queue_url:
+        try:
+            sqs = _get_sqs()
+            attrs = sqs.get_queue_attributes(
+                QueueUrl=_cfg.action_queue_url,
+                AttributeNames=[
+                    "ApproximateNumberOfMessages",
+                    "ApproximateNumberOfMessagesNotVisible",
+                    "ApproximateNumberOfMessagesDelayed",
+                ],
+            ).get("Attributes", {})
+            queue_health["messages_available"] = int(attrs.get("ApproximateNumberOfMessages", 0))
+            queue_health["messages_in_flight"] = int(attrs.get("ApproximateNumberOfMessagesNotVisible", 0))
+            queue_health["messages_delayed"] = int(attrs.get("ApproximateNumberOfMessagesDelayed", 0))
+        except Exception as e:
+            queue_health["error"] = str(e)
+    else:
+        queue_health["error"] = "ACTION_QUEUE_URL not configured"
+
+    # --- Recent Tool Runner Lambda executions (from CloudWatch Logs) ---
+    recent_executions: list[dict] = []
+    logs_error: str | None = None
+    # Derive log group from stack name or env
+    stack_name = os.getenv("STACK_NAME", "")
+    log_group = os.getenv(
+        "TOOL_RUNNER_LOG_GROUP",
+        f"/aws/lambda/{stack_name}-ToolRunnerFunction" if stack_name else "",
+    )
+    if not log_group:
+        # Try to find it via the marvain config
+        try:
+            mcfg = _read_marvain_config()
+            default_env = mcfg.get("default_env", "dev")
+            env_cfg = mcfg.get("envs", {}).get(default_env, {})
+            sn = env_cfg.get("stack_name", "")
+            if sn:
+                log_group = f"/aws/lambda/{sn}-ToolRunnerFunction"
+        except Exception:
+            pass
+
+    if log_group:
+        try:
+            logs_client = _boto3.client("logs", region_name=region)
+            import time as _time
+
+            end_ms = int(_time.time() * 1000)
+            start_ms = end_ms - (3600 * 1000)  # last hour
+
+            resp = logs_client.filter_log_events(
+                logGroupName=log_group,
+                startTime=start_ms,
+                endTime=end_ms,
+                filterPattern="processed",
+                limit=20,
+                interleaved=True,
+            )
+            for ev in resp.get("events", []):
+                ts = ev.get("timestamp", 0)
+                msg = ev.get("message", "").strip()
+                recent_executions.append(
+                    {
+                        "timestamp": ts,
+                        "timestamp_iso": __import__("datetime")
+                        .datetime.fromtimestamp(ts / 1000, tz=__import__("datetime").timezone.utc)
+                        .isoformat()
+                        if ts
+                        else None,
+                        "message": msg[:500],
+                        "log_stream": ev.get("logStreamName", ""),
+                    }
+                )
+        except Exception as e:
+            logs_error = str(e)
+    else:
+        logs_error = "Could not determine Tool Runner log group"
+
+    # --- Per-action status breakdown (recent) ---
+    db = _get_db()
+    agents = list_agents_for_user(db, user_id=user.user_id)
+    agent_ids = [a.agent_id for a in agents]
+    action_timeline: list[dict] = []
+    if agent_ids:
+        placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+        params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+        rows = db.query(
+            f"""SELECT action_id::TEXT, agent_id::TEXT, kind, status,
+                       created_at::TEXT, updated_at::TEXT, approved_at::TEXT,
+                       executed_at::TEXT, completed_at::TEXT,
+                       result::TEXT, error
+                FROM actions
+                WHERE agent_id::TEXT IN ({placeholders})
+                ORDER BY created_at DESC LIMIT 20""",
+            params,
+        )
+        for row in rows:
+            action_timeline.append(
+                {
+                    "action_id": row.get("action_id"),
+                    "agent_id": row.get("agent_id"),
+                    "kind": row.get("kind"),
+                    "status": row.get("status"),
+                    "created_at": row.get("created_at"),
+                    "approved_at": row.get("approved_at"),
+                    "executed_at": row.get("executed_at"),
+                    "completed_at": row.get("completed_at"),
+                    "error": row.get("error"),
+                }
+            )
+
+    return {
+        "queue_health": queue_health,
+        "recent_executions": recent_executions,
+        "logs_error": logs_error,
+        "log_group": log_group,
+        "action_timeline": action_timeline,
+        "region": region,
+    }
+
+
 @app.get("/api/actions/{action_id}", name="api_get_action")
 def api_get_action(request: Request, action_id: str) -> dict:
     """Get action details."""
@@ -2658,6 +3031,17 @@ def api_approve_action(request: Request, action_id: str) -> dict:
         logger.error(f"Failed to approve action: {e}")
         raise HTTPException(status_code=500, detail="Failed to approve action")
 
+    # Queue for execution via Tool Runner Lambda
+    agent_id = str(action.get("agent_id", ""))
+    if _cfg.action_queue_url:
+        try:
+            _get_sqs().send_message(
+                QueueUrl=_cfg.action_queue_url,
+                MessageBody=json.dumps({"action_id": action_id, "agent_id": agent_id}),
+            )
+        except Exception as e:
+            logger.error(f"Failed to queue action {action_id} to SQS: {e}")
+
     return {"message": "Action approved", "action_id": action_id, "status": "approved"}
 
 
@@ -2726,10 +3110,14 @@ def api_create_action(request: Request, body: ActionCreate) -> dict:
     if not check_agent_permission(db, user_id=user.user_id, agent_id=body.agent_id, required_role="admin"):
         raise HTTPException(status_code=403, detail="Requires admin permission on the agent")
 
-    # Validate kind
+    # Validate kind and payload contract
     valid_kinds = ["send_message", "create_memory", "http_request", "device_command", "shell_command"]
     if body.kind not in valid_kinds:
         raise HTTPException(status_code=400, detail=f"Invalid action kind. Valid kinds: {valid_kinds}")
+    try:
+        normalized_payload = validate_tool_payload(body.kind, body.payload)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # If space_id provided, verify it belongs to the agent
     if body.space_id:
@@ -2745,43 +3133,114 @@ def api_create_action(request: Request, body: ActionCreate) -> dict:
     import json
 
     action_id = str(uuid.uuid4())
-    status = "approved" if body.auto_approve else "proposed"
+    policy_mode = str(os.getenv("AUTO_APPROVE_POLICY_MODE", "enforce")).strip().lower()
+    policy = evaluate_auto_approve(
+        db,
+        agent_id=body.agent_id,
+        action_kind=body.kind,
+        action_required_scopes=[str(s) for s in (body.required_scopes or [])],
+    )
+
+    approval_source = None
+    approval_policy_id = None
+    status = "proposed"
+    decision_kind = "no_match"
+    decision_reason = "no_policy_match"
+    if body.auto_approve:
+        status = "approved"
+        approval_source = "manual"
+        decision_kind = "manual_auto_approved"
+        decision_reason = "manual_auto_approve=true"
+    elif policy.matched and policy_mode == "enforce":
+        status = "approved"
+        approval_source = "policy"
+        approval_policy_id = policy.policy_id
+        decision_kind = "policy_auto_approved"
+        decision_reason = policy.reason
 
     try:
         db.execute(
             """
-            INSERT INTO actions (action_id, agent_id, space_id, kind, payload, required_scopes, status)
-            VALUES (:action_id::uuid, :agent_id::uuid, :space_id::uuid, :kind, :payload::jsonb, :scopes::jsonb, :status)
+            INSERT INTO actions (
+                action_id, agent_id, space_id, kind, payload, required_scopes, status, approval_source, approval_policy_id
+            )
+            VALUES (
+                :action_id::uuid, :agent_id::uuid, :space_id::uuid, :kind, :payload::jsonb, :scopes::jsonb, :status,
+                :approval_source,
+                CASE WHEN :approval_policy_id IS NULL OR :approval_policy_id = '' THEN NULL ELSE :approval_policy_id::uuid END
+            )
         """,
             {
                 "action_id": action_id,
                 "agent_id": body.agent_id,
                 "space_id": body.space_id,
                 "kind": body.kind,
-                "payload": json.dumps(body.payload),
+                "payload": json.dumps(normalized_payload),
                 "scopes": json.dumps(body.required_scopes),
                 "status": status,
+                "approval_source": approval_source,
+                "approval_policy_id": approval_policy_id,
             },
         )
 
-        # If auto-approved, update with approver info
-        if body.auto_approve:
+        # If approved, stamp approver metadata.
+        if status == "approved" and body.auto_approve:
             db.execute(
                 """
                 UPDATE actions SET approved_by = :user_id::uuid, approved_at = now() WHERE action_id = :action_id::uuid
             """,
                 {"action_id": action_id, "user_id": str(user.user_id)},
             )
+        elif status == "approved":
+            db.execute(
+                """
+                UPDATE actions SET approved_by = NULL, approved_at = now() WHERE action_id = :action_id::uuid
+            """,
+                {"action_id": action_id},
+            )
+
+        # Record policy evaluation decision when table exists.
+        try:
+            db.execute(
+                """
+                INSERT INTO action_policy_decisions(action_id, policy_id, decision, reason)
+                VALUES(
+                  :action_id::uuid,
+                  CASE WHEN :policy_id IS NULL OR :policy_id = '' THEN NULL ELSE :policy_id::uuid END,
+                  :decision,
+                  :reason
+                )
+                """,
+                {
+                    "action_id": action_id,
+                    "policy_id": approval_policy_id if approval_policy_id else policy.policy_id,
+                    "decision": decision_kind,
+                    "reason": decision_reason[:500],
+                },
+            )
+        except Exception:
+            pass
 
     except Exception as e:
         logger.error(f"Failed to create action: {e}")
         raise HTTPException(status_code=500, detail="Failed to create action")
 
+    # Queue auto-approved actions for execution via Tool Runner Lambda
+    if status == "approved" and _cfg.action_queue_url:
+        try:
+            _get_sqs().send_message(
+                QueueUrl=_cfg.action_queue_url,
+                MessageBody=json.dumps({"action_id": action_id, "agent_id": body.agent_id}),
+            )
+        except Exception as e:
+            logger.error(f"Failed to queue action {action_id} to SQS: {e}")
+
     return {
         "message": "Action created",
         "action_id": action_id,
         "status": status,
-        "auto_approved": body.auto_approve,
+        "auto_approved": status == "approved",
+        "approval_source": approval_source,
     }
 
 

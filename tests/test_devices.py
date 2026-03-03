@@ -292,6 +292,59 @@ class TestDeviceDeletion(unittest.TestCase):
         self.assertIn("DELETE FROM devices", call_args[0][0])
 
 
+class TestDeviceTokenRotation(unittest.TestCase):
+    """Tests for device token rotation."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_hub_api_app_module()
+        from fastapi.testclient import TestClient
+
+        cls._TestClient = TestClient
+        cls._orig_gui_get_user = cls.mod._gui_get_user
+        cls._orig_get_db = cls.mod._get_db
+
+    def setUp(self) -> None:
+        self.client = self.__class__._TestClient(self.mod.app)
+        self.mod._gui_get_user = self.__class__._orig_gui_get_user
+        self.mod._get_db = self.__class__._orig_get_db
+
+    def tearDown(self) -> None:
+        self.mod._gui_get_user = self.__class__._orig_gui_get_user
+        self.mod._get_db = self.__class__._orig_get_db
+
+    def test_rotate_token_requires_authentication(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+        r = self.client.post("/api/devices/device-123/rotate-token")
+        self.assertEqual(r.status_code, 401)
+
+    def test_rotate_token_not_found_or_no_permission(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[])
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post("/api/devices/device-123/rotate-token")
+        self.assertEqual(r.status_code, 404)
+
+    def test_rotate_token_success(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[{"device_id": "device-123"}])
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post("/api/devices/device-123/rotate-token")
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["device_id"], "device-123")
+        self.assertTrue(len(data["token"]) > 20)
+        mock_db.execute.assert_called_once()
+
 class TestDevicesPage(unittest.TestCase):
     """Tests for devices page rendering."""
 

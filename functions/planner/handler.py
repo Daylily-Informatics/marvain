@@ -8,8 +8,10 @@ import uuid
 from typing import Any
 
 import boto3
+from agent_hub.auto_approve_policy import evaluate_auto_approve
 from agent_hub.audit import append_audit_entry
 from agent_hub.broadcast import broadcast_event
+from agent_hub.contracts import validate_tool_payload
 from agent_hub.config import load_config
 from agent_hub.openai_http import call_embeddings, call_responses, extract_output_text
 from agent_hub.policy import is_agent_disabled, is_privacy_mode
@@ -24,6 +26,7 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 _cfg = load_config()
 _db = RdsData(RdsDataEnv(resource_arn=_cfg.db_resource_arn, secret_arn=_cfg.db_secret_arn, database=_cfg.db_name))
 _sqs = boto3.client("sqs")
+_AUTO_APPROVE_POLICY_MODE = str(os.getenv("AUTO_APPROVE_POLICY_MODE", "enforce")).strip().lower()
 
 # Idempotency: track processed event IDs in memory (per Lambda invocation)
 # For true cross-invocation idempotency, we use a database check
@@ -174,6 +177,29 @@ def _insert_memory(
         },
     )
     return memory_id
+
+
+def _record_policy_decision(*, action_id: str, policy_id: str | None, decision: str, reason: str) -> None:
+    try:
+        _db.execute(
+            """
+            INSERT INTO action_policy_decisions(action_id, policy_id, decision, reason)
+            VALUES(
+              :action_id::uuid,
+              CASE WHEN :policy_id IS NULL OR :policy_id = '' THEN NULL ELSE :policy_id::uuid END,
+              :decision,
+              :reason
+            )
+            """,
+            {
+                "action_id": action_id,
+                "policy_id": policy_id,
+                "decision": decision,
+                "reason": reason[:500],
+            },
+        )
+    except Exception as exc:
+        logger.warning("Failed to record policy decision for %s: %s", action_id, exc)
 
 
 def handler(event: dict, context: Any) -> dict[str, Any]:
@@ -327,11 +353,43 @@ Rules:
 
         created_action_ids: list[str] = []
         for a in actions:
-            # Already sanitized
+            # Validate payload against tool contract.
+            try:
+                normalized_payload = validate_tool_payload(str(a["kind"]), a["payload"])
+            except Exception as exc:
+                logger.warning("Skipping planner action with invalid payload kind=%s err=%s", a.get("kind"), exc)
+                continue
+
             action_id = str(uuid.uuid4())
+            policy = evaluate_auto_approve(
+                _db,
+                agent_id=agent_id,
+                action_kind=str(a["kind"]),
+                action_required_scopes=[str(s) for s in (a.get("required_scopes") or [])],
+            )
+
+            approval_source = None
+            approval_policy_id = None
+            status = "proposed"
+            decision_reason = "no_match"
+            decision_kind = "no_match"
+            if policy.matched and _AUTO_APPROVE_POLICY_MODE == "enforce":
+                status = "approved"
+                approval_source = "policy"
+                approval_policy_id = policy.policy_id
+                decision_reason = policy.reason
+                decision_kind = "policy_auto_approved"
+            elif bool(a.get("auto_approve")):
+                status = "approved"
+                approval_source = "planner_hint"
+                decision_reason = "planner_auto_approve_hint"
+                decision_kind = "planner_auto_approved"
+
             _db.execute(
                 """
-                INSERT INTO actions(action_id, agent_id, space_id, kind, payload, required_scopes, status)
+                INSERT INTO actions(
+                  action_id, agent_id, space_id, kind, payload, required_scopes, status, approval_source, approval_policy_id
+                )
                 VALUES(
                   :action_id::uuid,
                   :agent_id::uuid,
@@ -339,7 +397,9 @@ Rules:
                   :kind,
                   :payload::jsonb,
                   :required_scopes::jsonb,
-                  :status
+                  :status,
+                  :approval_source,
+                  CASE WHEN :approval_policy_id IS NULL OR :approval_policy_id = '' THEN NULL ELSE :approval_policy_id::uuid END
                 )
                 """,
                 {
@@ -347,14 +407,22 @@ Rules:
                     "agent_id": agent_id,
                     "space_id": ev["space_id"],
                     "kind": a["kind"],
-                    "payload": json.dumps(a["payload"]),
+                    "payload": json.dumps(normalized_payload),
                     "required_scopes": json.dumps(a["required_scopes"]),
-                    "status": "approved" if a["auto_approve"] else "proposed",
+                    "status": status,
+                    "approval_source": approval_source,
+                    "approval_policy_id": approval_policy_id,
                 },
             )
             created_action_ids.append(action_id)
+            _record_policy_decision(
+                action_id=action_id,
+                policy_id=approval_policy_id if approval_policy_id else policy.policy_id,
+                decision=decision_kind,
+                reason=decision_reason,
+            )
 
-            if a["auto_approve"] and _cfg.action_queue_url:
+            if status == "approved" and _cfg.action_queue_url:
                 _sqs.send_message(
                     QueueUrl=_cfg.action_queue_url,
                     MessageBody=json.dumps({"action_id": action_id, "agent_id": agent_id}),
@@ -369,7 +437,7 @@ Rules:
                     payload={
                         "action_id": action_id,
                         "kind": a["kind"],
-                        "status": "approved" if a["auto_approve"] else "proposed",
+                        "status": status,
                     },
                 )
             except Exception as e:

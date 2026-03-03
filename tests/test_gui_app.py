@@ -1000,12 +1000,16 @@ class TestActionsGui(unittest.TestCase):
         cls._orig_list_agents_for_user = cls.mod.list_agents_for_user
         cls._orig_list_spaces_for_user = cls.mod.list_spaces_for_user
         cls._orig_get_db = cls.mod._get_db
+        cls._orig_get_sqs = cls.mod._get_sqs
+        cls._orig_cfg = cls.mod._cfg
 
     def setUp(self) -> None:
         self.mod._gui_get_user = self._orig_gui_get_user
         self.mod.list_agents_for_user = self._orig_list_agents_for_user
         self.mod.list_spaces_for_user = self._orig_list_spaces_for_user
         self.mod._get_db = self._orig_get_db
+        self.mod._get_sqs = self._orig_get_sqs
+        self.mod._cfg = self._orig_cfg
         self.client = self.__class__._TestClient(self.mod.app, raise_server_exceptions=False)
 
     def test_actions_redirects_to_login_when_unauthenticated(self) -> None:
@@ -1059,12 +1063,20 @@ class TestActionsGui(unittest.TestCase):
         mock_db.execute = mock.Mock()
         self.mod._get_db = mock.Mock(return_value=mock_db)
 
+        mock_sqs = mock.Mock()
+        self.mod._get_sqs = mock.Mock(return_value=mock_sqs)
+        self.mod._cfg = mock.Mock(action_queue_url="https://sqs.us-east-1.amazonaws.com/123/ActionQueue")
+
         r = self.client.post("/api/actions/action-1/approve")
 
         self.assertEqual(r.status_code, 200)
         data = r.json()
         self.assertEqual(data["message"], "Action approved")
         self.assertEqual(data["status"], "approved")
+        # Verify action was queued to SQS
+        mock_sqs.send_message.assert_called_once()
+        call_kwargs = mock_sqs.send_message.call_args
+        self.assertIn("action-1", call_kwargs.kwargs.get("MessageBody", call_kwargs[1].get("MessageBody", "")))
 
     def test_reject_action_requires_authentication(self) -> None:
         self.mod._gui_get_user = mock.Mock(return_value=None)
@@ -1108,6 +1120,105 @@ class TestActionsGui(unittest.TestCase):
         self.assertIn("Actions Guide", r.text)
         self.assertIn("send_message", r.text)
         self.assertIn("device_command", r.text)
+
+    def test_approve_action_queues_to_sqs(self) -> None:
+        """Verify approved actions are queued to SQS for Tool Runner execution."""
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[{"action_id": "act-42", "agent_id": "agent-7", "status": "proposed"}])
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        mock_sqs = mock.Mock()
+        self.mod._get_sqs = mock.Mock(return_value=mock_sqs)
+        self.mod._cfg = mock.Mock(action_queue_url="https://sqs.example.com/ActionQueue")
+
+        r = self.client.post("/api/actions/act-42/approve")
+
+        self.assertEqual(r.status_code, 200)
+        mock_sqs.send_message.assert_called_once()
+        body = mock_sqs.send_message.call_args.kwargs.get(
+            "MessageBody", mock_sqs.send_message.call_args[1].get("MessageBody", "")
+        )
+        import json as _json
+
+        parsed = _json.loads(body)
+        self.assertEqual(parsed["action_id"], "act-42")
+        self.assertEqual(parsed["agent_id"], "agent-7")
+
+    def test_approve_action_skips_sqs_when_no_queue_url(self) -> None:
+        """When action_queue_url is not set, approval should succeed without SQS."""
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[{"action_id": "act-1", "agent_id": "agent-1", "status": "proposed"}])
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        mock_sqs = mock.Mock()
+        self.mod._get_sqs = mock.Mock(return_value=mock_sqs)
+        self.mod._cfg = mock.Mock(action_queue_url=None)
+
+        r = self.client.post("/api/actions/act-1/approve")
+
+        self.assertEqual(r.status_code, 200)
+        mock_sqs.send_message.assert_not_called()
+
+    def test_diagnostics_requires_authentication(self) -> None:
+        """Diagnostics endpoint should reject unauthenticated requests."""
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.get("/api/actions/diagnostics")
+
+        self.assertEqual(r.status_code, 401)
+
+    def test_diagnostics_returns_queue_health(self) -> None:
+        """Diagnostics endpoint should return queue health and action timeline."""
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[])
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+        self.mod.list_agents_for_user = mock.Mock(return_value=[])
+
+        mock_sqs = mock.Mock()
+        mock_sqs.get_queue_attributes = mock.Mock(
+            return_value={
+                "Attributes": {
+                    "ApproximateNumberOfMessages": "3",
+                    "ApproximateNumberOfMessagesNotVisible": "1",
+                    "ApproximateNumberOfMessagesDelayed": "0",
+                }
+            }
+        )
+        self.mod._get_sqs = mock.Mock(return_value=mock_sqs)
+        self.mod._cfg = mock.Mock(
+            action_queue_url="https://sqs.example.com/ActionQueue",
+            cognito_region="us-east-1",
+        )
+
+        # Patch boto3.client to avoid real CloudWatch calls
+        with mock.patch.object(self.mod, "_read_marvain_config", return_value={}):
+            import boto3
+
+            with mock.patch.object(boto3, "client") as mock_boto_client:
+                mock_logs = mock.Mock()
+                mock_logs.filter_log_events = mock.Mock(return_value={"events": []})
+                mock_boto_client.return_value = mock_logs
+
+                r = self.client.get("/api/actions/diagnostics")
+
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertIn("queue_health", data)
+        self.assertEqual(data["queue_health"]["messages_available"], 3)
+        self.assertEqual(data["queue_health"]["messages_in_flight"], 1)
+        self.assertIn("action_timeline", data)
+        self.assertIn("recent_executions", data)
 
 
 class TestArtifactsGui(unittest.TestCase):

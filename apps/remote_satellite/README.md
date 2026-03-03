@@ -35,6 +35,7 @@ sudo systemctl start marvain-satellite
 ```bash
 python daemon.py \
   --hub-ws-url wss://your-hub.example.com/ws \
+  --hub-rest-url https://your-hub.example.com \
   --device-token YOUR_DEVICE_TOKEN \
   --heartbeat-interval 20
 ```
@@ -43,6 +44,7 @@ python daemon.py \
 
 ```bash
 export MARVAIN_HUB_WS_URL="wss://your-hub.example.com/ws"
+export MARVAIN_HUB_REST_URL="https://your-hub.example.com"
 export MARVAIN_DEVICE_TOKEN="YOUR_DEVICE_TOKEN"
 export MARVAIN_HEARTBEAT_INTERVAL=20
 python daemon.py
@@ -54,6 +56,7 @@ Create `config.yaml`:
 
 ```yaml
 hub_ws_url: wss://your-hub.example.com/ws
+hub_rest_url: https://your-hub.example.com
 device_token: YOUR_DEVICE_TOKEN
 heartbeat_interval: 20
 ```
@@ -125,4 +128,3 @@ python daemon.py --debug --hub-ws-url ... --device-token ...
 ## License
 
 MIT License - See main repository LICENSE file.
-

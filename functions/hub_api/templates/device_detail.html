@@ -112,7 +112,7 @@
       <label>Connection Command</label>
       <div class="input-group">
         <textarea class="form-control" readonly id="connect-command" rows="2"
-                  style="font-family: monospace; font-size: 0.85rem; resize: none;">python apps/remote_satellite/daemon.py --hub-ws-url {{ ws_url or 'wss://YOUR_WS_URL' }} --device-token YOUR_DEVICE_TOKEN</textarea>
+                  style="font-family: monospace; font-size: 0.85rem; resize: none;">python apps/remote_satellite/daemon.py --hub-ws-url {{ ws_url or 'wss://YOUR_WS_URL' }} --hub-rest-url {{ rest_url or 'https://YOUR_REST_URL' }} --device-token YOUR_DEVICE_TOKEN</textarea>
         <button type="button" class="btn btn-outline" onclick="copyText(document.getElementById('connect-command').value, 'Command')">
           <i class="fas fa-copy"></i> Copy
         </button>
@@ -139,6 +139,7 @@ source marvain_activate</code></pre>
         <h4 style="margin-bottom: var(--spacing-sm);">3. Run the Satellite Daemon</h4>
         <pre style="background: var(--color-gray-900); padding: var(--spacing-sm); border-radius: var(--radius-sm); font-size: 0.85rem; overflow-x: auto; margin-bottom: var(--spacing-md);"><code>python apps/remote_satellite/daemon.py \
   --hub-ws-url {{ ws_url or 'wss://YOUR_WS_URL' }} \
+  --hub-rest-url {{ rest_url or 'https://YOUR_REST_URL' }} \
   --device-token YOUR_DEVICE_TOKEN</code></pre>
 
         <h4 style="margin-bottom: var(--spacing-sm);">4. Verify</h4>
@@ -509,4 +510,3 @@ document.addEventListener('DOMContentLoaded', awRefreshStatus);
 }
 </style>
 {% endblock %}
-
