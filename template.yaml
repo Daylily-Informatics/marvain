@@ -211,8 +211,7 @@ Resources:
         Rules:
           - Id: ExpireRecognitionArtifacts
             Status: Enabled
-            Filter:
-              Prefix: recognition/
+            Prefix: recognition/
             ExpirationInDays: 1
             NoncurrentVersionExpirationInDays: 1
             AbortIncompleteMultipartUpload:
