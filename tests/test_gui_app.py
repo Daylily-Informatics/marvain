@@ -1545,6 +1545,22 @@ class TestWebSocketContext(unittest.TestCase):
         # Should contain WebSocket initialization
         self.assertIn("wsConnect", r.text)
         self.assertIn("wss://test-ws.example.com", r.text)
+        # Access token must not be rendered into HTML.
+        self.assertNotIn("test-token", r.text)
+
+    def test_ws_auth_token_api_returns_cookie_token(self):
+        """WS auth token endpoint should return token from secure cookie."""
+        self.mod._gui_get_user = mock.Mock(return_value=mock.Mock(user_id="user-1", email="test@example.com"))
+        r = self.client.get("/api/ws-auth-token", cookies={"marvain_access_token": "test-token"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), {"access_token": "test-token"})
+        self.assertEqual(r.headers.get("cache-control"), "no-store")
+
+    def test_ws_auth_token_api_requires_auth(self):
+        """WS auth token endpoint should require GUI authentication."""
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+        r = self.client.get("/api/ws-auth-token", cookies={"marvain_access_token": "test-token"})
+        self.assertEqual(r.status_code, 401)
 
     def test_ws_indicator_present_in_authenticated_pages(self):
         """WebSocket indicator should be present in header for authenticated users."""
