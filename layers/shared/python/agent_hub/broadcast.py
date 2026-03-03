@@ -1,7 +1,8 @@
 """Broadcast module for real-time WebSocket event streaming.
 
 This module sends events to WebSocket-connected clients via API Gateway
-Management API. Subscriptions are stored in DynamoDB (WsConnectionsTable).
+Management API. Topic subscriptions are stored in DynamoDB (WsSubscriptionsTable);
+authenticated connection records are stored in DynamoDB (WsConnectionsTable).
 """
 
 from __future__ import annotations

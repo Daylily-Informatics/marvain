@@ -12,6 +12,7 @@ os.environ.setdefault("DB_RESOURCE_ARN", "arn:aws:rds:us-east-1:123:cluster:test
 os.environ.setdefault("DB_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:123:secret:test")
 os.environ.setdefault("DB_NAME", "testdb")
 os.environ.setdefault("WS_TABLE", "test-ws-connections")
+os.environ.setdefault("WS_SUBSCRIPTIONS_TABLE", "test-ws-subscriptions")
 os.environ.setdefault("ACTION_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/action-queue")
 
 import sys
@@ -430,10 +431,11 @@ class TestRejectAction:
 class TestSubscribePresence:
     """Tests for the subscribe_presence action."""
 
+    @patch("handler._upsert_subscription_index")
     @patch("handler._dynamo")
     @patch("handler._get_db")
     @patch("handler._mgmt_api")
-    def test_subscribe_presence_stores_subscription(self, mock_mgmt, mock_db, mock_dynamo):
+    def test_subscribe_presence_stores_subscription(self, mock_mgmt, mock_db, mock_dynamo, mock_upsert_index):
         """User should be able to subscribe to presence updates."""
         from handler import handler
 
@@ -470,17 +472,17 @@ class TestSubscribePresence:
             assert sent_data["ok"] is True
             assert "presence:agent-xyz:space-1" in sent_data["subscription"]
 
-            # Verify DynamoDB was updated
-            mock_table.update_item.assert_called_once()
+            mock_upsert_index.assert_called_once_with("conn-123", "presence:agent-xyz:space-1", None)
 
 
 class TestSubscribeEvents:
     """Tests for the subscribe_events action."""
 
+    @patch("handler._upsert_subscription_index")
     @patch("handler._dynamo")
     @patch("handler._get_db")
     @patch("handler._mgmt_api")
-    def test_subscribe_events_stores_subscription(self, mock_mgmt, mock_db, mock_dynamo):
+    def test_subscribe_events_stores_subscription(self, mock_mgmt, mock_db, mock_dynamo, mock_upsert_index):
         """User should be able to subscribe to event stream."""
         from handler import handler
 
@@ -518,8 +520,7 @@ class TestSubscribeEvents:
             assert sent_data["subscription"] == "events:agent-xyz"
             assert sent_data["agent_id"] == "agent-xyz"
 
-            # Verify DynamoDB was updated
-            mock_table.update_item.assert_called_once()
+            mock_upsert_index.assert_called_once_with("conn-123", "events:agent-xyz", None)
 
     @patch("handler._dynamo")
     @patch("handler._get_db")
