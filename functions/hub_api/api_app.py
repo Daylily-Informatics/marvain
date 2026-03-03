@@ -409,6 +409,15 @@ def health() -> dict[str, Any]:
     return {"ok": True, "stage": _cfg.stage}
 
 
+@api_app.get("/v1/tools")
+def list_tools(device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
+    """Return all registered tools with name, description, and required scopes."""
+    from agent_hub.tools.registry import get_registry
+
+    registry = get_registry()
+    return {"tools": [t.to_dict() for t in registry.list_tools()]}
+
+
 @api_app.get("/v1/me", response_model=MeOut)
 def me(user: AuthenticatedUser = Depends(get_user)) -> MeOut:
     return MeOut(user_id=user.user_id, email=user.email)

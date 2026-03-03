@@ -205,11 +205,9 @@
           <label for="action-kind">Action Kind <span class="required">*</span></label>
           <select id="action-kind" name="kind" required>
             <option value="">Select action type...</option>
-            <option value="send_message">send_message</option>
-            <option value="create_memory">create_memory</option>
-            <option value="http_request">http_request</option>
-            <option value="device_command">device_command</option>
-            <option value="shell_command">shell_command</option>
+            {% for k in action_kinds %}
+            <option value="{{ k }}">{{ k }}</option>
+            {% endfor %}
           </select>
         </div>
         <div class="form-group">
