@@ -67,6 +67,9 @@ from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+# Avoid leaking AWS response payloads (can include secrets) in local logs.
+for _name in ("botocore", "urllib3", "httpcore", "httpx"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 
 
 # -----------------------------
@@ -584,7 +587,7 @@ def gui_home(request: Request) -> Response:
             """
             SELECT COUNT(*) as cnt FROM actions a
             INNER JOIN agent_memberships m ON a.agent_id = m.agent_id
-            WHERE m.user_id = :user_id AND m.revoked_at IS NULL AND a.status = 'proposed'
+            WHERE m.user_id = :user_id::uuid AND m.revoked_at IS NULL AND a.status = 'proposed'
         """,
             {"user_id": str(user.user_id)},
         )

@@ -182,19 +182,52 @@ async def validate_id_token(cfg: HubConfig, id_token: str) -> dict[str, Any]:
     if not cfg.cognito_user_pool_id or not cfg.cognito_issuer or not cfg.cognito_user_pool_client_id:
         raise CognitoAuthError("Cognito is not fully configured")
 
-    try:
-        from daylily_cognito.jwks import verify_token_with_jwks
+    expected_client_id = str(cfg.cognito_user_pool_client_id or "").strip()
 
-        claims = await asyncio.to_thread(
-            verify_token_with_jwks,
+    def _extract_audiences(claim_value: Any) -> list[str]:
+        if isinstance(claim_value, str):
+            v = claim_value.strip()
+            return [v] if v else []
+        if isinstance(claim_value, list):
+            out: list[str] = []
+            for item in claim_value:
+                if item is None:
+                    continue
+                s = str(item).strip()
+                if s:
+                    out.append(s)
+            return out
+        return []
+
+    try:
+        from jose import jwt
+
+        unverified_header = jwt.get_unverified_header(id_token)
+        kid = str(unverified_header.get("kid") or "").strip()
+        if not kid:
+            raise CognitoAuthError("Token validation failed: missing key id")
+
+        cache = _get_daylily_jwks_cache(cfg)
+        key = await asyncio.to_thread(cache.get_key, kid)
+
+        claims = jwt.decode(
             id_token,
-            str(cfg.cognito_region),
-            str(cfg.cognito_user_pool_id),
-            _get_daylily_jwks_cache(cfg),
+            key=key,
+            algorithms=["RS256"],
+            issuer=str(cfg.cognito_issuer),
+            options={
+                "verify_signature": True,
+                "verify_exp": True,
+                "verify_iss": True,
+                "verify_aud": False,
+                "verify_at_hash": False,
+            },
         )
-        audience = str(claims.get("aud") or claims.get("client_id") or "").strip()
-        if audience != str(cfg.cognito_user_pool_client_id):
-            raise CognitoAuthError("Token validation failed: invalid audience")
+        audiences = _extract_audiences(claims.get("aud")) + _extract_audiences(claims.get("client_id"))
+        if expected_client_id not in audiences:
+            raise CognitoAuthError(
+                f"Token validation failed: invalid audience (expected={expected_client_id}, got={audiences})"
+            )
 
         return claims
 
