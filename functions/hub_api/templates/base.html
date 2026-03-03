@@ -17,6 +17,9 @@
   <!-- Font Awesome -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
   
+  <!-- HTMX -->
+  <script src="https://unpkg.com/htmx.org@2.0.4" integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+" crossorigin="anonymous"></script>
+
   <!-- Marvain Styles -->
   <link rel="stylesheet" href="{{ url_for('static', path='css/marvain.css') }}">
   
@@ -110,7 +113,7 @@
     <div class="container">
       <span>Marvain Hub</span>
       {% if stage %}
-        <span class="badge badge-info" style="margin-left: 8px;">{{ stage }}</span>
+        <span class="badge badge-info ml-sm">{{ stage }}</span>
       {% endif %}
     </div>
   </footer>
