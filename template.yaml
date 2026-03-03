@@ -19,6 +19,10 @@ Parameters:
     Type: String
     Default: gpt-4.1-mini
 
+  MaxSpacesPerAgent:
+    Type: String
+    Default: "5"
+
   LiveKitUrl:
     Type: String
     Description: LiveKit server URL (e.g. wss://your.livekit.host or https://...). Leave empty to disable LiveKit token minting.
@@ -319,6 +323,7 @@ Resources:
           AUDIT_BUCKET: !Ref AuditBucket
           ARTIFACT_BUCKET: !Ref ArtifactBucket
           ADMIN_SECRET_ARN: !Ref AdminApiKeySecret
+          OPENAI_SECRET_ARN: !Ref OpenAISecret
           LIVEKIT_URL: !Ref LiveKitUrl
           LIVEKIT_SECRET_ARN: !Ref LiveKitSecret
           # Cognito settings
@@ -335,6 +340,7 @@ Resources:
           WS_API_ENDPOINT: !Sub https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
           AUTO_APPROVE_POLICY_MODE: "enforce"
           MARVAIN_METRICS_NAMESPACE: "Marvain"
+          MAX_SPACES_PER_AGENT: !Ref MaxSpacesPerAgent
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:

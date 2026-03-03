@@ -117,7 +117,7 @@ def hub_ingest_transcript(
         if resp.ok:
             logger.debug(f"Ingested transcript ({role}): {text[:50]}...")
         else:
-            logger.warning(f"Failed to ingest transcript: {resp.status_code}")
+            logger.warning("Failed to ingest transcript: status=%s body=%s", resp.status_code, resp.text[:300])
     except Exception as e:
         # Don't crash the realtime loop
         logger.warning(f"Failed to ingest transcript: {e}")
@@ -157,7 +157,7 @@ def hub_create_memory(
         if resp.ok:
             logger.debug(f"Created memory ({tier}): {content[:50]}...")
         else:
-            logger.warning(f"Failed to create memory: {resp.status_code}")
+            logger.warning("Failed to create memory: status=%s body=%s", resp.status_code, resp.text[:300])
     except Exception as e:
         logger.warning(f"Failed to create memory: {e}")
 
@@ -178,7 +178,7 @@ def _fetch_space_events(space_id: str, limit: int = 50) -> list[dict]:
         )
         if resp.ok:
             return resp.json().get("events", [])
-        logger.warning(f"Failed to fetch space events: {resp.status_code}")
+        logger.warning("Failed to fetch space events: status=%s body=%s", resp.status_code, resp.text[:300])
     except Exception as e:
         logger.warning(f"Failed to fetch space events: {e}")
     return []
@@ -205,7 +205,7 @@ def _fetch_recall_memories(agent_id: str, space_id: str | None, query: str, k: i
         )
         if resp.ok:
             return resp.json().get("memories", [])
-        logger.warning(f"Failed to fetch memories: {resp.status_code}")
+        logger.warning("Failed to fetch memories: status=%s body=%s", resp.status_code, resp.text[:300])
     except Exception as e:
         logger.warning(f"Failed to fetch memories: {e}")
     return []

@@ -253,7 +253,9 @@ scp laptop:~/.config/marvain/marvain-config.yaml \
     ~/.config/marvain/marvain-config.yaml
 
 # 3) Register this device (from the GUI on your laptop, or CLI)
-marvain hub register-device --name "pi-kitchen" --agent-id <agent-id>
+marvain devices register --agent-id <agent-id> --name "pi-kitchen" \
+  --scope events:read --scope events:write --scope presence:write \
+  --scope memories:read --scope memories:write
 
 # 4) Start the agent worker in headless mode
 marvain agent start
@@ -282,6 +284,24 @@ WantedBy=multi-user.target
 ```sh
 sudo systemctl enable --now marvain-agent.service
 ```
+
+### Remote Satellite + Camera Commands
+
+If you want a remote machine (Pi/NUC/laptop) to execute device actions (including webcam capture), run the satellite daemon on that machine with a device token from **Devices**.
+
+```sh
+cd apps/remote_satellite
+python daemon.py \
+  --hub-ws-url "$(marvain config show | jq -r '.env_config.resources.HubWebSocketUrl')" \
+  --hub-rest-url "$(marvain config show | jq -r '.env_config.resources.HubRestApiBase')" \
+  --device-token "<device-token>" \
+  --heartbeat-interval 20
+```
+
+Then create actions in `/actions` (or via API):
+- `device_command` + payload `{"device_id":"<device-id>","command":"list_cameras","data":{}}`
+- `device_command` + payload `{"device_id":"<device-id>","command":"capture_photo","data":{"device":0}}`
+- `shell_command` + payload `{"device_id":"<device-id>","command":"ls -lah","timeout":30}`
 
 ## Agent Worker Lifecycle Commands
 
@@ -330,6 +350,14 @@ sudo systemctl enable --now marvain-agent.service
      --query SecretString --output text
    ```
 3. **SQS queue empty/stuck**: Check the TranscriptQueue in AWS Console
+4. **Worker device token points at the wrong agent/space**: this causes `Failed to create memory: 404` in agent logs.
+   - Verify config bootstrap IDs:
+     ```sh
+     marvain config show | jq '.env_config.bootstrap'
+     ```
+   - Ensure `bootstrap.agent_id` matches the agent you are chatting with.
+   - Ensure `bootstrap.space_id` is a real space under that same agent.
+5. **Device missing `memories:write` scope**: memory writes from worker/device calls are rejected.
 
 ### Agent not joining the room
 

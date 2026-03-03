@@ -320,6 +320,31 @@ def _space_agent_id(*, space_id: str) -> str | None:
     return str(v) if v else None
 
 
+def _device_is_admin(device: AuthenticatedDevice) -> bool:
+    kind = str((device.capabilities or {}).get("kind") or "").strip().lower()
+    # Local agent workers are trusted orchestrators and must access any space
+    # selected in LiveKit sessions, even when their bootstrap token is anchored
+    # to a different agent.
+    return kind in {"admin", "worker"}
+
+
+def _resolve_space_agent_for_device(
+    *,
+    device: AuthenticatedDevice,
+    space_id: str,
+    not_found_detail: str = "Space not found",
+    mismatch_status: int = 403,
+    mismatch_detail: str = "Forbidden",
+) -> str:
+    """Resolve a space's owning agent and enforce device access rules."""
+    agent_id = _space_agent_id(space_id=space_id)
+    if not agent_id:
+        raise HTTPException(status_code=404, detail=not_found_detail)
+    if agent_id != str(device.agent_id) and not _device_is_admin(device):
+        raise HTTPException(status_code=mismatch_status, detail=mismatch_detail)
+    return agent_id
+
+
 async def _mint_livekit_token_for_user(*, user: AuthenticatedUser, space_id: str) -> LiveKitTokenOut:
     """Mint a LiveKit token with a unique room name per session.
 
@@ -937,7 +962,14 @@ def admin_set_privacy(space_id: str, body: SetPrivacyIn) -> dict[str, Any]:
 @api_app.post("/v1/events", response_model=IngestEventOut)
 def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_device)) -> IngestEventOut:
     require_scope(device, "events:write")
-    if is_agent_disabled(_get_db(), device.agent_id):
+    space_agent_id = _resolve_space_agent_for_device(
+        device=device,
+        space_id=body.space_id,
+        not_found_detail="Space not found",
+        mismatch_status=404,
+        mismatch_detail="Space not found",
+    )
+    if is_agent_disabled(_get_db(), space_agent_id):
         raise HTTPException(status_code=403, detail="Agent is disabled")
     if is_privacy_mode(_get_db(), body.space_id):
         return IngestEventOut(event_id="privacy_mode", queued=False)
@@ -948,7 +980,7 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
                    CASE WHEN :person_id = '' THEN NULL ELSE :person_id::uuid END, :type, :payload::jsonb)""",
         {
             "event_id": event_id,
-            "agent_id": device.agent_id,
+            "agent_id": space_agent_id,
             "space_id": body.space_id,
             "device_id": device.device_id,
             "person_id": body.person_id or "",
@@ -963,7 +995,7 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
             MessageBody=json.dumps(
                 {
                     "event_id": event_id,
-                    "agent_id": device.agent_id,
+                    "agent_id": space_agent_id,
                     "space_id": body.space_id,
                     "device_id": device.device_id,
                 }
@@ -974,7 +1006,7 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
         append_audit_entry(
             _get_db(),
             bucket=_cfg.audit_bucket,
-            agent_id=device.agent_id,
+            agent_id=space_agent_id,
             entry_type="event_ingested",
             entry={"event_id": event_id, "type": body.type, "space_id": body.space_id, "queued": queued},
         )
@@ -983,7 +1015,7 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
     try:
         broadcast_event(
             event_type="events.new",
-            agent_id=device.agent_id,
+            agent_id=space_agent_id,
             space_id=body.space_id,
             payload={
                 "event": {
@@ -1046,14 +1078,15 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
     """Create a memory for the device's agent (requires memories:write scope)."""
     require_scope(device, "memories:write")
 
+    target_agent_id = str(device.agent_id)
     if body.space_id:
-        # Verify the space belongs to this agent
-        rows = _get_db().query(
-            "SELECT 1 FROM spaces WHERE space_id = :space_id::uuid AND agent_id = :agent_id::uuid",
-            {"space_id": body.space_id, "agent_id": device.agent_id},
+        target_agent_id = _resolve_space_agent_for_device(
+            device=device,
+            space_id=body.space_id,
+            not_found_detail="Space not found",
+            mismatch_status=404,
+            mismatch_detail="Space not found for this agent",
         )
-        if not rows:
-            raise HTTPException(status_code=404, detail="Space not found for this agent")
 
     memory_id = str(uuid.uuid4())
     provenance = {
@@ -1061,10 +1094,22 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
         "device_id": device.device_id,
         **body.metadata,
     }
+    embedding: str | None = None
+    if _cfg.openai_secret_arn:
+        try:
+            embed_model = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+            vec = call_embeddings(
+                openai_secret_arn=_cfg.openai_secret_arn,
+                model=embed_model,
+                text=body.content,
+            )
+            embedding = "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
+        except Exception as e:
+            logger.warning("Failed to generate memory embedding (continuing without embedding): %s", e)
 
     _get_db().execute(
         """
-        INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants, provenance)
+        INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants, provenance, embedding)
         VALUES (
             :memory_id::uuid,
             :agent_id::uuid,
@@ -1072,17 +1117,19 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
             :tier,
             :content,
             :participants::jsonb,
-            :provenance::jsonb
+            :provenance::jsonb,
+            CASE WHEN :embedding IS NULL THEN NULL ELSE CAST(:embedding AS vector) END
         )
         """,
         {
             "memory_id": memory_id,
-            "agent_id": device.agent_id,
+            "agent_id": target_agent_id,
             "space_id": body.space_id,
             "tier": body.tier,
             "content": body.content,
             "participants": json.dumps(body.participants),
             "provenance": json.dumps(provenance),
+            "embedding": embedding,
         },
     )
 
@@ -1090,7 +1137,7 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
         append_audit_entry(
             _get_db(),
             bucket=_cfg.audit_bucket,
-            agent_id=device.agent_id,
+            agent_id=target_agent_id,
             entry_type="memory_created",
             entry={"memory_id": memory_id, "tier": body.tier, "source": "device"},
         )
@@ -1129,6 +1176,55 @@ class RecallOut(BaseModel):
     memories: list[RecallMemoryOut]
 
 
+def _recall_recent_fallback(
+    *,
+    agent_id: str,
+    space_id: str | None,
+    tiers: list[str] | None,
+    limit: int,
+) -> RecallOut:
+    tier_clause = ""
+    params: dict[str, Any] = {
+        "agent_id": agent_id,
+        "limit": limit,
+    }
+    if tiers:
+        tier_clause = "AND tier = ANY(:tiers)"
+        params["tiers"] = tiers
+    space_clause = ""
+    if space_id:
+        space_clause = "AND (space_id = :space_id::uuid OR space_id IS NULL)"
+        params["space_id"] = space_id
+
+    rows = _get_db().query(
+        f"""
+        SELECT memory_id::TEXT as memory_id,
+               tier,
+               content,
+               created_at::TEXT as created_at
+        FROM memories
+        WHERE agent_id = :agent_id::uuid
+          {tier_clause}
+          {space_clause}
+        ORDER BY created_at DESC
+        LIMIT :limit
+        """,
+        params,
+    )
+    return RecallOut(
+        memories=[
+            RecallMemoryOut(
+                memory_id=r["memory_id"],
+                tier=r["tier"],
+                content=r["content"],
+                created_at=r["created_at"],
+                distance=1.0,
+            )
+            for r in rows
+        ]
+    )
+
+
 @api_app.post("/v1/recall", response_model=RecallOut)
 def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_device)) -> RecallOut:
     """Semantic memory search using pgvector embeddings.
@@ -1138,13 +1234,29 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
     """
     require_scope(device, "memories:read")
 
-    # Verify device belongs to requested agent
-    if device.agent_id != body.agent_id:
-        raise HTTPException(status_code=403, detail="Cannot recall memories for a different agent")
+    target_agent_id = str(body.agent_id)
+    if device.agent_id != target_agent_id:
+        if not _device_is_admin(device):
+            raise HTTPException(status_code=403, detail="Cannot recall memories for a different agent")
+        if not body.space_id:
+            raise HTTPException(status_code=403, detail="Admin device recall across agents requires space_id")
+        space_agent_id = _resolve_space_agent_for_device(
+            device=device,
+            space_id=body.space_id,
+            not_found_detail="Space not found",
+            mismatch_status=403,
+            mismatch_detail="Cannot recall memories for a different agent",
+        )
+        target_agent_id = space_agent_id
 
-    # Check OpenAI configuration
+    # If embeddings are unavailable, fall back to recent memories so context hydration still works.
     if not _cfg.openai_secret_arn:
-        raise HTTPException(status_code=503, detail="Embedding service not configured")
+        return _recall_recent_fallback(
+            agent_id=target_agent_id,
+            space_id=body.space_id,
+            tiers=body.tiers,
+            limit=body.k,
+        )
 
     # Generate query embedding
     try:
@@ -1156,13 +1268,18 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
         )
         emb_str = "[" + ",".join(f"{x:.6f}" for x in query_embedding) + "]"
     except Exception as e:
-        logger.error("Failed to generate query embedding: %s", e)
-        raise HTTPException(status_code=503, detail="Failed to generate query embedding")
+        logger.warning("Failed to generate query embedding (falling back to recency): %s", e)
+        return _recall_recent_fallback(
+            agent_id=target_agent_id,
+            space_id=body.space_id,
+            tiers=body.tiers,
+            limit=body.k,
+        )
 
     # Build query with optional tier and space filters
     tier_clause = ""
     params: dict[str, Any] = {
-        "agent_id": body.agent_id,
+        "agent_id": target_agent_id,
         "q": emb_str,
         "limit": body.k,
     }
@@ -1206,6 +1323,14 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
         for r in rows
     ]
 
+    if not memories:
+        return _recall_recent_fallback(
+            agent_id=target_agent_id,
+            space_id=body.space_id,
+            tiers=body.tiers,
+            limit=body.k,
+        )
+
     return RecallOut(memories=memories)
 
 
@@ -1243,16 +1368,13 @@ def get_space_events(
     """
     require_scope(device, "events:read")
 
-    # Verify space belongs to device's agent
-    rows = _get_db().query(
-        "SELECT agent_id::TEXT as agent_id FROM spaces WHERE space_id = :space_id::uuid",
-        {"space_id": space_id},
+    _resolve_space_agent_for_device(
+        device=device,
+        space_id=space_id,
+        not_found_detail="Space not found",
+        mismatch_status=403,
+        mismatch_detail="Space belongs to a different agent",
     )
-    if not rows:
-        raise HTTPException(status_code=404, detail="Space not found")
-
-    if rows[0]["agent_id"] != device.agent_id:
-        raise HTTPException(status_code=403, detail="Space belongs to a different agent")
 
     # Check privacy mode
     if is_privacy_mode(_get_db(), space_id):
@@ -1792,17 +1914,30 @@ def delegate_write_memory(
         _check_agent_space(agent, body.space_id)
 
     memory_id = str(uuid.uuid4())
+    embedding: str | None = None
+    if _cfg.openai_secret_arn:
+        try:
+            embed_model = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+            vec = call_embeddings(
+                openai_secret_arn=_cfg.openai_secret_arn,
+                model=embed_model,
+                text=body.content,
+            )
+            embedding = "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
+        except Exception as e:
+            logger.warning("Failed to generate delegate memory embedding (continuing): %s", e)
 
     _get_db().execute(
         """
-        INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants)
+        INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants, embedding)
         VALUES (
             :memory_id::uuid,
             :agent_id::uuid,
             CASE WHEN :space_id IS NULL THEN NULL ELSE :space_id::uuid END,
             :tier,
             :content,
-            :participants::jsonb
+            :participants::jsonb,
+            CASE WHEN :embedding IS NULL THEN NULL ELSE CAST(:embedding AS vector) END
         )
         """,
         {
@@ -1812,6 +1947,7 @@ def delegate_write_memory(
             "tier": body.tier,
             "content": body.content,
             "participants": json.dumps(body.participants),
+            "embedding": embedding,
         },
     )
 

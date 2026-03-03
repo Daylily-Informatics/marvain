@@ -193,6 +193,292 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         self.assertEqual(body["device_token"], "devtok")
         self.assertTrue(fake_db.execute.called)
 
+    def test_ingest_event_rejects_space_not_owned_by_device_agent(self) -> None:
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(device_id="d1", agent_id="a1", scopes=["events:write"])
+        )
+        self.mod.is_agent_disabled = mock.Mock(return_value=False)
+        self.mod.broadcast_event = mock.Mock()
+        self.mod._cfg = dataclasses.replace(self.mod._cfg, transcript_queue_url=None, audit_bucket=None)
+
+        fake_db = mock.Mock()
+        # _space_agent_id lookup returns a different agent_id than the device token.
+        fake_db.query = mock.Mock(return_value=[{"agent_id": "a2"}])
+        self.mod._db = fake_db
+
+        r = self.client.post(
+            "/v1/events",
+            headers={"Authorization": "Bearer devtok"},
+            json={"space_id": "space-1", "type": "transcript_chunk", "payload": {"text": "hello"}},
+        )
+        self.assertEqual(r.status_code, 404)
+        self.assertIn("Space not found", r.text)
+        fake_db.execute.assert_not_called()
+        self.mod.broadcast_event.assert_not_called()
+
+    def test_ingest_event_accepts_space_owned_by_device_agent(self) -> None:
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(device_id="d1", agent_id="a1", scopes=["events:write"])
+        )
+        self.mod.is_agent_disabled = mock.Mock(return_value=False)
+        self.mod.is_privacy_mode = mock.Mock(return_value=False)
+        self.mod.broadcast_event = mock.Mock()
+        self.mod._cfg = dataclasses.replace(self.mod._cfg, transcript_queue_url=None, audit_bucket=None)
+
+        fake_db = mock.Mock()
+        fake_db.query = mock.Mock(return_value=[{"agent_id": "a1"}])
+        fake_db.execute = mock.Mock()
+        self.mod._db = fake_db
+
+        r = self.client.post(
+            "/v1/events",
+            headers={"Authorization": "Bearer devtok"},
+            json={"space_id": "space-1", "type": "transcript_chunk", "payload": {"text": "hello"}},
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json().get("event_id"))
+        fake_db.execute.assert_called_once()
+        self.mod.broadcast_event.assert_called_once()
+
+    def test_ingest_event_allows_admin_device_across_agents(self) -> None:
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(
+                device_id="d1",
+                agent_id="a1",
+                scopes=["events:write"],
+                capabilities={"kind": "admin"},
+            )
+        )
+        self.mod.is_agent_disabled = mock.Mock(return_value=False)
+        self.mod.is_privacy_mode = mock.Mock(return_value=False)
+        self.mod.broadcast_event = mock.Mock()
+        self.mod._cfg = dataclasses.replace(self.mod._cfg, transcript_queue_url=None, audit_bucket=None)
+
+        fake_db = mock.Mock()
+        fake_db.query = mock.Mock(return_value=[{"agent_id": "a2"}])
+        fake_db.execute = mock.Mock()
+        self.mod._db = fake_db
+
+        r = self.client.post(
+            "/v1/events",
+            headers={"Authorization": "Bearer devtok"},
+            json={"space_id": "space-1", "type": "transcript_chunk", "payload": {"text": "hello"}},
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json().get("event_id"))
+        fake_db.execute.assert_called_once()
+        _, params = fake_db.execute.call_args[0]
+        self.assertEqual(params["agent_id"], "a2")
+        self.mod.broadcast_event.assert_called_once()
+        self.assertEqual(self.mod.broadcast_event.call_args.kwargs["agent_id"], "a2")
+
+    def test_ingest_event_allows_worker_device_across_agents(self) -> None:
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(
+                device_id="d1",
+                agent_id="a1",
+                scopes=["events:write"],
+                capabilities={"kind": "worker"},
+            )
+        )
+        self.mod.is_agent_disabled = mock.Mock(return_value=False)
+        self.mod.is_privacy_mode = mock.Mock(return_value=False)
+        self.mod.broadcast_event = mock.Mock()
+        self.mod._cfg = dataclasses.replace(self.mod._cfg, transcript_queue_url=None, audit_bucket=None)
+
+        fake_db = mock.Mock()
+        fake_db.query = mock.Mock(return_value=[{"agent_id": "a2"}])
+        fake_db.execute = mock.Mock()
+        self.mod._db = fake_db
+
+        r = self.client.post(
+            "/v1/events",
+            headers={"Authorization": "Bearer devtok"},
+            json={"space_id": "space-1", "type": "transcript_chunk", "payload": {"text": "hello"}},
+        )
+        self.assertEqual(r.status_code, 200)
+        fake_db.execute.assert_called_once()
+        _, params = fake_db.execute.call_args[0]
+        self.assertEqual(params["agent_id"], "a2")
+
+    def test_recall_memories_falls_back_to_recent_when_embeddings_unconfigured(self) -> None:
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(device_id="d1", agent_id="a1", scopes=["memories:read"])
+        )
+        self.mod._cfg = dataclasses.replace(self.mod._cfg, openai_secret_arn=None)
+
+        fake_db = mock.Mock()
+        fake_db.query = mock.Mock(
+            return_value=[
+                {
+                    "memory_id": "m1",
+                    "tier": "episodic",
+                    "content": "User said they are tired",
+                    "created_at": "2026-03-03T10:00:00Z",
+                }
+            ]
+        )
+        self.mod._db = fake_db
+
+        r = self.client.post(
+            "/v1/recall",
+            headers={"Authorization": "Bearer devtok"},
+            json={"agent_id": "a1", "query": "tired", "k": 3},
+        )
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(len(body["memories"]), 1)
+        self.assertEqual(body["memories"][0]["memory_id"], "m1")
+        self.assertEqual(body["memories"][0]["distance"], 1.0)
+        fake_db.query.assert_called_once()
+
+    def test_recall_memories_allows_admin_device_across_agents_with_space(self) -> None:
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(
+                device_id="d1",
+                agent_id="a1",
+                scopes=["memories:read"],
+                capabilities={"kind": "admin"},
+            )
+        )
+        self.mod._cfg = dataclasses.replace(self.mod._cfg, openai_secret_arn=None)
+
+        fake_db = mock.Mock()
+        fake_db.query = mock.Mock(
+            side_effect=[
+                [{"agent_id": "a2"}],
+                [
+                    {
+                        "memory_id": "m1",
+                        "tier": "episodic",
+                        "content": "cross-agent memory",
+                        "created_at": "2026-03-03T10:00:00Z",
+                    }
+                ],
+            ]
+        )
+        self.mod._db = fake_db
+
+        r = self.client.post(
+            "/v1/recall",
+            headers={"Authorization": "Bearer devtok"},
+            json={"agent_id": "a2", "space_id": "space-1", "query": "memory", "k": 3},
+        )
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(len(body["memories"]), 1)
+        self.assertEqual(body["memories"][0]["memory_id"], "m1")
+
+    def test_recall_memories_admin_cross_agent_requires_space_id(self) -> None:
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(
+                device_id="d1",
+                agent_id="a1",
+                scopes=["memories:read"],
+                capabilities={"kind": "admin"},
+            )
+        )
+        self.mod._cfg = dataclasses.replace(self.mod._cfg, openai_secret_arn=None)
+
+        r = self.client.post(
+            "/v1/recall",
+            headers={"Authorization": "Bearer devtok"},
+            json={"agent_id": "a2", "query": "memory", "k": 3},
+        )
+        self.assertEqual(r.status_code, 403)
+        self.assertIn("requires space_id", r.text)
+
+    def test_create_memory_generates_embedding_when_openai_configured(self) -> None:
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(device_id="d1", agent_id="a1", scopes=["memories:write"])
+        )
+        self.mod._cfg = dataclasses.replace(
+            self.mod._cfg,
+            openai_secret_arn="arn:aws:secretsmanager:us-east-1:123:secret:oai",
+            audit_bucket=None,
+        )
+        self.mod.call_embeddings = mock.Mock(return_value=[0.125, -0.5, 0.25])
+
+        fake_db = mock.Mock()
+        fake_db.execute = mock.Mock()
+        self.mod._db = fake_db
+
+        r = self.client.post(
+            "/v1/memories",
+            headers={"Authorization": "Bearer devtok"},
+            json={"tier": "episodic", "content": "hello memory"},
+        )
+        self.assertEqual(r.status_code, 200)
+        self.mod.call_embeddings.assert_called_once()
+        self.assertTrue(fake_db.execute.called)
+        _, params = fake_db.execute.call_args[0]
+        self.assertIn("embedding", params)
+        self.assertIsInstance(params["embedding"], str)
+        self.assertTrue(params["embedding"].startswith("[0.125000,-0.500000,0.250000"))
+
+    def test_create_memory_allows_admin_device_across_agents(self) -> None:
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(
+                device_id="d1",
+                agent_id="a1",
+                scopes=["memories:write"],
+                capabilities={"kind": "admin"},
+            )
+        )
+        self.mod._cfg = dataclasses.replace(self.mod._cfg, openai_secret_arn=None, audit_bucket=None)
+
+        fake_db = mock.Mock()
+        fake_db.query = mock.Mock(return_value=[{"agent_id": "a2"}])
+        fake_db.execute = mock.Mock()
+        self.mod._db = fake_db
+
+        r = self.client.post(
+            "/v1/memories",
+            headers={"Authorization": "Bearer devtok"},
+            json={"space_id": "space-1", "tier": "episodic", "content": "hello memory"},
+        )
+        self.assertEqual(r.status_code, 200)
+        fake_db.execute.assert_called_once()
+        _, params = fake_db.execute.call_args[0]
+        self.assertEqual(params["agent_id"], "a2")
+
+    def test_get_space_events_allows_admin_device_across_agents(self) -> None:
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(
+                device_id="d1",
+                agent_id="a1",
+                scopes=["events:read"],
+                capabilities={"kind": "admin"},
+            )
+        )
+        self.mod.is_privacy_mode = mock.Mock(return_value=False)
+
+        fake_db = mock.Mock()
+        fake_db.query = mock.Mock(
+            side_effect=[
+                [{"agent_id": "a2"}],
+                [
+                    {
+                        "event_id": "e1",
+                        "type": "transcript_chunk",
+                        "person_id": None,
+                        "payload_json": '{"text":"hi"}',
+                        "created_at": "2026-03-03T10:00:00Z",
+                    }
+                ],
+            ]
+        )
+        self.mod._db = fake_db
+
+        r = self.client.get(
+            "/v1/spaces/space-1/events?limit=10",
+            headers={"Authorization": "Bearer devtok"},
+        )
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(len(body["events"]), 1)
+        self.assertEqual(body["events"][0]["event_id"], "e1")
+
     def test_create_agent_success(self) -> None:
         """Test POST /v1/agents creates an agent and makes user the owner."""
         fake_db = mock.Mock()
