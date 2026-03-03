@@ -990,6 +990,70 @@ def load_config_file(path: str) -> dict[str, Any]:
 @click.option("--publish-audio/--no-publish-audio", default=True, help="Publish microphone audio to LiveKit")
 @click.option("--publish-video/--no-publish-video", default=False, help="Publish camera video to LiveKit (requires OpenCV)")
 @click.option("--subscribe-audio/--no-subscribe-audio", default=True, help="Play remote audio tracks (agent speech)")
+@click.option("--vad-enabled/--no-vad-enabled", default=True, help="Enable local VAD (used for triggered mode + sound events)")
+@click.option("--motion-enabled/--no-motion-enabled", default=False, help="Enable local motion detection (requires OpenCV)")
+@click.option(
+    "--idle-disconnect-seconds",
+    envvar="MARVAIN_IDLE_DISCONNECT_SECONDS",
+    default=60,
+    type=int,
+    help="Triggered-mode idle timeout before disconnecting from LiveKit (default: 60)",
+)
+@click.option(
+    "--audio-activity-threshold",
+    envvar="MARVAIN_AUDIO_ACTIVITY_THRESHOLD",
+    default=0.02,
+    type=float,
+    help="Normalized int16 RMS threshold for activity (0..1, default: 0.02)",
+)
+@click.option(
+    "--motion-activity-threshold",
+    envvar="MARVAIN_MOTION_ACTIVITY_THRESHOLD",
+    default=0.03,
+    type=float,
+    help="Motion mean-delta threshold for activity (0..1, default: 0.03)",
+)
+@click.option(
+    "--voice-sample-seconds",
+    envvar="MARVAIN_VOICE_SAMPLE_SECONDS",
+    default=3,
+    type=int,
+    help="Seconds to capture for each voice.sample artifact (default: 3)",
+)
+@click.option(
+    "--voice-sample-interval-seconds",
+    envvar="MARVAIN_VOICE_SAMPLE_INTERVAL_SECONDS",
+    default=30,
+    type=int,
+    help="Minimum seconds between voice.sample uploads (default: 30)",
+)
+@click.option(
+    "--face-snapshot-interval-seconds",
+    envvar="MARVAIN_FACE_SNAPSHOT_INTERVAL_SECONDS",
+    default=30,
+    type=int,
+    help="Minimum seconds between face.snapshot uploads (default: 30)",
+)
+@click.option(
+    "--video-fps",
+    envvar="MARVAIN_VIDEO_FPS",
+    default=10,
+    type=int,
+    help="Camera capture/publish fps when video is enabled (default: 10)",
+)
+@click.option(
+    "--camera-usb-index",
+    envvar="MARVAIN_CAMERA_USB_INDEX",
+    default=None,
+    type=int,
+    help="USB camera index for OpenCV VideoCapture (default: 0 if video enabled)",
+)
+@click.option(
+    "--camera-rtsp-url",
+    envvar="MARVAIN_CAMERA_RTSP_URL",
+    default=None,
+    help="RTSP camera URL for OpenCV VideoCapture",
+)
 @click.option(
     "--audio-in-device",
     envvar="MARVAIN_AUDIO_IN_DEVICE",
@@ -1015,6 +1079,17 @@ def main(
     publish_audio: bool,
     publish_video: bool,
     subscribe_audio: bool,
+    vad_enabled: bool,
+    motion_enabled: bool,
+    idle_disconnect_seconds: int,
+    audio_activity_threshold: float,
+    motion_activity_threshold: float,
+    voice_sample_seconds: int,
+    voice_sample_interval_seconds: int,
+    face_snapshot_interval_seconds: int,
+    video_fps: int,
+    camera_usb_index: int | None,
+    camera_rtsp_url: str | None,
     audio_in_device: str | None,
     audio_out_device: str | None,
     debug: bool,
@@ -1040,6 +1115,17 @@ def main(
         publish_audio = bool(file_config.get("publish_audio", publish_audio))
         publish_video = bool(file_config.get("publish_video", publish_video))
         subscribe_audio = bool(file_config.get("subscribe_audio", subscribe_audio))
+        vad_enabled = bool(file_config.get("vad_enabled", vad_enabled))
+        motion_enabled = bool(file_config.get("motion_enabled", motion_enabled))
+        idle_disconnect_seconds = int(file_config.get("idle_disconnect_seconds", idle_disconnect_seconds))
+        audio_activity_threshold = float(file_config.get("audio_activity_threshold", audio_activity_threshold))
+        motion_activity_threshold = float(file_config.get("motion_activity_threshold", motion_activity_threshold))
+        voice_sample_seconds = int(file_config.get("voice_sample_seconds", voice_sample_seconds))
+        voice_sample_interval_seconds = int(file_config.get("voice_sample_interval_seconds", voice_sample_interval_seconds))
+        face_snapshot_interval_seconds = int(file_config.get("face_snapshot_interval_seconds", face_snapshot_interval_seconds))
+        video_fps = int(file_config.get("video_fps", video_fps))
+        camera_usb_index = file_config.get("camera_usb_index", camera_usb_index)
+        camera_rtsp_url = file_config.get("camera_rtsp_url", camera_rtsp_url)
         audio_in_device = file_config.get("audio_in_device", audio_in_device)
         audio_out_device = file_config.get("audio_out_device", audio_out_device)
 
@@ -1074,6 +1160,17 @@ def main(
                 publish_audio=publish_audio,
                 publish_video=publish_video,
                 subscribe_audio=subscribe_audio,
+                vad_enabled=vad_enabled,
+                motion_enabled=motion_enabled,
+                idle_disconnect_seconds=idle_disconnect_seconds,
+                audio_activity_rms_threshold=audio_activity_threshold,
+                motion_activity_threshold=motion_activity_threshold,
+                voice_sample_seconds=voice_sample_seconds,
+                voice_sample_interval_seconds=voice_sample_interval_seconds,
+                face_snapshot_interval_seconds=face_snapshot_interval_seconds,
+                video_fps=video_fps,
+                camera_usb_index=camera_usb_index,
+                camera_rtsp_url=camera_rtsp_url,
                 audio_in_device=audio_in_device,
                 audio_out_device=audio_out_device,
             )
