@@ -188,7 +188,7 @@ def _fetch_space_events(space_id: str, limit: int = 50) -> list[dict]:
     return []
 
 
-def _fetch_recall_memories(agent_id: str, space_id: str | None, query: str, k: int = 8) -> list[dict]:
+def _fetch_recall_memories(agent_id: str, space_id: str | None, query: str, k: int = 8, person_id: str | None = None) -> list[dict]:
     """Fetch relevant memories via semantic search.
 
     Returns list of memories or empty list on failure.
@@ -202,6 +202,7 @@ def _fetch_recall_memories(agent_id: str, space_id: str | None, query: str, k: i
             json={
                 "agent_id": agent_id,
                 "space_id": space_id,
+                "person_id": person_id,
                 "query": query,
                 "k": k,
             },
@@ -213,6 +214,24 @@ def _fetch_recall_memories(agent_id: str, space_id: str | None, query: str, k: i
     except Exception as e:
         logger.warning(f"Failed to fetch memories: {e}")
     return []
+
+
+def _infer_active_person_id(events: list[dict]) -> str | None:
+    """Best-effort: infer the current human speaker from recent transcript events.
+
+    The Hub can map LiveKit participant identities to people via person_accounts,
+    populating events.person_id for transcript_chunk events. We use the newest
+    user transcript with a person_id as a hint for person-scoped recall.
+    """
+    for ev in events or []:
+        if ev.get("type") != "transcript_chunk":
+            continue
+        payload = ev.get("payload") or {}
+        if isinstance(payload, dict) and payload.get("role") == "user":
+            pid = str(ev.get("person_id") or "").strip()
+            if pid:
+                return pid
+    return None
 
 
 def _build_context_block(events: list[dict], memories: list[dict]) -> str:
@@ -304,12 +323,33 @@ async def forge_agent(ctx: agents.JobContext):
     if agent_id and HUB_API_BASE and HUB_DEVICE_TOKEN:
         logger.info(f"Fetching context for space {space_id}...")
         events = _fetch_space_events(space_id, limit=50)
-        memories = _fetch_recall_memories(
+        active_person_id = _infer_active_person_id(events)
+
+        # Person-scoped recall (when we can infer who is speaking) plus general space recall.
+        memories_person = []
+        if active_person_id:
+            memories_person = _fetch_recall_memories(
+                agent_id=agent_id,
+                space_id=space_id,
+                person_id=active_person_id,
+                query="facts preferences relationship history about the current speaker",
+                k=6,
+            )
+        memories_space = _fetch_recall_memories(
             agent_id=agent_id,
             space_id=space_id,
             query="session context recent conversation important facts",
             k=8,
         )
+        seen = set()
+        memories = []
+        for m in (memories_person + memories_space):
+            mid = str(m.get("memory_id") or "")
+            if mid and mid in seen:
+                continue
+            if mid:
+                seen.add(mid)
+            memories.append(m)
         context_block = _build_context_block(events, memories)
         if context_block:
             logger.info(f"Context hydration: {len(events)} events, {len(memories)} memories")
