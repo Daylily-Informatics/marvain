@@ -104,6 +104,9 @@
         <button class="btn btn-sm btn-outline" onclick="openEnrollModal('{{ person.person_id }}', '{{ person.agent_id }}', '{{ person.display_name }}')">
           <i class="fas fa-id-badge"></i> Enroll
         </button>
+        <button class="btn btn-sm btn-outline" onclick="openEnrollOnDeviceModal('{{ person.person_id }}', '{{ person.agent_id }}', '{{ person.display_name }}')">
+          <i class="fas fa-laptop"></i> On Device
+        </button>
         <button class="btn btn-sm btn-outline" onclick="openLinkModal('{{ person.person_id }}', '{{ person.display_name }}')">
           <i class="fas fa-link"></i> Link
         </button>
@@ -335,10 +338,73 @@
     </div>
   </div>
 </div>
+
+<!-- Enrollment On Device Modal -->
+<div id="enroll-device-modal" class="modal" style="display: none;">
+  <div class="modal-backdrop" onclick="closeEnrollOnDeviceModal()"></div>
+  <div class="modal-content">
+    <div class="modal-header">
+      <h3>Enroll On Device for <span id="enroll-device-person-name"></span></h3>
+      <button type="button" class="btn btn-sm" onclick="closeEnrollOnDeviceModal()">
+        <i class="fas fa-times"></i>
+      </button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="enroll-device-person-id">
+      <input type="hidden" id="enroll-device-agent-id">
+
+      <p class="text-muted mb-md">This will create a <code>device_command</code> action targeting a connected device to capture an enrollment sample.</p>
+
+      <div class="form-group">
+        <label for="enroll-device-device-id">Device *</label>
+        <select id="enroll-device-device-id" onchange="onEnrollDeviceSelectionChanged()"></select>
+        <div class="text-muted text-sm" id="enroll-device-device-hint"></div>
+      </div>
+
+      <div class="form-group">
+        <label for="enroll-device-modality">Type *</label>
+        <select id="enroll-device-modality" onchange="onEnrollDeviceModalityChange()">
+          <option value="voice">Voice</option>
+          <option value="face">Face</option>
+        </select>
+      </div>
+
+      <div class="form-group" id="enroll-device-voice-seconds-group">
+        <label for="enroll-device-voice-seconds">Voice Clip Seconds</label>
+        <input type="number" id="enroll-device-voice-seconds" value="3" min="1" max="15">
+      </div>
+
+      <div class="form-group">
+        <label for="enroll-device-space-id">Space</label>
+        <select id="enroll-device-space-id"></select>
+        <div class="text-muted text-sm">Used as the event context (defaults to the device's location space when known).</div>
+      </div>
+
+      <div class="form-group">
+        <label class="consent-toggle">
+          <input type="checkbox" id="enroll-device-auto-approve" checked>
+          <span class="consent-toggle-label"><i class="fas fa-check-circle"></i> Auto-approve action</span>
+        </label>
+      </div>
+
+      <div class="text-muted text-sm" id="enroll-device-status"></div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-outline" onclick="closeEnrollOnDeviceModal()">Cancel</button>
+      <button type="button" class="btn btn-primary" onclick="startEnrollOnDevice()">
+        <i class="fas fa-play"></i> Start
+      </button>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
 <script>
+// Spaces/devices data (for enroll-on-device workflow)
+const agentSpaces = {{ spaces_by_agent|tojson|safe if spaces_by_agent else '{}' }};
+const agentDevices = {{ devices_by_agent|tojson|safe if devices_by_agent else '{}' }};
+
 function filterPeople() {
   const agent = document.getElementById('agent-filter').value;
   const consent = document.getElementById('consent-filter').value;
@@ -690,5 +756,186 @@ async function uploadFaceEnrollment() {
     Marvain.showToast('error', 'Error', error.message);
   }
 }
+
+// -----------------------------------------------------------------------------
+// Enroll On Device (Action-based)
+// -----------------------------------------------------------------------------
+
+let _enrollDevicePendingActionId = null;
+
+function openEnrollOnDeviceModal(personId, agentId, displayName) {
+  document.getElementById('enroll-device-person-id').value = personId;
+  document.getElementById('enroll-device-agent-id').value = agentId;
+  document.getElementById('enroll-device-person-name').textContent = displayName;
+  document.getElementById('enroll-device-status').textContent = '';
+
+  // Populate device list for this agent.
+  const deviceSelect = document.getElementById('enroll-device-device-id');
+  deviceSelect.innerHTML = '';
+  const devices = (agentDevices && agentDevices[agentId]) ? agentDevices[agentId] : [];
+  if (!devices.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '(No devices for this agent)';
+    deviceSelect.appendChild(opt);
+  } else {
+    devices.forEach(d => {
+      const opt = document.createElement('option');
+      opt.value = d.device_id;
+      const label = (d.location_label ? (d.location_label + ' - ') : '') + (d.name || d.device_id);
+      opt.textContent = d.is_online ? label : (label + ' (offline)');
+      if (!d.is_online) opt.disabled = true;
+      deviceSelect.appendChild(opt);
+    });
+  }
+
+  // Populate spaces for this agent.
+  const spaceSelect = document.getElementById('enroll-device-space-id');
+  spaceSelect.innerHTML = '';
+  const spaces = (agentSpaces && agentSpaces[agentId]) ? agentSpaces[agentId] : [];
+  spaces.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s.space_id;
+    opt.textContent = (s.livekit_room_mode === 'stable' ? '[Location] ' : '') + s.name;
+    spaceSelect.appendChild(opt);
+  });
+
+  // Pick defaults (device -> space).
+  onEnrollDeviceSelectionChanged();
+  onEnrollDeviceModalityChange();
+
+  Marvain.showModal('enroll-device-modal');
+}
+
+function closeEnrollOnDeviceModal() {
+  document.getElementById('enroll-device-status').textContent = '';
+  Marvain.hideModal('enroll-device-modal');
+}
+
+function onEnrollDeviceSelectionChanged() {
+  const agentId = document.getElementById('enroll-device-agent-id').value;
+  const deviceId = document.getElementById('enroll-device-device-id').value;
+  const hint = document.getElementById('enroll-device-device-hint');
+  const spaceSelect = document.getElementById('enroll-device-space-id');
+
+  const devices = (agentDevices && agentDevices[agentId]) ? agentDevices[agentId] : [];
+  const d = devices.find(x => x.device_id === deviceId);
+  const locSpaceId = (d && d.location_space_id) ? d.location_space_id : '';
+
+  if (hint) {
+    hint.textContent = locSpaceId ? ('Default location space: ' + locSpaceId) : '';
+  }
+
+  // Default space: device location space if present; else first stable space; else first space.
+  if (spaceSelect && spaceSelect.options && spaceSelect.options.length) {
+    if (locSpaceId) {
+      for (let i = 0; i < spaceSelect.options.length; i++) {
+        if (spaceSelect.options[i].value === locSpaceId) {
+          spaceSelect.value = locSpaceId;
+          return;
+        }
+      }
+    }
+    const spaces = (agentSpaces && agentSpaces[agentId]) ? agentSpaces[agentId] : [];
+    const stable = spaces.find(s => s.livekit_room_mode === 'stable');
+    if (stable) {
+      spaceSelect.value = stable.space_id;
+      return;
+    }
+    spaceSelect.selectedIndex = 0;
+  }
+}
+
+function onEnrollDeviceModalityChange() {
+  const modality = document.getElementById('enroll-device-modality').value;
+  const voiceGroup = document.getElementById('enroll-device-voice-seconds-group');
+  if (voiceGroup) voiceGroup.style.display = (modality === 'voice') ? '' : 'none';
+}
+
+async function startEnrollOnDevice() {
+  const personId = document.getElementById('enroll-device-person-id').value;
+  const agentId = document.getElementById('enroll-device-agent-id').value;
+  const deviceId = document.getElementById('enroll-device-device-id').value;
+  const modality = document.getElementById('enroll-device-modality').value;
+  const spaceId = document.getElementById('enroll-device-space-id').value;
+  const autoApprove = document.getElementById('enroll-device-auto-approve').checked;
+
+  if (!deviceId) {
+    Marvain.showToast('error', 'Error', 'Select an online device');
+    return;
+  }
+  if (!spaceId) {
+    Marvain.showToast('error', 'Error', 'Select a space');
+    return;
+  }
+
+  const requiredScopes = ['artifacts:write', 'events:write'];
+
+  let runKind = 'record_audio_clip';
+  let runPayload = { space_id: spaceId, enroll_person_id: personId };
+  if (modality === 'voice') {
+    const seconds = parseInt(document.getElementById('enroll-device-voice-seconds').value || '3', 10);
+    runPayload.seconds = Math.max(1, Math.min(seconds || 3, 15));
+    runPayload.sample_rate = 16000;
+    runPayload.channels = 1;
+  } else {
+    runKind = 'capture_face_snapshot';
+    runPayload.resolution = '1280x720';
+    runPayload.device = 0;
+  }
+
+  const actionBody = {
+    agent_id: agentId,
+    space_id: spaceId,
+    kind: 'device_command',
+    payload: {
+      device_id: deviceId,
+      command: 'run_action',
+      data: { kind: runKind, payload: runPayload },
+    },
+    required_scopes: requiredScopes,
+    auto_approve: !!autoApprove,
+  };
+
+  try {
+    Marvain.showLoading('Starting enrollment on device...');
+    const resp = await fetch('/api/actions', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(actionBody),
+    });
+    if (!resp.ok) {
+      const err = await resp.json();
+      throw new Error(err.detail || 'Failed to create device action');
+    }
+    const out = await resp.json();
+    Marvain.hideLoading();
+
+    _enrollDevicePendingActionId = out.action_id;
+    document.getElementById('enroll-device-status').textContent = `Action created: ${out.action_id} (watching for completion)`;
+    Marvain.showToast('success', 'Started', 'Enrollment capture action created');
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+}
+
+// Watch for action completion to update the modal.
+Marvain.wsOn('actions.updated', function(msg) {
+  try {
+    if (!msg || !msg.payload || !_enrollDevicePendingActionId) return;
+    const p = msg.payload || {};
+    if (p.action_id !== _enrollDevicePendingActionId) return;
+    if (p.status === 'executed') {
+      document.getElementById('enroll-device-status').textContent = 'Capture complete (recognition will process shortly)';
+      Marvain.showToast('success', 'Done', 'Device enrollment sample captured');
+      _enrollDevicePendingActionId = null;
+    } else if (p.status === 'failed' || p.status === 'device_timeout') {
+      document.getElementById('enroll-device-status').textContent = 'Capture failed: ' + (p.error || 'unknown');
+      Marvain.showToast('error', 'Failed', p.error || 'Device enrollment failed');
+      _enrollDevicePendingActionId = null;
+    }
+  } catch (e) {}
+});
 </script>
 {% endblock %}

@@ -39,3 +39,11 @@ dependencies:
       - daylily-cognito==0.1.24  # Shared Cognito auth helpers
       - python-jose[cryptography]  # JWT validation for Cognito auth
       - itsdangerous  # Session signing for SessionMiddleware
+      # Recognition worker deps (optional but recommended for real embeddings)
+      - numpy
+      - soundfile
+      - resemblyzer
+      - pillow
+      - opencv-python
+      - onnxruntime
+      - insightface

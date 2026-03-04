@@ -27,6 +27,7 @@ class HubClientConfig:
     reconnect_delay: int = 5  # seconds
     max_reconnect_delay: int = 60  # seconds
     location_label: str | None = None  # Human-readable location label
+    location_space_id: str | None = None  # Optional space_id for "this device represents this space"
 
 
 class HubClient:
@@ -143,8 +144,13 @@ class HubClient:
             "Content-Type": "application/json",
         }
         payload: dict[str, Any] = {}
-        if self.config.location_label:
-            payload["metadata"] = {"location_label": self.config.location_label}
+        if self.config.location_label or self.config.location_space_id:
+            meta: dict[str, Any] = {}
+            if self.config.location_label:
+                meta["location_label"] = self.config.location_label
+            if self.config.location_space_id:
+                meta["location_space_id"] = self.config.location_space_id
+            payload["metadata"] = meta
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, headers=headers, json=payload, timeout=10) as resp:
