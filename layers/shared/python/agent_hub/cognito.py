@@ -166,6 +166,40 @@ async def exchange_code_for_tokens(cfg: HubConfig, code: str) -> dict[str, Any]:
         return response.json()
 
 
+async def refresh_tokens(cfg: HubConfig, refresh_token: str) -> dict[str, Any]:
+    """Exchange a refresh token for new tokens.
+
+    Returns a token response containing a new access_token (and sometimes id_token).
+
+    NOTE: Cognito typically does not rotate refresh tokens for this flow.
+    """
+    import httpx
+
+    if not refresh_token:
+        raise CognitoAuthError("Missing refresh token")
+    if not cfg.cognito_token_url or not cfg.cognito_user_pool_client_id:
+        raise CognitoAuthError("Cognito is not fully configured")
+
+    data = {
+        "grant_type": "refresh_token",
+        "client_id": cfg.cognito_user_pool_client_id,
+        "refresh_token": refresh_token,
+    }
+    if cfg.cognito_user_pool_client_secret:
+        data["client_secret"] = cfg.cognito_user_pool_client_secret
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            cfg.cognito_token_url,
+            data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        if response.status_code != 200:
+            logger.error(f"Token refresh failed: {response.text}")
+            raise CognitoAuthError(f"Token refresh failed: {response.status_code}")
+        return response.json()
+
+
 async def validate_id_token(cfg: HubConfig, id_token: str) -> dict[str, Any]:
     """Validate a Cognito ID token and return its claims.
 

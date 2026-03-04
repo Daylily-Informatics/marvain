@@ -66,8 +66,18 @@
         </div>
       </div>
       <div class="consent-badges">
-        {% if person.voice_consent %}
-        <span class="consent-badge consent-active" title="Voice consent until {{ person.voice_consent }}">
+        {% if person.global_consent %}
+        <span class="consent-badge consent-active" title="Global consent until {{ person.global_consent }}">
+          <i class="fas fa-globe"></i> Global
+        </span>
+        {% else %}
+        <span class="consent-badge consent-none" title="No global consent">
+          <i class="fas fa-globe"></i> Global
+        </span>
+        {% endif %}
+
+        {% if person.voice_consent or person.global_consent %}
+        <span class="consent-badge consent-active" title="Voice consent until {{ person.voice_consent or person.global_consent }}">
           <i class="fas fa-microphone"></i> Voice
         </span>
         {% else %}
@@ -75,8 +85,8 @@
           <i class="fas fa-microphone-slash"></i> Voice
         </span>
         {% endif %}
-        {% if person.face_consent %}
-        <span class="consent-badge consent-active" title="Face consent until {{ person.face_consent }}">
+        {% if person.face_consent or person.global_consent %}
+        <span class="consent-badge consent-active" title="Face consent until {{ person.face_consent or person.global_consent }}">
           <i class="fas fa-camera"></i> Face
         </span>
         {% else %}
@@ -84,8 +94,8 @@
           <i class="fas fa-camera"></i> Face
         </span>
         {% endif %}
-        {% if person.recording_consent %}
-        <span class="consent-badge consent-active" title="Recording consent until {{ person.recording_consent }}">
+        {% if person.recording_consent or person.global_consent %}
+        <span class="consent-badge consent-active" title="Recording consent until {{ person.recording_consent or person.global_consent }}">
           <i class="fas fa-record-vinyl"></i> Record
         </span>
         {% else %}
@@ -202,6 +212,18 @@
       <div class="modal-body">
         <p class="text-muted mb-md">Grant or revoke consent for different types of data collection.</p>
         <div class="consent-options">
+          <div class="consent-option">
+            <label class="consent-toggle">
+              <input type="checkbox" id="consent-global" name="global" onchange="onGlobalConsentToggled()">
+              <span class="consent-toggle-label">
+                <i class="fas fa-globe"></i> Global Consent Granted
+              </span>
+            </label>
+            <div class="consent-expiry">
+              <label for="consent-global-expiry">Expires</label>
+              <input type="date" id="consent-global-expiry" name="global_expiry">
+            </div>
+          </div>
           <div class="consent-option">
             <label class="consent-toggle">
               <input type="checkbox" id="consent-voice" name="voice">
@@ -467,17 +489,65 @@ async function submitEditPerson(event) {
   }
 }
 
-function manageConsent(personId, displayName) {
+function onGlobalConsentToggled() {
+  const globalChecked = document.getElementById('consent-global').checked;
+  const ids = [
+    'consent-voice', 'consent-face', 'consent-recording',
+    'consent-voice-expiry', 'consent-face-expiry', 'consent-recording-expiry'
+  ];
+  ids.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.disabled = globalChecked;
+    if (globalChecked) {
+      if (el.type === 'checkbox') el.checked = false;
+      if (el.type === 'date') el.value = '';
+    }
+  });
+}
+
+async function manageConsent(personId, displayName) {
   document.getElementById('consent-person-id').value = personId;
   document.getElementById('consent-person-name').textContent = displayName;
   // Reset form
+  document.getElementById('consent-global').checked = false;
   document.getElementById('consent-voice').checked = false;
   document.getElementById('consent-face').checked = false;
   document.getElementById('consent-recording').checked = false;
+  document.getElementById('consent-global-expiry').value = '';
   document.getElementById('consent-voice-expiry').value = '';
   document.getElementById('consent-face-expiry').value = '';
   document.getElementById('consent-recording-expiry').value = '';
   Marvain.showModal('consent-modal');
+
+  // Prefill from server so users can confirm consent actually saved.
+  try {
+    const resp = await fetch(`/api/people/${personId}/consent`, {
+      method: 'GET',
+      headers: {'Accept': 'application/json'}
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const consents = Array.isArray(data.consents) ? data.consents : [];
+    consents.forEach(c => {
+      const t = String(c.type || '').toLowerCase();
+      const exp = c.expires_at || '';
+      if (t === 'global') {
+        document.getElementById('consent-global').checked = true;
+        document.getElementById('consent-global-expiry').value = exp;
+      } else if (t === 'voice') {
+        document.getElementById('consent-voice').checked = true;
+        document.getElementById('consent-voice-expiry').value = exp;
+      } else if (t === 'face') {
+        document.getElementById('consent-face').checked = true;
+        document.getElementById('consent-face-expiry').value = exp;
+      } else if (t === 'recording') {
+        document.getElementById('consent-recording').checked = true;
+        document.getElementById('consent-recording-expiry').value = exp;
+      }
+    });
+    onGlobalConsentToggled();
+  } catch (e) {}
 }
 
 async function submitCreatePerson(event) {
@@ -519,14 +589,18 @@ async function submitConsent(event) {
   const personId = document.getElementById('consent-person-id').value;
 
   const consents = [];
-  if (document.getElementById('consent-voice').checked) {
-    consents.push({type: 'voice', expires_at: document.getElementById('consent-voice-expiry').value || null});
-  }
-  if (document.getElementById('consent-face').checked) {
-    consents.push({type: 'face', expires_at: document.getElementById('consent-face-expiry').value || null});
-  }
-  if (document.getElementById('consent-recording').checked) {
-    consents.push({type: 'recording', expires_at: document.getElementById('consent-recording-expiry').value || null});
+  if (document.getElementById('consent-global').checked) {
+    consents.push({type: 'global', expires_at: document.getElementById('consent-global-expiry').value || null});
+  } else {
+    if (document.getElementById('consent-voice').checked) {
+      consents.push({type: 'voice', expires_at: document.getElementById('consent-voice-expiry').value || null});
+    }
+    if (document.getElementById('consent-face').checked) {
+      consents.push({type: 'face', expires_at: document.getElementById('consent-face-expiry').value || null});
+    }
+    if (document.getElementById('consent-recording').checked) {
+      consents.push({type: 'recording', expires_at: document.getElementById('consent-recording-expiry').value || null});
+    }
   }
 
   try {

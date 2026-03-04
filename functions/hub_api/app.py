@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import secrets
+import time
 import urllib.parse
 import uuid
 from pathlib import Path
@@ -35,6 +36,7 @@ from agent_hub.cognito import (
     build_logout_url,
     exchange_code_for_tokens,
     get_user_info_from_tokens,
+    refresh_tokens,
 )
 from agent_hub.broadcast import broadcast_event
 from agent_hub.livekit_tokens import mint_livekit_join_token  # noqa: F401 — used via module attr in tests
@@ -241,9 +243,65 @@ async def startup_validate_configuration():
 # -----------------------------
 
 _GUI_ACCESS_TOKEN_COOKIE = "marvain_access_token"
+_GUI_REFRESH_TOKEN_COOKIE = "marvain_refresh_token"
 _GUI_OAUTH_STATE_COOKIE = "marvain_oauth_state"
 _GUI_OAUTH_VERIFIER_COOKIE = "marvain_oauth_verifier"
 _GUI_OAUTH_NEXT_COOKIE = "marvain_oauth_next"
+
+
+def _jwt_exp_unverified(token: str) -> int | None:
+    """Extract JWT exp without verifying signature.
+
+    Used only to decide whether to refresh tokens for WS auth.
+    """
+    try:
+        parts = str(token or "").split(".")
+        if len(parts) < 2:
+            return None
+        payload_b64 = parts[1].encode("ascii", errors="ignore")
+        payload_b64 += b"=" * ((4 - (len(payload_b64) % 4)) % 4)
+        payload_raw = base64.urlsafe_b64decode(payload_b64)
+        payload = json.loads(payload_raw.decode("utf-8", errors="replace"))
+        exp = payload.get("exp")
+        if isinstance(exp, (int, float)):
+            return int(exp)
+        if isinstance(exp, str) and exp.isdigit():
+            return int(exp)
+    except Exception:
+        return None
+    return None
+
+
+def _jwt_needs_refresh(token: str, *, now_s: int, refresh_window_s: int = 300) -> bool:
+    exp_s = _jwt_exp_unverified(token)
+    if exp_s is None:
+        return False
+    return exp_s <= (now_s + int(refresh_window_s))
+
+
+def _parse_expires_at(value: str | None):
+    """Parse a consent expiry value.
+
+    The consent modal uses <input type="date"> which submits 'YYYY-MM-DD'. Treat
+    that as inclusive (expires end-of-day UTC), not midnight, so "today" works.
+    """
+    if not value:
+        return None
+    v = str(value).strip()
+    if not v:
+        return None
+    from datetime import date, datetime, time as dt_time, timezone
+
+    try:
+        if len(v) == 10 and v[4] == "-" and v[7] == "-":
+            d = date.fromisoformat(v)
+            return datetime.combine(d, dt_time(23, 59, 59), tzinfo=timezone.utc)
+        dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
 
 
 def _get_ws_context(request: Request) -> dict[str, str | None]:
@@ -496,6 +554,7 @@ async def gui_auth_callback(
         tokens = await exchange_code_for_tokens(cfg, code)
         id_token = tokens.get("id_token")
         access_token = tokens.get("access_token")
+        refresh_token = tokens.get("refresh_token")
 
         if not id_token:
             return _gui_error_page(
@@ -549,6 +608,19 @@ async def gui_auth_callback(
         else:
             logger.warning("No access token received from Cognito!")
 
+        # Keep refresh token in a secure, HttpOnly cookie so we can refresh WS auth without forcing re-login.
+        # NOTE: This is still a bearer credential; protect it with HTTPS and HttpOnly.
+        if refresh_token:
+            resp.set_cookie(
+                key=_GUI_REFRESH_TOKEN_COOKIE,
+                value=str(refresh_token),
+                httponly=True,
+                secure=_cookie_secure(request),
+                samesite="lax",
+                max_age=30 * 24 * 3600,  # 30 days
+                path="/",
+            )
+
         return resp
 
     except CognitoAuthError as e:
@@ -589,6 +661,7 @@ def gui_logout(request: Request) -> Response:
 
     # Clear old cookies
     resp.delete_cookie(_GUI_ACCESS_TOKEN_COOKIE, path="/")
+    resp.delete_cookie(_GUI_REFRESH_TOKEN_COOKIE, path="/")
     resp.delete_cookie(_GUI_OAUTH_STATE_COOKIE, path="/")
     resp.delete_cookie(_GUI_OAUTH_VERIFIER_COOKIE, path="/")
     resp.delete_cookie(_GUI_OAUTH_NEXT_COOKIE, path="/")
@@ -603,15 +676,56 @@ def gui_logged_out(request: Request) -> HTMLResponse:
 
 
 @app.get("/api/ws-auth-token", name="api_ws_auth_token")
-def api_ws_auth_token(request: Request) -> JSONResponse:
-    """Return current user's WS auth token from secure cookie (GUI only)."""
+async def api_ws_auth_token(request: Request) -> JSONResponse:
+    """Return current user's WS auth token, refreshing if needed (GUI only)."""
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
+
     access_token = str(request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or "").strip()
-    if not access_token:
-        raise HTTPException(status_code=401, detail="Missing access token")
+    refresh_token = str(request.cookies.get(_GUI_REFRESH_TOKEN_COOKIE) or "").strip()
+
+    now_s = int(time.time())
+    needs_refresh = (not access_token) or _jwt_needs_refresh(access_token, now_s=now_s, refresh_window_s=5 * 60)
+    refreshed_access_token: str | None = None
+    refreshed_expires_in: int | None = None
+
+    if needs_refresh:
+        if not refresh_token:
+            raise HTTPException(status_code=401, detail="Missing access token")
+        try:
+            tokens = await refresh_tokens(_cfg, refresh_token)
+            refreshed_access_token = str(tokens.get("access_token") or "").strip()
+            refreshed_expires_in = int(tokens.get("expires_in") or 3600)
+            if not refreshed_access_token:
+                raise CognitoAuthError("Token refresh returned no access_token")
+            access_token = refreshed_access_token
+        except CognitoAuthError as e:
+            # Force re-login by clearing cookies.
+            resp = JSONResponse({"detail": f"Token refresh failed: {e}"}, status_code=401)
+            resp.delete_cookie(_GUI_ACCESS_TOKEN_COOKIE, path="/")
+            resp.delete_cookie(_GUI_REFRESH_TOKEN_COOKIE, path="/")
+            resp.headers["Cache-Control"] = "no-store"
+            return resp
+        except Exception:
+            logger.exception("Token refresh failed")
+            resp = JSONResponse({"detail": "Token refresh failed"}, status_code=401)
+            resp.delete_cookie(_GUI_ACCESS_TOKEN_COOKIE, path="/")
+            resp.headers["Cache-Control"] = "no-store"
+            return resp
+
     resp = JSONResponse({"access_token": access_token})
+    if refreshed_access_token:
+        # Refresh succeeded; update the cookie so future fetches work.
+        resp.set_cookie(
+            key=_GUI_ACCESS_TOKEN_COOKIE,
+            value=refreshed_access_token,
+            httponly=True,
+            secure=_cookie_secure(request),
+            samesite="lax",
+            max_age=int(refreshed_expires_in or 3600),
+            path="/",
+        )
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
@@ -2842,7 +2956,7 @@ class PersonResponse(BaseModel):
 class ConsentGrant(BaseModel):
     """A single consent grant."""
 
-    type: str = Field(..., description="Type of consent: voice, face, or recording")
+    type: str = Field(..., description="Type of consent: voice, face, recording, or global")
     expires_at: str | None = Field(None, description="Optional expiration date (ISO format)")
 
 
@@ -2929,12 +3043,7 @@ def api_update_consent(request: Request, person_id: str, body: ConsentUpdate) ->
         # Then create new consent grants
         for consent in body.consents:
             consent_id = str(uuid.uuid4())
-            expires_at = None
-            if consent.expires_at:
-                try:
-                    expires_at = datetime.fromisoformat(consent.expires_at.replace("Z", "+00:00"))
-                except Exception:
-                    expires_at = None
+            expires_at = _parse_expires_at(consent.expires_at)
 
             db.execute(
                 """
@@ -2946,7 +3055,7 @@ def api_update_consent(request: Request, person_id: str, body: ConsentUpdate) ->
                     "consent_id": consent_id,
                     "agent_id": agent_id,
                     "person_id": person_id,
-                    "consent_type": consent.type,
+                    "consent_type": str(consent.type or "").strip().lower(),
                     "expires_at": expires_at.isoformat() if expires_at else None,
                 },
             )
@@ -2956,6 +3065,65 @@ def api_update_consent(request: Request, person_id: str, body: ConsentUpdate) ->
         raise HTTPException(status_code=500, detail="Failed to update consent")
 
     return {"message": "Consent updated", "person_id": person_id}
+
+
+@app.get("/api/people/{person_id}/consent", name="api_get_consent")
+def api_get_consent(request: Request, person_id: str) -> JSONResponse:
+    """Get active consent grants for a person (GUI only)."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+
+    # Requires admin/owner on the agent owning the person.
+    rows = db.query(
+        """
+        SELECT p.person_id, p.agent_id
+        FROM people p
+        INNER JOIN agent_memberships m ON p.agent_id = m.agent_id
+        WHERE p.person_id = :person_id::uuid
+          AND m.user_id = :user_id::uuid
+          AND m.role IN ('admin', 'owner')
+          AND m.revoked_at IS NULL
+        """,
+        {"person_id": person_id, "user_id": str(user.user_id)},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Person not found or permission denied")
+
+    from datetime import datetime, timezone
+
+    consent_rows = db.query(
+        """
+        SELECT consent_type, expires_at
+        FROM consent_grants
+        WHERE person_id = :person_id::uuid
+          AND revoked_at IS NULL
+          AND (expires_at IS NULL OR expires_at > :now::timestamptz)
+        ORDER BY granted_at DESC
+        """,
+        {"person_id": person_id, "now": datetime.now(timezone.utc).isoformat()},
+    )
+
+    consents: list[dict[str, Any]] = []
+    for r in consent_rows:
+        ct = str(r.get("consent_type") or "").strip().lower()
+        exp = r.get("expires_at")
+        exp_date = None
+        if exp:
+            try:
+                if hasattr(exp, "date"):
+                    exp_date = exp.date().isoformat()
+                else:
+                    exp_date = str(exp)[:10]
+            except Exception:
+                exp_date = None
+        consents.append({"type": ct, "expires_at": exp_date})
+
+    resp = JSONResponse({"person_id": person_id, "consents": consents})
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 class PersonUpdate(BaseModel):
@@ -3331,14 +3499,17 @@ def gui_people(request: Request) -> Response:
                 {"person_id": person_id, "now": datetime.now(timezone.utc).isoformat()},
             )
 
+            global_consent = None
             voice_consent = None
             face_consent = None
             recording_consent = None
             for cr in consent_rows:
-                ct = cr.get("consent_type", "")
+                ct = str(cr.get("consent_type", "") or "").strip().lower()
                 exp = cr.get("expires_at")
                 exp_str = str(exp)[:10] if exp else "No expiry"
-                if ct == "voice":
+                if ct == "global":
+                    global_consent = exp_str
+                elif ct == "voice":
                     voice_consent = exp_str
                 elif ct == "face":
                     face_consent = exp_str
@@ -3352,10 +3523,11 @@ def gui_people(request: Request) -> Response:
                     "agent_name": row.get("agent_name", ""),
                     "display_name": row.get("display_name", ""),
                     "created_at_relative": created_at_relative,
+                    "global_consent": global_consent,
                     "voice_consent": voice_consent,
                     "face_consent": face_consent,
                     "recording_consent": recording_consent,
-                    "active_consents": bool(voice_consent or face_consent or recording_consent),
+                    "active_consents": bool(global_consent or voice_consent or face_consent or recording_consent),
                 }
             )
 

@@ -35,8 +35,8 @@ Parameters:
 
   CognitoDomainPrefix:
     Type: String
-    Description: Prefix for Cognito Hosted UI domain (must be globally unique across all AWS accounts)
-    Default: daylily-cognito
+    Description: Prefix for Cognito Hosted UI domain (must be globally unique across all AWS accounts). Leave empty to auto-generate.
+    Default: ""
 
   GuiCallbackUrls:
     Type: CommaDelimitedList
@@ -51,6 +51,7 @@ Parameters:
 Conditions:
   IsDeploymentV1: !Equals [!Ref ApiDeploymentVersion, "1"]
   IsDeploymentV2: !Equals [!Ref ApiDeploymentVersion, "2"]
+  HasCognitoDomainPrefix: !Not [!Equals [!Ref CognitoDomainPrefix, ""]]
 
 Globals:
   Function:
@@ -355,7 +356,10 @@ Resources:
           COGNITO_REGION: !Ref AWS::Region
           COGNITO_USER_POOL_ID: !Ref CognitoUserPool
           COGNITO_APP_CLIENT_ID: !Ref CognitoUserPoolClient
-          COGNITO_DOMAIN: !Sub ${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
+          COGNITO_DOMAIN: !If
+            - HasCognitoDomainPrefix
+            - !Sub ${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
+            - !Sub marvain-${StageName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com
           COGNITO_REDIRECT_URI: !Sub https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/auth/callback
           SESSION_SECRET_ARN: !Ref SessionSecret
           STACK_NAME: !Ref AWS::StackName
@@ -912,7 +916,7 @@ Resources:
           MinimumLength: 8
           RequireLowercase: true
           RequireNumbers: true
-          RequireSymbols: true
+          RequireSymbols: false
           RequireUppercase: true
       # NOTE: Do not specify Schema - it's immutable and the existing pool has the default schema
 
@@ -942,7 +946,7 @@ Resources:
   CognitoUserPoolDomain:
     Type: AWS::Cognito::UserPoolDomain
     Properties:
-      Domain: !Ref CognitoDomainPrefix
+      Domain: !If [HasCognitoDomainPrefix, !Ref CognitoDomainPrefix, !Sub "marvain-${StageName}-${AWS::AccountId}"]
       UserPoolId: !Ref CognitoUserPool
 
   # Session secret for SessionMiddleware
@@ -1077,12 +1081,20 @@ Outputs:
     Value: !Ref CognitoUserPoolClient
   CognitoDomain:
     Description: Cognito Hosted UI domain
-    Value: !Sub ${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
+    Value: !If
+      - HasCognitoDomainPrefix
+      - !Sub ${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
+      - !Sub marvain-${StageName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com
   CognitoLoginUrl:
     Description: Cognito Hosted UI login URL (uses the first GUI callback URL)
-    Value: !Sub
-      - https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com/login?client_id=${CognitoUserPoolClient}&response_type=code&scope=openid+email+profile&redirect_uri=${RedirectUri}
-      - RedirectUri: !Select [0, !Ref GuiCallbackUrls]
+    Value: !If
+      - HasCognitoDomainPrefix
+      - !Sub
+          - https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com/login?client_id=${CognitoUserPoolClient}&response_type=code&scope=openid+email+profile&redirect_uri=${RedirectUri}
+          - RedirectUri: !Select [0, !Ref GuiCallbackUrls]
+      - !Sub
+          - https://marvain-${StageName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com/login?client_id=${CognitoUserPoolClient}&response_type=code&scope=openid+email+profile&redirect_uri=${RedirectUri}
+          - RedirectUri: !Select [0, !Ref GuiCallbackUrls]
   SessionSecretArn:
     Description: Secrets Manager ARN containing session secret key
     Value: !Ref SessionSecret
