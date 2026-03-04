@@ -85,6 +85,10 @@ def build_login_url(cfg: HubConfig, state: str | None = None) -> str:
         "scope": "openid email profile aws.cognito.signin.user.admin",
         "redirect_uri": cfg.cognito_redirect_uri,
     }
+    identity_provider = str(getattr(cfg, "cognito_identity_provider", "") or "").strip()
+    if identity_provider:
+        # Force federation to a specific IdP (e.g. Google) instead of showing the Hosted UI provider chooser.
+        params["identity_provider"] = identity_provider
     if state:
         params["state"] = state
 
