@@ -35,8 +35,16 @@ Parameters:
 
   CognitoDomainPrefix:
     Type: String
-    Description: Prefix for Cognito Hosted UI domain (must be globally unique across all AWS accounts)
-    Default: daylily-cognito
+    Description: Prefix for Cognito Hosted UI domain (must be globally unique across all AWS accounts). Leave empty to auto-generate.
+    Default: ""
+
+  EnableGoogleAuth:
+    Type: String
+    Description: Enable Google as a Cognito Hosted UI identity provider (requires google-oauth secret to be populated).
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "false"
 
   GuiCallbackUrls:
     Type: CommaDelimitedList
@@ -51,6 +59,9 @@ Parameters:
 Conditions:
   IsDeploymentV1: !Equals [!Ref ApiDeploymentVersion, "1"]
   IsDeploymentV2: !Equals [!Ref ApiDeploymentVersion, "2"]
+  HasCognitoDomainPrefix: !Not [!Equals [!Ref CognitoDomainPrefix, ""]]
+  GoogleAuthEnabled: !Equals [!Ref EnableGoogleAuth, "true"]
+  GoogleAuthDisabled: !Equals [!Ref EnableGoogleAuth, "false"]
 
 Globals:
   Function:
@@ -165,6 +176,13 @@ Resources:
       Name: !Sub ${AWS::StackName}/livekit
       Description: Store your LiveKit credentials as {"api_key":"...","api_secret":"..."}
       SecretString: '{"api_key":"REPLACE_ME","api_secret":"REPLACE_ME"}'
+
+  GoogleOAuthSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${AWS::StackName}/google-oauth
+      Description: Store your Google OAuth credentials as {"client_id":"...","client_secret":"..."} for Cognito federation
+      SecretString: '{"client_id":"REPLACE_ME","client_secret":"REPLACE_ME"}'
 
   # -----------------------------
   # Aurora PostgreSQL Serverless v2 + Data API
@@ -354,9 +372,13 @@ Resources:
           # Cognito settings
           COGNITO_REGION: !Ref AWS::Region
           COGNITO_USER_POOL_ID: !Ref CognitoUserPool
-          COGNITO_APP_CLIENT_ID: !Ref CognitoUserPoolClient
-          COGNITO_DOMAIN: !Sub ${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
+          COGNITO_APP_CLIENT_ID: !If [GoogleAuthEnabled, !Ref CognitoUserPoolClientGoogle, !Ref CognitoUserPoolClientNative]
+          COGNITO_DOMAIN: !If
+            - HasCognitoDomainPrefix
+            - !Sub ${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
+            - !Sub marvain-${StageName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com
           COGNITO_REDIRECT_URI: !Sub https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/auth/callback
+          COGNITO_IDENTITY_PROVIDER: !If [GoogleAuthEnabled, "Google", ""]
           SESSION_SECRET_ARN: !Ref SessionSecret
           STACK_NAME: !Ref AWS::StackName
           WS_TABLE: !Ref WsConnectionsTable
@@ -912,12 +934,32 @@ Resources:
           MinimumLength: 8
           RequireLowercase: true
           RequireNumbers: true
-          RequireSymbols: true
+          RequireSymbols: false
           RequireUppercase: true
       # NOTE: Do not specify Schema - it's immutable and the existing pool has the default schema
 
-  CognitoUserPoolClient:
+  CognitoGoogleIdentityProvider:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    Condition: GoogleAuthEnabled
+    Properties:
+      ProviderName: Google
+      ProviderType: Google
+      UserPoolId: !Ref CognitoUserPool
+      ProviderDetails:
+        client_id: !Sub '{{resolve:secretsmanager:${GoogleOAuthSecret}:SecretString:client_id}}'
+        client_secret: !Sub '{{resolve:secretsmanager:${GoogleOAuthSecret}:SecretString:client_secret}}'
+        authorize_scopes: "openid email profile"
+      AttributeMapping:
+        email: email
+        name: name
+        username: sub
+        given_name: given_name
+        family_name: family_name
+        picture: picture
+
+  CognitoUserPoolClientNative:
     Type: AWS::Cognito::UserPoolClient
+    Condition: GoogleAuthDisabled
     Properties:
       ClientName: !Sub ${AWS::StackName}-app
       UserPoolId: !Ref CognitoUserPool
@@ -939,10 +981,37 @@ Resources:
         - ALLOW_USER_SRP_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
 
+  CognitoUserPoolClientGoogle:
+    Type: AWS::Cognito::UserPoolClient
+    Condition: GoogleAuthEnabled
+    DependsOn:
+      - CognitoGoogleIdentityProvider
+    Properties:
+      ClientName: !Sub ${AWS::StackName}-app
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+        - aws.cognito.signin.user.admin
+      CallbackURLs: !Ref GuiCallbackUrls
+      LogoutURLs: !Ref GuiLogoutUrls
+      SupportedIdentityProviders:
+        - COGNITO
+        - Google
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
   CognitoUserPoolDomain:
     Type: AWS::Cognito::UserPoolDomain
     Properties:
-      Domain: !Ref CognitoDomainPrefix
+      Domain: !If [HasCognitoDomainPrefix, !Ref CognitoDomainPrefix, !Sub "marvain-${StageName}-${AWS::AccountId}"]
       UserPoolId: !Ref CognitoUserPool
 
   # Session secret for SessionMiddleware
@@ -1074,15 +1143,37 @@ Outputs:
     Value: !Ref CognitoUserPool
   CognitoAppClientId:
     Description: Cognito App Client ID
-    Value: !Ref CognitoUserPoolClient
+    Value: !If [GoogleAuthEnabled, !Ref CognitoUserPoolClientGoogle, !Ref CognitoUserPoolClientNative]
+  CognitoIdentityProvider:
+    Description: Optional forced identity provider for Hosted UI authorization (e.g. Google)
+    Value: !If [GoogleAuthEnabled, "Google", ""]
   CognitoDomain:
     Description: Cognito Hosted UI domain
-    Value: !Sub ${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
+    Value: !If
+      - HasCognitoDomainPrefix
+      - !Sub ${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
+      - !Sub marvain-${StageName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com
+  CognitoIdpResponseUrl:
+    Description: Cognito redirect URL to configure in the external IdP (Google) OAuth client
+    Value: !If
+      - HasCognitoDomainPrefix
+      - !Sub https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com/oauth2/idpresponse
+      - !Sub https://marvain-${StageName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com/oauth2/idpresponse
   CognitoLoginUrl:
     Description: Cognito Hosted UI login URL (uses the first GUI callback URL)
-    Value: !Sub
-      - https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com/login?client_id=${CognitoUserPoolClient}&response_type=code&scope=openid+email+profile&redirect_uri=${RedirectUri}
-      - RedirectUri: !Select [0, !Ref GuiCallbackUrls]
+    Value: !If
+      - HasCognitoDomainPrefix
+      - !Sub
+          - https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com/login?client_id=${ClientId}&response_type=code&scope=openid+email+profile&redirect_uri=${RedirectUri}
+          - RedirectUri: !Select [0, !Ref GuiCallbackUrls]
+            ClientId: !If [GoogleAuthEnabled, !Ref CognitoUserPoolClientGoogle, !Ref CognitoUserPoolClientNative]
+      - !Sub
+          - https://marvain-${StageName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com/login?client_id=${ClientId}&response_type=code&scope=openid+email+profile&redirect_uri=${RedirectUri}
+          - RedirectUri: !Select [0, !Ref GuiCallbackUrls]
+            ClientId: !If [GoogleAuthEnabled, !Ref CognitoUserPoolClientGoogle, !Ref CognitoUserPoolClientNative]
   SessionSecretArn:
     Description: Secrets Manager ARN containing session secret key
     Value: !Ref SessionSecret
+  GoogleOAuthSecretArn:
+    Description: Secrets Manager ARN containing Google OAuth client_id/client_secret JSON
+    Value: !Ref GoogleOAuthSecret

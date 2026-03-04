@@ -47,6 +47,7 @@ class HubConfig:
     cognito_domain: str | None
     cognito_redirect_uri: str | None
     cognito_group_role_map: str | None  # JSON string: '{"admins": ["admin"]}'
+    cognito_identity_provider: str | None  # e.g. "Google" to force Hosted UI federation
     # Session settings
     session_secret_key: str | None  # Direct secret key (for local dev)
     session_secret_arn: str | None  # Secrets Manager ARN (for Lambda)
@@ -133,6 +134,7 @@ def load_config() -> HubConfig:
         cognito_domain=os.getenv("COGNITO_DOMAIN"),
         cognito_redirect_uri=os.getenv("COGNITO_REDIRECT_URI"),
         cognito_group_role_map=os.getenv("COGNITO_GROUP_ROLE_MAP"),
+        cognito_identity_provider=os.getenv("COGNITO_IDENTITY_PROVIDER"),
         # Session settings
         session_secret_key=os.getenv("SESSION_SECRET_KEY"),
         session_secret_arn=os.getenv("SESSION_SECRET_ARN"),
