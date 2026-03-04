@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import os
@@ -815,6 +816,257 @@ def _action_file_info(payload: dict[str, Any]) -> dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
+# -----------------------------------------------------------------------------
+# Enrollment Capture (Voice / Face) + Hub Artifact Upload
+# -----------------------------------------------------------------------------
+
+
+_HUB_REST_URL: str | None = None
+_HUB_DEVICE_TOKEN: str | None = None
+_DEFAULT_SPACE_ID: str | None = None
+
+
+def _set_hub_context(*, hub_rest_url: str | None, device_token: str, default_space_id: str | None) -> None:
+    global _HUB_REST_URL, _HUB_DEVICE_TOKEN, _DEFAULT_SPACE_ID
+    _HUB_REST_URL = hub_rest_url
+    _HUB_DEVICE_TOKEN = device_token
+    _DEFAULT_SPACE_ID = default_space_id
+
+
+def _resolve_space_id(payload: dict[str, Any]) -> str:
+    space_id = str(payload.get("space_id") or "").strip() or str(_DEFAULT_SPACE_ID or "").strip()
+    if not space_id:
+        raise ValueError("missing_space_id")
+    return space_id
+
+
+def _resolve_enroll_person_id(payload: dict[str, Any]) -> str:
+    person_id = str(payload.get("enroll_person_id") or payload.get("person_id") or "").strip()
+    if not person_id:
+        raise ValueError("missing_enroll_person_id")
+    return person_id
+
+
+async def _hub_presign_put(*, filename: str, content_type: str, purpose: str = "recognition") -> dict[str, Any]:
+    if not _HUB_REST_URL or not _HUB_DEVICE_TOKEN:
+        raise RuntimeError("hub_rest_url_not_configured (start daemon with --hub-rest-url)")
+    import aiohttp
+
+    url = str(_HUB_REST_URL).rstrip("/") + "/v1/artifacts/presign"
+    headers = {"Authorization": f"Bearer {_HUB_DEVICE_TOKEN}", "Content-Type": "application/json"}
+    body = {"filename": filename, "content_type": content_type, "purpose": purpose}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=headers, json=body, timeout=15) as resp:
+            txt = await resp.text()
+            if resp.status >= 400:
+                raise RuntimeError(f"presign_failed status={resp.status} body={txt[:300]}")
+            return json.loads(txt or "{}")
+
+
+async def _hub_put_bytes(*, upload_url: str, data: bytes, content_type: str) -> None:
+    import aiohttp
+
+    async with aiohttp.ClientSession() as session:
+        async with session.put(upload_url, data=data, headers={"Content-Type": content_type}, timeout=60) as resp:
+            if resp.status >= 400:
+                txt = await resp.text()
+                raise RuntimeError(f"upload_failed status={resp.status} body={txt[:300]}")
+
+
+async def _hub_ingest_event(*, space_id: str, ev_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if not _HUB_REST_URL or not _HUB_DEVICE_TOKEN:
+        raise RuntimeError("hub_rest_url_not_configured (start daemon with --hub-rest-url)")
+    import aiohttp
+
+    url = str(_HUB_REST_URL).rstrip("/") + "/v1/events"
+    headers = {"Authorization": f"Bearer {_HUB_DEVICE_TOKEN}", "Content-Type": "application/json"}
+    body = {"space_id": space_id, "type": ev_type, "payload": payload}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=headers, json=body, timeout=20) as resp:
+            txt = await resp.text()
+            if resp.status >= 400:
+                raise RuntimeError(f"event_ingest_failed status={resp.status} body={txt[:300]}")
+            try:
+                return json.loads(txt or "{}")
+            except Exception:
+                return {}
+
+
+def _pcm_to_wav_bytes(*, pcm_bytes: bytes, sample_rate: int, channels: int) -> bytes:
+    buf = __import__("io").BytesIO()
+    import wave
+
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(int(channels))
+        wf.setsampwidth(2)  # int16
+        wf.setframerate(int(sample_rate))
+        wf.writeframes(pcm_bytes)
+    return buf.getvalue()
+
+
+def _record_pcm_int16_blocking(*, seconds: int, sample_rate: int, channels: int, device: int | str | None = None) -> bytes:
+    import sounddevice as sd  # type: ignore
+
+    seconds = max(1, min(int(seconds), 30))
+    sample_rate = max(8000, min(int(sample_rate), 48000))
+    channels = max(1, min(int(channels), 2))
+    expected_bytes = int(seconds * sample_rate * channels * 2)
+    buf = bytearray()
+
+    def _cb(indata: bytes, frames: int, time_info: Any, status: Any) -> None:  # noqa: ARG001
+        if status:
+            logger.debug("audio record status: %s", status)
+        try:
+            buf.extend(bytes(indata))
+        except Exception:
+            pass
+
+    stream = sd.RawInputStream(
+        samplerate=sample_rate,
+        channels=channels,
+        dtype="int16",
+        device=device,
+        callback=_cb,
+    )
+    stream.start()
+    try:
+        sd.sleep(int(seconds * 1000))
+    finally:
+        try:
+            stream.stop()
+            stream.close()
+        except Exception:
+            pass
+
+    if not buf:
+        return b""
+    return bytes(buf[:expected_bytes])
+
+
+async def _action_record_audio_clip(payload: dict[str, Any]) -> dict[str, Any]:
+    """Record a short WAV clip and emit a voice.sample event for enrollment.
+
+    Payload:
+        space_id: uuid (optional if daemon started with --space-id)
+        enroll_person_id: uuid (required)
+        seconds: int (default 3)
+        sample_rate: int (default 16000)
+        channels: int (default 1)
+        audio_device: int|str (optional sounddevice device selector)
+    """
+    space_id = _resolve_space_id(payload)
+    enroll_person_id = _resolve_enroll_person_id(payload)
+
+    seconds = int(payload.get("seconds") or payload.get("duration") or 3)
+    sample_rate = int(payload.get("sample_rate") or 16000)
+    channels = int(payload.get("channels") or 1)
+    audio_device = payload.get("audio_device", None)
+
+    pcm = await asyncio.to_thread(
+        _record_pcm_int16_blocking,
+        seconds=seconds,
+        sample_rate=sample_rate,
+        channels=channels,
+        device=audio_device,
+    )
+    if not pcm:
+        return {"status": "error", "error": "audio_capture_failed"}
+
+    wav_bytes = _pcm_to_wav_bytes(pcm_bytes=pcm, sample_rate=sample_rate, channels=channels)
+    presign = await _hub_presign_put(filename="voice_enroll.wav", content_type="audio/wav", purpose="recognition")
+    upload_url = str(presign.get("upload_url") or "").strip()
+    bucket = str(presign.get("bucket") or "").strip()
+    key = str(presign.get("key") or "").strip()
+    if not upload_url or not bucket or not key:
+        raise RuntimeError("presign_missing_fields")
+
+    await _hub_put_bytes(upload_url=upload_url, data=wav_bytes, content_type="audio/wav")
+
+    ingest = await _hub_ingest_event(
+        space_id=space_id,
+        ev_type="voice.sample",
+        payload={
+            "artifact_bucket": bucket,
+            "artifact_key": key,
+            "content_type": "audio/wav",
+            "enroll_person_id": enroll_person_id,
+            "sample_rate": sample_rate,
+            "channels": channels,
+            "seconds": seconds,
+        },
+    )
+    return {
+        "status": "success",
+        "space_id": space_id,
+        "person_id": enroll_person_id,
+        "artifact_bucket": bucket,
+        "artifact_key": key,
+        "event_id": ingest.get("event_id"),
+    }
+
+
+async def _action_capture_face_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
+    """Capture a JPEG snapshot and emit a face.snapshot event for enrollment.
+
+    Payload:
+        space_id: uuid (optional if daemon started with --space-id)
+        enroll_person_id: uuid (required)
+        device: int|str (optional ffmpeg camera selector, default 0)
+        resolution: str (default 1280x720)
+    """
+    import tempfile
+
+    space_id = _resolve_space_id(payload)
+    enroll_person_id = _resolve_enroll_person_id(payload)
+
+    cam_device = payload.get("device", 0)
+    resolution = str(payload.get("resolution") or "1280x720")
+
+    fd, tmp_path = tempfile.mkstemp(prefix="marvain_face_", suffix=".jpg")
+    os.close(fd)
+    try:
+        cap = await asyncio.to_thread(
+            _action_capture_photo,
+            {"device": cam_device, "resolution": resolution, "output_format": "file", "output_path": tmp_path},
+        )
+        if cap.get("status") != "success":
+            return cap
+        with open(tmp_path, "rb") as f:
+            jpg_bytes = f.read()
+    finally:
+        with contextlib.suppress(Exception):
+            os.remove(tmp_path)
+
+    presign = await _hub_presign_put(filename="face_enroll.jpg", content_type="image/jpeg", purpose="recognition")
+    upload_url = str(presign.get("upload_url") or "").strip()
+    bucket = str(presign.get("bucket") or "").strip()
+    key = str(presign.get("key") or "").strip()
+    if not upload_url or not bucket or not key:
+        raise RuntimeError("presign_missing_fields")
+
+    await _hub_put_bytes(upload_url=upload_url, data=jpg_bytes, content_type="image/jpeg")
+
+    ingest = await _hub_ingest_event(
+        space_id=space_id,
+        ev_type="face.snapshot",
+        payload={
+            "artifact_bucket": bucket,
+            "artifact_key": key,
+            "content_type": "image/jpeg",
+            "enroll_person_id": enroll_person_id,
+            "resolution": resolution,
+        },
+    )
+    return {
+        "status": "success",
+        "space_id": space_id,
+        "person_id": enroll_person_id,
+        "artifact_bucket": bucket,
+        "artifact_key": key,
+        "event_id": ingest.get("event_id"),
+    }
+
+
 # Registry of supported device actions
 DEVICE_ACTIONS: dict[str, Any] = {
     # Basic actions
@@ -829,6 +1081,9 @@ DEVICE_ACTIONS: dict[str, Any] = {
     "capture_photo": _action_capture_photo,
     "capture_video": _action_capture_video,
     "list_cameras": _action_list_cameras,
+    # Enrollment capture actions
+    "record_audio_clip": _action_record_audio_clip,
+    "capture_face_snapshot": _action_capture_face_snapshot,
     # File operations
     "read_file": _action_read_file,
     "list_directory": _action_list_directory,
@@ -877,6 +1132,8 @@ async def handle_command(msg: dict[str, Any]) -> dict[str, Any] | None:
             try:
                 handler = DEVICE_ACTIONS[kind]
                 result = handler(payload)
+                if asyncio.iscoroutine(result):
+                    result = await result
                 return {
                     "action": "device_action_result",
                     "action_id": action_id,
@@ -1137,6 +1394,9 @@ def main(
         audio_in_device = file_config.get("audio_in_device", audio_in_device)
         audio_out_device = file_config.get("audio_out_device", audio_out_device)
 
+    # Make hub REST URL + token available to device actions that need to upload artifacts/events.
+    _set_hub_context(hub_rest_url=hub_rest_url, device_token=device_token, default_space_id=space_id)
+
     logger.info("Starting Marvain Remote Satellite Daemon")
     logger.info("Hub WebSocket URL: %s", hub_ws_url)
     logger.info("Heartbeat interval: %d seconds", heartbeat_interval)
@@ -1151,6 +1411,7 @@ def main(
         device_token=device_token,
         heartbeat_interval=heartbeat_interval,
         location_label=location_label,
+        location_space_id=space_id,
     )
 
     client = HubClient(config, on_command=handle_command)
