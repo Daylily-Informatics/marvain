@@ -3280,6 +3280,7 @@ def gui_people(request: Request) -> Response:
 
     db = _get_db()
     agents = list_agents_for_user(db, user_id=user.user_id)
+    spaces = list_spaces_for_user(db, user_id=user.user_id)
 
     # Get people for all agents the user has access to
     agent_ids = [a.agent_id for a in agents]
@@ -3360,6 +3361,58 @@ def gui_people(request: Request) -> Response:
 
     agents_data = [{"agent_id": a.agent_id, "name": a.name, "role": a.role} for a in agents]
 
+    # Build spaces/devices by agent for enrollment UI.
+    spaces_by_agent: dict[str, list[dict[str, Any]]] = {}
+    for s in spaces:
+        agent_id = str(s.agent_id)
+        spaces_by_agent.setdefault(agent_id, []).append(
+            {"space_id": str(s.space_id), "name": s.name, "livekit_room_mode": str(getattr(s, "livekit_room_mode", ""))}
+        )
+
+    devices_by_agent: dict[str, list[dict[str, Any]]] = {}
+    if agent_ids:
+        import json as json_mod
+
+        placeholders = ", ".join(f":id{i}" for i in range(len(agent_ids)))
+        params = {f"id{i}": aid for i, aid in enumerate(agent_ids)}
+        rows = db.query(
+            f"""SELECT d.device_id::TEXT as device_id, d.agent_id::TEXT as agent_id,
+                       d.name, d.location_label, d.metadata,
+                       CASE
+                           WHEN d.last_heartbeat_at > now() - interval '60 seconds' THEN true
+                           ELSE false
+                       END as is_online,
+                       a.name as agent_name
+                FROM devices d
+                JOIN agents a ON a.agent_id = d.agent_id
+                WHERE d.agent_id::TEXT IN ({placeholders})
+                  AND d.revoked_at IS NULL
+                ORDER BY d.location_label NULLS LAST, d.created_at DESC""",
+            params,
+        )
+        for r in rows:
+            meta = r.get("metadata") or {}
+            if isinstance(meta, str):
+                try:
+                    meta = json_mod.loads(meta)
+                except Exception:
+                    meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+            agent_id = str(r.get("agent_id") or "")
+            devices_by_agent.setdefault(agent_id, []).append(
+                {
+                    "device_id": str(r.get("device_id") or ""),
+                    "name": str(r.get("name") or "Unnamed Device"),
+                    "agent_id": agent_id,
+                    "agent_name": str(r.get("agent_name") or ""),
+                    "is_online": bool(r.get("is_online")),
+                    "location_label": str(r.get("location_label") or ""),
+                    "metadata": meta,
+                    "location_space_id": str(meta.get("location_space_id") or ""),
+                }
+            )
+
     return templates.TemplateResponse(
         request,
         "people.html",
@@ -3369,6 +3422,8 @@ def gui_people(request: Request) -> Response:
             "active_page": "people",
             "people": people_data,
             "agents": agents_data,
+            "spaces_by_agent": spaces_by_agent,
+            "devices_by_agent": devices_by_agent,
             **_get_ws_context(request),
         },
     )
