@@ -149,6 +149,38 @@ marvain deploy --no-guided --parameter-overrides \\
 
 After this, login should work from any Tailscale-connected device.
 
+## 8c) Google SSO via Cognito Hosted UI (Optional)
+
+Marvain's GUI login is handled by the Cognito Hosted UI. If you want "Sign in with Google":
+
+1. Deploy (or update) the stack once to create the Google OAuth secret:
+
+```sh
+marvain deploy --no-guided
+```
+
+2. Get the Cognito IdP redirect URL (this is what Google must redirect back to):
+
+```sh
+marvain status | rg CognitoIdpResponseUrl -n
+```
+
+3. In Google Cloud Console, create an OAuth client (Web application) and add the redirect URI:
+
+```
+<CognitoIdpResponseUrl>
+```
+
+4. Put the Google OAuth client ID/secret into the stack secret `GoogleOAuthSecretArn` (JSON keys: `client_id`, `client_secret`).
+
+5. Enable Google auth in the stack:
+
+```sh
+marvain deploy --no-guided --parameter-overrides EnableGoogleAuth=true
+```
+
+After the next `marvain gui restart`, the GUI will use Google as the default identity provider (it sets `COGNITO_IDENTITY_PROVIDER=Google` from stack outputs).
+
 ### GUI Pages at a Glance
 
 | Page | URL | What It Does |

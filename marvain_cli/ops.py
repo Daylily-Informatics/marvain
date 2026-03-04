@@ -1045,6 +1045,7 @@ def gui_run(
         "DbName": "DB_NAME",
         "CognitoUserPoolId": "COGNITO_USER_POOL_ID",
         "CognitoAppClientId": "COGNITO_APP_CLIENT_ID",
+        "CognitoIdentityProvider": "COGNITO_IDENTITY_PROVIDER",
         "CognitoDomain": "COGNITO_DOMAIN",
         "AdminApiKeySecretArn": "ADMIN_SECRET_ARN",
         "OpenAISecretArn": "OPENAI_SECRET_ARN",
