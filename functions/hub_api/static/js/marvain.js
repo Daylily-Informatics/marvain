@@ -205,6 +205,7 @@
     wsMaxReconnectAttempts: 5,
     wsReconnectDelay: 1000,
     wsAuthenticated: false,
+    wsAuthFailed: false,
 
     /**
      * Connect to WebSocket server
@@ -241,6 +242,7 @@
               this._wsEmit('connected');
             } else {
               console.error('[Marvain] Authentication failed:', msg.error);
+              this.wsAuthFailed = true;
               this._wsEmit('auth_failed', msg);
               // Close connection on auth failure
               this.ws.close();
@@ -271,6 +273,11 @@
         this._wsEmit('disconnected', event);
         this.ws = null;
         // Attempt reconnect
+        if (this.wsAuthFailed) {
+          // Auth failures need a fresh token; caller should fetch a new one and reconnect.
+          this.wsAuthFailed = false;
+          return;
+        }
         if (this.wsReconnectAttempts < this.wsMaxReconnectAttempts) {
           this.wsReconnectAttempts++;
           const delay = this.wsReconnectDelay * Math.pow(2, this.wsReconnectAttempts - 1);

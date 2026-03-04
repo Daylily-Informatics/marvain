@@ -164,6 +164,11 @@
           if (statusText) statusText.textContent = 'Offline';
         });
 
+        // If the WS token is expired/invalid, re-fetch a fresh token (server will refresh via refresh_token cookie).
+        Marvain.wsOn('auth_failed', function() {
+          setTimeout(connectWebSocket, 750);
+        });
+
         // Subscribe to topic streams once hello/auth succeeds.
         Marvain.wsOn('hello', function(msg) {
           if (!msg || !msg.ok) return;
