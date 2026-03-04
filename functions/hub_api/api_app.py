@@ -1261,12 +1261,37 @@ def v1_patch_person(person_id: str, body: PersonPatchV1In, user: AuthenticatedUs
 
 
 class ConsentGrantV1In(BaseModel):
-    type: str = Field(..., description="voice|face|recording")
+    type: str = Field(..., description="voice|face|recording|global")
     expires_at: str | None = None
 
 
 class ConsentUpdateV1In(BaseModel):
     consents: list[ConsentGrantV1In] = Field(default_factory=list)
+
+
+def _parse_consent_expires_at(value: str | None):
+    """Parse consent expiry values.
+
+    For <input type="date"> style values ('YYYY-MM-DD'), treat as inclusive and
+    expire end-of-day UTC, not midnight.
+    """
+    if not value:
+        return None
+    v = str(value).strip()
+    if not v:
+        return None
+    from datetime import date, datetime, time as dt_time, timezone
+
+    try:
+        if len(v) == 10 and v[4] == "-" and v[7] == "-":
+            d = date.fromisoformat(v)
+            return datetime.combine(d, dt_time(23, 59, 59), tzinfo=timezone.utc)
+        dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
 
 
 class ConsentGrantV1Out(BaseModel):
@@ -1317,7 +1342,7 @@ def v1_update_consent(person_id: str, body: ConsentUpdateV1In, user: Authenticat
     agent_id = _get_person_agent_id_for_user(person_id=person_id, user=user)
     _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
 
-    valid_types = {"voice", "face", "recording"}
+    valid_types = {"voice", "face", "recording", "global"}
     for c in body.consents or []:
         ctype = str(c.type or "").strip().lower()
         if ctype not in valid_types:
@@ -1337,12 +1362,7 @@ def v1_update_consent(person_id: str, body: ConsentUpdateV1In, user: Authenticat
 
         for c in body.consents or []:
             consent_id = str(uuid.uuid4())
-            expires_at = None
-            if c.expires_at:
-                try:
-                    expires_at = datetime.fromisoformat(str(c.expires_at).replace("Z", "+00:00"))
-                except Exception:
-                    expires_at = None
+            expires_at = _parse_consent_expires_at(c.expires_at)
             _get_db().execute(
                 """
                 INSERT INTO consent_grants(consent_id, agent_id, person_id, consent_type, expires_at)
@@ -1464,7 +1484,7 @@ def _require_person_consent(*, agent_id: str, person_id: str, consent_type: str)
         FROM consent_grants
         WHERE agent_id = :agent_id::uuid
           AND person_id = :person_id::uuid
-          AND consent_type = :consent_type
+          AND consent_type IN (:consent_type, 'global')
           AND revoked_at IS NULL
           AND (expires_at IS NULL OR expires_at > now())
         LIMIT 1
@@ -1637,7 +1657,7 @@ def v1_identify_voice(body: IdentifyEmbeddingIn, device: AuthenticatedDevice = D
             SELECT 1 FROM consent_grants cg
             WHERE cg.agent_id = vp.agent_id
               AND cg.person_id = vp.person_id
-              AND cg.consent_type = 'voice'
+              AND cg.consent_type IN ('voice', 'global')
               AND cg.revoked_at IS NULL
               AND (cg.expires_at IS NULL OR cg.expires_at > now())
           )
@@ -1686,7 +1706,7 @@ def v1_identify_face(body: IdentifyEmbeddingIn, device: AuthenticatedDevice = De
             SELECT 1 FROM consent_grants cg
             WHERE cg.agent_id = fp.agent_id
               AND cg.person_id = fp.person_id
-              AND cg.consent_type = 'face'
+              AND cg.consent_type IN ('face', 'global')
               AND cg.revoked_at IS NULL
               AND (cg.expires_at IS NULL OR cg.expires_at > now())
           )
