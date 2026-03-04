@@ -8,4 +8,4 @@ Usage:
     marvain-remote-satellite --hub-ws-url wss://example.com/ws --device-token TOKEN
 """
 
-__version__ = "0.1.0"
+__version__ = "0.3.11"
