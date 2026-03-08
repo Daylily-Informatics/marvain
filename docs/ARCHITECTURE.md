@@ -47,6 +47,21 @@ This plane should not own identity or memory.
 - CloudWatch Logs for services.
 - Tamper-evident audit: S3 Object Lock bucket + hash chaining.
 
+## Entry Point Test Coverage
+
+- FastAPI HTTP entrypoints are smoke-covered by dynamic route enumeration:
+  - [tests/test_route_smoke_api.py](../tests/test_route_smoke_api.py)
+  - [tests/test_route_smoke_gui.py](../tests/test_route_smoke_gui.py)
+- API Gateway WebSocket lifecycle handlers are unit-covered:
+  - [tests/test_ws_connect_handler.py](../tests/test_ws_connect_handler.py)
+  - [tests/test_ws_disconnect_handler.py](../tests/test_ws_disconnect_handler.py)
+- WebSocket command and callback handling is covered in:
+  - [tests/test_ws_message_handler.py](../tests/test_ws_message_handler.py)
+  - [tests/test_ws_actions.py](../tests/test_ws_actions.py)
+  - [tests/test_ws_device_callbacks.py](../tests/test_ws_device_callbacks.py)
+
+This coverage guarantees every declared HTTP route and every WebSocket Lambda entrypoint is exercised at least once. It does not imply exhaustive behavioral coverage for every route.
+
 ## Event flow (speech)
 
 1) Satellite captures speech and publishes audio into a LiveKit room.
@@ -74,4 +89,3 @@ This plane should not own identity or memory.
   - redeploy SAM stack
   - restore DB snapshot
   - satellites reconnect
-
