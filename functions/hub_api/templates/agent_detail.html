@@ -569,7 +569,11 @@ async function awRefreshStatus() {
 async function awLaunch() {
   try {
     Marvain.showLoading('Starting agent worker…');
-    var resp = await fetch('/api/agent-worker/launch', {method: 'POST'});
+    var resp = await fetch('/api/agent-worker/launch', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({agent_id: AGENT_ID, idempotency_key: crypto.randomUUID()})
+    });
     Marvain.hideLoading();
     if (!resp.ok) { var err = await resp.json(); throw new Error(err.detail || 'Failed to launch'); }
     var data = await resp.json();
@@ -585,7 +589,11 @@ async function awStop() {
   if (!confirm('Stop the agent worker? Voice sessions will be interrupted.')) return;
   try {
     Marvain.showLoading('Stopping agent worker…');
-    var resp = await fetch('/api/agent-worker/stop', {method: 'POST'});
+    var resp = await fetch('/api/agent-worker/stop', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({agent_id: AGENT_ID, idempotency_key: crypto.randomUUID()})
+    });
     Marvain.hideLoading();
     if (!resp.ok) { var err = await resp.json(); throw new Error(err.detail || 'Failed to stop'); }
     var data = await resp.json();
@@ -600,7 +608,11 @@ async function awStop() {
 async function awRestart() {
   try {
     Marvain.showLoading('Restarting agent worker…');
-    var resp = await fetch('/api/agent-worker/restart', {method: 'POST'});
+    var resp = await fetch('/api/agent-worker/restart', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({agent_id: AGENT_ID, idempotency_key: crypto.randomUUID()})
+    });
     Marvain.hideLoading();
     if (!resp.ok) { var err = await resp.json(); throw new Error(err.detail || 'Failed to restart'); }
     var data = await resp.json();
@@ -659,4 +671,3 @@ async function executeDeleteAgent() {
 awRefreshStatus();
 </script>
 {% endblock %}
-

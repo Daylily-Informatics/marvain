@@ -68,6 +68,17 @@ def test_device_command_moves_to_awaiting_device_result():
         patch.object(runner, "_db", mock_db),
         patch.object(runner, "_cfg", SimpleNamespace(audit_bucket=None)),
         patch.object(runner, "_load_action", return_value=action),
+        patch.object(
+            runner,
+            "begin_device_dispatch",
+            return_value={
+                "action_id": action["action_id"],
+                "agent_id": action["agent_id"],
+                "space_id": action["space_id"],
+                "kind": "device_command",
+                "status": "awaiting_device_result",
+            },
+        ) as mock_begin_dispatch,
         patch.object(runner, "execute_tool", return_value=tool_result),
         patch.object(runner, "is_agent_disabled", return_value=False),
         patch.object(runner, "broadcast_event") as mock_broadcast,
@@ -88,9 +99,7 @@ def test_device_command_moves_to_awaiting_device_result():
         )
 
     assert out["processed"] == 1
-    assert mock_db.execute.call_count == 2
-    assert "SET status = 'awaiting_device_result'" in mock_db.execute.call_args_list[1].args[0]
-    assert mock_db.execute.call_args_list[1].args[1]["correlation_id"] == "00000000-0000-0000-0000-000000000222"
+    mock_begin_dispatch.assert_called_once()
     mock_broadcast.assert_called_once()
     assert mock_broadcast.call_args.kwargs["payload"]["status"] == "awaiting_device_result"
 
@@ -136,8 +145,8 @@ def test_non_device_tool_completes_immediately():
         )
 
     assert out["processed"] == 1
-    assert mock_db.execute.call_count == 2
-    final_params = mock_db.execute.call_args_list[1].args[1]
+    assert mock_db.execute.call_count == 1
+    final_params = mock_db.execute.call_args.args[1]
     assert final_params["status"] == "executed"
     assert final_params["error"] is None
     mock_broadcast.assert_called_once()

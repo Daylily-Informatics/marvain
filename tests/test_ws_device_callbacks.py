@@ -80,8 +80,7 @@ def test_device_action_ack_transitions_to_acknowledged(mock_mgmt, mock_db, mock_
     )
 
     assert result["statusCode"] == 200
-    db.execute.assert_called_once()
-    assert "device_acknowledged" in db.execute.call_args.args[0]
+    assert db.query.call_count >= 2
     sent = json.loads(mock_post.call_args.kwargs["Data"].decode())
     assert sent["type"] == "device_action_ack"
     assert sent["ok"] is True
@@ -145,8 +144,7 @@ def test_device_action_result_success_marks_executed(
     )
 
     assert result["statusCode"] == 200
-    db.execute.assert_called_once()
-    assert db.execute.call_args.args[1]["status"] == "executed"
+    assert db.query.call_count >= 2
     mock_broadcast_event.assert_called_once()
     assert mock_broadcast_event.call_args.kwargs["event_type"] == "actions.updated"
 

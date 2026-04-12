@@ -31,8 +31,10 @@ from typing import Any
 
 import click
 import yaml
+from argv_executors import parse_safe_command, run_argv_command
 from hub_client import HubClient, HubClientConfig
 from location_node import LocationNode, LocationNodeConfig
+from safe_http import perform_http_request
 
 # Configure logging
 logging.basicConfig(
@@ -132,37 +134,17 @@ def _action_shell_command(payload: dict[str, Any]) -> dict[str, Any]:
     if not command:
         return {"status": "error", "error": "No command provided"}
 
-    # Parse first word to check if command is safe
-    parts = command.split()
-    base_cmd = parts[0].split("/")[-1] if parts else ""
-
-    if base_cmd not in SAFE_SHELL_COMMANDS:
+    try:
+        argv, base_cmd = parse_safe_command(command, allowed_commands=SAFE_SHELL_COMMANDS)
+    except ValueError as exc:
         return {
             "status": "error",
-            "error": f"Command '{base_cmd}' not in safe list",
+            "error": str(exc),
             "safe_commands": sorted(SAFE_SHELL_COMMANDS),
         }
 
-    start_time = time_module.time()
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=working_dir,
-        )
-        execution_time = time_module.time() - start_time
-
-        return {
-            "status": "success",
-            "exit_code": result.returncode,
-            "stdout": result.stdout[:50000],  # Limit output size
-            "stderr": result.stderr[:10000],
-            "execution_time_seconds": round(execution_time, 3),
-            "truncated": len(result.stdout) > 50000 or len(result.stderr) > 10000,
-        }
+        return run_argv_command(argv, timeout=timeout, working_dir=working_dir)
     except subprocess.TimeoutExpired:
         return {
             "status": "error",
@@ -187,10 +169,6 @@ def _action_http_request(payload: dict[str, Any]) -> dict[str, Any]:
         body: str|dict - Optional request body
         timeout: int - Request timeout in seconds (default: 30)
     """
-    import urllib.error
-    import urllib.parse
-    import urllib.request
-
     url = payload.get("url", "").strip()
     method = payload.get("method", "GET").upper()
     headers = payload.get("headers", {})
@@ -203,51 +181,17 @@ def _action_http_request(payload: dict[str, Any]) -> dict[str, Any]:
     if not url.startswith(("http://", "https://")):
         return {"status": "error", "error": "URL must start with http:// or https://"}
 
-    # Prepare body
-    data = None
-    if body:
-        if isinstance(body, dict):
-            data = json.dumps(body).encode("utf-8")
-            if "Content-Type" not in headers:
-                headers["Content-Type"] = "application/json"
-        else:
-            data = str(body).encode("utf-8")
-
     try:
-        req = urllib.request.Request(url, data=data, headers=headers, method=method)
-        start_time = time_module.time()
-
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            response_body = response.read()
-            execution_time = time_module.time() - start_time
-
-            # Try to decode as text
-            try:
-                body_text = response_body.decode("utf-8")[:50000]
-                is_binary = False
-            except UnicodeDecodeError:
-                body_text = base64.b64encode(response_body[:10000]).decode("ascii")
-                is_binary = True
-
-            return {
-                "status": "success",
-                "status_code": response.status,
-                "headers": dict(response.headers),
-                "body": body_text,
-                "is_binary": is_binary,
-                "body_length": len(response_body),
-                "truncated": len(response_body) > 50000,
-                "execution_time_seconds": round(execution_time, 3),
-            }
-    except urllib.error.HTTPError as e:
-        return {
-            "status": "http_error",
-            "status_code": e.code,
-            "error": str(e.reason),
-            "headers": dict(e.headers) if e.headers else {},
-        }
-    except urllib.error.URLError as e:
-        return {"status": "error", "error": f"URL error: {e.reason}"}
+        return perform_http_request(
+            url=url,
+            method=method,
+            headers=headers if isinstance(headers, dict) else {},
+            body=body,
+            timeout=timeout,
+            allowed_hosts=[h.strip() for h in os.getenv("MARVAIN_HTTP_ALLOWED_HOSTS", "").split(",") if h.strip()],
+        )
+    except ValueError as exc:
+        return {"status": "error", "error": str(exc)}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
@@ -1170,15 +1114,23 @@ async def handle_command(msg: dict[str, Any]) -> dict[str, Any] | None:
 
     elif msg_type == "cmd.config":
         config_data = msg.get("config", {})
+        action_id = str(msg.get("action_id") or "")
+        correlation_id = str(msg.get("correlation_id") or "")
+        device_id = str(msg.get("device_id") or "")
         logger.info("Received config update: %s", config_data)
 
         # Merge new config with existing config
         _device_config.update(config_data)
 
         return {
-            "action": "config_ack",
-            "status": "applied",
-            "config_keys": list(config_data.keys()),
+            "action": "device_action_result",
+            "action_id": action_id,
+            "correlation_id": correlation_id,
+            "device_id": device_id,
+            "kind": "config",
+            "status": "success",
+            "result": {"applied": True, "config_keys": list(config_data.keys())},
+            "completed_at": int(time_module.time() * 1000),
         }
 
     return None

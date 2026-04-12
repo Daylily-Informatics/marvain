@@ -61,7 +61,10 @@ class TestDeviceCommandHandler:
         ctx = MockToolContext()
         ctx.db.query.return_value = []  # No device found
 
-        result = device_command_handler({"device_id": "device-xyz", "command": "ping"}, ctx)
+        result = device_command_handler(
+            {"device_id": "device-xyz", "command": "ping", "correlation_id": "corr-ping-1"},
+            ctx,
+        )
 
         assert result.ok is False
         assert result.error == "device_not_found_or_not_owned"
@@ -91,7 +94,15 @@ class TestDeviceCommandHandler:
         mock_get_connections.return_value = ["conn-1", "conn-2"]
         mock_send.return_value = True  # Successful send
 
-        result = device_command_handler({"device_id": "device-xyz", "command": "ping", "data": {"test": True}}, ctx)
+        result = device_command_handler(
+            {
+                "device_id": "device-xyz",
+                "command": "ping",
+                "data": {"test": True},
+                "correlation_id": "corr-ping-2",
+            },
+            ctx,
+        )
 
         assert result.ok is True
         assert result.data["device_id"] == "device-xyz"
@@ -112,7 +123,12 @@ class TestDeviceCommandHandler:
         mock_send.side_effect = [True, True, False]
 
         result = device_command_handler(
-            {"device_id": "device-xyz", "command": "run_action", "kind": "device_status"},
+            {
+                "device_id": "device-xyz",
+                "command": "run_action",
+                "kind": "device_status",
+                "correlation_id": "corr-run-1",
+            },
             ctx,
         )
 
@@ -130,7 +146,10 @@ class TestDeviceCommandHandler:
         mock_get_connections.return_value = ["conn-1", "conn-2"]
         mock_send.return_value = False  # All sends fail
 
-        result = device_command_handler({"device_id": "device-xyz", "command": "config"}, ctx)
+        result = device_command_handler(
+            {"device_id": "device-xyz", "command": "config", "correlation_id": "corr-config-1"},
+            ctx,
+        )
 
         assert result.ok is False
         assert result.error == "failed_to_send_to_any_connection"
@@ -149,7 +168,10 @@ class TestDeviceCommandHandler:
 
             with patch("agent_hub.tools.device_command._get_connections_for_device") as mock_conn:
                 mock_conn.return_value = ["conn-1"]
-                result = device_command_handler({"device_id": "device-xyz", "command": "ping"}, ctx)
+                result = device_command_handler(
+                    {"device_id": "device-xyz", "command": "ping", "correlation_id": "corr-ping-3"},
+                    ctx,
+                )
         finally:
             if original:
                 os.environ["WS_API_ENDPOINT"] = original
