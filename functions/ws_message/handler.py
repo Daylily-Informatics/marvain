@@ -7,9 +7,18 @@ import time
 import uuid
 
 import boto3
-from agent_hub.audit import append_audit_entry
+from agent_hub.audit import append_audit_entry  # noqa: F401 - kept for existing tests
+from agent_hub.action_service import (
+    ActionServiceError,
+    approve_action,
+    create_action,
+    load_action,
+    record_device_ack,
+    record_device_result,
+    reject_action,
+)
 from agent_hub.auth import authenticate_device, authenticate_user_access_token
-from agent_hub.contracts import CmdRunAction, DeviceActionAck, DeviceActionResult
+from agent_hub.contracts import DeviceActionAck, DeviceActionResult
 from agent_hub.config import load_config
 from agent_hub.memberships import check_agent_permission, list_agents_for_user
 from agent_hub.metrics import emit_count, emit_ms
@@ -88,28 +97,6 @@ def _upsert_subscription_index(connection_id: str, topic_key: str, ttl: int | No
         logger.warning("Failed to update subscription index for %s: %s", topic_key, exc)
 
 
-def _load_action_with_execution(action_id: str) -> dict | None:
-    rows = _get_db().query(
-        """
-        SELECT action_id::TEXT as action_id,
-               agent_id::TEXT as agent_id,
-               space_id::TEXT as space_id,
-               kind,
-               status,
-               target_device_id::TEXT as target_device_id,
-               correlation_id::TEXT as correlation_id,
-               COALESCE(EXTRACT(EPOCH FROM (now() - created_at)) * 1000, 0) as age_ms
-        FROM actions
-        WHERE action_id = :action_id::uuid
-        LIMIT 1
-        """,
-        {"action_id": action_id},
-    )
-    if not rows:
-        return None
-    return rows[0]
-
-
 def _get_device_connections(table, target_device_id: str) -> list[str]:
     """Find all WebSocket connection IDs for a specific device.
 
@@ -185,19 +172,11 @@ def _handle_action_decision(
     user_id = conn_item.get("user_id")
 
     # Load action
-    rows = _get_db().query(
-        """
-        SELECT action_id::TEXT, agent_id::TEXT, kind, status
-        FROM actions
-        WHERE action_id = :action_id::uuid
-        """,
-        {"action_id": action_id},
-    )
-    if not rows:
+    action_row = load_action(_get_db(), action_id)
+    if not action_row:
         _send(event, connection_id, {"type": action_type, "ok": False, "error": "action_not_found"})
         return {"statusCode": 200, "body": "ok"}
 
-    action_row = rows[0]
     agent_id = action_row["agent_id"]
     current_status = action_row["status"]
 
@@ -225,55 +204,33 @@ def _handle_action_decision(
         )
         return {"statusCode": 200, "body": "ok"}
 
-    new_status = "approved" if approve else "rejected"
-
-    if approve:
-        # Approve: update status with approver info and queue for execution
-        _get_db().execute(
-            """
-            UPDATE actions
-            SET status = 'approved', updated_at = now(),
-                approved_by = :user_id::uuid, approved_at = now()
-            WHERE action_id = :action_id::uuid
-            """,
-            {"action_id": action_id, "user_id": user_id},
-        )
-
-        # Queue for execution
-        if _ACTION_QUEUE_URL:
-            _sqs.send_message(
-                QueueUrl=_ACTION_QUEUE_URL,
-                MessageBody=json.dumps({"action_id": action_id, "agent_id": agent_id}),
+    try:
+        if approve:
+            updated = approve_action(
+                _get_db(),
+                action_id=action_id,
+                user_id=user_id,
+                audit_bucket=_get_cfg().audit_bucket,
+                sqs_client=_sqs,
+                action_queue_url=_ACTION_QUEUE_URL,
+                reason=reason,
             )
+        else:
+            updated = reject_action(
+                _get_db(),
+                action_id=action_id,
+                user_id=user_id,
+                reason=reason,
+                audit_bucket=_get_cfg().audit_bucket,
+            )
+    except ActionServiceError as exc:
+        payload = {"type": action_type, "ok": False, "error": exc.code}
+        payload.update(exc.extra)
+        _send(event, connection_id, payload)
+        return {"statusCode": 200, "body": "ok"}
 
-        _send(event, connection_id, {"type": action_type, "ok": True, "action_id": action_id, "new_status": new_status})
-    else:
-        # Reject: update status
-        _get_db().execute(
-            """
-            UPDATE actions
-            SET status = 'rejected', updated_at = now()
-            WHERE action_id = :action_id::uuid
-            """,
-            {"action_id": action_id},
-        )
-        _send(event, connection_id, {"type": action_type, "ok": True, "action_id": action_id, "new_status": new_status})
-
-    # Audit log the action decision
-    cfg = _get_cfg()
-    if cfg.audit_bucket:
-        append_audit_entry(
-            _get_db(),
-            bucket=cfg.audit_bucket,
-            agent_id=agent_id,
-            entry_type="action_decision",
-            entry={
-                "action_id": action_id,
-                "decision": new_status,
-                "by_user_id": user_id,
-                "reason": reason,
-            },
-        )
+    new_status = str(updated.get("status") or "")
+    _send(event, connection_id, {"type": action_type, "ok": True, "action_id": action_id, "new_status": new_status})
 
     logger.info("Action %s %s by user %s", action_id, new_status, user_id)
     return {"statusCode": 200, "body": "ok"}
@@ -291,42 +248,20 @@ def _handle_device_action_ack(event, connection_id: str, conn_item: dict, msg: d
         _send(event, connection_id, {"type": "device_action_ack", "ok": False, "error": f"invalid_payload: {exc}"})
         return {"statusCode": 200, "body": "ok"}
 
-    action_row = _load_action_with_execution(ack.action_id)
-    if not action_row:
-        _send(event, connection_id, {"type": "device_action_ack", "ok": False, "error": "action_not_found"})
+    try:
+        action_row = record_device_ack(
+            _get_db(),
+            action_id=ack.action_id,
+            device_id=str(conn_item.get("device_id") or ""),
+            correlation_id=ack.correlation_id,
+            received_at_ms=ack.received_at,
+            audit_bucket=_get_cfg().audit_bucket,
+        )
+    except ActionServiceError as exc:
+        payload = {"type": "device_action_ack", "ok": False, "error": exc.code}
+        payload.update(exc.extra)
+        _send(event, connection_id, payload)
         return {"statusCode": 200, "body": "ok"}
-
-    device_id = str(conn_item.get("device_id") or "")
-    target_device_id = str(action_row.get("target_device_id") or "")
-    if target_device_id and target_device_id != device_id:
-        _send(event, connection_id, {"type": "device_action_ack", "ok": False, "error": "permission_denied"})
-        return {"statusCode": 200, "body": "ok"}
-
-    action_corr = str(action_row.get("correlation_id") or "")
-    if action_corr and action_corr != ack.correlation_id:
-        _send(event, connection_id, {"type": "device_action_ack", "ok": False, "error": "correlation_mismatch"})
-        return {"statusCode": 200, "body": "ok"}
-
-    _get_db().execute(
-        """
-        UPDATE actions
-        SET status = 'device_acknowledged',
-            updated_at = now(),
-            device_acknowledged_at = now(),
-            execution_metadata = COALESCE(execution_metadata, '{}'::jsonb) || :meta::jsonb
-        WHERE action_id = :action_id::uuid
-          AND status IN ('awaiting_device_result', 'device_acknowledged')
-        """,
-        {
-            "action_id": ack.action_id,
-            "meta": json.dumps(
-                {
-                    "acknowledged_by_device_id": ack.device_id,
-                    "acknowledged_at_ms": ack.received_at,
-                }
-            ),
-        },
-    )
 
     emit_count(
         "ActionExecutionCount",
@@ -336,7 +271,16 @@ def _handle_device_action_ack(event, connection_id: str, conn_item: dict, msg: d
         },
     )
 
-    _send(event, connection_id, {"type": "device_action_ack", "ok": True, "action_id": ack.action_id})
+    _send(
+        event,
+        connection_id,
+        {
+            "type": "device_action_ack",
+            "ok": True,
+            "action_id": ack.action_id,
+            "duplicate": bool(action_row.get("duplicate")),
+        },
+    )
     return {"statusCode": 200, "body": "ok"}
 
 
@@ -352,64 +296,44 @@ def _handle_device_action_result(event, connection_id: str, conn_item: dict, msg
         _send(event, connection_id, {"type": "device_action_result", "ok": False, "error": f"invalid_payload: {exc}"})
         return {"statusCode": 200, "body": "ok"}
 
-    action_row = _load_action_with_execution(result_in.action_id)
-    if not action_row:
-        _send(event, connection_id, {"type": "device_action_result", "ok": False, "error": "action_not_found"})
-        return {"statusCode": 200, "body": "ok"}
-
-    device_id = str(conn_item.get("device_id") or "")
-    target_device_id = str(action_row.get("target_device_id") or "")
-    if target_device_id and target_device_id != device_id:
-        _send(event, connection_id, {"type": "device_action_result", "ok": False, "error": "permission_denied"})
-        return {"statusCode": 200, "body": "ok"}
-
-    action_corr = str(action_row.get("correlation_id") or "")
-    if action_corr and action_corr != result_in.correlation_id:
-        _send(event, connection_id, {"type": "device_action_result", "ok": False, "error": "correlation_mismatch"})
-        return {"statusCode": 200, "body": "ok"}
-
-    new_status = "executed" if result_in.status == "success" else "failed"
-    err_text = None if result_in.status == "success" else (result_in.error or f"device_{result_in.status}")
-    result_json = json.dumps(result_in.result or {})
-
-    _get_db().execute(
-        """
-        UPDATE actions
-        SET status = :status,
-            updated_at = now(),
-            executed_at = now(),
-            completed_at = now(),
-            device_response_at = now(),
-            awaiting_result_until = NULL,
-            result = :result::jsonb,
-            error = :error
-        WHERE action_id = :action_id::uuid
-          AND status IN ('awaiting_device_result', 'device_acknowledged')
-        """,
-        {
-            "action_id": result_in.action_id,
-            "status": new_status,
-            "result": result_json,
-            "error": err_text,
-        },
-    )
-
     try:
-        from agent_hub.broadcast import broadcast_event
-
-        broadcast_event(
-            event_type="actions.updated",
-            agent_id=str(action_row.get("agent_id") or ""),
-            space_id=action_row.get("space_id"),
-            payload={
-                "action_id": result_in.action_id,
-                "kind": str(action_row.get("kind") or result_in.kind),
-                "status": new_status,
-                "error": err_text,
-            },
+        action_row = record_device_result(
+            _get_db(),
+            action_id=result_in.action_id,
+            device_id=str(conn_item.get("device_id") or ""),
+            correlation_id=result_in.correlation_id,
+            result_status=result_in.status,
+            result_payload=result_in.result or {},
+            error_text=result_in.error,
+            completed_at_ms=result_in.completed_at,
+            audit_bucket=_get_cfg().audit_bucket,
         )
-    except Exception as exc:
-        logger.warning("Failed to broadcast device action result: %s", exc)
+    except ActionServiceError as exc:
+        payload = {"type": "device_action_result", "ok": False, "error": exc.code}
+        payload.update(exc.extra)
+        _send(event, connection_id, payload)
+        return {"statusCode": 200, "body": "ok"}
+
+    new_status = str(action_row.get("status") or "")
+    err_text = action_row.get("error")
+
+    if not bool(action_row.get("duplicate")):
+        try:
+            from agent_hub.broadcast import broadcast_event
+
+            broadcast_event(
+                event_type="actions.updated",
+                agent_id=str(action_row.get("agent_id") or ""),
+                space_id=action_row.get("space_id"),
+                payload={
+                    "action_id": result_in.action_id,
+                    "kind": str(action_row.get("kind") or result_in.kind),
+                    "status": new_status,
+                    "error": err_text,
+                },
+            )
+        except Exception as exc:
+            logger.warning("Failed to broadcast device action result: %s", exc)
 
     emit_count(
         "ActionExecutionCount",
@@ -424,7 +348,16 @@ def _handle_device_action_result(event, connection_id: str, conn_item: dict, msg
         dimensions={"ActionKind": str(action_row.get("kind") or "unknown")},
     )
 
-    _send(event, connection_id, {"type": "device_action_result", "ok": True, "action_id": result_in.action_id})
+    _send(
+        event,
+        connection_id,
+        {
+            "type": "device_action_result",
+            "ok": True,
+            "action_id": result_in.action_id,
+            "duplicate": bool(action_row.get("duplicate")),
+        },
+    )
     return {"statusCode": 200, "body": "ok"}
 
 
@@ -677,8 +610,12 @@ def handler(event, context):
     # cmd.ping - ping a specific device (hub -> device)
     if action == "cmd.ping":
         target_device_id = str(msg.get("target_device_id") or "").strip()
+        idempotency_key = str(msg.get("idempotency_key") or "").strip()
         if not target_device_id:
             _send(event, connection_id, {"type": "cmd.ping", "ok": False, "error": "missing_target_device_id"})
+            return {"statusCode": 200, "body": "ok"}
+        if not idempotency_key:
+            _send(event, connection_id, {"type": "cmd.ping", "ok": False, "error": "missing_idempotency_key"})
             return {"statusCode": 200, "body": "ok"}
 
         # Only allow users with admin role or the device's own agent to ping
@@ -705,15 +642,48 @@ def handler(event, context):
             if not rows or rows[0]["agent_id"] != dev_agent:
                 _send(event, connection_id, {"type": "cmd.ping", "ok": False, "error": "permission_denied"})
                 return {"statusCode": 200, "body": "ok"}
+            target_agent_id = rows[0]["agent_id"]
+        try:
+            created = create_action(
+                _get_db(),
+                agent_id=target_agent_id,
+                space_id=None,
+                kind="device_command",
+                payload={
+                    "device_id": target_device_id,
+                    "command": "ping",
+                    "data": {},
+                },
+                required_scopes=[str(s) for s in (msg.get("required_scopes") or [])],
+                requested_approval_mode="manual_immediate",
+                approved_by_user_id=user_id if principal_type == "user" else None,
+                idempotency_key=idempotency_key,
+                request_actor_type="user" if principal_type == "user" else "device",
+                request_actor_id=user_id if principal_type == "user" else str(conn_item.get("device_id") or ""),
+                request_origin="ws:cmd.ping",
+                audit_bucket=_get_cfg().audit_bucket,
+                sqs_client=_sqs,
+                action_queue_url=_ACTION_QUEUE_URL,
+            )
+        except ActionServiceError as exc:
+            payload = {"type": "cmd.ping", "ok": False, "error": exc.code}
+            payload.update(exc.extra)
+            _send(event, connection_id, payload)
+            return {"statusCode": 200, "body": "ok"}
 
-        # Broadcast cmd.ping to the target device via WebSocket
-        sent_at = int(time.time() * 1000)
-        device_message = {
-            "type": "cmd.ping",
-            "from_connection_id": connection_id,
-            "sent_at": sent_at,
-        }
-        sent_count, stale_count = _send_to_device(event, table, target_device_id, device_message)
+        try:
+            broadcast_event(
+                event_type="actions.updated",
+                agent_id=target_agent_id,
+                space_id=None,
+                payload={
+                    "action_id": created["action_id"],
+                    "kind": created["kind"],
+                    "status": created["status"],
+                },
+            )
+        except Exception as exc:
+            logger.warning("Failed to broadcast queued device ping: %s", exc)
 
         _send(
             event,
@@ -722,9 +692,9 @@ def handler(event, context):
                 "type": "cmd.ping",
                 "ok": True,
                 "target_device_id": target_device_id,
-                "sent_at": sent_at,
-                "device_connections": sent_count,
-                "device_online": sent_count > 0,
+                "action_id": created["action_id"],
+                "status": created["status"],
+                "queued": bool(_ACTION_QUEUE_URL),
             },
         )
         return {"statusCode": 200, "body": "ok"}
@@ -750,8 +720,7 @@ def handler(event, context):
         target_device_id = str(msg.get("target_device_id") or "").strip()
         action_kind = str(msg.get("kind") or "").strip()
         action_payload = msg.get("payload") or {}
-        run_action_id = str(msg.get("action_id") or str(uuid.uuid4()))
-        correlation_id = str(msg.get("correlation_id") or str(uuid.uuid4()))
+        idempotency_key = str(msg.get("idempotency_key") or "").strip()
 
         if not target_device_id or not action_kind:
             _send(
@@ -759,6 +728,9 @@ def handler(event, context):
                 connection_id,
                 {"type": "cmd.run_action", "ok": False, "error": "missing_target_device_id_or_kind"},
             )
+            return {"statusCode": 200, "body": "ok"}
+        if not idempotency_key:
+            _send(event, connection_id, {"type": "cmd.run_action", "ok": False, "error": "missing_idempotency_key"})
             return {"statusCode": 200, "body": "ok"}
 
         # Permission check: user needs admin on the device's agent
@@ -778,31 +750,50 @@ def handler(event, context):
             _send(event, connection_id, {"type": "cmd.run_action", "ok": False, "error": "user_only"})
             return {"statusCode": 200, "body": "ok"}
 
-        # Broadcast cmd.run_action to the target device via WebSocket
-        sent_at = int(time.time() * 1000)
-        cmd = CmdRunAction(
-            action_id=run_action_id,
-            correlation_id=correlation_id,
-            kind=action_kind,
-            payload=action_payload,
-            sent_at=sent_at,
-            from_connection_id=connection_id,
-        )
-        device_message = _model_dump(cmd)
-        sent_count, stale_count = _send_to_device(event, table, target_device_id, device_message)
+        try:
+            created = create_action(
+                _get_db(),
+                agent_id=target_agent_id,
+                space_id=None,
+                kind="device_command",
+                payload={
+                    "device_id": target_device_id,
+                    "command": "run_action",
+                    "data": {
+                        "kind": action_kind,
+                        "payload": action_payload,
+                    },
+                },
+                required_scopes=[str(s) for s in (msg.get("required_scopes") or [])],
+                requested_approval_mode="manual_immediate",
+                approved_by_user_id=user_id,
+                idempotency_key=idempotency_key,
+                request_actor_type="user",
+                request_actor_id=user_id,
+                request_origin="ws:cmd.run_action",
+                audit_bucket=_get_cfg().audit_bucket,
+                sqs_client=_sqs,
+                action_queue_url=_ACTION_QUEUE_URL,
+            )
+        except ActionServiceError as exc:
+            payload = {"type": "cmd.run_action", "ok": False, "error": exc.code}
+            payload.update(exc.extra)
+            _send(event, connection_id, payload)
+            return {"statusCode": 200, "body": "ok"}
 
-        if sent_count == 0:
-            _send(
-                event,
-                connection_id,
-                {
-                    "type": "cmd.run_action",
-                    "ok": False,
-                    "error": "device_not_connected",
-                    "target_device_id": target_device_id,
+        try:
+            broadcast_event(
+                event_type="actions.updated",
+                agent_id=target_agent_id,
+                space_id=None,
+                payload={
+                    "action_id": created["action_id"],
+                    "kind": created["kind"],
+                    "status": created["status"],
                 },
             )
-            return {"statusCode": 200, "body": "ok"}
+        except Exception as exc:
+            logger.warning("Failed to broadcast queued device action: %s", exc)
 
         _send(
             event,
@@ -812,10 +803,9 @@ def handler(event, context):
                 "ok": True,
                 "target_device_id": target_device_id,
                 "kind": action_kind,
-                "action_id": run_action_id,
-                "correlation_id": correlation_id,
-                "sent_at": sent_at,
-                "device_connections": sent_count,
+                "action_id": created["action_id"],
+                "status": created["status"],
+                "queued": bool(_ACTION_QUEUE_URL),
             },
         )
         return {"statusCode": 200, "body": "ok"}
@@ -824,9 +814,13 @@ def handler(event, context):
     if action == "cmd.config":
         target_device_id = str(msg.get("target_device_id") or "").strip()
         config_data = msg.get("config") or {}
+        idempotency_key = str(msg.get("idempotency_key") or "").strip()
 
         if not target_device_id:
             _send(event, connection_id, {"type": "cmd.config", "ok": False, "error": "missing_target_device_id"})
+            return {"statusCode": 200, "body": "ok"}
+        if not idempotency_key:
+            _send(event, connection_id, {"type": "cmd.config", "ok": False, "error": "missing_idempotency_key"})
             return {"statusCode": 200, "body": "ok"}
 
         # Permission check: user needs admin on the device's agent
@@ -846,28 +840,47 @@ def handler(event, context):
             _send(event, connection_id, {"type": "cmd.config", "ok": False, "error": "user_only"})
             return {"statusCode": 200, "body": "ok"}
 
-        # Broadcast cmd.config to the target device via WebSocket
-        sent_at = int(time.time() * 1000)
-        device_message = {
-            "type": "cmd.config",
-            "from_connection_id": connection_id,
-            "config": config_data,
-            "sent_at": sent_at,
-        }
-        sent_count, stale_count = _send_to_device(event, table, target_device_id, device_message)
+        try:
+            created = create_action(
+                _get_db(),
+                agent_id=target_agent_id,
+                space_id=None,
+                kind="device_command",
+                payload={
+                    "device_id": target_device_id,
+                    "command": "config",
+                    "data": {"config": config_data},
+                },
+                required_scopes=[str(s) for s in (msg.get("required_scopes") or [])],
+                requested_approval_mode="manual_immediate",
+                approved_by_user_id=user_id,
+                idempotency_key=idempotency_key,
+                request_actor_type="user",
+                request_actor_id=user_id,
+                request_origin="ws:cmd.config",
+                audit_bucket=_get_cfg().audit_bucket,
+                sqs_client=_sqs,
+                action_queue_url=_ACTION_QUEUE_URL,
+            )
+        except ActionServiceError as exc:
+            payload = {"type": "cmd.config", "ok": False, "error": exc.code}
+            payload.update(exc.extra)
+            _send(event, connection_id, payload)
+            return {"statusCode": 200, "body": "ok"}
 
-        if sent_count == 0:
-            _send(
-                event,
-                connection_id,
-                {
-                    "type": "cmd.config",
-                    "ok": False,
-                    "error": "device_not_connected",
-                    "target_device_id": target_device_id,
+        try:
+            broadcast_event(
+                event_type="actions.updated",
+                agent_id=target_agent_id,
+                space_id=None,
+                payload={
+                    "action_id": created["action_id"],
+                    "kind": created["kind"],
+                    "status": created["status"],
                 },
             )
-            return {"statusCode": 200, "body": "ok"}
+        except Exception as exc:
+            logger.warning("Failed to broadcast queued device config action: %s", exc)
 
         _send(
             event,
@@ -876,8 +889,9 @@ def handler(event, context):
                 "type": "cmd.config",
                 "ok": True,
                 "target_device_id": target_device_id,
-                "sent_at": sent_at,
-                "device_connections": sent_count,
+                "action_id": created["action_id"],
+                "status": created["status"],
+                "queued": bool(_ACTION_QUEUE_URL),
             },
         )
         return {"statusCode": 200, "body": "ok"}
@@ -892,7 +906,7 @@ def handler(event, context):
         return _handle_device_action_result(event, connection_id, conn_item, msg)
 
     if action == "config_ack":
-        _send(event, connection_id, {"type": "config_ack", "ok": True})
+        _send(event, connection_id, {"type": "config_ack", "ok": True, "deprecated": True})
         return {"statusCode": 200, "body": "ok"}
 
     # -------------------------------------------------------------------------

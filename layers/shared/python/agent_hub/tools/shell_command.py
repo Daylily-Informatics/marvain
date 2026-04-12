@@ -121,6 +121,8 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
     device_payload = {
         "device_id": device_id,
         "command": "run_action",
+        "correlation_id": payload.get("correlation_id"),
+        "timeout_seconds": payload.get("timeout_seconds"),
         "data": {
             "kind": "shell_command",
             "payload": {

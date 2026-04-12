@@ -14,6 +14,7 @@ def test_dump_json_schemas_contains_all_tool_contracts():
         "create_memory",
         "http_request",
         "device_command",
+        "host_process",
         "shell_command",
     }
 

@@ -32,6 +32,13 @@ class DeviceCommandPayload(BaseModel):
     device_id: str
     command: str = "run_action"
     data: dict[str, Any] = Field(default_factory=dict)
+    correlation_id: str | None = None
+    timeout_seconds: int | None = None
+
+
+class HostProcessPayload(BaseModel):
+    operation: Literal["launch_satellite", "launch_agent_worker", "stop_agent_worker", "restart_agent_worker"]
+    args: dict[str, Any] = Field(default_factory=dict)
 
 
 class ShellCommandPayload(BaseModel):
@@ -39,6 +46,8 @@ class ShellCommandPayload(BaseModel):
     command: str
     timeout: int = 30
     working_dir: str | None = None
+    correlation_id: str | None = None
+    timeout_seconds: int | None = None
 
 
 TOOL_PAYLOAD_MODELS: dict[str, type[BaseModel]] = {
@@ -46,6 +55,7 @@ TOOL_PAYLOAD_MODELS: dict[str, type[BaseModel]] = {
     "create_memory": CreateMemoryPayload,
     "http_request": HttpRequestPayload,
     "device_command": DeviceCommandPayload,
+    "host_process": HostProcessPayload,
     "shell_command": ShellCommandPayload,
 }
 

@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import time
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine
 
@@ -14,6 +15,21 @@ import websockets
 from websockets.client import WebSocketClientProtocol
 
 logger = logging.getLogger(__name__)
+
+
+def _url_is_local(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    return host in {"localhost", "127.0.0.1", "::1"}
+
+
+def _validate_endpoint_url(url: str, *, secure_scheme: str, insecure_scheme: str) -> None:
+    parsed = urllib.parse.urlparse(str(url or "").strip())
+    if parsed.scheme == secure_scheme:
+        return
+    if parsed.scheme == insecure_scheme and _url_is_local(url):
+        return
+    raise ValueError(f"{secure_scheme}_required_for_non_local_endpoint")
 
 
 @dataclass
@@ -49,6 +65,9 @@ class HubClient:
 
     async def connect(self) -> None:
         """Connect to Hub WebSocket and authenticate."""
+        _validate_endpoint_url(self.config.ws_url, secure_scheme="wss", insecure_scheme="ws")
+        if self.config.rest_url:
+            _validate_endpoint_url(self.config.rest_url, secure_scheme="https", insecure_scheme="http")
         logger.info("Connecting to Hub WebSocket: %s", self.config.ws_url)
         self._ws = await websockets.connect(self.config.ws_url)
         logger.info("Connected. Sending hello...")
@@ -85,31 +104,50 @@ class HubClient:
         """Handle incoming message from Hub."""
         msg_type = msg.get("type", "")
 
-        if msg_type == "cmd.ping":
-            # Respond to ping
+        if msg_type.startswith("cmd.") and msg.get("action_id") and msg.get("correlation_id"):
             await self._send(
                 {
-                    "action": "cmd.pong",
-                    "original_sent_at": msg.get("sent_at"),
+                    "action": "device_action_ack",
+                    "action_id": msg.get("action_id"),
+                    "correlation_id": msg.get("correlation_id"),
+                    "device_id": self._device_id,
+                    "received_at": int(time.time() * 1000),
                 }
             )
+
+        if msg_type == "cmd.ping":
+            action_id = str(msg.get("action_id") or "")
+            correlation_id = str(msg.get("correlation_id") or "")
+            if action_id and correlation_id:
+                await self._send(
+                    {
+                        "action": "device_action_result",
+                        "action_id": action_id,
+                        "correlation_id": correlation_id,
+                        "device_id": self._device_id,
+                        "kind": "ping",
+                        "status": "success",
+                        "result": {
+                            "original_sent_at": msg.get("sent_at"),
+                            "received_at": int(time.time() * 1000),
+                        },
+                        "completed_at": int(time.time() * 1000),
+                    }
+                )
+            else:
+                await self._send(
+                    {
+                        "action": "cmd.pong",
+                        "original_sent_at": msg.get("sent_at"),
+                    }
+                )
             logger.debug("Responded to cmd.ping")
 
         elif msg_type.startswith("cmd.") and self.on_command:
-            if msg_type == "cmd.run_action":
-                await self._send(
-                    {
-                        "action": "device_action_ack",
-                        "action_id": msg.get("action_id"),
-                        "correlation_id": msg.get("correlation_id"),
-                        "device_id": self._device_id,
-                        "received_at": int(time.time() * 1000),
-                    }
-                )
             # Delegate to command handler
             result = await self.on_command(msg)
             if result:
-                if msg_type == "cmd.run_action" and not result.get("device_id"):
+                if msg_type in {"cmd.run_action", "cmd.config"} and not result.get("device_id"):
                     result["device_id"] = self._device_id
                 await self._send(result)
 

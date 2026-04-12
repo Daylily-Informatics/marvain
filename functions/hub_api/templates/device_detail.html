@@ -311,7 +311,8 @@ function pingDevice(deviceId) {
     return;
   }
 
-  // Set up one-time listener for ping response
+  const requestId = crypto.randomUUID();
+  // Set up one-time listener for ping queue response
   const pingHandler = function(msg) {
     if (msg.type === 'cmd.ping' && msg.target_device_id === deviceId) {
       Marvain.wsOff('message', pingHandler);
@@ -320,18 +321,7 @@ function pingDevice(deviceId) {
         pingBtn.innerHTML = '<i class="fas fa-wifi"></i> Ping Device';
       }
       if (msg.ok) {
-        if (msg.device_online) {
-          Marvain.showToast('success', 'Device Online',
-            `Device responded! Sent to ${msg.device_connections} connection(s).`);
-          // Update status badge
-          const statusBadge = document.querySelector('.info-value .badge');
-          if (statusBadge) {
-            statusBadge.className = 'badge badge-success';
-            statusBadge.innerHTML = '<i class="fas fa-circle"></i> Online';
-          }
-        } else {
-          Marvain.showToast('warning', 'Device Offline', 'Device is not connected to the hub.');
-        }
+        Marvain.showToast('success', 'Ping Queued', `Ping action queued (${msg.action_id}).`);
       } else {
         Marvain.showToast('error', 'Ping Failed', msg.error || 'Unknown error');
       }
@@ -342,7 +332,8 @@ function pingDevice(deviceId) {
   // Send ping command
   Marvain.wsSend({
     action: 'cmd.ping',
-    target_device_id: deviceId
+    target_device_id: deviceId,
+    idempotency_key: requestId
   });
 
   // Timeout after 10 seconds
@@ -460,7 +451,11 @@ async function awLaunch() {
   btn.disabled = true;
   btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Launching…';
   try {
-    const resp = await fetch('/api/agent-worker/launch', { method: 'POST' });
+    const resp = await fetch('/api/agent-worker/launch', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({agent_id: '{{ device.agent_id }}', idempotency_key: crypto.randomUUID()}),
+    });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || 'Launch failed');
     Marvain.showToast('success', 'Agent Worker', data.message);
@@ -478,7 +473,11 @@ async function awStop() {
   btn.disabled = true;
   btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Stopping…';
   try {
-    const resp = await fetch('/api/agent-worker/stop', { method: 'POST' });
+    const resp = await fetch('/api/agent-worker/stop', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({agent_id: '{{ device.agent_id }}', idempotency_key: crypto.randomUUID()}),
+    });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || 'Stop failed');
     Marvain.showToast('success', 'Agent Worker', data.message);
@@ -496,7 +495,11 @@ async function awRestart() {
   btn.disabled = true;
   btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Restarting…';
   try {
-    const resp = await fetch('/api/agent-worker/restart', { method: 'POST' });
+    const resp = await fetch('/api/agent-worker/restart', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({agent_id: '{{ device.agent_id }}', idempotency_key: crypto.randomUUID()}),
+    });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || 'Restart failed');
     Marvain.showToast('success', 'Agent Worker', data.message);
