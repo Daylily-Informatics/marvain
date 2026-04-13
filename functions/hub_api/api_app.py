@@ -8,7 +8,6 @@ Architecture:
 - api_app.py (this file): API routes only -> deployed to Lambda
 - app.py: API + GUI routes -> local development only
 - lambda_handler.py: imports from api_app.py
-- run_local.py: imports from app.py
 """
 
 from __future__ import annotations
@@ -40,6 +39,20 @@ from agent_hub.auth import (
 )
 from agent_hub.broadcast import broadcast_event
 from agent_hub.config import load_config
+from agent_hub.integrations import (
+    IntegrationQueueMessage,
+    enqueue_integration_event,
+    get_integration_message,
+    insert_integration_message,
+    link_integration_message_event,
+    normalize_github_webhook,
+    normalize_slack_webhook,
+    normalize_twilio_webhook,
+    parse_twilio_form_body,
+    verify_github_request,
+    verify_slack_request,
+    verify_twilio_request,
+)
 from agent_hub.livekit_tokens import mint_livekit_join_token
 from agent_hub.memberships import (
     check_agent_permission,
@@ -58,6 +71,7 @@ from agent_hub.secrets import get_secret_json
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.responses import PlainTextResponse
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -172,6 +186,60 @@ def get_user(request: Request) -> AuthenticatedUser:
 # Expose shared state for gui routes (app.py) to use
 def get_config():
     return _cfg
+
+
+def _require_agent_space(agent_id: str, space_id: str) -> None:
+    rows = _get_db().query(
+        """
+        SELECT 1
+        FROM spaces
+        WHERE agent_id = :agent_id::uuid
+          AND space_id = :space_id::uuid
+        LIMIT 1
+        """,
+        {"agent_id": agent_id, "space_id": space_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Space not found")
+
+
+def _require_slack_signing_secret() -> str:
+    secret_arn = str(_cfg.slack_secret_arn or "").strip()
+    if not secret_arn:
+        raise HTTPException(status_code=500, detail="SLACK_SECRET_ARN not configured")
+    data = get_secret_json(secret_arn)
+    signing_secret = str(data.get("signing_secret") or "").strip()
+    if not signing_secret or signing_secret == "REPLACE_ME":
+        raise HTTPException(status_code=500, detail="Slack signing secret not configured")
+    return signing_secret
+
+
+def _require_twilio_auth() -> dict[str, str]:
+    secret_arn = str(_cfg.twilio_secret_arn or "").strip()
+    if not secret_arn:
+        raise HTTPException(status_code=500, detail="TWILIO_SECRET_ARN not configured")
+    data = get_secret_json(secret_arn)
+    account_sid = str(data.get("account_sid") or "").strip()
+    auth_token = str(data.get("auth_token") or "").strip()
+    if not account_sid or account_sid == "REPLACE_ME":
+        raise HTTPException(status_code=500, detail="Twilio account SID not configured")
+    if not auth_token or auth_token == "REPLACE_ME":
+        raise HTTPException(status_code=500, detail="Twilio auth token not configured")
+    return {
+        "account_sid": account_sid,
+        "auth_token": auth_token,
+    }
+
+
+def _require_github_webhook_secret() -> str:
+    secret_arn = str(_cfg.github_secret_arn or "").strip()
+    if not secret_arn:
+        raise HTTPException(status_code=500, detail="GITHUB_SECRET_ARN not configured")
+    data = get_secret_json(secret_arn)
+    webhook_secret = str(data.get("webhook_secret") or "").strip()
+    if not webhook_secret or webhook_secret == "REPLACE_ME":
+        raise HTTPException(status_code=500, detail="GitHub webhook secret not configured")
+    return webhook_secret
 
 
 # -----------------------------
@@ -342,22 +410,20 @@ def _space_agent_id(*, space_id: str) -> str | None:
 
 
 def _space_livekit_room_mode(*, space_id: str) -> str:
-    """Return the LiveKit room mode for a space.
-
-    Back-compat: if the DB schema predates 015_spaces_livekit_room_mode.sql,
-    fall back to 'ephemeral'.
-    """
+    """Return the LiveKit room mode for a space."""
     try:
         rows = _get_db().query(
             "SELECT livekit_room_mode FROM spaces WHERE space_id = CAST(:space_id AS uuid)",
             params={"space_id": str(space_id)},
         )
-        if not rows:
-            return "ephemeral"
-        v = str(rows[0].get("livekit_room_mode") or "").strip().lower()
-        return v if v in {"ephemeral", "stable"} else "ephemeral"
-    except Exception:
-        return "ephemeral"
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to look up space room mode: {e}")
+    if not rows:
+        raise HTTPException(status_code=404, detail="Space not found")
+    v = str(rows[0].get("livekit_room_mode") or "").strip().lower()
+    if v not in {"ephemeral", "stable"}:
+        raise HTTPException(status_code=500, detail=f"Invalid livekit_room_mode for space: {v}")
+    return v
 
 
 def _device_is_admin(device: AuthenticatedDevice) -> bool:
@@ -1778,22 +1844,18 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
         if isinstance(participant_identity, str) and participant_identity.startswith("user:"):
             user_id = participant_identity.split(":", 1)[1].strip()
             if user_id:
-                try:
-                    rows = _get_db().query(
-                        """
-                        SELECT person_id::TEXT as person_id
-                        FROM person_accounts
-                        WHERE agent_id = :agent_id::uuid
-                          AND user_id = :user_id::uuid
-                        LIMIT 1
-                        """,
-                        {"agent_id": space_agent_id, "user_id": user_id},
-                    )
-                    if rows and rows[0].get("person_id"):
-                        resolved_person_id = str(rows[0]["person_id"])
-                except Exception:
-                    # Back-compat: table not present or query failed.
-                    pass
+                rows = _get_db().query(
+                    """
+                    SELECT person_id::TEXT as person_id
+                    FROM person_accounts
+                    WHERE agent_id = :agent_id::uuid
+                      AND user_id = :user_id::uuid
+                    LIMIT 1
+                    """,
+                    {"agent_id": space_agent_id, "user_id": user_id},
+                )
+                if rows and rows[0].get("person_id"):
+                    resolved_person_id = str(rows[0]["person_id"])
     _get_db().execute(
         """INSERT INTO events(event_id, agent_id, space_id, device_id, person_id, type, payload)
            VALUES (:event_id::uuid, :agent_id::uuid, :space_id::uuid, :device_id::uuid,
@@ -1869,6 +1931,406 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
         logger.warning("Failed to broadcast event: %s", e)
 
     return IngestEventOut(event_id=event_id, queued=queued)
+
+
+@api_app.post("/v1/integrations/slack/webhook/{agent_id}/{space_id}", response_model=None)
+async def ingest_slack_webhook(agent_id: str, space_id: str, request: Request) -> Any:
+    signature = str(request.headers.get("x-slack-signature") or "").strip()
+    timestamp = str(request.headers.get("x-slack-request-timestamp") or "").strip()
+    if not signature or not timestamp:
+        raise HTTPException(status_code=401, detail="Missing Slack signature headers")
+
+    raw_body = await request.body()
+    signing_secret = _require_slack_signing_secret()
+    try:
+        verify_slack_request(
+            signing_secret,
+            timestamp=timestamp,
+            signature=signature,
+            body=raw_body,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+
+    _require_agent_space(agent_id, space_id)
+    if is_agent_disabled(_get_db(), agent_id):
+        raise HTTPException(status_code=403, detail="Agent is disabled")
+
+    normalized = normalize_slack_webhook(payload, agent_id=agent_id, space_id=space_id)
+    if normalized.challenge is not None:
+        return PlainTextResponse(normalized.challenge)
+    if normalized.ignored_reason is not None:
+        return {
+            "ok": True,
+            "provider": "slack",
+            "ignored": True,
+            "reason": normalized.ignored_reason,
+        }
+    if normalized.integration_message is None:
+        raise HTTPException(status_code=400, detail="Slack payload did not produce an integration message")
+
+    db = _get_db()
+    tx = db.begin()
+    write_result = None
+    resolved_message = None
+    inserted = False
+    try:
+        write_result = insert_integration_message(db, normalized.integration_message, transaction_id=tx)
+        resolved_message = write_result.message
+        inserted = write_result.inserted
+
+        if not resolved_message.event_id:
+            event_id = str(uuid.uuid4())
+            event_payload = dict(normalized.event_payload)
+            event_payload["integration_message_id"] = resolved_message.integration_message_id
+            db.execute(
+                """
+                INSERT INTO events(event_id, agent_id, space_id, device_id, type, payload)
+                VALUES(
+                    :event_id::uuid,
+                    :agent_id::uuid,
+                    :space_id::uuid,
+                    NULL,
+                    :type,
+                    :payload::jsonb
+                )
+                """,
+                {
+                    "event_id": event_id,
+                    "agent_id": agent_id,
+                    "space_id": space_id,
+                    "type": "integration.event.received",
+                    "payload": json.dumps(event_payload),
+                },
+                transaction_id=tx,
+            )
+            resolved_message = link_integration_message_event(
+                db,
+                integration_message_id=resolved_message.integration_message_id,
+                event_id=event_id,
+                transaction_id=tx,
+            )
+
+        db.commit(tx)
+    except RuntimeError as exc:
+        db.rollback(tx)
+        if "already linked to a different event" not in str(exc) or write_result is None:
+            raise
+        resolved_message = get_integration_message(
+            db,
+            integration_message_id=write_result.message.integration_message_id,
+        )
+        if resolved_message is None or not resolved_message.event_id:
+            raise HTTPException(status_code=409, detail="Slack webhook event conflict") from exc
+    except Exception:
+        db.rollback(tx)
+        raise
+
+    if resolved_message is None or not resolved_message.event_id:
+        raise RuntimeError("Slack integration message is missing an event_id")
+    if not _cfg.integration_queue_url:
+        raise HTTPException(status_code=500, detail="INTEGRATION_QUEUE_URL not configured")
+
+    enqueue_integration_event(
+        _get_sqs(),
+        queue_url=_cfg.integration_queue_url,
+        message=IntegrationQueueMessage(
+            event_id=resolved_message.event_id,
+            agent_id=agent_id,
+            space_id=space_id,
+            integration_message_id=resolved_message.integration_message_id,
+        ),
+    )
+
+    if _cfg.audit_bucket:
+        append_audit_entry(
+            db,
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
+            entry_type="integration_webhook_received",
+            entry={
+                "provider": "slack",
+                "space_id": space_id,
+                "event_id": resolved_message.event_id,
+                "integration_message_id": resolved_message.integration_message_id,
+                "inserted": inserted,
+            },
+        )
+
+    return {
+        "ok": True,
+        "provider": "slack",
+        "event_id": resolved_message.event_id,
+        "integration_message_id": resolved_message.integration_message_id,
+        "inserted": inserted,
+    }
+
+
+@api_app.post("/v1/integrations/twilio/webhook/{agent_id}/{space_id}", response_model=None)
+async def ingest_twilio_webhook(agent_id: str, space_id: str, request: Request) -> Any:
+    signature = str(request.headers.get("x-twilio-signature") or "").strip()
+    if not signature:
+        raise HTTPException(status_code=401, detail="Missing Twilio signature header")
+
+    raw_body = await request.body()
+    try:
+        payload = parse_twilio_form_body(raw_body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    twilio_auth = _require_twilio_auth()
+    try:
+        verify_twilio_request(
+            twilio_auth["auth_token"],
+            url=str(request.url),
+            params=payload,
+            signature=signature,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    _require_agent_space(agent_id, space_id)
+    if is_agent_disabled(_get_db(), agent_id):
+        raise HTTPException(status_code=403, detail="Agent is disabled")
+
+    normalized = normalize_twilio_webhook(payload, agent_id=agent_id, space_id=space_id)
+    if normalized.ignored_reason is not None:
+        return PlainTextResponse("")
+    if normalized.integration_message is None:
+        raise HTTPException(status_code=400, detail="Twilio payload did not produce an integration message")
+
+    db = _get_db()
+    tx = db.begin()
+    write_result = None
+    resolved_message = None
+    inserted = False
+    try:
+        write_result = insert_integration_message(db, normalized.integration_message, transaction_id=tx)
+        resolved_message = write_result.message
+        inserted = write_result.inserted
+
+        if not resolved_message.event_id:
+            event_id = str(uuid.uuid4())
+            event_payload = dict(normalized.event_payload)
+            event_payload["integration_message_id"] = resolved_message.integration_message_id
+            db.execute(
+                """
+                INSERT INTO events(event_id, agent_id, space_id, device_id, type, payload)
+                VALUES(
+                    :event_id::uuid,
+                    :agent_id::uuid,
+                    :space_id::uuid,
+                    NULL,
+                    :type,
+                    :payload::jsonb
+                )
+                """,
+                {
+                    "event_id": event_id,
+                    "agent_id": agent_id,
+                    "space_id": space_id,
+                    "type": "integration.event.received",
+                    "payload": json.dumps(event_payload),
+                },
+                transaction_id=tx,
+            )
+            resolved_message = link_integration_message_event(
+                db,
+                integration_message_id=resolved_message.integration_message_id,
+                event_id=event_id,
+                transaction_id=tx,
+            )
+
+        db.commit(tx)
+    except RuntimeError as exc:
+        db.rollback(tx)
+        if "already linked to a different event" not in str(exc) or write_result is None:
+            raise
+        resolved_message = get_integration_message(
+            db,
+            integration_message_id=write_result.message.integration_message_id,
+        )
+        if resolved_message is None or not resolved_message.event_id:
+            raise HTTPException(status_code=409, detail="Twilio webhook event conflict") from exc
+    except Exception:
+        db.rollback(tx)
+        raise
+
+    if resolved_message is None or not resolved_message.event_id:
+        raise RuntimeError("Twilio integration message is missing an event_id")
+    if not _cfg.integration_queue_url:
+        raise HTTPException(status_code=500, detail="INTEGRATION_QUEUE_URL not configured")
+
+    enqueue_integration_event(
+        _get_sqs(),
+        queue_url=_cfg.integration_queue_url,
+        message=IntegrationQueueMessage(
+            event_id=resolved_message.event_id,
+            agent_id=agent_id,
+            space_id=space_id,
+            integration_message_id=resolved_message.integration_message_id,
+        ),
+    )
+
+    if _cfg.audit_bucket:
+        append_audit_entry(
+            db,
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
+            entry_type="integration_webhook_received",
+            entry={
+                "provider": "twilio",
+                "space_id": space_id,
+                "event_id": resolved_message.event_id,
+                "integration_message_id": resolved_message.integration_message_id,
+                "inserted": inserted,
+            },
+        )
+
+    return PlainTextResponse("")
+
+
+@api_app.post("/v1/integrations/github/webhook/{agent_id}/{space_id}", response_model=None)
+async def ingest_github_webhook(agent_id: str, space_id: str, request: Request) -> Any:
+    signature = str(request.headers.get("x-hub-signature-256") or "").strip()
+    event_name = str(request.headers.get("x-github-event") or "").strip()
+    delivery_id = str(request.headers.get("x-github-delivery") or "").strip()
+    if not signature or not event_name or not delivery_id:
+        raise HTTPException(status_code=401, detail="Missing GitHub signature headers")
+
+    raw_body = await request.body()
+    webhook_secret = _require_github_webhook_secret()
+    try:
+        verify_github_request(webhook_secret, signature=signature, body=raw_body)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
+
+    _require_agent_space(agent_id, space_id)
+    if is_agent_disabled(_get_db(), agent_id):
+        raise HTTPException(status_code=403, detail="Agent is disabled")
+
+    normalized = normalize_github_webhook(
+        payload,
+        event_name=event_name,
+        delivery_id=delivery_id,
+        agent_id=agent_id,
+        space_id=space_id,
+    )
+    if normalized.ignored_reason is not None:
+        return {
+            "ok": True,
+            "provider": "github",
+            "ignored": True,
+            "reason": normalized.ignored_reason,
+        }
+    if normalized.integration_message is None:
+        raise HTTPException(status_code=400, detail="GitHub payload did not produce an integration message")
+
+    db = _get_db()
+    tx = db.begin()
+    write_result = None
+    resolved_message = None
+    inserted = False
+    try:
+        write_result = insert_integration_message(db, normalized.integration_message, transaction_id=tx)
+        resolved_message = write_result.message
+        inserted = write_result.inserted
+
+        if not resolved_message.event_id:
+            event_id = str(uuid.uuid4())
+            event_payload = dict(normalized.event_payload)
+            event_payload["integration_message_id"] = resolved_message.integration_message_id
+            db.execute(
+                """
+                INSERT INTO events(event_id, agent_id, space_id, device_id, type, payload)
+                VALUES(
+                    :event_id::uuid,
+                    :agent_id::uuid,
+                    :space_id::uuid,
+                    NULL,
+                    :type,
+                    :payload::jsonb
+                )
+                """,
+                {
+                    "event_id": event_id,
+                    "agent_id": agent_id,
+                    "space_id": space_id,
+                    "type": "integration.event.received",
+                    "payload": json.dumps(event_payload),
+                },
+                transaction_id=tx,
+            )
+            resolved_message = link_integration_message_event(
+                db,
+                integration_message_id=resolved_message.integration_message_id,
+                event_id=event_id,
+                transaction_id=tx,
+            )
+
+        db.commit(tx)
+    except RuntimeError as exc:
+        db.rollback(tx)
+        if "already linked to a different event" not in str(exc) or write_result is None:
+            raise
+        resolved_message = get_integration_message(
+            db,
+            integration_message_id=write_result.message.integration_message_id,
+        )
+        if resolved_message is None or not resolved_message.event_id:
+            raise HTTPException(status_code=409, detail="GitHub webhook event conflict") from exc
+    except Exception:
+        db.rollback(tx)
+        raise
+
+    if resolved_message is None or not resolved_message.event_id:
+        raise RuntimeError("GitHub integration message is missing an event_id")
+    if not _cfg.integration_queue_url:
+        raise HTTPException(status_code=500, detail="INTEGRATION_QUEUE_URL not configured")
+
+    enqueue_integration_event(
+        _get_sqs(),
+        queue_url=_cfg.integration_queue_url,
+        message=IntegrationQueueMessage(
+            event_id=resolved_message.event_id,
+            agent_id=agent_id,
+            space_id=space_id,
+            integration_message_id=resolved_message.integration_message_id,
+        ),
+    )
+
+    if _cfg.audit_bucket:
+        append_audit_entry(
+            db,
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
+            entry_type="integration_webhook_received",
+            entry={
+                "provider": "github",
+                "space_id": space_id,
+                "event_id": resolved_message.event_id,
+                "integration_message_id": resolved_message.integration_message_id,
+                "inserted": inserted,
+            },
+        )
+
+    return {
+        "ok": True,
+        "provider": "github",
+        "event_id": resolved_message.event_id,
+        "integration_message_id": resolved_message.integration_message_id,
+        "inserted": inserted,
+    }
 
 
 @api_app.get("/v1/memories")
@@ -2040,63 +2502,6 @@ class RecallOut(BaseModel):
     memories: list[RecallMemoryOut]
 
 
-def _recall_recent_fallback(
-    *,
-    agent_id: str,
-    space_id: str | None,
-    person_id: str | None,
-    tiers: list[str] | None,
-    limit: int,
-) -> RecallOut:
-    tier_clause = ""
-    params: dict[str, Any] = {
-        "agent_id": agent_id,
-        "limit": limit,
-    }
-    if tiers:
-        tier_clause = "AND tier = ANY(:tiers)"
-        params["tiers"] = tiers
-    space_clause = ""
-    if space_id:
-        space_clause = "AND (space_id = :space_id::uuid OR space_id IS NULL)"
-        params["space_id"] = space_id
-
-    person_clause = ""
-    if person_id:
-        person_clause = "AND (subject_person_id = :person_id::uuid OR participants @> :person_ref::jsonb)"
-        params["person_id"] = person_id
-        params["person_ref"] = json.dumps([f"person:{person_id}"])
-
-    rows = _get_db().query(
-        f"""
-        SELECT memory_id::TEXT as memory_id,
-               tier,
-               content,
-               created_at::TEXT as created_at
-        FROM memories
-        WHERE agent_id = :agent_id::uuid
-          {tier_clause}
-          {space_clause}
-          {person_clause}
-        ORDER BY created_at DESC
-        LIMIT :limit
-        """,
-        params,
-    )
-    return RecallOut(
-        memories=[
-            RecallMemoryOut(
-                memory_id=r["memory_id"],
-                tier=r["tier"],
-                content=r["content"],
-                created_at=r["created_at"],
-                distance=1.0,
-            )
-            for r in rows
-        ]
-    )
-
-
 @api_app.post("/v1/recall", response_model=RecallOut)
 def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_device)) -> RecallOut:
     """Semantic memory search using pgvector embeddings.
@@ -2121,15 +2526,8 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
         )
         target_agent_id = space_agent_id
 
-    # If embeddings are unavailable, fall back to recent memories so context hydration still works.
     if not _cfg.openai_secret_arn:
-        return _recall_recent_fallback(
-            agent_id=target_agent_id,
-            space_id=body.space_id,
-            person_id=body.person_id,
-            tiers=body.tiers,
-            limit=body.k,
-        )
+        raise HTTPException(status_code=503, detail="OPENAI_SECRET_ARN not configured")
 
     # Generate query embedding
     try:
@@ -2141,14 +2539,8 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
         )
         emb_str = "[" + ",".join(f"{x:.6f}" for x in query_embedding) + "]"
     except Exception as e:
-        logger.warning("Failed to generate query embedding (falling back to recency): %s", e)
-        return _recall_recent_fallback(
-            agent_id=target_agent_id,
-            space_id=body.space_id,
-            person_id=body.person_id,
-            tiers=body.tiers,
-            limit=body.k,
-        )
+        logger.warning("Failed to generate query embedding: %s", e)
+        raise HTTPException(status_code=502, detail="Failed to generate query embedding")
 
     # Build query with optional tier and space filters
     tier_clause = ""
@@ -2203,15 +2595,6 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
         )
         for r in rows
     ]
-
-    if not memories:
-        return _recall_recent_fallback(
-            agent_id=target_agent_id,
-            space_id=body.space_id,
-            person_id=body.person_id,
-            tiers=body.tiers,
-            limit=body.k,
-        )
 
     return RecallOut(memories=memories)
 

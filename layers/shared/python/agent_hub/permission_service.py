@@ -10,6 +10,8 @@ _DEFAULT_TOOL_RUNNER_SCOPES = [
     "http:request",
     "memory:write",
     "message:send",
+    "slack:message:write",
+    "twilio:sms:send",
     "shell:execute",
 ]
 

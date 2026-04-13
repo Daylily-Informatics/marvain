@@ -33,14 +33,7 @@ def find_config_path(explicit: str | None) -> Path | None:
 
     # User-global config locations (prefer XDG base dir spec).
     xdg_home = Path(os.getenv("XDG_CONFIG_HOME") or (Path.home() / ".config")).expanduser()
-    candidates = [
-        # Primary canonical location
-        xdg_home / "marvain" / "marvain-config.yaml",
-        # Legacy locations (kept for backwards compatibility during migration)
-        xdg_home / "marvain" / "marvain.yaml",
-        xdg_home / "marvain" / "config.yaml",
-        Path.home() / ".marvain" / "config.yaml",
-    ]
+    candidates = [xdg_home / "marvain" / "marvain-config.yaml"]
     for p in candidates:
         if p.exists():
             return p.resolve()

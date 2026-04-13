@@ -571,8 +571,6 @@ def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool, no_confirm: bool = Fals
         cmd.append("--guided")
     else:
         # Non-guided deploys must be fully non-interactive by default.
-        # Keep `--no-confirm` as a legacy flag, but `--no-guided` should never
-        # require stdin input.
         cmd.append("--no-confirm-changeset")
 
     if caps:
@@ -977,115 +975,6 @@ def doctor(ctx: Ctx, *, dry_run: bool) -> int:
     run_cmd(["aws", "sts", "get-caller-identity", *aws_cli_args(ctx.env)], env=cmd_env(ctx.env), dry_run=dry_run)
     _eprint("doctor OK")
     return 0
-
-
-def gui_run(
-    ctx: Ctx,
-    *,
-    dry_run: bool,
-    host: str,
-    port: int,
-    reload: bool,
-    stack_prefix: str | None,
-) -> int:
-    """Start the local GUI server.
-
-    The GUI runs locally (developer laptop or EC2) and connects to deployed
-    AWS resources (Aurora Data API, Cognito, S3, SQS) via environment variables.
-
-    Args:
-        host: Host to bind to (default: 127.0.0.1)
-        port: Port to bind to (default: 8084)
-        reload: Enable auto-reload on code changes
-        stack_prefix: Unused (kept for backward CLI compatibility)
-    """
-    import subprocess
-
-    rc = _conda_preflight(enforce=not dry_run)
-    if rc != 0:
-        return rc
-
-    _ = stack_prefix  # Unused but kept for backward CLI compatibility
-
-    repo_root = Path(__file__).parent.parent
-    hub_api_dir = repo_root / "functions" / "hub_api"
-    shared_layer = repo_root / "layers" / "shared" / "python"
-
-    # Get resources from marvain-config.yaml config
-    resources = ctx.cfg.get("envs", {}).get(ctx.env.env, {}).get("resources", {})
-    if not resources:
-        _eprint(f"ERROR: No resources found in config for env '{ctx.env.env}'")
-        _eprint("Run 'marvain monitor outputs --write-config' to populate resources.")
-        return 2
-
-    cmd = ["uvicorn", "app:app", "--host", host, "--port", str(port)]
-    if reload:
-        cmd.append("--reload")
-
-    public_base_url = str(os.environ.get("PUBLIC_BASE_URL", "")).strip().rstrip("/")
-    if public_base_url:
-        redirect_uri = f"{public_base_url}/auth/callback"
-    else:
-        redirect_uri = f"http://localhost:{port}/auth/callback"
-
-    _eprint(f"Starting local GUI server at http://{host}:{port}")
-    _eprint(f"Using config: {ctx.config_path} (env: {ctx.env.env})")
-    _eprint(f"$ cd {hub_api_dir} && {' '.join(cmd)}")
-
-    if dry_run:
-        return 0
-
-    # Build environment from marvain-config.yaml resources
-    env = os.environ.copy()
-
-    # Map config resource keys to environment variable names
-    resource_to_env = {
-        "DbClusterArn": "DB_RESOURCE_ARN",
-        "DbSecretArn": "DB_SECRET_ARN",
-        "DbName": "DB_NAME",
-        "CognitoUserPoolId": "COGNITO_USER_POOL_ID",
-        "CognitoAppClientId": "COGNITO_APP_CLIENT_ID",
-        "CognitoIdentityProvider": "COGNITO_IDENTITY_PROVIDER",
-        "CognitoDomain": "COGNITO_DOMAIN",
-        "AdminApiKeySecretArn": "ADMIN_SECRET_ARN",
-        "OpenAISecretArn": "OPENAI_SECRET_ARN",
-        "LiveKitSecretArn": "LIVEKIT_SECRET_ARN",
-        "LiveKitUrl": "LIVEKIT_URL",
-        "HubWebSocketUrl": "WS_API_URL",
-        "AuditBucketName": "AUDIT_BUCKET",
-        "ArtifactBucketName": "ARTIFACT_BUCKET",
-        "RecognitionQueueUrl": "RECOGNITION_QUEUE_URL",
-        "SessionSecretArn": "SESSION_SECRET_ARN",
-    }
-
-    for res_key, env_key in resource_to_env.items():
-        if res_key in resources and resources[res_key]:
-            env[env_key] = str(resources[res_key])
-
-    # Set Cognito redirect URI dynamically
-    env["COGNITO_REDIRECT_URI"] = redirect_uri
-    env["COGNITO_REGION"] = ctx.env.aws_region
-
-    # Set AWS credentials from config
-    env["AWS_PROFILE"] = ctx.env.aws_profile
-    env["AWS_REGION"] = ctx.env.aws_region
-    env["AWS_DEFAULT_REGION"] = ctx.env.aws_region
-
-    # Local development settings
-    env["ENVIRONMENT"] = "local"
-    env["LOG_LEVEL"] = env.get("LOG_LEVEL", "INFO")
-    # For local dev, use a static session secret (Lambda uses SESSION_SECRET_ARN)
-    if "SESSION_SECRET_KEY" not in env:
-        env["SESSION_SECRET_KEY"] = "local-dev-session-secret-key-change-in-production-123456"
-
-    # Set PYTHONPATH to include shared layer for agent_hub imports
-    existing_pythonpath = env.get("PYTHONPATH", "")
-    if existing_pythonpath:
-        env["PYTHONPATH"] = f"{shared_layer}:{existing_pythonpath}"
-    else:
-        env["PYTHONPATH"] = str(shared_layer)
-
-    return subprocess.call(cmd, cwd=str(hub_api_dir), env=env)
 
 
 # -----------------------------------------------------------------------------
@@ -1531,11 +1420,15 @@ def gui_start(
         "AdminApiKeySecretArn": "ADMIN_SECRET_ARN",
         "OpenAISecretArn": "OPENAI_SECRET_ARN",
         "LiveKitSecretArn": "LIVEKIT_SECRET_ARN",
+        "SlackSecretArn": "SLACK_SECRET_ARN",
+        "TwilioSecretArn": "TWILIO_SECRET_ARN",
+        "GitHubSecretArn": "GITHUB_SECRET_ARN",
         "LiveKitUrl": "LIVEKIT_URL",
         "HubWebSocketUrl": "WS_API_URL",
         "AuditBucketName": "AUDIT_BUCKET",
         "ArtifactBucketName": "ARTIFACT_BUCKET",
         "RecognitionQueueUrl": "RECOGNITION_QUEUE_URL",
+        "IntegrationQueueUrl": "INTEGRATION_QUEUE_URL",
         "SessionSecretArn": "SESSION_SECRET_ARN",
     }
 
@@ -2701,68 +2594,26 @@ def examples_create(
 
 
 def _get_cognito_client(ctx: Ctx):
-    """Get a boto3 cognito-idp client."""
-    import boto3
+    """Get a daylily-auth-cognito admin client."""
+    from daylily_auth_cognito.admin.client import CognitoAdminClient
 
-    session = boto3.Session(
-        profile_name=ctx.env.aws_profile,
-        region_name=ctx.env.aws_region,
+    return CognitoAdminClient(
+        region=ctx.env.aws_region,
+        aws_profile=ctx.env.aws_profile,
+        user_pool_id=_get_user_pool_id(ctx),
     )
-    return session.client("cognito-idp")
 
 
 def _get_user_pool_id(ctx: Ctx) -> str:
-    """Get the Cognito User Pool ID from stack resources/outputs.
-
-    First checks config.envs[env].resources (populated by `marvain monitor outputs --write-config`).
-    Falls back to live describe-stacks if not in config.
-    """
+    """Get the Cognito User Pool ID from config.envs[env].resources."""
     resources = ctx.cfg.get("envs", {}).get(ctx.env.env, {}).get("resources", {})
     pool_id = resources.get("CognitoUserPoolId")
     if pool_id:
         return pool_id
-
-    # Fallback: fetch from live stack
-    outs = aws_stack_outputs(ctx, dry_run=False)
-    pool_id = outs.get("CognitoUserPoolId")
-    if not pool_id:
-        raise ConfigError(
-            f"CognitoUserPoolId not found in outputs for env '{ctx.env.env}'. "
-            "Run 'marvain monitor outputs --write-config' to update config."
-        )
-    return pool_id
-
-
-# Backwards-compatible wrappers used by unit tests / older CLI naming.
-def cognito_admin_create_user(ctx: Ctx, *, email: str, dry_run: bool = False) -> dict[str, Any]:
-    """Create a Cognito user (admin-create-user).
-
-    This wrapper retains the older function name expected by tests.
-    """
-
-    pool_id = _get_user_pool_id(ctx)
-    _eprint(f"aws cognito-idp admin-create-user --user-pool-id {pool_id} --username {email}")
-    if dry_run:
-        return {}
-
-    # Default: suppress invite; user can be confirmed via set-password.
-    cognito_create_user(ctx, email=email, temporary_password=None, suppress_invite=True, dry_run=False)
-    return {}
-
-
-def cognito_admin_delete_user(ctx: Ctx, *, email: str, dry_run: bool = False) -> int:
-    """Delete a Cognito user (admin-delete-user).
-
-    This wrapper retains the older function name expected by tests.
-    """
-
-    pool_id = _get_user_pool_id(ctx)
-    _eprint(f"aws cognito-idp admin-delete-user --user-pool-id {pool_id} --username {email}")
-    if dry_run:
-        return 0
-
-    cognito_delete_user(ctx, email=email, dry_run=False)
-    return 0
+    raise ConfigError(
+        f"CognitoUserPoolId not found in config for env '{ctx.env.env}'. "
+        "Run 'marvain monitor outputs --write-config' before using Cognito commands."
+    )
 
 
 def cognito_create_user(
@@ -2794,9 +2645,16 @@ def cognito_create_user(
         _eprint(f"[DRY RUN] cognito-idp.admin_create_user({params})")
         return {"Username": email, "dry_run": True}
 
-    client = _get_cognito_client(ctx)
-    response = client.admin_create_user(**params)
-    return response.get("User", {})
+    from daylily_auth_cognito.admin.users import create_user
+
+    admin = _get_cognito_client(ctx)
+    return create_user(
+        admin,
+        email=email,
+        temporary_password=temporary_password,
+        email_verified=True,
+        suppress_message=suppress_invite,
+    )
 
 
 def cognito_set_password(
@@ -2817,13 +2675,10 @@ def cognito_set_password(
         )
         return
 
-    client = _get_cognito_client(ctx)
-    client.admin_set_user_password(
-        UserPoolId=pool_id,
-        Username=email,
-        Password=password,
-        Permanent=permanent,
-    )
+    from daylily_auth_cognito.admin.passwords import set_user_password
+
+    admin = _get_cognito_client(ctx)
+    set_user_password(admin, email=email, password=password, permanent=permanent)
     _eprint("Password set successfully")
 
 
@@ -2840,12 +2695,10 @@ def cognito_list_users(
         _eprint(f"[DRY RUN] cognito-idp.list_users(UserPoolId={pool_id})")
         return []
 
-    client = _get_cognito_client(ctx)
-    users = []
-    paginator = client.get_paginator("list_users")
-    for page in paginator.paginate(UserPoolId=pool_id):
-        users.extend(page.get("Users", []))
-    return users
+    from daylily_auth_cognito.admin.users import list_users as list_cognito_admin_users
+
+    admin = _get_cognito_client(ctx)
+    return list_cognito_admin_users(admin)
 
 
 def cognito_delete_user(
@@ -2862,8 +2715,10 @@ def cognito_delete_user(
         _eprint(f"[DRY RUN] cognito-idp.admin_delete_user(UserPoolId={pool_id}, Username={email})")
         return
 
-    client = _get_cognito_client(ctx)
-    client.admin_delete_user(UserPoolId=pool_id, Username=email)
+    from daylily_auth_cognito.admin.users import delete_user
+
+    admin = _get_cognito_client(ctx)
+    delete_user(admin, email=email)
     _eprint(f"User {email} deleted")
 
 
@@ -2880,10 +2735,10 @@ def cognito_get_user(
         _eprint(f"[DRY RUN] cognito-idp.admin_get_user(UserPoolId={pool_id}, Username={email})")
         return None
 
-    client = _get_cognito_client(ctx)
+    admin = _get_cognito_client(ctx)
     try:
-        return client.admin_get_user(UserPoolId=pool_id, Username=email)
-    except client.exceptions.UserNotFoundException:
+        return admin.cognito.admin_get_user(UserPoolId=pool_id, Username=email)
+    except admin.cognito.exceptions.UserNotFoundException:
         return None
 
 

@@ -1,7 +1,7 @@
 fastapi
 mangum
 itsdangerous
-daylily-cognito==0.1.24
+daylily-auth-cognito==2.0.1
 python-jose[cryptography]
 httpx
 livekit-api>=1.1.0

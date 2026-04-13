@@ -177,6 +177,27 @@ Resources:
       Description: Store your LiveKit credentials as {"api_key":"...","api_secret":"..."}
       SecretString: '{"api_key":"REPLACE_ME","api_secret":"REPLACE_ME"}'
 
+  SlackSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${AWS::StackName}/slack
+      Description: Store your Slack credentials as {"signing_secret":"...","bot_token":"..."}
+      SecretString: '{"signing_secret":"REPLACE_ME","bot_token":"REPLACE_ME"}'
+
+  TwilioSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${AWS::StackName}/twilio
+      Description: Store your Twilio credentials as {"account_sid":"...","auth_token":"...","from_number":"...","messaging_service_sid":"..."}
+      SecretString: '{"account_sid":"REPLACE_ME","auth_token":"REPLACE_ME","from_number":"REPLACE_ME","messaging_service_sid":"REPLACE_ME"}'
+
+  GitHubSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${AWS::StackName}/github
+      Description: Store your GitHub webhook secret as {"webhook_secret":"..."}
+      SecretString: '{"webhook_secret":"REPLACE_ME"}'
+
   GoogleOAuthSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
@@ -273,6 +294,11 @@ Resources:
     Properties:
       VisibilityTimeout: 60
 
+  IntegrationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 60
+
   # -----------------------------
   # WebSocket connection registry
   # -----------------------------
@@ -363,12 +389,16 @@ Resources:
           TRANSCRIPT_QUEUE_URL: !Ref TranscriptQueue
           ACTION_QUEUE_URL: !Ref ActionQueue
           RECOGNITION_QUEUE_URL: !Ref RecognitionQueue
+          INTEGRATION_QUEUE_URL: !Ref IntegrationQueue
           AUDIT_BUCKET: !Ref AuditBucket
           ARTIFACT_BUCKET: !Ref ArtifactBucket
           ADMIN_SECRET_ARN: !Ref AdminApiKeySecret
           OPENAI_SECRET_ARN: !Ref OpenAISecret
           LIVEKIT_URL: !Ref LiveKitUrl
           LIVEKIT_SECRET_ARN: !Ref LiveKitSecret
+          SLACK_SECRET_ARN: !Ref SlackSecret
+          TWILIO_SECRET_ARN: !Ref TwilioSecret
+          GITHUB_SECRET_ARN: !Ref GitHubSecret
           # Cognito settings
           COGNITO_REGION: !Ref AWS::Region
           COGNITO_USER_POOL_ID: !Ref CognitoUserPool
@@ -410,6 +440,9 @@ Resources:
                 - !Ref AdminApiKeySecret
                 - !Ref OpenAISecret
                 - !Ref LiveKitSecret
+                - !Ref SlackSecret
+                - !Ref TwilioSecret
+                - !Ref GitHubSecret
                 - !Ref SessionSecret
             - Effect: Allow
               Action:
@@ -419,6 +452,7 @@ Resources:
                 - !GetAtt TranscriptQueue.Arn
                 - !GetAtt ActionQueue.Arn
                 - !GetAtt RecognitionQueue.Arn
+                - !GetAtt IntegrationQueue.Arn
             - Effect: Allow
               Action:
                 - logs:FilterLogEvents
@@ -582,6 +616,7 @@ Resources:
           DB_SECRET_ARN: !Ref DbCredentialsSecret
           DB_NAME: !Ref DbName
           ACTION_QUEUE_URL: !Ref ActionQueue
+          INTEGRATION_QUEUE_URL: !Ref IntegrationQueue
           AUDIT_BUCKET: !Ref AuditBucket
           OPENAI_SECRET_ARN: !Ref OpenAISecret
           PLANNER_MODEL: !Ref PlannerModel
@@ -631,6 +666,11 @@ Resources:
           Properties:
             Queue: !GetAtt TranscriptQueue.Arn
             BatchSize: 5
+        IntegrationQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt IntegrationQueue.Arn
+            BatchSize: 5
 
   # -----------------------------
   # Tool Runner (execution plane)
@@ -650,6 +690,8 @@ Resources:
           DB_SECRET_ARN: !Ref DbCredentialsSecret
           DB_NAME: !Ref DbName
           AUDIT_BUCKET: !Ref AuditBucket
+          SLACK_SECRET_ARN: !Ref SlackSecret
+          TWILIO_SECRET_ARN: !Ref TwilioSecret
           WS_TABLE: !Ref WsConnectionsTable
           WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
           WS_API_ENDPOINT: !Sub https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
@@ -675,6 +717,8 @@ Resources:
                 - secretsmanager:GetSecretValue
               Resource:
                 - !Ref DbCredentialsSecret
+                - !Ref SlackSecret
+                - !Ref TwilioSecret
             - Effect: Allow
               Action:
                 - s3:PutObject
@@ -1117,6 +1161,15 @@ Outputs:
   LiveKitSecretArn:
     Description: Secrets Manager ARN containing LiveKit API key/secret placeholder
     Value: !Ref LiveKitSecret
+  SlackSecretArn:
+    Description: Secrets Manager ARN containing Slack signing secret/bot token placeholder
+    Value: !Ref SlackSecret
+  TwilioSecretArn:
+    Description: Secrets Manager ARN containing Twilio auth token/account SID placeholder
+    Value: !Ref TwilioSecret
+  GitHubSecretArn:
+    Description: Secrets Manager ARN containing GitHub webhook secret placeholder
+    Value: !Ref GitHubSecret
   LiveKitUrl:
     Description: LiveKit server URL for media connections
     Value: !Ref LiveKitUrl
@@ -1135,6 +1188,9 @@ Outputs:
   RecognitionQueueUrl:
     Description: SQS queue URL for recognition events (voice.sample / face.snapshot)
     Value: !Ref RecognitionQueue
+  IntegrationQueueUrl:
+    Description: SQS queue URL for normalized inbound integration events
+    Value: !Ref IntegrationQueue
   AuditBucketName:
     Description: Bucket for tamper-evident audit log (Object Lock)
     Value: !Ref AuditBucket

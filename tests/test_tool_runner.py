@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import io
+import base64
+import json
+import os
+import urllib.error
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from agent_hub.tools.registry import ToolContext, ToolRegistry, ToolResult
@@ -371,3 +377,255 @@ class TestHttpRequestTool:
         assert result.ok is True
         assert result.data["status"] == 200
         assert '{"ok": true}' in result.data["body"]
+
+
+class _FakeSlackResponse:
+    def __init__(self, payload: dict):
+        self._payload = json.dumps(payload).encode("utf-8")
+        self.status = 200
+
+    def read(self) -> bytes:
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeTwilioResponse:
+    def __init__(self, payload: dict):
+        self._payload = json.dumps(payload).encode("utf-8")
+        self.status = 201
+
+    def read(self) -> bytes:
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class TestSlackPostMessageTool:
+    """Tests for the slack_post_message tool."""
+
+    def test_slack_post_message_success(self):
+        """slack_post_message calls Slack and returns response metadata."""
+        from agent_hub.tools.slack_post_message import _handler
+
+        ctx = ToolContext(
+            db=MagicMock(),
+            agent_id="agent-1",
+            space_id="space-1",
+            action_id="action-1",
+            device_scopes=["slack:message:write"],
+        )
+
+        with (
+            patch.dict(os.environ, {"SLACK_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:123:secret:slack"}, clear=False),
+            patch("agent_hub.tools.slack_post_message.get_secret_json", return_value={"bot_token": "xoxb-test"}),
+            patch("agent_hub.tools.slack_post_message.insert_integration_message") as mock_insert,
+            patch(
+                "agent_hub.tools.slack_post_message.urllib.request.urlopen",
+                return_value=_FakeSlackResponse(
+                    {
+                        "ok": True,
+                        "channel": "C123",
+                        "ts": "1712345678.000100",
+                        "message": {"text": "hello", "thread_ts": "1712345678.000100"},
+                    }
+                ),
+            ) as mock_urlopen,
+        ):
+            result = _handler({"channel_id": "C123", "text": "hello"}, ctx)
+
+        assert result.ok is True
+        assert result.data["channel_id"] == "C123"
+        assert result.data["ts"] == "1712345678.000100"
+        assert result.data["thread_ts"] == "1712345678.000100"
+        req = mock_urlopen.call_args.args[0]
+        assert req.full_url == "https://slack.com/api/chat.postMessage"
+        assert req.get_header("Authorization") == "Bearer xoxb-test"
+        inserted_message = mock_insert.call_args.args[1]
+        assert inserted_message.provider == "slack"
+        assert inserted_message.direction == "outbound"
+        assert inserted_message.dedupe_key == "action:action-1"
+        assert inserted_message.external_message_id == "1712345678.000100"
+
+    def test_slack_post_message_handles_slack_api_error(self):
+        """slack_post_message surfaces Slack application errors."""
+        from agent_hub.tools.slack_post_message import _handler
+
+        ctx = ToolContext(
+            db=MagicMock(),
+            agent_id="agent-1",
+            space_id="space-1",
+            action_id="action-1",
+            device_scopes=["slack:message:write"],
+        )
+
+        with (
+            patch.dict(os.environ, {"SLACK_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:123:secret:slack"}, clear=False),
+            patch("agent_hub.tools.slack_post_message.get_secret_json", return_value={"bot_token": "xoxb-test"}),
+            patch("agent_hub.tools.slack_post_message.insert_integration_message") as mock_insert,
+            patch(
+                "agent_hub.tools.slack_post_message.urllib.request.urlopen",
+                return_value=_FakeSlackResponse({"ok": False, "error": "channel_not_found"}),
+            ),
+        ):
+            result = _handler({"channel_id": "C123", "text": "hello"}, ctx)
+
+        assert result.ok is False
+        assert result.error == "slack_api_error: channel_not_found"
+        mock_insert.assert_not_called()
+
+    def test_slack_post_message_handles_http_error(self):
+        """slack_post_message returns HTTP-level failures."""
+        from agent_hub.tools.slack_post_message import _handler
+
+        ctx = ToolContext(
+            db=MagicMock(),
+            agent_id="agent-1",
+            space_id="space-1",
+            action_id="action-1",
+            device_scopes=["slack:message:write"],
+        )
+        http_error = urllib.error.HTTPError(
+            url="https://slack.com/api/chat.postMessage",
+            code=429,
+            msg="Too Many Requests",
+            hdrs=None,
+            fp=io.BytesIO(b'{"ok": false, "error": "rate_limited"}'),
+        )
+
+        with (
+            patch.dict(os.environ, {"SLACK_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:123:secret:slack"}, clear=False),
+            patch("agent_hub.tools.slack_post_message.get_secret_json", return_value={"bot_token": "xoxb-test"}),
+            patch("agent_hub.tools.slack_post_message.insert_integration_message") as mock_insert,
+            patch("agent_hub.tools.slack_post_message.urllib.request.urlopen", side_effect=http_error),
+        ):
+            result = _handler({"channel_id": "C123", "text": "hello"}, ctx)
+
+        assert result.ok is False
+        assert result.error == "http_error_429"
+        mock_insert.assert_not_called()
+
+
+class TestTwilioSendSmsTool:
+    """Tests for the twilio_send_sms tool."""
+
+    def test_twilio_send_sms_success(self):
+        """twilio_send_sms posts a form request and returns Twilio metadata."""
+        from agent_hub.tools.twilio_send_sms import _handler
+
+        ctx = ToolContext(
+            db=MagicMock(),
+            agent_id="agent-1",
+            space_id="space-1",
+            action_id="action-1",
+            device_scopes=["twilio:sms:send"],
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {"TWILIO_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:123:secret:twilio"},
+                clear=False,
+            ),
+            patch(
+                "agent_hub.tools.twilio_send_sms.get_secret_json",
+                return_value={
+                    "account_sid": "AC123",
+                    "auth_token": "auth-token",
+                    "from_number": "+15551239999",
+                },
+            ),
+            patch("agent_hub.tools.twilio_send_sms.insert_integration_message") as mock_insert,
+            patch(
+                "agent_hub.tools.twilio_send_sms.urllib.request.urlopen",
+                return_value=_FakeTwilioResponse(
+                    {
+                        "sid": "SM123",
+                        "status": "queued",
+                        "to": "+15551230001",
+                        "from": "+15551239999",
+                    }
+                ),
+            ) as mock_urlopen,
+        ):
+            result = _handler({"to": "+15551230001", "body": "hello"}, ctx)
+
+        assert result.ok is True
+        assert result.data["sid"] == "SM123"
+        assert result.data["status"] == "queued"
+        req = mock_urlopen.call_args.args[0]
+        assert req.full_url == "https://api.twilio.com/2010-04-01/Accounts/AC123/Messages.json"
+        expected_auth = "Basic " + base64.b64encode(b"AC123:auth-token").decode("utf-8")
+        assert req.get_header("Authorization") == expected_auth
+        assert req.data.decode("utf-8") == "To=%2B15551230001&Body=hello&From=%2B15551239999"
+        inserted_message = mock_insert.call_args.args[1]
+        assert inserted_message.provider == "twilio"
+        assert inserted_message.direction == "outbound"
+        assert inserted_message.dedupe_key == "action:action-1"
+        assert inserted_message.external_message_id == "SM123"
+
+    def test_twilio_send_sms_handles_http_error(self):
+        """twilio_send_sms returns HTTP-level failures."""
+        from agent_hub.tools.twilio_send_sms import _handler
+
+        ctx = ToolContext(
+            db=MagicMock(),
+            agent_id="agent-1",
+            space_id="space-1",
+            action_id="action-1",
+            device_scopes=["twilio:sms:send"],
+        )
+        http_error = urllib.error.HTTPError(
+            url="https://api.twilio.com/2010-04-01/Accounts/AC123/Messages.json",
+            code=400,
+            msg="Bad Request",
+            hdrs=None,
+            fp=io.BytesIO(b'{"message": "The To phone number is invalid."}'),
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {"TWILIO_SECRET_ARN": "arn:aws:secretsmanager:us-east-1:123:secret:twilio"},
+                clear=False,
+            ),
+            patch(
+                "agent_hub.tools.twilio_send_sms.get_secret_json",
+                return_value={
+                    "account_sid": "AC123",
+                    "auth_token": "auth-token",
+                    "from_number": "+15551239999",
+                },
+            ),
+            patch("agent_hub.tools.twilio_send_sms.insert_integration_message") as mock_insert,
+            patch("agent_hub.tools.twilio_send_sms.urllib.request.urlopen", side_effect=http_error),
+        ):
+            result = _handler({"to": "+15551230001", "body": "hello"}, ctx)
+
+        assert result.ok is False
+        assert result.error == "http_error_400"
+        mock_insert.assert_not_called()
+
+
+def test_tool_runner_template_wires_provider_secrets():
+    template_text = (Path(__file__).resolve().parents[1] / "template.yaml").read_text(encoding="utf-8")
+    assert "ToolRunnerFunction:" in template_text
+    assert "SLACK_SECRET_ARN: !Ref SlackSecret" in template_text
+    assert "- !Ref SlackSecret" in template_text
+    assert "TWILIO_SECRET_ARN: !Ref TwilioSecret" in template_text
+    assert "- !Ref TwilioSecret" in template_text
+
+
+def test_hub_api_template_wires_github_secret():
+    template_text = (Path(__file__).resolve().parents[1] / "template.yaml").read_text(encoding="utf-8")
+    assert "HubApiFunction:" in template_text
+    assert "GITHUB_SECRET_ARN: !Ref GitHubSecret" in template_text
+    assert "- !Ref GitHubSecret" in template_text

@@ -1,40 +1,31 @@
 from __future__ import annotations
 
-import io
 import os
+import sys
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
+
+from cli_core_yo.conformance import assert_exit_code, invoke
 
 
-class TestTyperSmoke(unittest.TestCase):
-    def test_typer_help_and_build_dry_run_do_not_crash(self) -> None:
-        try:
-            from marvain_cli import typer_app
-        except ModuleNotFoundError:
-            # Typer/Click not installed; that's an allowed mode (argparse fallback).
-            self.skipTest("typer not installed")
+class TestCliCoreSmoke(unittest.TestCase):
+    def test_help_version_and_build_dry_run_do_not_crash(self) -> None:
+        from marvain_cli import cli
 
-        with tempfile.TemporaryDirectory() as td:
+        with tempfile.TemporaryDirectory() as tmpdir:
             old_home = os.environ.get("HOME")
             old_xdg = os.environ.get("XDG_CONFIG_HOME")
             old_cwd = os.getcwd()
-            os.environ["HOME"] = td
-            os.environ["XDG_CONFIG_HOME"] = os.path.join(td, ".config")
+            os.environ["HOME"] = tmpdir
+            os.environ["XDG_CONFIG_HOME"] = os.path.join(tmpdir, ".config")
             try:
-                # Ensure repo-local marvain.yaml (if present) does not affect this test.
-                os.chdir(td)
-                out = io.StringIO()
-                err = io.StringIO()
-                with redirect_stdout(out), redirect_stderr(err):
-                    rc_help = typer_app.run(["--help"])
-                    rc_version = typer_app.run(["--version"])
-                    rc_build = typer_app.run(["--dry-run", "build"])
-                    rc_build2 = typer_app.run(["build", "--dry-run"])
-                self.assertEqual(rc_help, 0)
-                self.assertEqual(rc_version, 0)
-                self.assertEqual(rc_build, 0)
-                self.assertEqual(rc_build2, 0)
+                os.chdir(tmpdir)
+                app = cli.build_app()
+
+                assert_exit_code(invoke(app, ["--help"], prog_name="marvain"), 0)
+                assert_exit_code(invoke(app, ["version"], prog_name="marvain"), 0)
+                assert_exit_code(invoke(app, ["--dry-run", "build"], prog_name="marvain"), 0)
             finally:
                 os.chdir(old_cwd)
                 if old_home is None:
@@ -47,34 +38,29 @@ class TestTyperSmoke(unittest.TestCase):
                     os.environ["XDG_CONFIG_HOME"] = old_xdg
 
     def test_missing_config_returns_nonzero_for_config_required_commands(self) -> None:
-        try:
-            from marvain_cli import typer_app
-        except ModuleNotFoundError:
-            # Typer/Click not installed; that's an allowed mode (argparse fallback).
-            self.skipTest("typer not installed")
+        from marvain_cli import cli
 
-        with tempfile.TemporaryDirectory() as td:
+        with tempfile.TemporaryDirectory() as tmpdir:
             old_home = os.environ.get("HOME")
             old_xdg = os.environ.get("XDG_CONFIG_HOME")
             old_cwd = os.getcwd()
-            os.environ["HOME"] = td
-            os.environ["XDG_CONFIG_HOME"] = os.path.join(td, ".config")
+            os.environ["HOME"] = tmpdir
+            os.environ["XDG_CONFIG_HOME"] = os.path.join(tmpdir, ".config")
             try:
-                # Ensure repo-local marvain.yaml (if present) does not affect this test.
-                os.chdir(td)
-                out = io.StringIO()
-                err = io.StringIO()
-                with redirect_stdout(out), redirect_stderr(err):
-                    # Help should work without config.
-                    rc_gui_help = typer_app.run(["gui", "--help"])
+                os.chdir(tmpdir)
+                app = cli.build_app()
 
-                    # These should require config (even if --dry-run is set).
-                    rc_deploy_dry = typer_app.run(["deploy", "--dry-run"])
-                    rc_bootstrap_dry = typer_app.run(["bootstrap", "--dry-run", "--space-name", "home"])
+                assert_exit_code(invoke(app, ["gui", "--help"], prog_name="marvain"), 0)
 
-                self.assertEqual(rc_gui_help, 0)
-                self.assertNotEqual(rc_deploy_dry, 0)
-                self.assertNotEqual(rc_bootstrap_dry, 0)
+                deploy = invoke(app, ["--dry-run", "deploy"], prog_name="marvain")
+                bootstrap = invoke(
+                    app,
+                    ["--dry-run", "bootstrap", "--space-name", "home"],
+                    prog_name="marvain",
+                )
+
+                self.assertNotEqual(deploy.exit_code, 0)
+                self.assertNotEqual(bootstrap.exit_code, 0)
             finally:
                 os.chdir(old_cwd)
                 if old_home is None:
@@ -85,6 +71,59 @@ class TestTyperSmoke(unittest.TestCase):
                     os.environ.pop("XDG_CONFIG_HOME", None)
                 else:
                     os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+    def test_test_command_invokes_pytest(self) -> None:
+        from marvain_cli import cli
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_home = os.environ.get("HOME")
+            old_xdg = os.environ.get("XDG_CONFIG_HOME")
+            old_cwd = os.getcwd()
+            os.environ["HOME"] = tmpdir
+            os.environ["XDG_CONFIG_HOME"] = os.path.join(tmpdir, ".config")
+            try:
+                os.chdir(tmpdir)
+                app = cli.build_app()
+                with mock.patch("marvain_cli.commands.subprocess.call", return_value=0) as call_mock:
+                    assert_exit_code(invoke(app, ["test"], prog_name="marvain"), 0)
+
+                cmd = call_mock.call_args.args[0]
+                cwd = call_mock.call_args.kwargs["cwd"]
+                env = call_mock.call_args.kwargs["env"]
+                self.assertEqual(cmd, [sys.executable, "-m", "pytest"])
+                self.assertTrue(cwd.endswith("/marvain"))
+                self.assertIn("layers/shared/python", env["PYTHONPATH"])
+            finally:
+                os.chdir(old_cwd)
+                if old_home is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = old_home
+                if old_xdg is None:
+                    os.environ.pop("XDG_CONFIG_HOME", None)
+                else:
+                    os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+    def test_cli_uses_cli_core_pattern_without_local_typer_shim(self) -> None:
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[1]
+        pyproject_text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+        commands_text = (repo_root / "marvain_cli" / "commands.py").read_text(encoding="utf-8")
+
+        self.assertNotIn('"typer",', pyproject_text)
+        self.assertIn("from typer import Argument, Exit, Option, confirm", commands_text)
+        self.assertFalse((repo_root / "marvain_cli" / "cli_primitives.py").exists())
+
+    def test_project_uses_scm_versioning(self) -> None:
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[1]
+        pyproject_text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+
+        self.assertIn('dynamic = ["version"]', pyproject_text)
+        self.assertIn("[tool.setuptools_scm]", pyproject_text)
+        self.assertNotIn('version = "0.3.11"', pyproject_text)
 
 
 if __name__ == "__main__":

@@ -6,10 +6,10 @@ import os
 import time
 import uuid
 
-import boto3
 import pytest
 import requests
 import websockets
+from daylily_auth_cognito.admin.client import CognitoAdminClient
 
 
 pytestmark = pytest.mark.e2e
@@ -51,8 +51,8 @@ def cfg() -> dict[str, str]:
 
 @pytest.fixture(scope="session")
 def user_access_token(cfg: dict[str, str]) -> str:
-    client = boto3.client("cognito-idp", region_name=cfg["region"])
-    resp = client.initiate_auth(
+    admin = CognitoAdminClient(region=cfg["region"], app_client_id=cfg["client_id"])
+    resp = admin.cognito.initiate_auth(
         AuthFlow="USER_PASSWORD_AUTH",
         ClientId=cfg["client_id"],
         AuthParameters={
