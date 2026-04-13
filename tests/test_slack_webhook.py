@@ -16,6 +16,7 @@ from unittest import mock
 
 AGENT_ID = "11111111-1111-1111-1111-111111111111"
 SPACE_ID = "22222222-2222-2222-2222-222222222222"
+INTEGRATION_ACCOUNT_ID = "55555555-5555-5555-5555-555555555555"
 INTEGRATION_MESSAGE_ID = "33333333-3333-3333-3333-333333333333"
 EVENT_ID = "44444444-4444-4444-4444-444444444444"
 SLACK_SECRET = "slack-signing-secret"
@@ -107,6 +108,23 @@ def _integration_row(
     return row
 
 
+def _account_row() -> dict[str, object]:
+    return {
+        "integration_account_id": INTEGRATION_ACCOUNT_ID,
+        "agent_id": AGENT_ID,
+        "provider": "slack",
+        "display_name": "Primary Slack",
+        "external_account_id": "T111",
+        "default_space_id": SPACE_ID,
+        "credentials_secret_arn": "arn:aws:secretsmanager:us-east-1:123:secret:slack-account",
+        "scopes_json": "[]",
+        "config_json": "{}",
+        "status": "active",
+        "created_at": "2026-04-12T00:00:00+00:00",
+        "updated_at": "2026-04-12T00:00:00+00:00",
+    }
+
+
 class _ScriptedDb:
     def __init__(self, query_responses: list[list[dict[str, object]]]):
         self.query_responses = list(query_responses)
@@ -158,7 +176,6 @@ class TestSlackWebhook(unittest.TestCase):
             self.__class__._orig_cfg,
             audit_bucket=None,
             integration_queue_url="https://sqs.us-east-1.amazonaws.com/123/IntegrationQueue",
-            slack_secret_arn="arn:aws:secretsmanager:us-east-1:123:secret:slack",
         )
         self.mod.get_secret_json = mock.Mock(return_value={"signing_secret": SLACK_SECRET})
         self.mod.append_audit_entry = mock.Mock()
@@ -185,13 +202,13 @@ class TestSlackWebhook(unittest.TestCase):
             "x-slack-signature": signature or _slack_signature(timestamp_n, body),
         }
         return self.client.post(
-            f"/v1/integrations/slack/webhook/{AGENT_ID}/{SPACE_ID}",
+            f"/v1/integrations/slack/webhook/{INTEGRATION_ACCOUNT_ID}",
             content=body,
             headers=headers,
         )
 
     def test_url_verification_returns_challenge(self) -> None:
-        db = _ScriptedDb([[{"ok": True}]])
+        db = _ScriptedDb([[_account_row()]])
         self.mod._get_db = mock.Mock(return_value=db)
 
         response = self._post({"type": "url_verification", "challenge": "challenge-token"})
@@ -202,7 +219,7 @@ class TestSlackWebhook(unittest.TestCase):
         self.mock_sqs.send_message.assert_not_called()
 
     def test_invalid_signature_is_rejected(self) -> None:
-        self.mod._get_db = mock.Mock(return_value=_ScriptedDb([]))
+        self.mod._get_db = mock.Mock(return_value=_ScriptedDb([[_account_row()]]))
 
         response = self._post(
             {"type": "url_verification", "challenge": "challenge-token"},
@@ -213,18 +230,18 @@ class TestSlackWebhook(unittest.TestCase):
         self.assertEqual(response.json()["detail"], "invalid Slack signature")
 
     def test_missing_slack_secret_fails_closed(self) -> None:
-        self.mod._cfg = dataclasses.replace(self.mod._cfg, slack_secret_arn=None)
-        self.mod._get_db = mock.Mock(return_value=_ScriptedDb([]))
+        self.mod.get_secret_json = mock.Mock(return_value={})
+        self.mod._get_db = mock.Mock(return_value=_ScriptedDb([[_account_row()]]))
 
         response = self._post({"type": "url_verification", "challenge": "challenge-token"})
 
         self.assertEqual(response.status_code, 500)
-        self.assertEqual(response.json()["detail"], "SLACK_SECRET_ARN not configured")
+        self.assertEqual(response.json()["detail"], "Slack signing secret not configured")
 
     def test_event_callback_stores_event_and_enqueues(self) -> None:
         db = _ScriptedDb(
             [
-                [{"ok": True}],
+                [_account_row()],
                 [_integration_row(inserted=True)],
                 [_integration_row(event_id=EVENT_ID)],
             ]
@@ -273,7 +290,7 @@ class TestSlackWebhook(unittest.TestCase):
     def test_duplicate_event_returns_success_and_reenqueues(self) -> None:
         db = _ScriptedDb(
             [
-                [{"ok": True}],
+                [_account_row()],
                 [_integration_row(event_id=EVENT_ID, inserted=False)],
             ]
         )
@@ -301,7 +318,7 @@ class TestSlackWebhook(unittest.TestCase):
         self.mock_sqs.send_message.assert_called_once()
 
     def test_bot_message_is_ignored_without_storage_or_enqueue(self) -> None:
-        db = _ScriptedDb([[{"ok": True}]])
+        db = _ScriptedDb([[_account_row()]])
         self.mod._get_db = mock.Mock(return_value=db)
 
         response = self._post(
@@ -329,7 +346,7 @@ class TestSlackWebhook(unittest.TestCase):
         self.mock_sqs.send_message.assert_not_called()
 
     def test_message_subtype_is_ignored_without_storage_or_enqueue(self) -> None:
-        db = _ScriptedDb([[{"ok": True}]])
+        db = _ScriptedDb([[_account_row()]])
         self.mod._get_db = mock.Mock(return_value=db)
 
         response = self._post(

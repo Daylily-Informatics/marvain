@@ -1,235 +1,239 @@
 # Still To Add
 
-This document tracks the work intentionally left outside the completed V1 sprint slice.
+This document is derived from the current checked-out branch. It is a publication
+target for remaining gaps and refreshed completion accounting, not a source of
+truth on its own.
 
-The current branch now covers the sprinted V1 path:
+Source documents used for the accounting below:
 
-- `integration_messages`
-- `IntegrationQueue`
-- Slack webhook ingestion
-- GitHub webhook ingestion
-- Twilio SMS ingestion
-- planner support for `integration.event.received`
-- `slack_post_message`
-- `twilio_send_sms`
-- outbound `integration_messages` rows for Slack and Twilio actions
+- `README.md`
+- `docs/ARCHITECTURE.md`
+- `docs/IMPLEMENTATION_STATUS.generated.md`
+- `ADVANCED_FEATURE_PLAN.md`
+- `docs/plans/marvain_deep_analysis_upgrade_spec.md`
+- `docs/plans/marvain_sprint_to_functional_plan.md`
+- `docs/plans/multi_agent_marvain_post_v1_completion.md`
 
-Everything below remains deferred.
+Percentages use equal-weight grouped deliverables. Only `complete / total` counts
+toward the percentage. `partial` items are called out in notes and do not receive
+credit. There is intentionally no single blended repo-wide percentage.
 
 ## Gmail
 
-Status: not started.
+Status: partial.
 
-Why it is still out:
+Already in branch:
 
-- no Gmail poller
-- no Gmail provider module
-- no Gmail webhook substitute or cursoring
-- no `gmail_create_draft`
-- no `gmail_send_message`
+- account-backed Gmail credentials in `integration_accounts.credentials_secret_arn`
+- `functions/gmail_poll/handler.py`
+- `integration_sync_state` cursor management
+- normalized inbound Gmail storage in `integration_messages`
+- synthetic `integration.event.received` planner ingress
 
-What still needs to be added:
+Still missing:
 
-- provider secret contract and stack wiring
-- mailbox sync state storage
-- poll worker
-- normalization into `integration_messages`
-- planner-safe outbound tools
+- `gmail_create_draft`
+- `gmail_send_message`
+- outbound Gmail execution and regression coverage
 
 ## Linear
 
-Status: not started.
+Status: partial.
 
-Why it is still out:
+Already in branch:
 
-- no Linear webhook route
-- no Linear provider module
-- no Linear outbound comment tool
+- `linear_comment_create` outbound tool
+- Linear action contract payload and required scope wiring
+- outbound `integration_messages` persistence for Linear comment sends
 
-What still needs to be added:
+Still missing:
 
-- webhook verification and normalization
-- planner mapping for Linear issue/comment events
-- `linear_comment_create`
-- any provider-specific secret/config wiring
+- `layers/shared/python/agent_hub/integrations/linear.py`
+- account-keyed Linear webhook ingress
+- inbound normalization and `integration.event.received` wiring for Linear
 
 ## Ramp
 
 Status: not started.
 
-Why it is still out:
+Still missing:
 
-- no Ramp schema
-- no Ramp ingress path
-- no Ramp provider module
-- no Ramp planner/action mapping
-
-What still needs to be added:
-
-- source-of-truth event model for Ramp objects
-- provider auth and secret shape
-- normalization into `integration_messages`
+- provider model and credentials contract
+- normalized inbound storage model
+- planner/action mapping
 - any outbound action surface, if still desired
 
 ## retention sweeper
 
-Status: not started.
+Status: partial.
 
-Why it is still out:
+Already in branch:
 
-- no sweeper Lambda
-- no redaction schedule
-- current `integration_messages` V1 table does not include the broader PHI/retention fields from the deep spec
+- `contains_phi`, `retention_until`, and `redacted_at` on `integration_messages`
+- `functions/retention_sweeper/handler.py`
+- `integration_message_redacted` audit emission
 
-What still needs to be added:
+Still missing:
 
-- retention/redaction columns if the broader spec stays in force
-- scheduled sweeper function
-- audit entries for redaction batches
+- the broader integration audit event set from the deep-analysis spec:
+  `integration_message_received`, `integration_message_deduped`,
+  `integration_message_triaged`, `integration_message_drafted`,
+  `integration_message_sent`
 
 ## OAuth UI
 
-Status: not started for integrations.
+Status: partial.
 
-Why it is still out:
+Already in branch:
 
-- V1 uses stack-level provider secrets
-- there is no user-facing integration connect/disconnect UI
-- there is no provider account authorization flow for Slack/GitHub/Gmail/Linear/Twilio
+- `integration_accounts` schema and store
+- Hub API CRUD for integration accounts
+- account-owned secret references instead of stack-level provider secrets
 
-What still needs to be added:
+Still missing:
 
-- integration account model and CRUD
-- provider-specific OAuth initiation/callback flows
-- UI surfaces for connect, rotate, revoke, and status
+- user-facing connect/disconnect UI
+- provider-specific OAuth initiation and callback flows
+- token rotation/revoke UX for human operators
 
 ## generic http_request provider actions
 
 Status: intentionally not implemented.
 
-Why it is still out:
+Still missing:
 
-- the sprint explicitly required typed provider tools instead of generic outbound provider actions
-- current V1 only uses `slack_post_message` and `twilio_send_sms`
-
-What still needs to be added:
-
-- a clear policy decision that generic provider actions are allowed
-- per-provider allowlists and approval rules
-- stronger audit and abuse controls than the current V1 needs
+- a scoped approval and policy model that explicitly allows generic provider egress
+- provider allowlists and abuse controls strong enough for planner exposure
 
 ## extra queues beyond IntegrationQueue
 
 Status: not started.
 
-Why it is still out:
-
-- the sprint explicitly limited queue expansion
-- current ingress work uses `IntegrationQueue` only
-
-What still needs to be added:
+Still missing:
 
 - a concrete need that justifies another queue
-- ownership boundaries for each new queue consumer
-- test coverage for retry and dedupe semantics
+- ownership boundaries for each added consumer
+- retry and dedupe coverage for any new queue path
 
 ## broad refactors outside the touched path
 
 Status: intentionally deferred.
 
-Why it is still out:
+Still missing:
 
-- the sprint required minimal edits on the existing patterns
-- this branch stays narrow around planner, tool runner, webhook ingress, storage, stack wiring, and CLI cleanup
-
-What still needs to be added:
-
-- only after a new scoped plan exists
-- no greenfield project value comes from speculative cleanup for untouched areas
+- a new scoped plan that justifies repo-wide cleanup
+- explicit value beyond speculative polish
 
 ## Completion Accounting
 
 Method:
 
-- For the sprint plan, count completed phases against the 8 named phases in `docs/plans/marvain_sprint_to_functional_plan.md`.
-- For the user-declared V1 scope, count completed scope items against the 7 mandatory items listed in the sprint request.
-- For the broader `docs/plans/marvain_deep_analysis_upgrade_spec.md`, use grouped implementation deliverables from Phase 4 plus the explicit idempotency requirements. This avoids fake precision from counting every sub-bullet as a separate feature.
+- Score each source family separately.
+- Use grouped deliverables rather than per-bullet counting.
+- Count only `complete / total`.
+- Call out `partial` items in notes without giving completion credit.
 
-### Sprint plan
+### Repo base requirements
 
-- `8 / 8` phases complete
-- Percent complete: `100%`
+Sources: `README.md`, `docs/ARCHITECTURE.md`,
+`docs/IMPLEMENTATION_STATUS.generated.md`
 
-### Mandatory V1 scope
+This family measures the baseline starter/runtime promises made by the repo
+docs, not the later expansion specs.
 
-- `7 / 7` mandatory scope items complete
-- Percent complete: `100%`
+| Group | Status | Notes |
+| --- | --- | --- |
+| AWS SAM runtime spine | complete | Hub API, planner, tool runner, ws handlers, async workers, and supporting stack resources exist on this branch. |
+| Plane separation | complete | Media, control, cognition, state, execution, and observability planes all have concrete code surfaces. |
+| Durable truth and audit backbone | complete | Aurora, SQS, DynamoDB ws registry, artifacts, and audit storage are all wired in the repo. |
+| Realtime and control surfaces | complete | REST routes, WebSocket handlers, LiveKit token minting, and satellite/device flows are present. |
+| Planner and tool execution contracts | complete | Planner, tool runner, contracts, scopes, and action execution paths are implemented. |
+| Route coverage and generated checks | complete | Route smoke tests are enforced and the generated implementation status file is all PASS. |
+| Local runtime workflow | complete | Conda activation, CLI workflow, local GUI, and local agent worker paths are documented and present. |
+| Deployment and recovery guidance | complete | Build, deploy, bootstrap, and reset guidance are present in the repo docs. |
 
-The 7 counted items are:
+Repo base requirements complete: `8 / 8`
 
-1. Slack webhook ingestion
-2. GitHub webhook ingestion
-3. Twilio SMS ingestion
-4. `integration_messages` table
-5. planner support for `integration.event.received`
-6. `slack_post_message`
-7. `twilio_send_sms`
+Percent complete: `100%`
 
-### Broader deep-analysis integration upgrade spec
+### Architectural aspirations
 
-Grouped deliverable count:
+Sources: `ADVANCED_FEATURE_PLAN.md`,
+`docs/plans/marvain_deep_analysis_upgrade_spec.md`
 
-- Core runtime: `4 / 6` complete
-- Provider ingress: `3 / 5` complete
-- Planner and action shaping: `2 / 4` complete
-- Provider tools and message writes: `3 / 7` complete
-- Compliance and admin surfaces: `0 / 4` complete
+#### `ADVANCED_FEATURE_PLAN.md`
 
-Total grouped deliverables complete: `12 / 26`
+| Group | Status | Notes |
+| --- | --- | --- |
+| Spec 0: identity and permission spine | complete | Repo uses `agent_memberships`; legacy `memberships` was quarantined and users-column cleanup landed. |
+| Spec 1: devices fully functional | complete | Device create/revoke/rotate, heartbeat, scope-aware auth, and ws command flows are present. |
+| Spec 2: remotes as devices | complete | The plan itself marks this complete and the repo uses the device-only model. |
+| Spec 3: actions fully functional | complete | Approval enqueue, lifecycle persistence, runner result/error writes, and device command execution are present. |
+| Spec 4: core agent plus full memories | complete | `/v1/recall`, `/v1/spaces/{space_id}/events`, memory detail APIs, and worker context hydration are present. |
+| Spec 5: realtime event stream | complete | Broadcast wiring and live GUI/device updates are implemented. |
 
-Percent complete: `46%`
+Advanced feature plan complete: `6 / 6`
 
-What is counted as complete in that `12`:
+Percent complete: `100%`
 
-- `IntegrationQueue` wiring
-- shared integration queue config
-- `integration_messages` schema
-- integration storage/model layer
-- Slack inbound webhook
-- GitHub inbound webhook
-- Twilio inbound webhook
-- planner branch for `integration.event.received`
-- deterministic planner action idempotency for integration events
-- `slack_post_message`
-- `twilio_send_sms`
-- outbound `integration_messages` rows for Slack and Twilio actions
+#### `docs/plans/marvain_deep_analysis_upgrade_spec.md`
 
-What is still missing from that broader spec:
+| Group | Complete | Total | Notes |
+| --- | ---: | ---: | --- |
+| Core runtime | 6 | 6 | `IntegrationQueue`, integration schemas, stores, account CRUD, planner event branch, and action-scope expansion are in place. |
+| Provider ingress | 4 | 5 | Slack, GitHub, Twilio, and Gmail poll ingress are complete; Linear ingress is still missing. |
+| Planner and action shaping | 4 | 4 | `integration.event.received`, recent-thread context, connector payload shaping, and action scope union are in place. |
+| Provider tools and message writes | 5 | 7 | `set_message_status`, Slack, Twilio, GitHub, and Linear outbound paths are complete; Gmail draft/send remain missing. |
+| Compliance and admin surfaces | 3 | 4 | retention and redaction landed; broader integration audit typing remains partial and does not count. |
 
-- integration accounts CRUD
-- integration sync state
-- Gmail
-- Linear
-- message read endpoints
-- `set_message_status`
-- Gmail outbound tools
-- GitHub outbound tool
-- Linear outbound tool
-- compliance retention/redaction work
-- expanded integration audit typing
-- broader scope/refactor items from the original deep spec
+Deep-analysis upgrade spec complete: `22 / 26`
 
-## Notes On The Two Cleanup Items From This Turn
+Percent complete: `85%`
 
-### Typer-backed metadata
+Architectural aspirations family complete: `28 / 32`
 
-`cli-core-yo` still builds on Typer upstream. The remaining local indirection layer was removed instead of adding another shim. The branch now uses Typer imports directly in `marvain_cli/commands.py` and no longer carries a local `cli_primitives.py` wrapper.
+Percent complete: `88%`
 
-### Outbound provider action records
+Still materially missing in this family:
 
-Slack and Twilio outbound tools now write outbound `integration_messages` rows using `dedupe_key = f"action:{action_id}"`.
+- Linear inbound webhook ingestion
+- Gmail outbound draft/send tools
+- expanded integration audit entry typing
 
-One limitation still remains by design:
+### Current plan goals
 
-- the provider side effect happens before the local outbound row is written, so a post-send DB failure is still possible
-- fixing that would require a broader send-state design than this sprint allowed
+Sources: `docs/plans/marvain_sprint_to_functional_plan.md`,
+`docs/plans/multi_agent_marvain_post_v1_completion.md`
+
+#### `docs/plans/marvain_sprint_to_functional_plan.md`
+
+Sprint plan complete: `8 / 8`
+
+Percent complete: `100%`
+
+#### `docs/plans/multi_agent_marvain_post_v1_completion.md`
+
+| Deliverable | Status | Notes |
+| --- | --- | --- |
+| 1. `integration_accounts` schema/store | complete | Landed. |
+| 2. `integration_accounts` CRUD API | complete | Landed. |
+| 3. `integration_sync_state` schema/store | complete | Landed. |
+| 4. Gmail poll ingress | complete | Landed. |
+| 5. Linear webhook ingress | not started | Still missing. |
+| 6. Slack/GitHub/Twilio account migration | complete | Landed. |
+| 7. Durable outbound lifecycle | complete | Outbound rows are inserted before provider side effects for the implemented outbound tools. |
+| 8. Planner recent-thread integration context | complete | Landed. |
+| 9. Action scope union and connector permission scopes | complete | Landed. |
+| 10. Normalized message read APIs | complete | Landed. |
+| 11. `set_message_status` | complete | Landed. |
+| 12. Gmail outbound tools | not started | Still missing. |
+| 13. GitHub and Linear outbound tools | complete | Landed. |
+| 14. Retention, audit typing, regulated-scope cleanup | partial | Retention and scope cleanup landed; expanded audit typing is still open. |
+
+Post-V1 plan complete: `11 / 14`
+
+Percent complete: `79%`
+
+Current plan goals family complete: `19 / 22`
+
+Percent complete: `86%`

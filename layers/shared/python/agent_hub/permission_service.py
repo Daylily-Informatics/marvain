@@ -7,12 +7,10 @@ from agent_hub.rds_data import RdsData
 
 _DEFAULT_TOOL_RUNNER_SCOPES = [
     "devices:write",
-    "http:request",
     "memory:write",
     "message:send",
     "slack:message:write",
     "twilio:sms:send",
-    "shell:execute",
 ]
 
 _SCOPE_ALIASES = {

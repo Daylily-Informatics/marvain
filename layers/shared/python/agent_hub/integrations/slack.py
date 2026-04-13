@@ -71,6 +71,7 @@ def _infer_channel_type(channel_id: str | None, event: Mapping[str, Any]) -> str
 
 @dataclass(frozen=True)
 class SlackWebhookNormalized:
+    integration_account_id: str | None = None
     challenge: str | None = None
     ignored_reason: str | None = None
     integration_message: IntegrationMessageCreate | None = None
@@ -92,6 +93,7 @@ def normalize_slack_webhook(
     *,
     agent_id: str,
     space_id: str,
+    integration_account_id: str | None = None,
 ) -> SlackWebhookNormalized:
     if not isinstance(payload, Mapping):
         raise ValueError("Slack payload must be an object")
@@ -134,6 +136,7 @@ def normalize_slack_webhook(
     integration_message = IntegrationMessageCreate(
         agent_id=agent_id,
         space_id=space_id,
+        integration_account_id=integration_account_id,
         provider="slack",
         channel_type=channel_type,
         object_type=slack_event_type,
@@ -147,6 +150,7 @@ def normalize_slack_webhook(
     )
     event_payload = {
         "provider": "slack",
+        "integration_account_id": integration_account_id,
         "channel_type": channel_type,
         "object_type": slack_event_type,
         "team_id": team_id,
@@ -159,6 +163,7 @@ def normalize_slack_webhook(
         "recipients": recipients,
     }
     return SlackWebhookNormalized(
+        integration_account_id=integration_account_id,
         integration_message=integration_message,
         event_payload=event_payload,
     )

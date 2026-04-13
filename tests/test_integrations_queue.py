@@ -91,6 +91,17 @@ class TestIntegrationQueueWiring(unittest.TestCase):
         self.assertIn("IntegrationQueueUrl:", template_text)
         self.assertIn('"IntegrationQueueUrl": "INTEGRATION_QUEUE_URL"', ops_text)
 
+    def test_template_includes_gmail_poll_and_retention_functions(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        template_text = (repo_root / "template.yaml").read_text(encoding="utf-8")
+
+        self.assertIn("GmailPollFunction:", template_text)
+        self.assertIn("CodeUri: functions/gmail_poll/", template_text)
+        self.assertIn("GmailPollSchedule:", template_text)
+        self.assertIn("RetentionSweeperFunction:", template_text)
+        self.assertIn("CodeUri: functions/retention_sweeper/", template_text)
+        self.assertIn("RetentionSweepSchedule:", template_text)
+
 
 if __name__ == "__main__":
     unittest.main()

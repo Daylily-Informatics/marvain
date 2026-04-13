@@ -15,6 +15,7 @@ from unittest import mock
 
 AGENT_ID = "11111111-1111-1111-1111-111111111111"
 SPACE_ID = "22222222-2222-2222-2222-222222222222"
+INTEGRATION_ACCOUNT_ID = "55555555-5555-5555-5555-555555555555"
 INTEGRATION_MESSAGE_ID = "33333333-3333-3333-3333-333333333333"
 EVENT_ID = "44444444-4444-4444-4444-444444444444"
 GITHUB_WEBHOOK_SECRET = "github-webhook-secret"
@@ -105,6 +106,23 @@ def _integration_row(
     return row
 
 
+def _account_row() -> dict[str, object]:
+    return {
+        "integration_account_id": INTEGRATION_ACCOUNT_ID,
+        "agent_id": AGENT_ID,
+        "provider": "github",
+        "display_name": "Primary GitHub",
+        "external_account_id": "octo-org",
+        "default_space_id": SPACE_ID,
+        "credentials_secret_arn": "arn:aws:secretsmanager:us-east-1:123:secret:github-account",
+        "scopes_json": "[]",
+        "config_json": "{}",
+        "status": "active",
+        "created_at": "2026-04-12T00:00:00+00:00",
+        "updated_at": "2026-04-12T00:00:00+00:00",
+    }
+
+
 class _ScriptedDb:
     def __init__(self, query_responses: list[list[dict[str, object]]]):
         self.query_responses = list(query_responses)
@@ -156,7 +174,6 @@ class TestGitHubWebhook(unittest.TestCase):
             self.__class__._orig_cfg,
             audit_bucket=None,
             integration_queue_url="https://sqs.us-east-1.amazonaws.com/123/IntegrationQueue",
-            github_secret_arn="arn:aws:secretsmanager:us-east-1:123:secret:github",
         )
         self.mod.get_secret_json = mock.Mock(return_value={"webhook_secret": GITHUB_WEBHOOK_SECRET})
         self.mod.append_audit_entry = mock.Mock()
@@ -190,13 +207,13 @@ class TestGitHubWebhook(unittest.TestCase):
             "x-hub-signature-256": signature or _github_signature(body),
         }
         return self.client.post(
-            f"/v1/integrations/github/webhook/{AGENT_ID}/{SPACE_ID}",
+            f"/v1/integrations/github/webhook/{INTEGRATION_ACCOUNT_ID}",
             content=body,
             headers=headers,
         )
 
     def test_invalid_signature_is_rejected(self) -> None:
-        self.mod._get_db = mock.Mock(return_value=_ScriptedDb([]))
+        self.mod._get_db = mock.Mock(return_value=_ScriptedDb([[_account_row()]]))
 
         response = self._post(
             {
@@ -211,8 +228,8 @@ class TestGitHubWebhook(unittest.TestCase):
         self.assertEqual(response.json()["detail"], "invalid GitHub signature")
 
     def test_missing_github_secret_fails_closed(self) -> None:
-        self.mod._cfg = dataclasses.replace(self.mod._cfg, github_secret_arn=None)
-        self.mod._get_db = mock.Mock(return_value=_ScriptedDb([]))
+        self.mod.get_secret_json = mock.Mock(return_value={})
+        self.mod._get_db = mock.Mock(return_value=_ScriptedDb([[_account_row()]]))
 
         response = self._post(
             {
@@ -223,10 +240,10 @@ class TestGitHubWebhook(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 500)
-        self.assertEqual(response.json()["detail"], "GITHUB_SECRET_ARN not configured")
+        self.assertEqual(response.json()["detail"], "GitHub webhook secret not configured")
 
     def test_ping_is_ignored_without_side_effects(self) -> None:
-        db = _ScriptedDb([[{"ok": True}]])
+        db = _ScriptedDb([[_account_row()]])
         self.mod._get_db = mock.Mock(return_value=db)
 
         response = self._post({"zen": "keep it logically awesome"}, event_name="ping")
@@ -241,7 +258,7 @@ class TestGitHubWebhook(unittest.TestCase):
     def test_issue_comment_stores_event_and_enqueues(self) -> None:
         db = _ScriptedDb(
             [
-                [{"ok": True}],
+                [_account_row()],
                 [_integration_row(inserted=True)],
                 [_integration_row(event_id=EVENT_ID)],
             ]
@@ -282,7 +299,7 @@ class TestGitHubWebhook(unittest.TestCase):
     def test_duplicate_delivery_reuses_existing_event(self) -> None:
         db = _ScriptedDb(
             [
-                [{"ok": True}],
+                [_account_row()],
                 [_integration_row(inserted=False, event_id=EVENT_ID)],
             ]
         )

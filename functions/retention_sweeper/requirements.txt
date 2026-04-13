@@ -1,0 +1,2 @@
+# No third-party deps beyond the shared layer.
+boto3

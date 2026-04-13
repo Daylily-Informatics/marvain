@@ -225,9 +225,13 @@ class TestOps(unittest.TestCase):
         self.assertIn("sql/002_users_and_memberships.sql", joined)
         self.assertIn("sql/003_owner_unique_index.sql", joined)
         self.assertIn("sql/017_integration_messages.sql", joined)
+        self.assertIn("sql/018_integration_accounts.sql", joined)
+        self.assertIn("sql/019_integration_sync_state.sql", joined)
         self.assertLess(joined.find("sql/001_init.sql"), joined.find("sql/002_users_and_memberships.sql"))
         self.assertLess(joined.find("sql/002_users_and_memberships.sql"), joined.find("sql/003_owner_unique_index.sql"))
         self.assertLess(joined.find("sql/016_action_idempotency.sql"), joined.find("sql/017_integration_messages.sql"))
+        self.assertLess(joined.find("sql/017_integration_messages.sql"), joined.find("sql/018_integration_accounts.sql"))
+        self.assertLess(joined.find("sql/018_integration_accounts.sql"), joined.find("sql/019_integration_sync_state.sql"))
 
     def test_hub_claim_first_owner_dry_run_emits_http_request_without_leaking_token(self) -> None:
         emitted: list[str] = []
