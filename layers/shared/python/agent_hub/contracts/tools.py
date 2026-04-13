@@ -12,6 +12,17 @@ class SendMessagePayload(BaseModel):
     content: Any
 
 
+class SlackPostMessagePayload(BaseModel):
+    channel_id: str
+    text: str
+    thread_ts: str | None = None
+
+
+class TwilioSendSmsPayload(BaseModel):
+    to: str
+    body: str
+
+
 class CreateMemoryPayload(BaseModel):
     tier: Literal["episodic", "semantic"] = "semantic"
     content: str
@@ -52,6 +63,8 @@ class ShellCommandPayload(BaseModel):
 
 TOOL_PAYLOAD_MODELS: dict[str, type[BaseModel]] = {
     "send_message": SendMessagePayload,
+    "slack_post_message": SlackPostMessagePayload,
+    "twilio_send_sms": TwilioSendSmsPayload,
     "create_memory": CreateMemoryPayload,
     "http_request": HttpRequestPayload,
     "device_command": DeviceCommandPayload,
@@ -61,15 +74,11 @@ TOOL_PAYLOAD_MODELS: dict[str, type[BaseModel]] = {
 
 
 def _model_dump(model: BaseModel) -> dict[str, Any]:
-    if hasattr(model, "model_dump"):
-        return model.model_dump()
-    return model.dict()  # pragma: no cover - pydantic v1 fallback
+    return model.model_dump()
 
 
 def _model_schema(model_type: type[BaseModel]) -> dict[str, Any]:
-    if hasattr(model_type, "model_json_schema"):
-        return model_type.model_json_schema()
-    return model_type.schema()  # pragma: no cover - pydantic v1 fallback
+    return model_type.model_json_schema()
 
 
 def validate_tool_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any]:

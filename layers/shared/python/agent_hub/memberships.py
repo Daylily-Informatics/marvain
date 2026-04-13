@@ -231,42 +231,23 @@ class SpaceInfo:
 
 def list_spaces_for_user(db: RdsData, *, user_id: str) -> list[SpaceInfo]:
     """List all spaces the user has access to through their agent memberships."""
-    try:
-        rows = db.query(
-            """
-            SELECT s.space_id::TEXT as space_id,
-                   s.name as space_name,
-                   a.agent_id::TEXT as agent_id,
-                   a.name as agent_name,
-                   s.livekit_room_mode
-            FROM spaces s
-            JOIN agents a ON a.agent_id = s.agent_id
-            JOIN agent_memberships m ON m.agent_id = a.agent_id
-            WHERE m.user_id = :user_id::uuid
-              AND m.revoked_at IS NULL
-              AND a.disabled = false
-            ORDER BY a.name ASC, s.name ASC
-            """,
-            {"user_id": user_id},
-        )
-    except Exception:
-        # Back-compat: before 015_spaces_livekit_room_mode.sql.
-        rows = db.query(
-            """
-            SELECT s.space_id::TEXT as space_id,
-                   s.name as space_name,
-                   a.agent_id::TEXT as agent_id,
-                   a.name as agent_name
-            FROM spaces s
-            JOIN agents a ON a.agent_id = s.agent_id
-            JOIN agent_memberships m ON m.agent_id = a.agent_id
-            WHERE m.user_id = :user_id::uuid
-              AND m.revoked_at IS NULL
-              AND a.disabled = false
-            ORDER BY a.name ASC, s.name ASC
-            """,
-            {"user_id": user_id},
-        )
+    rows = db.query(
+        """
+        SELECT s.space_id::TEXT as space_id,
+               s.name as space_name,
+               a.agent_id::TEXT as agent_id,
+               a.name as agent_name,
+               s.livekit_room_mode
+        FROM spaces s
+        JOIN agents a ON a.agent_id = s.agent_id
+        JOIN agent_memberships m ON m.agent_id = a.agent_id
+        WHERE m.user_id = :user_id::uuid
+          AND m.revoked_at IS NULL
+          AND a.disabled = false
+        ORDER BY a.name ASC, s.name ASC
+        """,
+        {"user_id": user_id},
+    )
     out: list[SpaceInfo] = []
     for r in rows:
         out.append(

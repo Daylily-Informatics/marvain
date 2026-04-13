@@ -34,6 +34,7 @@ class HubConfig:
     db_name: str
     transcript_queue_url: str | None
     action_queue_url: str | None
+    integration_queue_url: str | None
     audit_bucket: str | None
     artifact_bucket: str | None
     admin_secret_arn: str | None
@@ -54,6 +55,9 @@ class HubConfig:
     # LiveKit settings
     livekit_url: str | None
     livekit_secret_arn: str | None
+    slack_secret_arn: str | None
+    twilio_secret_arn: str | None
+    github_secret_arn: str | None
     # WebSocket API settings
     ws_api_url: str | None  # WebSocket API Gateway URL for real-time updates
     # Limits
@@ -120,6 +124,7 @@ def load_config() -> HubConfig:
         db_name=_req("DB_NAME"),
         transcript_queue_url=os.getenv("TRANSCRIPT_QUEUE_URL"),
         action_queue_url=os.getenv("ACTION_QUEUE_URL"),
+        integration_queue_url=os.getenv("INTEGRATION_QUEUE_URL"),
         audit_bucket=os.getenv("AUDIT_BUCKET"),
         artifact_bucket=os.getenv("ARTIFACT_BUCKET"),
         admin_secret_arn=os.getenv("ADMIN_SECRET_ARN"),
@@ -128,8 +133,7 @@ def load_config() -> HubConfig:
         # Cognito settings
         cognito_region=os.getenv("COGNITO_REGION", "us-east-1"),
         cognito_user_pool_id=os.getenv("COGNITO_USER_POOL_ID"),
-        # Prefer Daylily-Ursa naming, but keep backward-compat.
-        cognito_user_pool_client_id=(os.getenv("COGNITO_APP_CLIENT_ID") or os.getenv("COGNITO_USER_POOL_CLIENT_ID")),
+        cognito_user_pool_client_id=os.getenv("COGNITO_APP_CLIENT_ID"),
         cognito_user_pool_client_secret=os.getenv("COGNITO_APP_CLIENT_SECRET"),
         cognito_domain=os.getenv("COGNITO_DOMAIN"),
         cognito_redirect_uri=os.getenv("COGNITO_REDIRECT_URI"),
@@ -141,6 +145,9 @@ def load_config() -> HubConfig:
         # LiveKit settings
         livekit_url=os.getenv("LIVEKIT_URL"),
         livekit_secret_arn=os.getenv("LIVEKIT_SECRET_ARN"),
+        slack_secret_arn=os.getenv("SLACK_SECRET_ARN"),
+        twilio_secret_arn=os.getenv("TWILIO_SECRET_ARN"),
+        github_secret_arn=os.getenv("GITHUB_SECRET_ARN"),
         # WebSocket API settings
         ws_api_url=os.getenv("WS_API_URL"),
         # Limits

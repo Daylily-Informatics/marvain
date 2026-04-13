@@ -25,9 +25,7 @@ _DEVICE_RESULT_TIMEOUT_SECONDS = int(os.getenv("DEVICE_RESULT_TIMEOUT_SECONDS", 
 
 
 def _model_dump(model: Any) -> dict[str, Any]:
-    if hasattr(model, "model_dump"):
-        return model.model_dump()
-    return model.dict()  # pragma: no cover - pydantic v1 fallback
+    return model.model_dump()
 
 
 def _get_dynamodb():

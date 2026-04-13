@@ -17,7 +17,7 @@ from agent_hub.action_service import (
     record_device_result,
     reject_action,
 )
-from agent_hub.auth import authenticate_device, authenticate_user_access_token
+from agent_hub.auth import authenticate_user_access_token
 from agent_hub.contracts import DeviceActionAck, DeviceActionResult
 from agent_hub.config import load_config
 from agent_hub.memberships import check_agent_permission, list_agents_for_user
@@ -71,9 +71,7 @@ def _send(event, connection_id: str, payload: dict):
 
 
 def _model_dump(model) -> dict:
-    if hasattr(model, "model_dump"):
-        return model.model_dump()
-    return model.dict()  # pragma: no cover - pydantic v1 fallback
+    return model.model_dump()
 
 
 def _subscription_table():
@@ -434,9 +432,7 @@ def handler(event, context):
 
     if action == "hello":
         access_token = str(msg.get("access_token") or "").strip()
-        device_token = str(msg.get("device_token") or "").strip()
 
-        # v1: accept Cognito access_token (preferred) for human users.
         if access_token:
             try:
                 logger.info(f"[hello] Attempting to authenticate access_token, length={len(access_token)}")
@@ -509,58 +505,7 @@ def handler(event, context):
             )
             return {"statusCode": 200, "body": "ok"}
 
-        # Back-compat: device_token for satellites/devices.
-        if not device_token:
-            _send(
-                event,
-                connection_id,
-                {"type": "hello", "ok": False, "error": "missing_access_token_or_device_token"},
-            )
-            return {"statusCode": 200, "body": "ok"}
-
-        dev = authenticate_device(_get_db(), device_token)
-        if not dev:
-            _send(event, connection_id, {"type": "hello", "ok": False, "error": "invalid_device_token"})
-            return {"statusCode": 200, "body": "ok"}
-
-        # Update last_hello_at and last_seen for presence tracking
-        _get_db().execute(
-            "UPDATE devices SET last_hello_at = now(), last_seen = now() WHERE device_id = :device_id::uuid",
-            {"device_id": dev.device_id},
-        )
-
-        dev_now_ts = int(time.time())
-        table.update_item(
-            Key={"connection_id": connection_id},
-            UpdateExpression=(
-                "SET #s=:s, principal_type=:pt, agent_id=:a, device_id=:d, scopes=:sc, "
-                "authenticated_at=:aat, #ttl=:ttl "
-                "REMOVE user_id, cognito_sub, email, agents"
-            ),
-            ExpressionAttributeNames={"#s": "status", "#ttl": "ttl"},
-            ExpressionAttributeValues={
-                ":s": "authenticated",
-                ":pt": "device",
-                ":a": dev.agent_id,
-                ":d": dev.device_id,
-                ":sc": dev.scopes,
-                ":aat": dev_now_ts,
-                ":ttl": dev_now_ts + _WS_AUTH_TTL,
-            },
-        )
-
-        _send(
-            event,
-            connection_id,
-            {
-                "type": "hello",
-                "ok": True,
-                "principal_type": "device",
-                "agent_id": dev.agent_id,
-                "device_id": dev.device_id,
-                "scopes": dev.scopes,
-            },
-        )
+        _send(event, connection_id, {"type": "hello", "ok": False, "error": "missing_access_token"})
         return {"statusCode": 200, "body": "ok"}
 
     # Get connection info for authorization
@@ -904,10 +849,6 @@ def handler(event, context):
 
     if action == "device_action_result":
         return _handle_device_action_result(event, connection_id, conn_item, msg)
-
-    if action == "config_ack":
-        _send(event, connection_id, {"type": "config_ack", "ok": True, "deprecated": True})
-        return {"statusCode": 200, "body": "ok"}
 
     # -------------------------------------------------------------------------
     # list_actions - list pending/proposed actions for an agent

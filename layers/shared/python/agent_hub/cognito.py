@@ -12,7 +12,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 if TYPE_CHECKING:
     from agent_hub.config import HubConfig
@@ -47,7 +47,7 @@ class CognitoUserInfo:
 
 
 def _get_daylily_jwks_cache(cfg: HubConfig):
-    """Get a reusable daylily-cognito JWKS cache for the configured pool."""
+    """Get a reusable daylily-auth-cognito JWKS cache for the configured pool."""
     global _daylily_jwks_cache, _daylily_jwks_cache_key
 
     region = str(cfg.cognito_region or "").strip()
@@ -55,12 +55,16 @@ def _get_daylily_jwks_cache(cfg: HubConfig):
     cache_key = (region, pool_id)
 
     if _daylily_jwks_cache is None or _daylily_jwks_cache_key != cache_key:
-        from daylily_cognito.jwks import JWKSCache
+        from daylily_auth_cognito.runtime.jwks import JWKSCache
 
         _daylily_jwks_cache = JWKSCache(region, pool_id)
         _daylily_jwks_cache_key = cache_key
 
     return _daylily_jwks_cache
+
+
+def _domain(cfg: HubConfig) -> str:
+    return str(cfg.cognito_domain or "").strip()
 
 
 def build_login_url(cfg: HubConfig, state: str | None = None) -> str:
@@ -76,23 +80,25 @@ def build_login_url(cfg: HubConfig, state: str | None = None) -> str:
     Raises:
         CognitoAuthError: If Cognito is not configured
     """
-    if not cfg.cognito_authorize_url or not cfg.cognito_user_pool_client_id or not cfg.cognito_redirect_uri:
+    if not cfg.cognito_domain or not cfg.cognito_user_pool_client_id or not cfg.cognito_redirect_uri:
         raise CognitoAuthError("Cognito is not fully configured")
 
-    params = {
-        "client_id": cfg.cognito_user_pool_client_id,
-        "response_type": "code",
-        "scope": "openid email profile aws.cognito.signin.user.admin",
-        "redirect_uri": cfg.cognito_redirect_uri,
-    }
-    identity_provider = str(getattr(cfg, "cognito_identity_provider", "") or "").strip()
-    if identity_provider:
-        # Force federation to a specific IdP (e.g. Google) instead of showing the Hosted UI provider chooser.
-        params["identity_provider"] = identity_provider
-    if state:
-        params["state"] = state
+    from daylily_auth_cognito.browser.oauth import build_authorization_url
 
-    return f"{cfg.cognito_authorize_url}?{urlencode(params)}"
+    url = build_authorization_url(
+        domain=_domain(cfg),
+        client_id=cfg.cognito_user_pool_client_id,
+        redirect_uri=cfg.cognito_redirect_uri,
+        response_type="code",
+        scope="openid email profile aws.cognito.signin.user.admin",
+        state=state,
+    )
+    identity_provider = str(getattr(cfg, "cognito_identity_provider", "") or "").strip()
+    if not identity_provider:
+        return url
+    parts = urlsplit(url)
+    query = f"{parts.query}&{urlencode({'identity_provider': identity_provider})}"
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
 
 
 def build_logout_url(cfg: HubConfig, redirect_uri: str | None = None) -> str:
@@ -108,7 +114,7 @@ def build_logout_url(cfg: HubConfig, redirect_uri: str | None = None) -> str:
     Raises:
         CognitoAuthError: If Cognito is not configured
     """
-    if not cfg.cognito_logout_url or not cfg.cognito_user_pool_client_id:
+    if not cfg.cognito_domain or not cfg.cognito_user_pool_client_id:
         raise CognitoAuthError("Cognito is not fully configured")
 
     # Default to /logged-out page (must be registered in Cognito LogoutURLs)
@@ -117,14 +123,13 @@ def build_logout_url(cfg: HubConfig, redirect_uri: str | None = None) -> str:
         # Replace /auth/callback with /logged-out
         logout_target = cfg.cognito_redirect_uri.replace("/auth/callback", "/logged-out")
 
-    params = {
-        "client_id": cfg.cognito_user_pool_client_id,
-        # Cognito logout endpoint accepts both 'logout_uri' and 'redirect_uri'
-        # but some versions require 'redirect_uri', so we include both for compatibility
-        "logout_uri": logout_target or "",
-        "redirect_uri": logout_target or "",
-    }
-    return f"{cfg.cognito_logout_url}?{urlencode(params)}"
+    from daylily_auth_cognito.browser.oauth import build_logout_url as build_cognito_logout_url
+
+    return build_cognito_logout_url(
+        domain=_domain(cfg),
+        client_id=cfg.cognito_user_pool_client_id,
+        logout_uri=logout_target or "",
+    )
 
 
 async def exchange_code_for_tokens(cfg: HubConfig, code: str) -> dict[str, Any]:
@@ -140,34 +145,21 @@ async def exchange_code_for_tokens(cfg: HubConfig, code: str) -> dict[str, Any]:
     Raises:
         CognitoAuthError: If token exchange fails
     """
-    import httpx
-
-    if not cfg.cognito_token_url or not cfg.cognito_user_pool_client_id or not cfg.cognito_redirect_uri:
+    if not cfg.cognito_domain or not cfg.cognito_user_pool_client_id or not cfg.cognito_redirect_uri:
         raise CognitoAuthError("Cognito is not fully configured")
 
-    data = {
-        "grant_type": "authorization_code",
-        "client_id": cfg.cognito_user_pool_client_id,
-        "code": code,
-        "redirect_uri": cfg.cognito_redirect_uri,
-    }
+    from daylily_auth_cognito.browser.oauth import exchange_authorization_code_async
 
-    # Add client secret if configured
-    if cfg.cognito_user_pool_client_secret:
-        data["client_secret"] = cfg.cognito_user_pool_client_secret
-
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            cfg.cognito_token_url,
-            data=data,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+    try:
+        return await exchange_authorization_code_async(
+            domain=_domain(cfg),
+            client_id=cfg.cognito_user_pool_client_id,
+            code=code,
+            redirect_uri=cfg.cognito_redirect_uri,
+            client_secret=cfg.cognito_user_pool_client_secret,
         )
-
-        if response.status_code != 200:
-            logger.error(f"Token exchange failed: {response.text}")
-            raise CognitoAuthError(f"Token exchange failed: {response.status_code}")
-
-        return response.json()
+    except Exception as exc:
+        raise CognitoAuthError(f"Token exchange failed: {exc}") from exc
 
 
 async def refresh_tokens(cfg: HubConfig, refresh_token: str) -> dict[str, Any]:

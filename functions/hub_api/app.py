@@ -35,6 +35,7 @@ from agent_hub.action_service import (
 from agent_hub.auth import (
     AuthenticatedUser,
     ensure_user_row,
+    list_cognito_users,
     lookup_cognito_user_by_email,
 )
 from agent_hub.cognito import (
@@ -655,7 +656,6 @@ def gui_logout(request: Request) -> Response:
     # Clear session
     request.session.clear()
 
-    # Also clear old cookies for backward compatibility
     resp: Response
     if _cfg.cognito_domain and _cfg.cognito_user_pool_client_id:
         # Redirect to Cognito logout
@@ -667,7 +667,7 @@ def gui_logout(request: Request) -> Response:
     else:
         resp = RedirectResponse(url=_gui_path(request, "/logged-out"), status_code=302)
 
-    # Clear old cookies
+    # Clear GUI auth cookies.
     resp.delete_cookie(_GUI_ACCESS_TOKEN_COOKIE, path="/")
     resp.delete_cookie(_GUI_REFRESH_TOKEN_COOKIE, path="/")
     resp.delete_cookie(_GUI_OAUTH_STATE_COOKIE, path="/")
@@ -1206,34 +1206,19 @@ def api_create_space(request: Request, body: SpaceCreate) -> SpaceResponse:
     if room_mode not in ("ephemeral", "stable"):
         raise HTTPException(status_code=400, detail="Invalid livekit_room_mode (expected 'ephemeral' or 'stable')")
     try:
-        try:
-            db.execute(
-                """
-                INSERT INTO spaces (space_id, agent_id, name, privacy_mode, livekit_room_mode)
-                VALUES (:space_id::uuid, :agent_id::uuid, :name, :privacy_mode, :livekit_room_mode)
-            """,
-                {
-                    "space_id": space_id,
-                    "agent_id": body.agent_id,
-                    "name": body.name,
-                    "privacy_mode": body.privacy_mode,
-                    "livekit_room_mode": room_mode,
-                },
-            )
-        except Exception:
-            # Back-compat: before 015_spaces_livekit_room_mode.sql.
-            db.execute(
-                """
-                INSERT INTO spaces (space_id, agent_id, name, privacy_mode)
-                VALUES (:space_id::uuid, :agent_id::uuid, :name, :privacy_mode)
-            """,
-                {
-                    "space_id": space_id,
-                    "agent_id": body.agent_id,
-                    "name": body.name,
-                    "privacy_mode": body.privacy_mode,
-                },
-            )
+        db.execute(
+            """
+            INSERT INTO spaces (space_id, agent_id, name, privacy_mode, livekit_room_mode)
+            VALUES (:space_id::uuid, :agent_id::uuid, :name, :privacy_mode, :livekit_room_mode)
+        """,
+            {
+                "space_id": space_id,
+                "agent_id": body.agent_id,
+                "name": body.name,
+                "privacy_mode": body.privacy_mode,
+                "livekit_room_mode": room_mode,
+            },
+        )
     except Exception as e:
         logger.error(f"Failed to create space: {e}")
         raise HTTPException(status_code=500, detail="Failed to create space")
@@ -2454,23 +2439,18 @@ def api_list_cognito_users(request: Request) -> list[dict]:
     if not _cfg.cognito_user_pool_id:
         raise HTTPException(status_code=500, detail="Cognito not configured")
 
-    import boto3
-
-    client = boto3.client("cognito-idp")
     users = []
-    paginator = client.get_paginator("list_users")
-    for page in paginator.paginate(UserPoolId=_cfg.cognito_user_pool_id):
-        for u in page.get("Users", []):
-            attrs = {a["Name"]: a["Value"] for a in u.get("Attributes", [])}
-            email = attrs.get("email", u.get("Username", ""))
-            if email:
-                users.append(
-                    {
-                        "email": email,
-                        "status": u.get("UserStatus", "UNKNOWN"),
-                        "enabled": u.get("Enabled", False),
-                    }
-                )
+    for u in list_cognito_users(user_pool_id=_cfg.cognito_user_pool_id, region=_cfg.cognito_region):
+        attrs = {a["Name"]: a["Value"] for a in u.get("Attributes", [])}
+        email = attrs.get("email", u.get("Username", ""))
+        if email:
+            users.append(
+                {
+                    "email": email,
+                    "status": u.get("UserStatus", "UNKNOWN"),
+                    "enabled": u.get("Enabled", False),
+                }
+            )
     return users
 
 

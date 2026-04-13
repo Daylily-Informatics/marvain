@@ -51,9 +51,7 @@ class DeviceActionResult(BaseModel):
 
 
 def _model_dump(model: BaseModel) -> dict[str, Any]:
-    if hasattr(model, "model_dump"):
-        return model.model_dump()
-    return model.dict()  # pragma: no cover - pydantic v1 fallback
+    return model.model_dump()
 
 
 def build_ws_envelope(*, event_type: str, agent_id: str, space_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:

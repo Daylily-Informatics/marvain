@@ -1,18 +1,18 @@
 [build-system]
-requires = ["setuptools>=69.0.0", "wheel"]
+requires = ["setuptools>=69.0.0", "setuptools-scm[toml]>=8.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "marvain"
-version = "0.3.11"
+dynamic = ["version"]
 description = "Marvain repository CLI (Makefile replacement)."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "boto3",
-  "click",
+  "cli-core-yo==2.0.0",
+  "daylily-auth-cognito==2.0.1",
   "pyyaml",
-  "typer",
 ]
 
 [project.scripts]
@@ -20,6 +20,10 @@ marvain = "marvain_cli.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["marvain_cli*"]
+
+[tool.setuptools_scm]
+version_scheme = "guess-next-dev"
+local_scheme = "no-local-version"
 
 [tool.marvain]
 # This repo is orchestrated via a Conda env (primary) rather than an in-repo venv.

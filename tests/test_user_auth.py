@@ -35,6 +35,11 @@ class _FakeCognito:
         return self.resp
 
 
+class _FakeAdmin:
+    def __init__(self, cognito):
+        self.cognito = cognito
+
+
 class TestUserAuth(unittest.TestCase):
     def test_authenticate_user_access_token_uses_sub_and_email(self) -> None:
         fake_db = _FakeDb(user_id="u1")
@@ -48,7 +53,7 @@ class TestUserAuth(unittest.TestCase):
             }
         )
 
-        with mock.patch("agent_hub.auth._boto3_client", return_value=fake_cog):
+        with mock.patch("agent_hub.auth._cognito_admin_client", return_value=_FakeAdmin(fake_cog)):
             u = authenticate_user_access_token(fake_db, "atk")
 
         self.assertIsInstance(u, AuthenticatedUser)
@@ -66,7 +71,7 @@ class TestUserAuth(unittest.TestCase):
         fake_db = _FakeDb(user_id="u2")
         fake_cog = _FakeCognito({"Username": "userpool-username", "UserAttributes": []})
 
-        with mock.patch("agent_hub.auth._boto3_client", return_value=fake_cog):
+        with mock.patch("agent_hub.auth._cognito_admin_client", return_value=_FakeAdmin(fake_cog)):
             u = authenticate_user_access_token(fake_db, "atk")
 
         self.assertEqual(u.user_id, "u2")
