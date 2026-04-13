@@ -177,27 +177,6 @@ Resources:
       Description: Store your LiveKit credentials as {"api_key":"...","api_secret":"..."}
       SecretString: '{"api_key":"REPLACE_ME","api_secret":"REPLACE_ME"}'
 
-  SlackSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Name: !Sub ${AWS::StackName}/slack
-      Description: Store your Slack credentials as {"signing_secret":"...","bot_token":"..."}
-      SecretString: '{"signing_secret":"REPLACE_ME","bot_token":"REPLACE_ME"}'
-
-  TwilioSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Name: !Sub ${AWS::StackName}/twilio
-      Description: Store your Twilio credentials as {"account_sid":"...","auth_token":"...","from_number":"...","messaging_service_sid":"..."}
-      SecretString: '{"account_sid":"REPLACE_ME","auth_token":"REPLACE_ME","from_number":"REPLACE_ME","messaging_service_sid":"REPLACE_ME"}'
-
-  GitHubSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Name: !Sub ${AWS::StackName}/github
-      Description: Store your GitHub webhook secret as {"webhook_secret":"..."}
-      SecretString: '{"webhook_secret":"REPLACE_ME"}'
-
   GoogleOAuthSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
@@ -396,9 +375,6 @@ Resources:
           OPENAI_SECRET_ARN: !Ref OpenAISecret
           LIVEKIT_URL: !Ref LiveKitUrl
           LIVEKIT_SECRET_ARN: !Ref LiveKitSecret
-          SLACK_SECRET_ARN: !Ref SlackSecret
-          TWILIO_SECRET_ARN: !Ref TwilioSecret
-          GITHUB_SECRET_ARN: !Ref GitHubSecret
           # Cognito settings
           COGNITO_REGION: !Ref AWS::Region
           COGNITO_USER_POOL_ID: !Ref CognitoUserPool
@@ -440,10 +416,8 @@ Resources:
                 - !Ref AdminApiKeySecret
                 - !Ref OpenAISecret
                 - !Ref LiveKitSecret
-                - !Ref SlackSecret
-                - !Ref TwilioSecret
-                - !Ref GitHubSecret
                 - !Ref SessionSecret
+                - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}/integrations/*
             - Effect: Allow
               Action:
                 - sqs:SendMessage
@@ -620,6 +594,7 @@ Resources:
           AUDIT_BUCKET: !Ref AuditBucket
           OPENAI_SECRET_ARN: !Ref OpenAISecret
           PLANNER_MODEL: !Ref PlannerModel
+          STACK_NAME: !Ref AWS::StackName
           WS_TABLE: !Ref WsConnectionsTable
           WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
           WS_API_ENDPOINT: !Sub https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
@@ -646,6 +621,7 @@ Resources:
               Resource:
                 - !Ref DbCredentialsSecret
                 - !Ref OpenAISecret
+                - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}/integrations/*
             - Effect: Allow
               Action:
                 - sqs:SendMessage
@@ -690,8 +666,7 @@ Resources:
           DB_SECRET_ARN: !Ref DbCredentialsSecret
           DB_NAME: !Ref DbName
           AUDIT_BUCKET: !Ref AuditBucket
-          SLACK_SECRET_ARN: !Ref SlackSecret
-          TWILIO_SECRET_ARN: !Ref TwilioSecret
+          STACK_NAME: !Ref AWS::StackName
           WS_TABLE: !Ref WsConnectionsTable
           WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
           WS_API_ENDPOINT: !Sub https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
@@ -717,8 +692,7 @@ Resources:
                 - secretsmanager:GetSecretValue
               Resource:
                 - !Ref DbCredentialsSecret
-                - !Ref SlackSecret
-                - !Ref TwilioSecret
+                - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}/integrations/*
             - Effect: Allow
               Action:
                 - s3:PutObject
@@ -734,6 +708,57 @@ Resources:
           Properties:
             Queue: !GetAtt ActionQueue.Arn
             BatchSize: 5
+
+  GmailPollFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/gmail_poll/
+      Handler: handler.handler
+      Timeout: 60
+      MemorySize: 512
+      Layers:
+        - !Ref SharedLayer
+      Environment:
+        Variables:
+          DB_RESOURCE_ARN: !GetAtt AuroraCluster.DBClusterArn
+          DB_SECRET_ARN: !Ref DbCredentialsSecret
+          DB_NAME: !Ref DbName
+          INTEGRATION_QUEUE_URL: !Ref IntegrationQueue
+          AUDIT_BUCKET: !Ref AuditBucket
+          GMAIL_POLL_MAX_RESULTS: "25"
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+                - rds-data:BeginTransaction
+                - rds-data:CommitTransaction
+                - rds-data:RollbackTransaction
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DbCredentialsSecret
+                - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}/integrations/*
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:GetQueueAttributes
+              Resource:
+                - !GetAtt IntegrationQueue.Arn
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource:
+                - !Sub ${AuditBucket.Arn}/*
+      Events:
+        GmailPollSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
 
   ActionTimeoutSweeperFunction:
     Type: AWS::Serverless::Function
@@ -780,6 +805,49 @@ Resources:
           Type: Schedule
           Properties:
             Schedule: rate(1 minute)
+
+  RetentionSweeperFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/retention_sweeper/
+      Handler: handler.handler
+      Timeout: 60
+      MemorySize: 512
+      Layers:
+        - !Ref SharedLayer
+      Environment:
+        Variables:
+          DB_RESOURCE_ARN: !GetAtt AuroraCluster.DBClusterArn
+          DB_SECRET_ARN: !Ref DbCredentialsSecret
+          DB_NAME: !Ref DbName
+          AUDIT_BUCKET: !Ref AuditBucket
+          RETENTION_SWEEPER_BATCH_SIZE: "200"
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+                - rds-data:BeginTransaction
+                - rds-data:CommitTransaction
+                - rds-data:RollbackTransaction
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DbCredentialsSecret
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource:
+                - !Sub ${AuditBucket.Arn}/*
+      Events:
+        RetentionSweepSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
 
   # -----------------------------
   # WebSocket API (sideband control channel)
@@ -1161,15 +1229,6 @@ Outputs:
   LiveKitSecretArn:
     Description: Secrets Manager ARN containing LiveKit API key/secret placeholder
     Value: !Ref LiveKitSecret
-  SlackSecretArn:
-    Description: Secrets Manager ARN containing Slack signing secret/bot token placeholder
-    Value: !Ref SlackSecret
-  TwilioSecretArn:
-    Description: Secrets Manager ARN containing Twilio auth token/account SID placeholder
-    Value: !Ref TwilioSecret
-  GitHubSecretArn:
-    Description: Secrets Manager ARN containing GitHub webhook secret placeholder
-    Value: !Ref GitHubSecret
   LiveKitUrl:
     Description: LiveKit server URL for media connections
     Value: !Ref LiveKitUrl

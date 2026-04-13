@@ -110,6 +110,7 @@ def _flatten_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class TwilioWebhookNormalized:
+    integration_account_id: str | None = None
     ignored_reason: str | None = None
     integration_message: IntegrationMessageCreate | None = None
     event_payload: dict[str, Any] = field(default_factory=dict)
@@ -120,6 +121,7 @@ def normalize_twilio_webhook(
     *,
     agent_id: str,
     space_id: str,
+    integration_account_id: str | None = None,
 ) -> TwilioWebhookNormalized:
     if not isinstance(payload, Mapping):
         raise ValueError("Twilio payload must be an object")
@@ -148,6 +150,7 @@ def normalize_twilio_webhook(
     integration_message = IntegrationMessageCreate(
         agent_id=agent_id,
         space_id=space_id,
+        integration_account_id=integration_account_id,
         provider="twilio",
         channel_type="sms",
         object_type="sms",
@@ -161,6 +164,7 @@ def normalize_twilio_webhook(
     )
     event_payload = {
         "provider": "twilio",
+        "integration_account_id": integration_account_id,
         "channel_type": "sms",
         "object_type": "sms",
         "account_sid": account_sid,
@@ -175,6 +179,7 @@ def normalize_twilio_webhook(
         "num_media": num_media,
     }
     return TwilioWebhookNormalized(
+        integration_account_id=integration_account_id,
         integration_message=integration_message,
         event_payload=event_payload,
     )

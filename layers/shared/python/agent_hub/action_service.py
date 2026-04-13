@@ -103,6 +103,24 @@ def _require_known_tool(kind: str) -> None:
         raise ActionServiceError("unknown_action_kind", message=f"unknown_action_kind: {kind}")
 
 
+def _registry_required_scopes(kind: str) -> list[str]:
+    try:
+        registry = get_registry()
+    except Exception as exc:  # pragma: no cover - defensive against registry bootstrap failures
+        logger.warning("Tool registry unavailable for %s: %s", kind, exc)
+        return []
+
+    try:
+        tool = registry.get(kind)
+    except Exception as exc:  # pragma: no cover - defensive against registry lookup failures
+        logger.warning("Tool registry lookup failed for %s: %s", kind, exc)
+        return []
+
+    if tool is None:
+        return []
+    return normalize_scopes(getattr(tool, "required_scopes", []) or [])
+
+
 def prepare_action_request(*, kind: str, payload: dict[str, Any], required_scopes: list[str] | None) -> tuple[dict[str, Any], list[str]]:
     kind_n = str(kind or "").strip()
     if not kind_n:
@@ -112,7 +130,9 @@ def prepare_action_request(*, kind: str, payload: dict[str, Any], required_scope
         normalized_payload = validate_tool_payload(kind_n, payload or {})
     except Exception as exc:  # pragma: no cover - routed through callers in tests
         raise ActionServiceError("invalid_payload", message=str(exc)) from exc
-    return normalized_payload, normalize_scopes(required_scopes)
+    requested_scopes = normalize_scopes(required_scopes)
+    merged_scopes = normalize_scopes([*requested_scopes, *_registry_required_scopes(kind_n)])
+    return normalized_payload, merged_scopes
 
 
 def _determine_initial_decision(

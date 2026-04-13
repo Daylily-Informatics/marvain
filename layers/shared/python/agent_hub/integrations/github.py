@@ -76,6 +76,7 @@ def _recipients(repository_full_name: str) -> list[dict[str, Any]]:
 
 @dataclass(frozen=True)
 class GitHubWebhookNormalized:
+    integration_account_id: str | None = None
     ignored_reason: str | None = None
     integration_message: IntegrationMessageCreate | None = None
     event_payload: dict[str, Any] = field(default_factory=dict)
@@ -88,6 +89,7 @@ def normalize_github_webhook(
     delivery_id: str,
     agent_id: str,
     space_id: str,
+    integration_account_id: str | None = None,
 ) -> GitHubWebhookNormalized:
     if not isinstance(payload, Mapping):
         raise ValueError("GitHub payload must be an object")
@@ -154,6 +156,7 @@ def normalize_github_webhook(
     integration_message = IntegrationMessageCreate(
         agent_id=agent_id,
         space_id=space_id,
+        integration_account_id=integration_account_id,
         provider="github",
         channel_type=channel_type,
         object_type=object_type,
@@ -167,6 +170,7 @@ def normalize_github_webhook(
     )
     event_payload = {
         "provider": "github",
+        "integration_account_id": integration_account_id,
         "github_event": event_name_n,
         "github_delivery_id": delivery_id_n,
         "action": action,
@@ -180,6 +184,7 @@ def normalize_github_webhook(
         "recipients": recipients,
     }
     return GitHubWebhookNormalized(
+        integration_account_id=integration_account_id,
         integration_message=integration_message,
         event_payload=event_payload,
     )

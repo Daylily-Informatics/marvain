@@ -128,6 +128,12 @@ def _bounded_optional_text(value: Any, *, limit: int) -> str | None:
     return text[:limit]
 
 
+def _field_value(message: Any, field_name: str, default: Any = None) -> Any:
+    if isinstance(message, dict):
+        return message.get(field_name, default)
+    return getattr(message, field_name, default)
+
+
 def _bounded_integration_metadata(message: Any) -> dict[str, Any]:
     metadata: dict[str, Any] = {}
 
@@ -139,11 +145,18 @@ def _bounded_integration_metadata(message: Any) -> dict[str, Any]:
         ("external_thread_id", 128),
         ("external_message_id", 128),
     ):
-        value = _bounded_optional_text(getattr(message, field_name, None), limit=limit)
+        value = _bounded_optional_text(_field_value(message, field_name), limit=limit)
         if value:
             metadata[field_name] = value
 
-    sender_value = getattr(message, "sender", {})
+    sender_value = _field_value(message, "sender", None)
+    if sender_value is None:
+        sender_value = _field_value(message, "sender_json", {})
+    if isinstance(sender_value, str):
+        try:
+            sender_value = json.loads(sender_value)
+        except Exception:
+            sender_value = {}
     if isinstance(sender_value, dict):
         sender: dict[str, str] = {}
         for key in ("user_id", "bot_id", "team_id", "email", "phone_number"):
@@ -153,7 +166,14 @@ def _bounded_integration_metadata(message: Any) -> dict[str, Any]:
         if sender:
             metadata["sender"] = sender
 
-    recipients_value = getattr(message, "recipients", [])
+    recipients_value = _field_value(message, "recipients", None)
+    if recipients_value is None:
+        recipients_value = _field_value(message, "recipients_json", [])
+    if isinstance(recipients_value, str):
+        try:
+            recipients_value = json.loads(recipients_value)
+        except Exception:
+            recipients_value = []
     if isinstance(recipients_value, list):
         recipients: list[dict[str, str]] = []
         for item in recipients_value[:5]:
@@ -172,7 +192,93 @@ def _bounded_integration_metadata(message: Any) -> dict[str, Any]:
     return metadata
 
 
-def _build_planner_event_context(ev: dict[str, Any], *, integration_message: Any | None = None) -> tuple[str, dict[str, Any]]:
+def _load_integration_thread_context(integration_message: Any) -> list[dict[str, Any]]:
+    external_thread_id = _bounded_optional_text(_field_value(integration_message, "external_thread_id"), limit=128)
+    if not external_thread_id:
+        return []
+
+    agent_id = _bounded_optional_text(_field_value(integration_message, "agent_id"), limit=64)
+    provider = _bounded_optional_text(_field_value(integration_message, "provider"), limit=32)
+    integration_message_id = _bounded_optional_text(_field_value(integration_message, "integration_message_id"), limit=64)
+    created_at = _field_value(integration_message, "created_at")
+    if not agent_id or not provider or not integration_message_id or not created_at:
+        return []
+
+    rows = _db.query(
+        """
+        SELECT integration_message_id::TEXT as integration_message_id,
+               agent_id::TEXT as agent_id,
+               space_id::TEXT as space_id,
+               event_id::TEXT as event_id,
+               provider,
+               direction,
+               channel_type,
+               object_type,
+               external_thread_id,
+               external_message_id,
+               dedupe_key,
+               sender::TEXT as sender_json,
+               recipients::TEXT as recipients_json,
+               subject,
+               body_text,
+               body_html,
+               payload::TEXT as payload_json,
+               status,
+               created_at::TEXT as created_at,
+               updated_at::TEXT as updated_at
+        FROM integration_messages
+        WHERE agent_id = :agent_id::uuid
+          AND provider = :provider
+          AND external_thread_id = :external_thread_id
+          AND (
+            created_at < :created_at::timestamptz
+            OR (
+              created_at = :created_at::timestamptz
+              AND integration_message_id <> :integration_message_id::uuid
+            )
+          )
+        ORDER BY created_at DESC, integration_message_id DESC
+        LIMIT 10
+        """,
+        {
+            "agent_id": agent_id,
+            "provider": provider,
+            "external_thread_id": external_thread_id,
+            "integration_message_id": integration_message_id,
+            "created_at": str(created_at),
+        },
+    )
+    if not isinstance(rows, list):
+        return []
+    thread_context: list[dict[str, Any]] = []
+    for row in rows or []:
+        thread_context.append(
+            {
+                "integration_message_id": str(row.get("integration_message_id") or "").strip(),
+                "agent_id": str(row.get("agent_id") or "").strip(),
+                "space_id": str(row.get("space_id") or "").strip() or None,
+                "event_id": str(row.get("event_id") or "").strip() or None,
+                "provider": str(row.get("provider") or "").strip(),
+                "direction": str(row.get("direction") or "").strip(),
+                "channel_type": str(row.get("channel_type") or "").strip(),
+                "object_type": str(row.get("object_type") or "").strip(),
+                "external_thread_id": str(row.get("external_thread_id") or "").strip() or None,
+                "external_message_id": str(row.get("external_message_id") or "").strip() or None,
+                "dedupe_key": str(row.get("dedupe_key") or "").strip(),
+                "status": str(row.get("status") or "").strip(),
+                "text": str(row.get("body_text") or "").strip(),
+                "integration": _bounded_integration_metadata(row),
+            }
+        )
+    return thread_context
+
+
+def _build_planner_event_context(
+    ev: dict[str, Any],
+    *,
+    integration_message: Any | None = None,
+    thread_context: list[dict[str, Any]] | None = None,
+) -> tuple[str, dict[str, Any]]:
     payload = ev.get("payload") or {}
     if not isinstance(payload, dict):
         payload = {}
@@ -188,13 +294,16 @@ def _build_planner_event_context(ev: dict[str, Any], *, integration_message: Any
         }
 
     text = str(getattr(integration_message, "body_text", "") or "").strip()
+    integration = _bounded_integration_metadata(integration_message)
+    if thread_context is not None:
+        integration["thread_context"] = thread_context
     event_context = {
         "event_id": ev["event_id"],
         "space_id": ev["space_id"],
         "person_id": ev.get("person_id"),
         "type": ev["type"],
         "text": text,
-        "integration": _bounded_integration_metadata(integration_message),
+        "integration": integration,
     }
     return text, event_context
 
@@ -327,6 +436,7 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
             continue
 
         integration_message = None
+        thread_context: list[dict[str, Any]] | None = None
         if ev.get("type") == "integration.event.received":
             integration_message_id_n = str(integration_message_id or "").strip()
             if not integration_message_id_n:
@@ -336,10 +446,13 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
             if integration_message is None:
                 logger.warning("Integration message not found: %s", integration_message_id_n)
                 continue
+            if _field_value(integration_message, "external_thread_id"):
+                thread_context = _load_integration_thread_context(integration_message)
 
         transcript_text, planner_event = _build_planner_event_context(
             ev,
             integration_message=integration_message,
+            thread_context=thread_context,
         )
         if not transcript_text:
             # nothing to plan on

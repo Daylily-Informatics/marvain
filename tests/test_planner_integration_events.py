@@ -127,7 +127,7 @@ class TestPlannerIntegrationEvents(unittest.TestCase):
         self.mod.is_agent_disabled = self.__class__._orig_is_agent_disabled
         self.mod.is_privacy_mode = self.__class__._orig_is_privacy_mode
 
-    def _integration_message(self) -> object:
+    def _integration_message(self, *, external_thread_id: str | None = "1712345678.000100") -> object:
         return self.IntegrationMessageRecord(
             integration_message_id=INTEGRATION_MESSAGE_ID,
             agent_id=AGENT_ID,
@@ -137,7 +137,7 @@ class TestPlannerIntegrationEvents(unittest.TestCase):
             direction="inbound",
             channel_type="dm",
             object_type="message",
-            external_thread_id="1712345678.000100",
+            external_thread_id=external_thread_id,
             external_message_id="1712345678.000100",
             dedupe_key="slack:T111:Ev111",
             sender={"team_id": "T111", "user_id": "U111"},
@@ -191,6 +191,62 @@ class TestPlannerIntegrationEvents(unittest.TestCase):
             integration_message_id=INTEGRATION_MESSAGE_ID,
         )
 
+    def test_integration_event_includes_prior_thread_context(self) -> None:
+        self.mod.get_integration_message = mock.Mock(return_value=self._integration_message())
+        self.mod._db.query.return_value = [
+            {
+                "integration_message_id": "msg-prior-1",
+                "agent_id": AGENT_ID,
+                "space_id": SPACE_ID,
+                "event_id": "event-prior-1",
+                "provider": "slack",
+                "direction": "outbound",
+                "channel_type": "dm",
+                "object_type": "message",
+                "external_thread_id": "1712345678.000100",
+                "external_message_id": "1712345678.000099",
+                "dedupe_key": "slack:T111:Ev110",
+                "sender_json": json.dumps({"team_id": "T111", "user_id": "U110"}),
+                "recipients_json": json.dumps([{"channel_id": "D111"}]),
+                "subject": None,
+                "body_text": "previous reply",
+                "body_html": None,
+                "payload_json": json.dumps({"raw": True}),
+                "status": "received",
+                "created_at": "2026-04-12T00:00:00+00:00",
+                "updated_at": "2026-04-12T00:00:00+00:00",
+            }
+        ]
+        self.mod.call_responses = mock.Mock(return_value={"ok": True})
+        self.mod.extract_output_text = mock.Mock(return_value='{"episodic":[],"semantic":[],"actions":[]}')
+        self.mod.create_action = mock.Mock()
+
+        result = self.mod.handler(
+            {
+                "Records": [
+                    {
+                        "body": json.dumps(
+                            {
+                                "event_id": EVENT_ID,
+                                "event_type": "integration.event.received",
+                                "agent_id": AGENT_ID,
+                                "space_id": SPACE_ID,
+                                "integration_message_id": INTEGRATION_MESSAGE_ID,
+                            }
+                        )
+                    }
+                ]
+            },
+            context=None,
+        )
+
+        self.assertEqual(result["processed"], 1)
+        planner_user = json.loads(self.mod.call_responses.call_args.kwargs["user"])
+        thread_context = planner_user["event"]["integration"]["thread_context"]
+        self.assertEqual(len(thread_context), 1)
+        self.assertEqual(thread_context[0]["integration_message_id"], "msg-prior-1")
+        self.assertEqual(thread_context[0]["text"], "previous reply")
+
     def test_integration_event_without_message_id_is_skipped(self) -> None:
         self.mod.get_integration_message = mock.Mock()
         self.mod.call_responses = mock.Mock()
@@ -218,6 +274,35 @@ class TestPlannerIntegrationEvents(unittest.TestCase):
         self.assertEqual(result["processed"], 0)
         self.mod.call_responses.assert_not_called()
         self.mod.get_integration_message.assert_not_called()
+
+    def test_integration_event_without_external_thread_id_does_not_add_thread_context(self) -> None:
+        self.mod.get_integration_message = mock.Mock(return_value=self._integration_message(external_thread_id=None))
+        self.mod.call_responses = mock.Mock(return_value={"ok": True})
+        self.mod.extract_output_text = mock.Mock(return_value='{"episodic":[],"semantic":[],"actions":[]}')
+        self.mod.create_action = mock.Mock()
+
+        result = self.mod.handler(
+            {
+                "Records": [
+                    {
+                        "body": json.dumps(
+                            {
+                                "event_id": EVENT_ID,
+                                "event_type": "integration.event.received",
+                                "agent_id": AGENT_ID,
+                                "space_id": SPACE_ID,
+                                "integration_message_id": INTEGRATION_MESSAGE_ID,
+                            }
+                        )
+                    }
+                ]
+            },
+            context=None,
+        )
+
+        self.assertEqual(result["processed"], 1)
+        planner_user = json.loads(self.mod.call_responses.call_args.kwargs["user"])
+        self.assertNotIn("thread_context", planner_user["event"]["integration"])
 
     def test_planner_actions_use_deterministic_idempotency_fields(self) -> None:
         self.mod.get_integration_message = mock.Mock(return_value=self._integration_message())

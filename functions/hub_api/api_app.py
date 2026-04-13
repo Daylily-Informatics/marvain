@@ -17,6 +17,7 @@ import logging
 import os
 import secrets
 import uuid
+from dataclasses import asdict
 from typing import Any, Optional
 
 import boto3
@@ -40,19 +41,26 @@ from agent_hub.auth import (
 from agent_hub.broadcast import broadcast_event
 from agent_hub.config import load_config
 from agent_hub.integrations import (
+    IntegrationAccountCreate,
+    IntegrationAccountUpdate,
+    create_integration_account,
     IntegrationQueueMessage,
-    enqueue_integration_event,
+    get_integration_account,
     get_integration_message,
+    enqueue_integration_event,
     insert_integration_message,
     link_integration_message_event,
+    list_integration_accounts,
     normalize_github_webhook,
     normalize_slack_webhook,
     normalize_twilio_webhook,
     parse_twilio_form_body,
+    update_integration_account,
     verify_github_request,
     verify_slack_request,
     verify_twilio_request,
 )
+from agent_hub.integrations.models import _UNSET
 from agent_hub.livekit_tokens import mint_livekit_join_token
 from agent_hub.memberships import (
     check_agent_permission,
@@ -203,43 +211,57 @@ def _require_agent_space(agent_id: str, space_id: str) -> None:
         raise HTTPException(status_code=404, detail="Space not found")
 
 
-def _require_slack_signing_secret() -> str:
-    secret_arn = str(_cfg.slack_secret_arn or "").strip()
+VALID_INTEGRATION_PROVIDERS = {"slack", "gmail", "github", "linear", "twilio"}
+
+
+def _validate_integration_provider(provider: str) -> str:
+    provider_n = str(provider or "").strip().lower()
+    if provider_n not in VALID_INTEGRATION_PROVIDERS:
+        raise HTTPException(status_code=400, detail="Invalid integration provider")
+    return provider_n
+
+
+def _integration_account_dict(account: Any) -> dict[str, Any]:
+    return asdict(account)
+
+
+def _integration_message_dict(message: Any) -> dict[str, Any]:
+    return asdict(message)
+
+
+def _require_agent_integration_account(agent_id: str, integration_account_id: str) -> Any:
+    account = get_integration_account(_get_db(), integration_account_id=integration_account_id)
+    if account is None or account.agent_id != agent_id:
+        raise HTTPException(status_code=404, detail="Integration account not found")
+    return account
+
+
+def _require_provider_integration_account(agent_id: str, integration_account_id: str, provider: str) -> Any:
+    account = _require_agent_integration_account(agent_id, integration_account_id)
+    if account.provider != provider:
+        raise HTTPException(status_code=400, detail="Integration account provider mismatch")
+    return account
+
+
+def _require_integration_account_secret_data(integration_account: Any) -> dict[str, Any]:
+    secret_arn = str(integration_account.credentials_secret_arn or "").strip()
     if not secret_arn:
-        raise HTTPException(status_code=500, detail="SLACK_SECRET_ARN not configured")
+        raise HTTPException(status_code=500, detail="Integration account secret not configured")
     data = get_secret_json(secret_arn)
-    signing_secret = str(data.get("signing_secret") or "").strip()
-    if not signing_secret or signing_secret == "REPLACE_ME":
-        raise HTTPException(status_code=500, detail="Slack signing secret not configured")
-    return signing_secret
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=500, detail="Integration account secret invalid")
+    return data
 
 
-def _require_twilio_auth() -> dict[str, str]:
-    secret_arn = str(_cfg.twilio_secret_arn or "").strip()
-    if not secret_arn:
-        raise HTTPException(status_code=500, detail="TWILIO_SECRET_ARN not configured")
-    data = get_secret_json(secret_arn)
-    account_sid = str(data.get("account_sid") or "").strip()
-    auth_token = str(data.get("auth_token") or "").strip()
-    if not account_sid or account_sid == "REPLACE_ME":
-        raise HTTPException(status_code=500, detail="Twilio account SID not configured")
-    if not auth_token or auth_token == "REPLACE_ME":
-        raise HTTPException(status_code=500, detail="Twilio auth token not configured")
-    return {
-        "account_sid": account_sid,
-        "auth_token": auth_token,
-    }
-
-
-def _require_github_webhook_secret() -> str:
-    secret_arn = str(_cfg.github_secret_arn or "").strip()
-    if not secret_arn:
-        raise HTTPException(status_code=500, detail="GITHUB_SECRET_ARN not configured")
-    data = get_secret_json(secret_arn)
-    webhook_secret = str(data.get("webhook_secret") or "").strip()
-    if not webhook_secret or webhook_secret == "REPLACE_ME":
-        raise HTTPException(status_code=500, detail="GitHub webhook secret not configured")
-    return webhook_secret
+def _require_webhook_account(integration_account_id: str, provider: str) -> Any:
+    account = get_integration_account(_get_db(), integration_account_id=integration_account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="Integration account not found")
+    if account.provider != provider:
+        raise HTTPException(status_code=404, detail="Integration account not found")
+    if not account.default_space_id:
+        raise HTTPException(status_code=400, detail="Integration account missing default space")
+    return account
 
 
 # -----------------------------
@@ -368,6 +390,34 @@ class PresignIn(BaseModel):
     filename: str
     content_type: str = Field(default="application/octet-stream")
     purpose: str | None = Field(default="general", description="general|recognition")
+
+
+class IntegrationAccountCreateIn(BaseModel):
+    provider: str
+    display_name: str
+    credentials_secret_arn: str
+    external_account_id: str | None = None
+    default_space_id: str | None = None
+    scopes: list[str] = Field(default_factory=list)
+    config: dict[str, Any] = Field(default_factory=dict)
+    status: str = Field(default="active")
+
+
+class IntegrationAccountUpdateIn(BaseModel):
+    display_name: str | None = None
+    credentials_secret_arn: str | None = None
+    external_account_id: str | None = None
+    default_space_id: str | None = None
+    scopes: list[str] | None = None
+    config: dict[str, Any] | None = None
+    status: str | None = None
+
+
+class IntegrationMessageQueryParams(BaseModel):
+    provider: str | None = None
+    status: str | None = None
+    external_thread_id: str | None = None
+    limit: int = 50
 
 
 # -----------------------------
@@ -1933,15 +1983,223 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
     return IngestEventOut(event_id=event_id, queued=queued)
 
 
-@api_app.post("/v1/integrations/slack/webhook/{agent_id}/{space_id}", response_model=None)
-async def ingest_slack_webhook(agent_id: str, space_id: str, request: Request) -> Any:
+@api_app.get("/v1/agents/{agent_id}/integration_accounts", response_model=dict[str, list[dict[str, Any]]])
+def list_agent_integration_accounts(
+    agent_id: str,
+    provider: str | None = None,
+    status: str | None = None,
+    user: AuthenticatedUser = Depends(get_user),
+) -> dict[str, list[dict[str, Any]]]:
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+    provider_n = _validate_integration_provider(provider) if provider else None
+    accounts = list_integration_accounts(
+        _get_db(),
+        agent_id=agent_id,
+        provider=provider_n,
+        status=(str(status).strip() or None) if status else None,
+    )
+    return {"integration_accounts": [_integration_account_dict(account) for account in accounts]}
+
+
+@api_app.post("/v1/agents/{agent_id}/integration_accounts", response_model=dict[str, Any])
+def create_agent_integration_account(
+    agent_id: str,
+    body: IntegrationAccountCreateIn,
+    user: AuthenticatedUser = Depends(get_user),
+) -> dict[str, Any]:
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+    account = create_integration_account(
+        _get_db(),
+        IntegrationAccountCreate(
+            agent_id=agent_id,
+            provider=_validate_integration_provider(body.provider),
+            display_name=body.display_name,
+            credentials_secret_arn=body.credentials_secret_arn,
+            external_account_id=body.external_account_id,
+            default_space_id=body.default_space_id,
+            scopes=body.scopes,
+            config=body.config,
+            status=body.status,
+        ),
+    )
+    if _cfg.audit_bucket:
+        append_audit_entry(
+            _get_db(),
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
+            entry_type="integration_account_created",
+            entry={
+                "integration_account_id": account.integration_account_id,
+                "provider": account.provider,
+                "display_name": account.display_name,
+            },
+        )
+    return {"integration_account": _integration_account_dict(account)}
+
+
+@api_app.get("/v1/agents/{agent_id}/integration_accounts/{integration_account_id}", response_model=dict[str, Any])
+def get_agent_integration_account(
+    agent_id: str,
+    integration_account_id: str,
+    user: AuthenticatedUser = Depends(get_user),
+) -> dict[str, Any]:
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+    account = _require_agent_integration_account(agent_id, integration_account_id)
+    return {"integration_account": _integration_account_dict(account)}
+
+
+@api_app.patch("/v1/agents/{agent_id}/integration_accounts/{integration_account_id}", response_model=dict[str, Any])
+def update_agent_integration_account(
+    agent_id: str,
+    integration_account_id: str,
+    body: IntegrationAccountUpdateIn,
+    user: AuthenticatedUser = Depends(get_user),
+) -> dict[str, Any]:
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+    _require_agent_integration_account(agent_id, integration_account_id)
+    account = update_integration_account(
+        _get_db(),
+        integration_account_id=integration_account_id,
+        update=IntegrationAccountUpdate(
+            display_name=body.display_name if body.display_name is not None else _UNSET,
+            credentials_secret_arn=body.credentials_secret_arn if body.credentials_secret_arn is not None else _UNSET,
+            external_account_id=body.external_account_id if body.external_account_id is not None else _UNSET,
+            default_space_id=body.default_space_id if body.default_space_id is not None else _UNSET,
+            scopes=body.scopes if body.scopes is not None else _UNSET,
+            config=body.config if body.config is not None else _UNSET,
+            status=body.status if body.status is not None else _UNSET,
+        ),
+    )
+    if _cfg.audit_bucket:
+        append_audit_entry(
+            _get_db(),
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
+            entry_type="integration_account_updated",
+            entry={
+                "integration_account_id": account.integration_account_id,
+                "provider": account.provider,
+                "display_name": account.display_name,
+            },
+        )
+    return {"integration_account": _integration_account_dict(account)}
+
+
+@api_app.delete("/v1/agents/{agent_id}/integration_accounts/{integration_account_id}", response_model=dict[str, Any])
+def delete_agent_integration_account(
+    agent_id: str,
+    integration_account_id: str,
+    user: AuthenticatedUser = Depends(get_user),
+) -> dict[str, Any]:
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+    rows = _get_db().query(
+        """
+        DELETE FROM integration_accounts
+        WHERE integration_account_id = :integration_account_id::uuid
+          AND agent_id = :agent_id::uuid
+        RETURNING integration_account_id::TEXT as integration_account_id
+        """,
+        {"integration_account_id": integration_account_id, "agent_id": agent_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Integration account not found")
+    if _cfg.audit_bucket:
+        append_audit_entry(
+            _get_db(),
+            bucket=_cfg.audit_bucket,
+            agent_id=agent_id,
+            entry_type="integration_account_deleted",
+            entry={"integration_account_id": integration_account_id},
+        )
+    return {"ok": True}
+
+
+@api_app.get("/v1/agents/{agent_id}/messages", response_model=dict[str, list[dict[str, Any]]])
+def list_agent_messages(
+    agent_id: str,
+    provider: str | None = None,
+    status: str | None = None,
+    external_thread_id: str | None = None,
+    limit: int = 50,
+    user: AuthenticatedUser = Depends(get_user),
+) -> dict[str, list[dict[str, Any]]]:
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+    provider_n = _validate_integration_provider(provider) if provider else None
+    limit_n = max(1, min(200, int(limit or 50)))
+    rows = _get_db().query(
+        """
+        SELECT
+            integration_message_id::TEXT as integration_message_id,
+            agent_id::TEXT as agent_id,
+            space_id::TEXT as space_id,
+            event_id::TEXT as event_id,
+            integration_account_id::TEXT as integration_account_id,
+            action_id::TEXT as action_id,
+            provider,
+            direction,
+            channel_type,
+            object_type,
+            external_thread_id,
+            external_message_id,
+            dedupe_key,
+            sender::TEXT as sender_json,
+            recipients::TEXT as recipients_json,
+            subject,
+            body_text,
+            body_html,
+            payload::TEXT as payload_json,
+            status,
+            contains_phi,
+            retention_until::TEXT as retention_until,
+            processed_at::TEXT as processed_at,
+            redacted_at::TEXT as redacted_at,
+            created_at::TEXT as created_at,
+            updated_at::TEXT as updated_at
+        FROM integration_messages
+        WHERE agent_id = :agent_id::uuid
+          AND (:provider IS NULL OR provider = :provider)
+          AND (:status IS NULL OR status = :status)
+          AND (:external_thread_id IS NULL OR external_thread_id = :external_thread_id)
+        ORDER BY created_at DESC, integration_message_id DESC
+        LIMIT :limit::int
+        """,
+        {
+            "agent_id": agent_id,
+            "provider": provider_n,
+            "status": (str(status).strip() or None) if status else None,
+            "external_thread_id": (str(external_thread_id).strip() or None) if external_thread_id else None,
+            "limit": limit_n,
+        },
+    )
+    return {"messages": rows}
+
+
+@api_app.get("/v1/agents/{agent_id}/messages/{integration_message_id}", response_model=dict[str, Any])
+def get_agent_message(
+    agent_id: str,
+    integration_message_id: str,
+    user: AuthenticatedUser = Depends(get_user),
+) -> dict[str, Any]:
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+    message = get_integration_message(_get_db(), integration_message_id=integration_message_id)
+    if message is None or message.agent_id != agent_id:
+        raise HTTPException(status_code=404, detail="Integration message not found")
+    return {"integration_message": _integration_message_dict(message)}
+
+
+@api_app.post("/v1/integrations/slack/webhook/{integration_account_id}", response_model=None)
+async def ingest_slack_webhook(integration_account_id: str, request: Request) -> Any:
     signature = str(request.headers.get("x-slack-signature") or "").strip()
     timestamp = str(request.headers.get("x-slack-request-timestamp") or "").strip()
     if not signature or not timestamp:
         raise HTTPException(status_code=401, detail="Missing Slack signature headers")
 
     raw_body = await request.body()
-    signing_secret = _require_slack_signing_secret()
+    account = _require_webhook_account(integration_account_id, "slack")
+    secret_data = _require_integration_account_secret_data(account)
+    signing_secret = str(secret_data.get("signing_secret") or "").strip()
+    if not signing_secret or signing_secret == "REPLACE_ME":
+        raise HTTPException(status_code=500, detail="Slack signing secret not configured")
     try:
         verify_slack_request(
             signing_secret,
@@ -1957,11 +2215,10 @@ async def ingest_slack_webhook(agent_id: str, space_id: str, request: Request) -
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
 
-    _require_agent_space(agent_id, space_id)
-    if is_agent_disabled(_get_db(), agent_id):
+    if is_agent_disabled(_get_db(), account.agent_id):
         raise HTTPException(status_code=403, detail="Agent is disabled")
 
-    normalized = normalize_slack_webhook(payload, agent_id=agent_id, space_id=space_id)
+    normalized = normalize_slack_webhook(payload, agent_id=account.agent_id, space_id=account.default_space_id)
     if normalized.challenge is not None:
         return PlainTextResponse(normalized.challenge)
     if normalized.ignored_reason is not None:
@@ -2002,8 +2259,8 @@ async def ingest_slack_webhook(agent_id: str, space_id: str, request: Request) -
                 """,
                 {
                     "event_id": event_id,
-                    "agent_id": agent_id,
-                    "space_id": space_id,
+                    "agent_id": account.agent_id,
+                    "space_id": account.default_space_id,
                     "type": "integration.event.received",
                     "payload": json.dumps(event_payload),
                 },
@@ -2041,8 +2298,8 @@ async def ingest_slack_webhook(agent_id: str, space_id: str, request: Request) -
         queue_url=_cfg.integration_queue_url,
         message=IntegrationQueueMessage(
             event_id=resolved_message.event_id,
-            agent_id=agent_id,
-            space_id=space_id,
+            agent_id=account.agent_id,
+            space_id=account.default_space_id,
             integration_message_id=resolved_message.integration_message_id,
         ),
     )
@@ -2051,11 +2308,11 @@ async def ingest_slack_webhook(agent_id: str, space_id: str, request: Request) -
         append_audit_entry(
             db,
             bucket=_cfg.audit_bucket,
-            agent_id=agent_id,
+            agent_id=account.agent_id,
             entry_type="integration_webhook_received",
             entry={
                 "provider": "slack",
-                "space_id": space_id,
+                "space_id": account.default_space_id,
                 "event_id": resolved_message.event_id,
                 "integration_message_id": resolved_message.integration_message_id,
                 "inserted": inserted,
@@ -2071,22 +2328,30 @@ async def ingest_slack_webhook(agent_id: str, space_id: str, request: Request) -
     }
 
 
-@api_app.post("/v1/integrations/twilio/webhook/{agent_id}/{space_id}", response_model=None)
-async def ingest_twilio_webhook(agent_id: str, space_id: str, request: Request) -> Any:
+@api_app.post("/v1/integrations/twilio/webhook/{integration_account_id}", response_model=None)
+async def ingest_twilio_webhook(integration_account_id: str, request: Request) -> Any:
     signature = str(request.headers.get("x-twilio-signature") or "").strip()
     if not signature:
         raise HTTPException(status_code=401, detail="Missing Twilio signature header")
 
     raw_body = await request.body()
+    account = _require_webhook_account(integration_account_id, "twilio")
+    secret_data = _require_integration_account_secret_data(account)
+    auth_token = str(secret_data.get("auth_token") or "").strip()
+    account_sid = str(secret_data.get("account_sid") or "").strip()
+    if not auth_token or auth_token == "REPLACE_ME":
+        raise HTTPException(status_code=500, detail="Twilio auth token not configured")
     try:
         payload = parse_twilio_form_body(raw_body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    twilio_auth = _require_twilio_auth()
+    payload_account_sid = str((payload.get("AccountSid") or [""])[0]).strip()
+    if account_sid and payload_account_sid and payload_account_sid != account_sid:
+        raise HTTPException(status_code=403, detail="Twilio account SID mismatch")
     try:
         verify_twilio_request(
-            twilio_auth["auth_token"],
+            auth_token,
             url=str(request.url),
             params=payload,
             signature=signature,
@@ -2094,11 +2359,10 @@ async def ingest_twilio_webhook(agent_id: str, space_id: str, request: Request) 
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 
-    _require_agent_space(agent_id, space_id)
-    if is_agent_disabled(_get_db(), agent_id):
+    if is_agent_disabled(_get_db(), account.agent_id):
         raise HTTPException(status_code=403, detail="Agent is disabled")
 
-    normalized = normalize_twilio_webhook(payload, agent_id=agent_id, space_id=space_id)
+    normalized = normalize_twilio_webhook(payload, agent_id=account.agent_id, space_id=account.default_space_id)
     if normalized.ignored_reason is not None:
         return PlainTextResponse("")
     if normalized.integration_message is None:
@@ -2132,8 +2396,8 @@ async def ingest_twilio_webhook(agent_id: str, space_id: str, request: Request) 
                 """,
                 {
                     "event_id": event_id,
-                    "agent_id": agent_id,
-                    "space_id": space_id,
+                    "agent_id": account.agent_id,
+                    "space_id": account.default_space_id,
                     "type": "integration.event.received",
                     "payload": json.dumps(event_payload),
                 },
@@ -2171,8 +2435,8 @@ async def ingest_twilio_webhook(agent_id: str, space_id: str, request: Request) 
         queue_url=_cfg.integration_queue_url,
         message=IntegrationQueueMessage(
             event_id=resolved_message.event_id,
-            agent_id=agent_id,
-            space_id=space_id,
+            agent_id=account.agent_id,
+            space_id=account.default_space_id,
             integration_message_id=resolved_message.integration_message_id,
         ),
     )
@@ -2181,11 +2445,11 @@ async def ingest_twilio_webhook(agent_id: str, space_id: str, request: Request) 
         append_audit_entry(
             db,
             bucket=_cfg.audit_bucket,
-            agent_id=agent_id,
+            agent_id=account.agent_id,
             entry_type="integration_webhook_received",
             entry={
                 "provider": "twilio",
-                "space_id": space_id,
+                "space_id": account.default_space_id,
                 "event_id": resolved_message.event_id,
                 "integration_message_id": resolved_message.integration_message_id,
                 "inserted": inserted,
@@ -2195,8 +2459,8 @@ async def ingest_twilio_webhook(agent_id: str, space_id: str, request: Request) 
     return PlainTextResponse("")
 
 
-@api_app.post("/v1/integrations/github/webhook/{agent_id}/{space_id}", response_model=None)
-async def ingest_github_webhook(agent_id: str, space_id: str, request: Request) -> Any:
+@api_app.post("/v1/integrations/github/webhook/{integration_account_id}", response_model=None)
+async def ingest_github_webhook(integration_account_id: str, request: Request) -> Any:
     signature = str(request.headers.get("x-hub-signature-256") or "").strip()
     event_name = str(request.headers.get("x-github-event") or "").strip()
     delivery_id = str(request.headers.get("x-github-delivery") or "").strip()
@@ -2204,7 +2468,11 @@ async def ingest_github_webhook(agent_id: str, space_id: str, request: Request) 
         raise HTTPException(status_code=401, detail="Missing GitHub signature headers")
 
     raw_body = await request.body()
-    webhook_secret = _require_github_webhook_secret()
+    account = _require_webhook_account(integration_account_id, "github")
+    secret_data = _require_integration_account_secret_data(account)
+    webhook_secret = str(secret_data.get("webhook_secret") or "").strip()
+    if not webhook_secret or webhook_secret == "REPLACE_ME":
+        raise HTTPException(status_code=500, detail="GitHub webhook secret not configured")
     try:
         verify_github_request(webhook_secret, signature=signature, body=raw_body)
     except ValueError as exc:
@@ -2215,16 +2483,15 @@ async def ingest_github_webhook(agent_id: str, space_id: str, request: Request) 
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Invalid JSON body") from exc
 
-    _require_agent_space(agent_id, space_id)
-    if is_agent_disabled(_get_db(), agent_id):
+    if is_agent_disabled(_get_db(), account.agent_id):
         raise HTTPException(status_code=403, detail="Agent is disabled")
 
     normalized = normalize_github_webhook(
         payload,
         event_name=event_name,
         delivery_id=delivery_id,
-        agent_id=agent_id,
-        space_id=space_id,
+        agent_id=account.agent_id,
+        space_id=account.default_space_id,
     )
     if normalized.ignored_reason is not None:
         return {
@@ -2264,8 +2531,8 @@ async def ingest_github_webhook(agent_id: str, space_id: str, request: Request) 
                 """,
                 {
                     "event_id": event_id,
-                    "agent_id": agent_id,
-                    "space_id": space_id,
+                    "agent_id": account.agent_id,
+                    "space_id": account.default_space_id,
                     "type": "integration.event.received",
                     "payload": json.dumps(event_payload),
                 },
@@ -2303,8 +2570,8 @@ async def ingest_github_webhook(agent_id: str, space_id: str, request: Request) 
         queue_url=_cfg.integration_queue_url,
         message=IntegrationQueueMessage(
             event_id=resolved_message.event_id,
-            agent_id=agent_id,
-            space_id=space_id,
+            agent_id=account.agent_id,
+            space_id=account.default_space_id,
             integration_message_id=resolved_message.integration_message_id,
         ),
     )
@@ -2313,11 +2580,11 @@ async def ingest_github_webhook(agent_id: str, space_id: str, request: Request) 
         append_audit_entry(
             db,
             bucket=_cfg.audit_bucket,
-            agent_id=agent_id,
+            agent_id=account.agent_id,
             entry_type="integration_webhook_received",
             entry={
                 "provider": "github",
-                "space_id": space_id,
+                "space_id": account.default_space_id,
                 "event_id": resolved_message.event_id,
                 "integration_message_id": resolved_message.integration_message_id,
                 "inserted": inserted,
