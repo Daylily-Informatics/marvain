@@ -664,7 +664,9 @@ class TestSpacesGui(unittest.TestCase):
         self.mod._get_db = mock.Mock(return_value=mock_db)
         self.mod.check_agent_permission = mock.Mock(return_value=True)
 
-        r = self.client.post("/api/spaces", json={"agent_id": "agent-1", "name": "Overflow Space", "privacy_mode": False})
+        r = self.client.post(
+            "/api/spaces", json={"agent_id": "agent-1", "name": "Overflow Space", "privacy_mode": False}
+        )
 
         self.assertEqual(r.status_code, 409)
         self.assertIn("Space limit reached (5)", r.text)

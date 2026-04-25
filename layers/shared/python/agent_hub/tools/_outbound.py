@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from agent_hub.integrations import get_integration_account
-from agent_hub.secrets import get_secret_json
 from agent_hub.integrations.models import IntegrationAccountRecord
 from agent_hub.rds_data import RdsData
+from agent_hub.secrets import get_secret_json
 
 
 def load_outbound_integration_account(

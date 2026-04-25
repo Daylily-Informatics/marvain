@@ -27,4 +27,3 @@ def list_audio_devices() -> list[dict[str, Any]]:
         return [dict(devices)]
     except Exception:
         return []
-

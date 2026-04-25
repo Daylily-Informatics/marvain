@@ -16,4 +16,3 @@ async def run_noop_monitoring(stop_event: asyncio.Event) -> None:
     """Placeholder loop that does nothing."""
     while not stop_event.is_set():
         await asyncio.sleep(1.0)
-

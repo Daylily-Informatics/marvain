@@ -9,17 +9,17 @@ _SHARED = Path(__file__).resolve().parents[1] / "layers" / "shared" / "python"
 if str(_SHARED) not in sys.path:
     sys.path.insert(0, str(_SHARED))
 
-from agent_hub.integrations.models import IntegrationMessageCreate
-from agent_hub.integrations.store import (
+from agent_hub.integrations.models import IntegrationMessageCreate  # noqa: E402
+from agent_hub.integrations.store import (  # noqa: E402
     create_integration_account,
     finalize_outbound_integration_message,
     get_integration_account,
     get_integration_message,
     get_integration_sync_state,
     insert_integration_message,
+    link_integration_message_event,
     list_integration_accounts,
     list_integration_messages_for_thread,
-    link_integration_message_event,
     set_integration_message_status,
     update_integration_account,
     upsert_integration_sync_state,

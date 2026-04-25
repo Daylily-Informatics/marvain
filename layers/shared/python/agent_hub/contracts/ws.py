@@ -54,7 +54,9 @@ def _model_dump(model: BaseModel) -> dict[str, Any]:
     return model.model_dump()
 
 
-def build_ws_envelope(*, event_type: str, agent_id: str, space_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
+def build_ws_envelope(
+    *, event_type: str, agent_id: str, space_id: str | None, payload: dict[str, Any]
+) -> dict[str, Any]:
     return _model_dump(
         WsEnvelope(
             type=event_type,

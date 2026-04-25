@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import dataclasses
 import importlib.util
-import json
 import os
 import sys
 import unittest
@@ -10,7 +9,6 @@ from pathlib import Path
 from unittest import mock
 
 from agent_hub.auth import AuthenticatedUser
-
 
 AGENT_ID = "11111111-1111-1111-1111-111111111111"
 INTEGRATION_ACCOUNT_ID = "55555555-5555-5555-5555-555555555555"
@@ -245,7 +243,9 @@ class TestHubApiIntegrationRoutes(unittest.TestCase):
             headers=self._headers(),
         )
         self.assertEqual(detail_response.status_code, 200)
-        self.assertEqual(detail_response.json()["integration_message"]["integration_message_id"], INTEGRATION_MESSAGE_ID)
+        self.assertEqual(
+            detail_response.json()["integration_message"]["integration_message_id"], INTEGRATION_MESSAGE_ID
+        )
 
 
 if __name__ == "__main__":

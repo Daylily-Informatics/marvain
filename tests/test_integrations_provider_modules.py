@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import sys
 from base64 import b64encode
 from pathlib import Path
-import sys
 
 repo_root = Path(__file__).resolve().parents[1]
 shared = repo_root / "layers" / "shared" / "python"
 if str(shared) not in sys.path:
     sys.path.insert(0, str(shared))
 
-from agent_hub.integrations.github import normalize_github_webhook, verify_github_request
-from agent_hub.integrations.slack import normalize_slack_webhook, verify_slack_request
-from agent_hub.integrations.twilio import normalize_twilio_webhook, verify_twilio_request
+from agent_hub.integrations.github import normalize_github_webhook, verify_github_request  # noqa: E402
+from agent_hub.integrations.slack import normalize_slack_webhook, verify_slack_request  # noqa: E402
+from agent_hub.integrations.twilio import normalize_twilio_webhook, verify_twilio_request  # noqa: E402
 
 
 def _slack_signature(timestamp: str, body: str, signing_secret: str) -> str:

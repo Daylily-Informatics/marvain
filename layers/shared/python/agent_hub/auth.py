@@ -70,8 +70,9 @@ def authenticate_user_access_token(db: RdsData, access_token: str) -> Authentica
 
 
 def _cognito_admin_client(*, user_pool_id: str | None = None):
-    from agent_hub.config import load_config
     from daylily_auth_cognito.admin.client import CognitoAdminClient
+
+    from agent_hub.config import load_config
 
     cfg = load_config()
     return CognitoAdminClient(
@@ -114,9 +115,10 @@ def lookup_cognito_user_by_email(*, user_pool_id: str, email: str) -> tuple[str,
 
 def list_cognito_users(*, user_pool_id: str, region: str | None = None) -> list[dict[str, Any]]:
     """List Cognito users through the shared daylily-auth-cognito boundary."""
-    from agent_hub.config import load_config
     from daylily_auth_cognito.admin.client import CognitoAdminClient
     from daylily_auth_cognito.admin.users import list_users as list_cognito_admin_users
+
+    from agent_hub.config import load_config
 
     cfg = load_config()
     admin = CognitoAdminClient(

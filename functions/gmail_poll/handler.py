@@ -7,7 +7,6 @@ import uuid
 from typing import Any
 
 import boto3
-
 from agent_hub.config import load_config
 from agent_hub.integrations.gmail import (
     fetch_gmail_message,
@@ -117,14 +116,18 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         space_id = str(account.get("default_space_id") or "").strip()
         credentials_secret_arn = str(account.get("credentials_secret_arn") or "").strip()
         if not integration_account_id or not agent_id or not space_id or not credentials_secret_arn:
-            logger.warning("Skipping gmail account with incomplete configuration: %s", integration_account_id or "<missing>")
+            logger.warning(
+                "Skipping gmail account with incomplete configuration: %s", integration_account_id or "<missing>"
+            )
             summary["accounts_skipped"] += 1
             continue
 
         try:
             credentials = load_gmail_credentials(credentials_secret_arn)
             access_token = refresh_gmail_access_token(credentials)
-            sync_state = get_integration_sync_state(_db, integration_account_id=integration_account_id, sync_key="gmail")
+            sync_state = get_integration_sync_state(
+                _db, integration_account_id=integration_account_id, sync_key="gmail"
+            )
             current_cursor = sync_state.cursor if sync_state else None
             refs, next_cursor = list_gmail_message_refs(
                 access_token,

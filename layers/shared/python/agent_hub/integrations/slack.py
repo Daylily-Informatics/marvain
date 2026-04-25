@@ -117,7 +117,9 @@ def normalize_slack_webhook(
             return SlackWebhookNormalized(ignored_reason=ignored_reason)
     channel_id = _optional_text(event.get("channel"))
     external_thread_id = _optional_text(event.get("thread_ts")) or _optional_text(event.get("ts"))
-    external_message_id = _optional_text(event.get("client_msg_id")) or _optional_text(event.get("ts")) or slack_event_id
+    external_message_id = (
+        _optional_text(event.get("client_msg_id")) or _optional_text(event.get("ts")) or slack_event_id
+    )
     body_text = str(event.get("text") or "")
 
     sender: dict[str, Any] = {"team_id": team_id}

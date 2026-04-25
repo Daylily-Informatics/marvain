@@ -93,14 +93,22 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                         "integration_account_id": str(updated.get("integration_account_id") or "").strip() or None,
                         "provider": str(updated.get("provider") or row.get("provider") or "").strip() or None,
                         "direction": str(updated.get("direction") or row.get("direction") or "").strip() or None,
-                        "channel_type": str(updated.get("channel_type") or row.get("channel_type") or "").strip() or None,
-                        "object_type": str(updated.get("object_type") or row.get("object_type") or "").strip() or None,
-                        "external_thread_id": str(updated.get("external_thread_id") or row.get("external_thread_id") or "").strip()
+                        "channel_type": str(updated.get("channel_type") or row.get("channel_type") or "").strip()
                         or None,
-                        "external_message_id": str(updated.get("external_message_id") or row.get("external_message_id") or "").strip()
+                        "object_type": str(updated.get("object_type") or row.get("object_type") or "").strip() or None,
+                        "external_thread_id": str(
+                            updated.get("external_thread_id") or row.get("external_thread_id") or ""
+                        ).strip()
+                        or None,
+                        "external_message_id": str(
+                            updated.get("external_message_id") or row.get("external_message_id") or ""
+                        ).strip()
                         or None,
                         "dedupe_key": str(updated.get("dedupe_key") or row.get("dedupe_key") or "").strip() or None,
-                        "retention_until": str(updated.get("retention_until") or row.get("retention_until") or "").strip() or None,
+                        "retention_until": str(
+                            updated.get("retention_until") or row.get("retention_until") or ""
+                        ).strip()
+                        or None,
                         "redacted_at": redacted_at,
                     },
                 )

@@ -11,7 +11,6 @@ import requests
 import websockets
 from daylily_auth_cognito.admin.client import CognitoAdminClient
 
-
 pytestmark = pytest.mark.e2e
 
 

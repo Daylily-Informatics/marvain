@@ -43,11 +43,11 @@ from agent_hub.config import load_config
 from agent_hub.integrations import (
     IntegrationAccountCreate,
     IntegrationAccountUpdate,
-    create_integration_account,
     IntegrationQueueMessage,
+    create_integration_account,
+    enqueue_integration_event,
     get_integration_account,
     get_integration_message,
-    enqueue_integration_event,
     insert_integration_message,
     link_integration_message_event,
     list_integration_accounts,
@@ -287,7 +287,9 @@ class RegisterDeviceIn(BaseModel):
     scopes: list[str] = Field(default_factory=list)
     capabilities: dict[str, Any] = Field(default_factory=dict)
     location_label: Optional[str] = Field(default=None, description="Human-readable location label")
-    location_coords: Optional[dict[str, Any]] = Field(default=None, description="Optional geographic coordinates: {lat, lng}")
+    location_coords: Optional[dict[str, Any]] = Field(
+        default=None, description="Optional geographic coordinates: {lat, lng}"
+    )
 
 
 class RegisterDeviceOut(BaseModel):
@@ -304,7 +306,9 @@ class DeviceLocationUpdateIn(BaseModel):
     """Request body for updating device location."""
 
     location_label: Optional[str] = Field(default=None, description="Human-readable location label")
-    location_coords: Optional[dict[str, Any]] = Field(default=None, description="Optional geographic coordinates: {lat, lng}")
+    location_coords: Optional[dict[str, Any]] = Field(
+        default=None, description="Optional geographic coordinates: {lat, lng}"
+    )
 
 
 class SetPrivacyIn(BaseModel):
@@ -1001,7 +1005,9 @@ def update_auto_approve_policy(
 
 
 @api_app.delete("/v1/agents/{agent_id}/auto-approve-policies/{policy_id}")
-def delete_auto_approve_policy(agent_id: str, policy_id: str, user: AuthenticatedUser = Depends(get_user)) -> dict[str, Any]:
+def delete_auto_approve_policy(
+    agent_id: str, policy_id: str, user: AuthenticatedUser = Depends(get_user)
+) -> dict[str, Any]:
     _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
     _get_db().execute(
         """
@@ -1047,8 +1053,13 @@ def register_device(body: RegisterDeviceIn, user: AuthenticatedUser = Depends(ge
             bucket=_cfg.audit_bucket,
             agent_id=body.agent_id,
             entry_type="device_registered",
-            entry={"device_id": device_id, "name": body.name, "scopes": body.scopes, "by_user_id": user.user_id,
-                    "location_label": body.location_label},
+            entry={
+                "device_id": device_id,
+                "name": body.name,
+                "scopes": body.scopes,
+                "by_user_id": user.user_id,
+                "location_label": body.location_label,
+            },
         )
     return RegisterDeviceOut(device_id=device_id, device_token=token)
 
@@ -1121,7 +1132,16 @@ def admin_bootstrap(body: BootstrapIn) -> BootstrapOut:
                 "device_id": device_id,
                 "agent_id": agent_id,
                 "name": "primary",
-                "scopes": json.dumps(["events:read", "events:write", "memories:read", "memories:write", "artifacts:write", "presence:write"]),
+                "scopes": json.dumps(
+                    [
+                        "events:read",
+                        "events:write",
+                        "memories:read",
+                        "memories:write",
+                        "artifacts:write",
+                        "presence:write",
+                    ]
+                ),
                 "capabilities": json.dumps({"kind": "admin"}),
                 "token_hash": token_hash,
             },
@@ -1169,15 +1189,20 @@ def admin_register_device(body: RegisterDeviceIn) -> RegisterDeviceOut:
             bucket=_cfg.audit_bucket,
             agent_id=body.agent_id,
             entry_type="device_registered",
-            entry={"device_id": device_id, "name": body.name, "scopes": body.scopes,
-                    "location_label": body.location_label},
+            entry={
+                "device_id": device_id,
+                "name": body.name,
+                "scopes": body.scopes,
+                "location_label": body.location_label,
+            },
         )
     return RegisterDeviceOut(device_id=device_id, device_token=token)
 
 
 @api_app.patch("/v1/devices/{device_id}/location")
-def api_update_device_location(device_id: str, body: DeviceLocationUpdateIn,
-                                user: AuthenticatedUser = Depends(get_user)) -> dict[str, Any]:
+def api_update_device_location(
+    device_id: str, body: DeviceLocationUpdateIn, user: AuthenticatedUser = Depends(get_user)
+) -> dict[str, Any]:
     """Update a device's location information."""
     db = _get_db()
     rows = db.query(
@@ -1396,7 +1421,8 @@ def _parse_consent_expires_at(value: str | None):
     v = str(value).strip()
     if not v:
         return None
-    from datetime import date, datetime, time as dt_time, timezone
+    from datetime import date, datetime, timezone
+    from datetime import time as dt_time
 
     try:
         if len(v) == 10 and v[4] == "-" and v[7] == "-":
@@ -1454,7 +1480,9 @@ def v1_list_consent(person_id: str, user: AuthenticatedUser = Depends(get_user))
 
 
 @api_app.post("/v1/people/{person_id}/consent")
-def v1_update_consent(person_id: str, body: ConsentUpdateV1In, user: AuthenticatedUser = Depends(get_user)) -> dict[str, Any]:
+def v1_update_consent(
+    person_id: str, body: ConsentUpdateV1In, user: AuthenticatedUser = Depends(get_user)
+) -> dict[str, Any]:
     agent_id = _get_person_agent_id_for_user(person_id=person_id, user=user)
     _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
 
@@ -1588,7 +1616,9 @@ def v1_link_person_account(
 
 def _vector_literal(values: list[float], expected_dim: int) -> str:
     if len(values) != expected_dim:
-        raise HTTPException(status_code=400, detail=f"Invalid embedding dim (expected {expected_dim}, got {len(values)})")
+        raise HTTPException(
+            status_code=400, detail=f"Invalid embedding dim (expected {expected_dim}, got {len(values)})"
+        )
     # Limit precision to keep payloads smaller and stable.
     return "[" + ",".join(f"{float(x):.6f}" for x in values) + "]"
 
@@ -1632,7 +1662,9 @@ class FaceprintCreateIn(BaseModel):
 
 
 @api_app.post("/v1/people/{person_id}/voiceprints")
-def v1_create_voiceprint(person_id: str, body: VoiceprintCreateIn, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
+def v1_create_voiceprint(
+    person_id: str, body: VoiceprintCreateIn, device: AuthenticatedDevice = Depends(get_device)
+) -> dict[str, Any]:
     require_scope(device, "biometrics:write")
     rows = _get_db().query(
         "SELECT agent_id::TEXT as agent_id FROM people WHERE person_id = :person_id::uuid LIMIT 1",
@@ -1670,7 +1702,9 @@ def v1_create_voiceprint(person_id: str, body: VoiceprintCreateIn, device: Authe
 
 
 @api_app.post("/v1/people/{person_id}/faceprints")
-def v1_create_faceprint(person_id: str, body: FaceprintCreateIn, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
+def v1_create_faceprint(
+    person_id: str, body: FaceprintCreateIn, device: AuthenticatedDevice = Depends(get_device)
+) -> dict[str, Any]:
     require_scope(device, "biometrics:write")
     rows = _get_db().query(
         "SELECT agent_id::TEXT as agent_id FROM people WHERE person_id = :person_id::uuid LIMIT 1",
@@ -2639,7 +2673,9 @@ class MemoryCreateIn(BaseModel):
     space_id: str | None = None
     tier: str = Field(default="episodic", description="Memory tier: episodic, semantic, or procedural")
     content: str = Field(..., min_length=1, max_length=10000)
-    metadata: dict[str, Any] = Field(default_factory=dict, description="Arbitrary metadata (input_modality, room_name, etc.)")
+    metadata: dict[str, Any] = Field(
+        default_factory=dict, description="Arbitrary metadata (input_modality, room_name, etc.)"
+    )
     participants: list[str] = Field(default_factory=list)
     subject_person_id: str | None = Field(default=None, description="Person this memory is about")
     tags: list[str] = Field(default_factory=list, description="Freeform tags")
@@ -3071,7 +3107,9 @@ class PresenceIn(BaseModel):
 
 
 @api_app.post("/v1/spaces/{space_id}/presence")
-def update_space_presence(space_id: str, body: PresenceIn, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
+def update_space_presence(
+    space_id: str, body: PresenceIn, device: AuthenticatedDevice = Depends(get_device)
+) -> dict[str, Any]:
     """Upsert presence records for people in a space (requires presence:write)."""
     require_scope(device, "presence:write")
 

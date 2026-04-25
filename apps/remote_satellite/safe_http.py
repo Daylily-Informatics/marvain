@@ -77,7 +77,9 @@ def perform_http_request(
         else:
             data = str(body).encode("utf-8")
 
-    request = urllib.request.Request(parsed.geturl(), data=data, headers=request_headers, method=str(method or "GET").upper())
+    request = urllib.request.Request(
+        parsed.geturl(), data=data, headers=request_headers, method=str(method or "GET").upper()
+    )
     opener = urllib.request.build_opener(NoRedirectHandler)
     start_time = time.time()
 

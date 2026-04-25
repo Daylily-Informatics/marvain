@@ -20,7 +20,6 @@ import logging
 import math
 import os
 import signal
-import sys
 import time
 from typing import Any
 
@@ -86,10 +85,9 @@ def _dummy_embedding(data: bytes, dim: int) -> list[float]:
 def _try_voice_embedding(audio_bytes: bytes) -> tuple[list[float], str] | None:
     """Return (embedding, model_name) or None if deps are unavailable."""
     try:
-        from resemblyzer import VoiceEncoder, preprocess_wav  # type: ignore
-
         import numpy as np  # type: ignore
         import soundfile as sf  # type: ignore
+        from resemblyzer import VoiceEncoder, preprocess_wav  # type: ignore
     except Exception:
         return None
 
@@ -109,10 +107,9 @@ def _try_voice_embedding(audio_bytes: bytes) -> tuple[list[float], str] | None:
 def _try_face_embedding(image_bytes: bytes) -> tuple[list[float], str] | None:
     """Return (embedding, model_name) or None if deps are unavailable."""
     try:
+        import insightface  # type: ignore
         import numpy as np  # type: ignore
         from PIL import Image  # type: ignore
-
-        import insightface  # type: ignore
     except Exception:
         return None
 
@@ -322,4 +319,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

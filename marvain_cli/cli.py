@@ -68,7 +68,9 @@ spec = CliSpec(
                 help="Path to config YAML",
             ),
             ContextOptionSpec(name="env", option_flags=("--env",), value_type="str", help="Environment name"),
-            ContextOptionSpec(name="profile", option_flags=("--profile",), value_type="str", help="AWS profile override"),
+            ContextOptionSpec(
+                name="profile", option_flags=("--profile",), value_type="str", help="AWS profile override"
+            ),
             ContextOptionSpec(name="region", option_flags=("--region",), value_type="str", help="AWS region override"),
             ContextOptionSpec(name="stack", option_flags=("--stack",), value_type="str", help="Stack name override"),
         ]

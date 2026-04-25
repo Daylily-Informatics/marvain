@@ -848,7 +848,9 @@ def _pcm_to_wav_bytes(*, pcm_bytes: bytes, sample_rate: int, channels: int) -> b
     return buf.getvalue()
 
 
-def _record_pcm_int16_blocking(*, seconds: int, sample_rate: int, channels: int, device: int | str | None = None) -> bytes:
+def _record_pcm_int16_blocking(
+    *, seconds: int, sample_rate: int, channels: int, device: int | str | None = None
+) -> bytes:
     import sounddevice as sd  # type: ignore
 
     seconds = max(1, min(int(seconds), 30))
@@ -1197,10 +1199,16 @@ def load_config_file(path: str) -> dict[str, Any]:
     help="Location node mode (default: persistent)",
 )
 @click.option("--publish-audio/--no-publish-audio", default=True, help="Publish microphone audio to LiveKit")
-@click.option("--publish-video/--no-publish-video", default=False, help="Publish camera video to LiveKit (requires OpenCV)")
+@click.option(
+    "--publish-video/--no-publish-video", default=False, help="Publish camera video to LiveKit (requires OpenCV)"
+)
 @click.option("--subscribe-audio/--no-subscribe-audio", default=True, help="Play remote audio tracks (agent speech)")
-@click.option("--vad-enabled/--no-vad-enabled", default=True, help="Enable local VAD (used for triggered mode + sound events)")
-@click.option("--motion-enabled/--no-motion-enabled", default=False, help="Enable local motion detection (requires OpenCV)")
+@click.option(
+    "--vad-enabled/--no-vad-enabled", default=True, help="Enable local VAD (used for triggered mode + sound events)"
+)
+@click.option(
+    "--motion-enabled/--no-motion-enabled", default=False, help="Enable local motion detection (requires OpenCV)"
+)
 @click.option(
     "--idle-disconnect-seconds",
     envvar="MARVAIN_IDLE_DISCONNECT_SECONDS",
@@ -1337,8 +1345,12 @@ def main(
         audio_activity_threshold = float(file_config.get("audio_activity_threshold", audio_activity_threshold))
         motion_activity_threshold = float(file_config.get("motion_activity_threshold", motion_activity_threshold))
         voice_sample_seconds = int(file_config.get("voice_sample_seconds", voice_sample_seconds))
-        voice_sample_interval_seconds = int(file_config.get("voice_sample_interval_seconds", voice_sample_interval_seconds))
-        face_snapshot_interval_seconds = int(file_config.get("face_snapshot_interval_seconds", face_snapshot_interval_seconds))
+        voice_sample_interval_seconds = int(
+            file_config.get("voice_sample_interval_seconds", voice_sample_interval_seconds)
+        )
+        face_snapshot_interval_seconds = int(
+            file_config.get("face_snapshot_interval_seconds", face_snapshot_interval_seconds)
+        )
         enroll_person_id = file_config.get("enroll_person_id", enroll_person_id)
         video_fps = int(file_config.get("video_fps", video_fps))
         camera_usb_index = file_config.get("camera_usb_index", camera_usb_index)
