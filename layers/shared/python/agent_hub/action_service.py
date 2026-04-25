@@ -6,8 +6,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from agent_hub.auto_approve_policy import evaluate_auto_approve
 from agent_hub.audit import append_audit_entry
+from agent_hub.auto_approve_policy import evaluate_auto_approve
 from agent_hub.contracts import validate_tool_payload
 from agent_hub.permission_service import normalize_scopes
 from agent_hub.rds_data import RdsData
@@ -121,7 +121,9 @@ def _registry_required_scopes(kind: str) -> list[str]:
     return normalize_scopes(getattr(tool, "required_scopes", []) or [])
 
 
-def prepare_action_request(*, kind: str, payload: dict[str, Any], required_scopes: list[str] | None) -> tuple[dict[str, Any], list[str]]:
+def prepare_action_request(
+    *, kind: str, payload: dict[str, Any], required_scopes: list[str] | None
+) -> tuple[dict[str, Any], list[str]]:
     kind_n = str(kind or "").strip()
     if not kind_n:
         raise ActionServiceError("missing_action_kind")

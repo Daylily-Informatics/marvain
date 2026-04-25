@@ -2251,12 +2251,16 @@ def bootstrap(
                 membership_created = True
                 _eprint(f"Created owner membership: user {user_id} -> agent {agent_id}")
         elif len(records) > 1:
-            _eprint("HINT: Multiple users found. Run 'marvain members claim-owner "
-                    f"--agent-id {agent_id}' to claim ownership.")
+            _eprint(
+                "HINT: Multiple users found. Run 'marvain members claim-owner "
+                f"--agent-id {agent_id}' to claim ownership."
+            )
         else:
-            _eprint("HINT: No users found yet. After creating a Cognito user and "
-                    "logging into the GUI, run 'marvain members claim-owner "
-                    f"--agent-id {agent_id}' to see this agent in the GUI.")
+            _eprint(
+                "HINT: No users found yet. After creating a Cognito user and "
+                "logging into the GUI, run 'marvain members claim-owner "
+                f"--agent-id {agent_id}' to see this agent in the GUI."
+            )
     except Exception as exc:
         _eprint(f"WARNING: Could not auto-create agent membership: {exc}")
         _eprint(f"HINT: Run 'marvain members claim-owner --agent-id {agent_id}' manually.")
@@ -2470,8 +2474,9 @@ def examples_create(
                 membership_created = True
                 _eprint(f"  Created owner membership: user {user_id}")
         else:
-            _eprint("  HINT: No users yet. Run 'marvain members claim-owner "
-                    f"--agent-id {agent_id}' after first GUI login.")
+            _eprint(
+                f"  HINT: No users yet. Run 'marvain members claim-owner --agent-id {agent_id}' after first GUI login."
+            )
     except Exception as exc:
         _eprint(f"  WARNING: Could not auto-create membership: {exc}")
 
@@ -2484,9 +2489,7 @@ def examples_create(
         openai_secret_arn = resources.get("OpenAISecretArn")
         if openai_secret_arn:
             try:
-                secret_data = _fetch_secret_json(
-                    openai_secret_arn, ctx.env.aws_profile, ctx.env.aws_region
-                )
+                secret_data = _fetch_secret_json(openai_secret_arn, ctx.env.aws_profile, ctx.env.aws_region)
                 key = secret_data.get("api_key", "")
                 if key and key != "REPLACE_ME":
                     openai_api_key = key
@@ -2502,9 +2505,7 @@ def examples_create(
             try:
                 emb_str: str | None = None
                 if openai_api_key:
-                    emb = _generate_embedding_cli(
-                        mem["content"], openai_api_key=openai_api_key
-                    )
+                    emb = _generate_embedding_cli(mem["content"], openai_api_key=openai_api_key)
                     if emb:
                         emb_str = "[" + ",".join(f"{x:.6f}" for x in emb) + "]"
 

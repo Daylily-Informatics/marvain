@@ -14,7 +14,11 @@ _SHARED = _ROOT / "layers" / "shared" / "python"
 if str(_SHARED) not in sys.path:
     sys.path.insert(0, str(_SHARED))
 
-from agent_hub.integrations.models import IntegrationMessageCreate, IntegrationMessageRecord, IntegrationMessageWriteResult
+from agent_hub.integrations.models import (  # noqa: E402
+    IntegrationMessageCreate,
+    IntegrationMessageRecord,
+    IntegrationMessageWriteResult,
+)
 
 
 class _FakeDb:
@@ -119,7 +123,9 @@ class TestGmailPollHandler(unittest.TestCase):
                 ],
             ),
             mock.patch.object(self.mod, "get_integration_sync_state", return_value=mock.Mock(cursor="100")),
-            mock.patch.object(self.mod, "load_gmail_credentials", return_value=mock.Mock(user_email="user@example.com")),
+            mock.patch.object(
+                self.mod, "load_gmail_credentials", return_value=mock.Mock(user_email="user@example.com")
+            ),
             mock.patch.object(self.mod, "refresh_gmail_access_token", return_value="token"),
             mock.patch.object(self.mod, "list_gmail_message_refs", return_value=([mock.Mock(message_id="m1")], "200")),
             mock.patch.object(self.mod, "fetch_gmail_message", return_value={"id": "m1"}),
@@ -127,7 +133,9 @@ class TestGmailPollHandler(unittest.TestCase):
             mock.patch.object(
                 self.mod,
                 "insert_integration_message",
-                side_effect=lambda *args, **kwargs: IntegrationMessageWriteResult(message=pending_record, inserted=True),
+                side_effect=lambda *args, **kwargs: IntegrationMessageWriteResult(
+                    message=pending_record, inserted=True
+                ),
             ),
             mock.patch.object(
                 self.mod,
@@ -208,7 +216,9 @@ class TestGmailPollHandler(unittest.TestCase):
                 ],
             ),
             mock.patch.object(self.mod, "get_integration_sync_state", return_value=mock.Mock(cursor="100")),
-            mock.patch.object(self.mod, "load_gmail_credentials", return_value=mock.Mock(user_email="user@example.com")),
+            mock.patch.object(
+                self.mod, "load_gmail_credentials", return_value=mock.Mock(user_email="user@example.com")
+            ),
             mock.patch.object(self.mod, "refresh_gmail_access_token", return_value="token"),
             mock.patch.object(self.mod, "list_gmail_message_refs", return_value=([mock.Mock(message_id="m1")], "200")),
             mock.patch.object(self.mod, "fetch_gmail_message", return_value={"id": "m1"}),
@@ -216,7 +226,9 @@ class TestGmailPollHandler(unittest.TestCase):
             mock.patch.object(
                 self.mod,
                 "insert_integration_message",
-                side_effect=lambda *args, **kwargs: IntegrationMessageWriteResult(message=pending_record, inserted=True),
+                side_effect=lambda *args, **kwargs: IntegrationMessageWriteResult(
+                    message=pending_record, inserted=True
+                ),
             ),
             mock.patch.object(
                 self.mod,

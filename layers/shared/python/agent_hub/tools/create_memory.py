@@ -111,8 +111,7 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
                 "modality": modality,
                 "confidence": confidence,
                 "related_memory_ids": (
-                    "{" + ",".join(str(r) for r in related_memory_ids) + "}"
-                    if related_memory_ids else "{}"
+                    "{" + ",".join(str(r) for r in related_memory_ids) + "}" if related_memory_ids else "{}"
                 ),
             },
         )

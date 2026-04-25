@@ -128,7 +128,9 @@ class IntegrationAccountCreate:
         object.__setattr__(self, "agent_id", _require_text(self.agent_id, "agent_id"))
         object.__setattr__(self, "provider", _require_text(self.provider, "provider"))
         object.__setattr__(self, "display_name", _require_text(self.display_name, "display_name"))
-        object.__setattr__(self, "credentials_secret_arn", _require_text(self.credentials_secret_arn, "credentials_secret_arn"))
+        object.__setattr__(
+            self, "credentials_secret_arn", _require_text(self.credentials_secret_arn, "credentials_secret_arn")
+        )
         object.__setattr__(self, "external_account_id", _optional_text(self.external_account_id))
         object.__setattr__(self, "default_space_id", _optional_text(self.default_space_id))
         object.__setattr__(self, "status", _require_text(self.status, "status"))

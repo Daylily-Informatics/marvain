@@ -13,9 +13,9 @@ from marvain_cli.ops import (
     GUI_LOG_FILENAME,
     GUI_PID_FILENAME,
     Ctx,
-    _get_user_pool_id,
     _get_gui_log_file,
     _get_gui_pid_file,
+    _get_user_pool_id,
     _is_port_in_use,
     _is_process_running,
     _read_pid_file,
@@ -230,8 +230,12 @@ class TestOps(unittest.TestCase):
         self.assertLess(joined.find("sql/001_init.sql"), joined.find("sql/002_users_and_memberships.sql"))
         self.assertLess(joined.find("sql/002_users_and_memberships.sql"), joined.find("sql/003_owner_unique_index.sql"))
         self.assertLess(joined.find("sql/016_action_idempotency.sql"), joined.find("sql/017_integration_messages.sql"))
-        self.assertLess(joined.find("sql/017_integration_messages.sql"), joined.find("sql/018_integration_accounts.sql"))
-        self.assertLess(joined.find("sql/018_integration_accounts.sql"), joined.find("sql/019_integration_sync_state.sql"))
+        self.assertLess(
+            joined.find("sql/017_integration_messages.sql"), joined.find("sql/018_integration_accounts.sql")
+        )
+        self.assertLess(
+            joined.find("sql/018_integration_accounts.sql"), joined.find("sql/019_integration_sync_state.sql")
+        )
 
     def test_hub_claim_first_owner_dry_run_emits_http_request_without_leaking_token(self) -> None:
         emitted: list[str] = []

@@ -9,10 +9,8 @@ from typing import Any
 
 import boto3
 from agent_hub.action_service import create_action
-from agent_hub.auto_approve_policy import evaluate_auto_approve
 from agent_hub.audit import append_audit_entry
 from agent_hub.broadcast import broadcast_event
-from agent_hub.contracts import validate_tool_payload
 from agent_hub.config import load_config
 from agent_hub.integrations import get_integration_message, parse_integration_queue_message
 from agent_hub.openai_http import call_embeddings, call_responses, extract_output_text
@@ -199,7 +197,9 @@ def _load_integration_thread_context(integration_message: Any) -> list[dict[str,
 
     agent_id = _bounded_optional_text(_field_value(integration_message, "agent_id"), limit=64)
     provider = _bounded_optional_text(_field_value(integration_message, "provider"), limit=32)
-    integration_message_id = _bounded_optional_text(_field_value(integration_message, "integration_message_id"), limit=64)
+    integration_message_id = _bounded_optional_text(
+        _field_value(integration_message, "integration_message_id"), limit=64
+    )
     created_at = _field_value(integration_message, "created_at")
     if not agent_id or not provider or not integration_message_id or not created_at:
         return []

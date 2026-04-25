@@ -38,6 +38,7 @@ from agent_hub.auth import (
     list_cognito_users,
     lookup_cognito_user_by_email,
 )
+from agent_hub.broadcast import broadcast_event
 from agent_hub.cognito import (
     CognitoAuthError,
     CognitoUserInfo,  # noqa: F401 — used via module attr in tests
@@ -47,7 +48,6 @@ from agent_hub.cognito import (
     get_user_info_from_tokens,
     refresh_tokens,
 )
-from agent_hub.broadcast import broadcast_event
 from agent_hub.livekit_tokens import mint_livekit_join_token  # noqa: F401 — used via module attr in tests
 from agent_hub.memberships import (
     SpaceInfo,  # noqa: F401 — used via module attr in tests
@@ -299,7 +299,8 @@ def _parse_expires_at(value: str | None):
     v = str(value).strip()
     if not v:
         return None
-    from datetime import date, datetime, time as dt_time, timezone
+    from datetime import date, datetime, timezone
+    from datetime import time as dt_time
 
     try:
         if len(v) == 10 and v[4] == "-" and v[7] == "-":
@@ -938,7 +939,6 @@ def gui_home(request: Request) -> Response:
     )
 
 
-
 # ---------------------------------------------------------------------------
 # Dashboard HTMX partial endpoints (auto-refresh fragments)
 # ---------------------------------------------------------------------------
@@ -990,7 +990,7 @@ def gui_dashboard_kpi(request: Request) -> Response:
         f'<div class="kpi-item"><span class="kpi-value">{online_agents}</span>'
         '<span class="kpi-label">Agents Online</span></div>'
         f'<div class="kpi-item {warn}"><span class="kpi-value">'
-        f'{pending_actions}</span>'
+        f"{pending_actions}</span>"
         '<span class="kpi-label">Pending Actions</span></div>'
         f'<div class="kpi-item"><span class="kpi-value">{devices_count}'
         '</span><span class="kpi-label">Devices</span></div>'
@@ -1034,10 +1034,7 @@ def gui_dashboard_activity(request: Request) -> Response:
                 ts = (row.get("created_at") or "")[:19]
                 agent = row.get("agent_name", "")
                 space = row.get("space_name") or ""
-                space_tag = (
-                    f' <span class="badge badge-outline">'
-                    f"{space}</span>" if space else ""
-                )
+                space_tag = f' <span class="badge badge-outline">{space}</span>' if space else ""
                 events_html += (
                     f'<div class="feed-item">'
                     f'<span class="feed-time">{ts}</span>'
@@ -1087,8 +1084,10 @@ def gui_dashboard_actions(request: Request) -> Response:
                 aid = row.get("action_id", "")
                 status = row.get("status", "")
                 _bcls = {
-                    "proposed": "warning", "approved": "info",
-                    "executed": "success", "failed": "error",
+                    "proposed": "warning",
+                    "approved": "info",
+                    "executed": "success",
+                    "failed": "error",
                     "rejected": "error",
                 }
                 badge_cls = _bcls.get(status, "info")
@@ -1134,7 +1133,6 @@ def gui_dashboard_actions(request: Request) -> Response:
         f"<tbody>{rows_html}</tbody></table>"
     )
     return HTMLResponse(content=table_html)
-
 
 
 # ---------------------------------------------------------------------------
@@ -1385,7 +1383,9 @@ class DeviceCreate(BaseModel):
     agent_id: str = Field(..., description="ID of the agent this device belongs to")
     name: str = Field(..., description="Name of the device")
     scopes: list[str] = Field(default_factory=list, description="Scopes assigned to the device")
-    location_label: str | None = Field(default=None, description="Human-readable location label (e.g., Kitchen, Lab Bench 3)")
+    location_label: str | None = Field(
+        default=None, description="Human-readable location label (e.g., Kitchen, Lab Bench 3)"
+    )
     location_coords: dict | None = Field(default=None, description="Optional geographic coordinates: {lat, lng}")
 
 
@@ -3464,7 +3464,9 @@ def _pick_space_for_agent(*, db, agent_id: str) -> str:
     return str(rows[0]["space_id"])
 
 
-def _enqueue_recognition_event(*, event_id: str, agent_id: str, space_id: str, person_id: str, event_type: str, payload: dict) -> bool:
+def _enqueue_recognition_event(
+    *, event_id: str, agent_id: str, space_id: str, person_id: str, event_type: str, payload: dict
+) -> bool:
     qurl = str(os.getenv("RECOGNITION_QUEUE_URL", "")).strip()
     if not qurl:
         return False
@@ -4641,7 +4643,6 @@ def gui_memories(request: Request) -> Response:
             **_get_ws_context(request),
         },
     )
-
 
 
 @app.post("/api/memories", name="api_create_memory")

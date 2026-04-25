@@ -85,4 +85,3 @@ class TestWsConnectHandler(unittest.TestCase):
         self.assertEqual(item["status"], "connected")
         self.assertEqual(item["connected_at"], 1700000000)
         self.assertEqual(item["ttl"], 1700000090)
-

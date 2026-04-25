@@ -11,8 +11,7 @@ _SHARED = Path(__file__).resolve().parents[1] / "layers" / "shared" / "python"
 if str(_SHARED) not in sys.path:
     sys.path.insert(0, str(_SHARED))
 
-from agent_hub.integrations.gmail import (
-    GmailCredentials,
+from agent_hub.integrations.gmail import (  # noqa: E402
     list_gmail_message_refs,
     normalize_gmail_message,
 )

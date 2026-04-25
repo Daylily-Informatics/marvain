@@ -50,7 +50,9 @@ def _message_data(message) -> dict[str, Any]:
         if isinstance(first_recipient, dict):
             channel_id = str(first_recipient.get("channel_id") or "").strip()
     response_ts = str(response.get("ts") or message.external_message_id or "").strip()
-    response_thread_ts = str(response_message.get("thread_ts") or message.external_thread_id or response_ts or "").strip() or None
+    response_thread_ts = (
+        str(response_message.get("thread_ts") or message.external_thread_id or response_ts or "").strip() or None
+    )
     return {
         "channel_id": channel_id or None,
         "ts": response_ts or None,
@@ -158,7 +160,9 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
             return ToolResult(ok=True, data=_message_data(pending.message))
         if pending.message.status == "error":
             payload_data = pending.message.payload if isinstance(pending.message.payload, dict) else {}
-            return ToolResult(ok=False, error=f"outbound_message_error: {payload_data.get('error') or pending.message.status}")
+            return ToolResult(
+                ok=False, error=f"outbound_message_error: {payload_data.get('error') or pending.message.status}"
+            )
         return ToolResult(ok=False, error="outbound_message_pending")
 
     try:
@@ -176,15 +180,30 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
         except Exception:
             error_body = ""
         logger.warning("slack_post_message http_error_%s: %s", exc.code, error_body[:500])
-        _finalize_failure(ctx, pending_message_id=pending.message.integration_message_id, request_body=request_body, error_message=f"http_error_{exc.code}")
+        _finalize_failure(
+            ctx,
+            pending_message_id=pending.message.integration_message_id,
+            request_body=request_body,
+            error_message=f"http_error_{exc.code}",
+        )
         return ToolResult(ok=False, error=f"http_error_{exc.code}")
     except urllib.error.URLError as exc:
         logger.warning("slack_post_message url_error: %s", exc.reason)
-        _finalize_failure(ctx, pending_message_id=pending.message.integration_message_id, request_body=request_body, error_message=f"url_error: {exc.reason}")
+        _finalize_failure(
+            ctx,
+            pending_message_id=pending.message.integration_message_id,
+            request_body=request_body,
+            error_message=f"url_error: {exc.reason}",
+        )
         return ToolResult(ok=False, error=f"url_error: {exc.reason}")
     except Exception as exc:
         logger.exception("slack_post_message failed")
-        _finalize_failure(ctx, pending_message_id=pending.message.integration_message_id, request_body=request_body, error_message=str(exc))
+        _finalize_failure(
+            ctx,
+            pending_message_id=pending.message.integration_message_id,
+            request_body=request_body,
+            error_message=str(exc),
+        )
         return ToolResult(ok=False, error=str(exc))
 
     if not bool(response_payload.get("ok")):
@@ -203,7 +222,9 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
         message = {}
     response_channel = str(response_payload.get("channel") or channel_id)
     response_ts = str(response_payload.get("ts") or message.get("ts") or "").strip() or None
-    response_thread_ts = str(message.get("thread_ts") or request_body.get("thread_ts") or response_ts or "").strip() or None
+    response_thread_ts = (
+        str(message.get("thread_ts") or request_body.get("thread_ts") or response_ts or "").strip() or None
+    )
     _finalize_outbound(
         ctx,
         pending_message_id=pending.message.integration_message_id,

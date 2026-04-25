@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import io
 import base64
+import io
 import json
-import os
 import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -645,7 +644,13 @@ class TestSlackPostMessageTool:
                 sender={"type": "bot"},
                 recipients=[{"channel_id": "C123"}],
                 body_text="hello",
-                payload={"response": {"channel": "C123", "ts": "1712345678.000100", "message": {"thread_ts": "1712345678.000100"}}},
+                payload={
+                    "response": {
+                        "channel": "C123",
+                        "ts": "1712345678.000100",
+                        "message": {"thread_ts": "1712345678.000100"},
+                    }
+                },
                 status="sent",
             ),
             inserted=False,
@@ -654,7 +659,9 @@ class TestSlackPostMessageTool:
         with (
             patch("agent_hub.tools._outbound.get_integration_account") as mock_account,
             patch("agent_hub.tools._outbound.get_secret_json") as mock_secret,
-            patch("agent_hub.tools.slack_post_message.insert_integration_message", return_value=existing) as mock_insert,
+            patch(
+                "agent_hub.tools.slack_post_message.insert_integration_message", return_value=existing
+            ) as mock_insert,
             patch("agent_hub.tools.slack_post_message.urllib.request.urlopen") as mock_urlopen,
         ):
             result = _handler({"integration_account_id": "slack-acct-1", "channel_id": "C123", "text": "hello"}, ctx)
@@ -883,7 +890,10 @@ class TestSetMessageStatusTool:
 def test_tool_runner_template_uses_integration_secret_prefix():
     template_text = (Path(__file__).resolve().parents[1] / "template.yaml").read_text(encoding="utf-8")
     assert "ToolRunnerFunction:" in template_text
-    assert "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}/integrations/*" in template_text
+    assert (
+        "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}/integrations/*"
+        in template_text
+    )
     assert "SLACK_SECRET_ARN: !Ref SlackSecret" not in template_text
     assert "TWILIO_SECRET_ARN: !Ref TwilioSecret" not in template_text
 
@@ -891,5 +901,8 @@ def test_tool_runner_template_uses_integration_secret_prefix():
 def test_hub_api_template_uses_integration_secret_prefix():
     template_text = (Path(__file__).resolve().parents[1] / "template.yaml").read_text(encoding="utf-8")
     assert "HubApiFunction:" in template_text
-    assert "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}/integrations/*" in template_text
+    assert (
+        "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}/integrations/*"
+        in template_text
+    )
     assert "GITHUB_SECRET_ARN: !Ref GitHubSecret" not in template_text

@@ -14,11 +14,12 @@ import time
 from typing import Any
 
 import boto3
+from botocore.exceptions import ClientError
+
 from agent_hub.contracts import build_ws_envelope
 from agent_hub.memberships import check_agent_permission
 from agent_hub.metrics import emit_count, emit_metric
 from agent_hub.rds_data import RdsData, RdsDataEnv
-from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +164,9 @@ def _find_topic_subscribers(*, topic: str, agent_id: str, space_id: str | None =
     return _find_topic_subscribers_from_index(topic=topic, agent_id=agent_id, space_id=space_id)
 
 
-def _find_topic_subscribers_from_index(*, topic: str, agent_id: str, space_id: str | None = None) -> list[dict[str, Any]]:
+def _find_topic_subscribers_from_index(
+    *, topic: str, agent_id: str, space_id: str | None = None
+) -> list[dict[str, Any]]:
     """Return subscribers from the subscription index."""
     subs_table = _get_subscriptions_table()
     if subs_table is None:

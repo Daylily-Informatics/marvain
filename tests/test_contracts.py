@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import pytest
-
 from agent_hub.contracts import (
-    CmdRunAction,
     TOOL_REQUIRED_SCOPES,
+    CmdRunAction,
     build_ws_envelope,
     dump_json_schemas,
     validate_tool_payload,

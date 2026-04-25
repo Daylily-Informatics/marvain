@@ -47,7 +47,9 @@ def _message_data(message, account_sid: str) -> dict[str, Any]:
     payload = message.payload if isinstance(message.payload, dict) else {}
     response = payload.get("response") if isinstance(payload.get("response"), dict) else {}
     recipients = message.recipients if isinstance(message.recipients, list) else []
-    response_to = str(response.get("to") or (recipients[0].get("phone_number") if recipients else "") or "").strip() or None
+    response_to = (
+        str(response.get("to") or (recipients[0].get("phone_number") if recipients else "") or "").strip() or None
+    )
     response_from = str(response.get("from") or "").strip() or None
     response_messaging_service_sid = str(response.get("messaging_service_sid") or "").strip() or None
     return {
@@ -122,7 +124,9 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
             return ToolResult(ok=True, data=_message_data(pending.message, account_sid or ""))
         if pending.message.status == "error":
             payload_data = pending.message.payload if isinstance(pending.message.payload, dict) else {}
-            return ToolResult(ok=False, error=f"outbound_message_error: {payload_data.get('error') or pending.message.status}")
+            return ToolResult(
+                ok=False, error=f"outbound_message_error: {payload_data.get('error') or pending.message.status}"
+            )
         return ToolResult(ok=False, error="outbound_message_pending")
 
     try:
@@ -208,9 +212,10 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
 
     response_to = str(response_payload.get("to") or to).strip()
     response_from = str(response_payload.get("from") or request_body.get("From") or "").strip() or None
-    response_messaging_service_sid = str(
-        response_payload.get("messaging_service_sid") or request_body.get("MessagingServiceSid") or ""
-    ).strip() or None
+    response_messaging_service_sid = (
+        str(response_payload.get("messaging_service_sid") or request_body.get("MessagingServiceSid") or "").strip()
+        or None
+    )
     sender: dict[str, str] = {}
     if response_from:
         sender["phone_number"] = response_from

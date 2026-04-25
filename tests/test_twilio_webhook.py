@@ -7,14 +7,12 @@ import importlib.util
 import json
 import os
 import sys
-import time
 import unittest
 import uuid
 from base64 import b64encode
 from pathlib import Path
-from urllib.parse import urlencode
 from unittest import mock
-
+from urllib.parse import urlencode
 
 AGENT_ID = "11111111-1111-1111-1111-111111111111"
 SPACE_ID = "22222222-2222-2222-2222-222222222222"

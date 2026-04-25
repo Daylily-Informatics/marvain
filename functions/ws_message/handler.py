@@ -4,10 +4,8 @@ import json
 import logging
 import os
 import time
-import uuid
 
 import boto3
-from agent_hub.audit import append_audit_entry  # noqa: F401 - kept for existing tests
 from agent_hub.action_service import (
     ActionServiceError,
     approve_action,
@@ -17,9 +15,11 @@ from agent_hub.action_service import (
     record_device_result,
     reject_action,
 )
+from agent_hub.audit import append_audit_entry  # noqa: F401 - kept for existing tests
 from agent_hub.auth import authenticate_user_access_token
-from agent_hub.contracts import DeviceActionAck, DeviceActionResult
+from agent_hub.broadcast import broadcast_event
 from agent_hub.config import load_config
+from agent_hub.contracts import DeviceActionAck, DeviceActionResult
 from agent_hub.memberships import check_agent_permission, list_agents_for_user
 from agent_hub.metrics import emit_count, emit_ms
 from agent_hub.rds_data import RdsData, RdsDataEnv

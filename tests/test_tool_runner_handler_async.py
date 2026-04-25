@@ -13,7 +13,6 @@ from unittest.mock import MagicMock, patch
 from agent_hub.integrations import IntegrationAccountRecord, IntegrationMessageRecord, IntegrationMessageWriteResult
 from agent_hub.tools.registry import ToolResult
 
-
 os.environ.setdefault("DB_RESOURCE_ARN", "arn:aws:rds:us-east-1:123:cluster:test")
 os.environ.setdefault("DB_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:123:secret:test")
 os.environ.setdefault("DB_NAME", "testdb")
@@ -261,7 +260,10 @@ def test_slack_post_message_executes_through_runner():
         patch.object(runner, "is_agent_disabled", return_value=False),
         patch.object(runner, "broadcast_event") as mock_broadcast,
         patch.object(runner, "emit_count"),
-        patch("agent_hub.tools._outbound.get_integration_account", return_value=_integration_account("slack", "arn:aws:secretsmanager:us-east-1:123:secret:slack")),
+        patch(
+            "agent_hub.tools._outbound.get_integration_account",
+            return_value=_integration_account("slack", "arn:aws:secretsmanager:us-east-1:123:secret:slack"),
+        ),
         patch("agent_hub.tools._outbound.get_secret_json", return_value={"bot_token": "xoxb-test"}),
         patch("agent_hub.tools.slack_post_message.insert_integration_message") as mock_insert,
         patch("agent_hub.tools.slack_post_message.finalize_outbound_integration_message") as mock_finalize,
@@ -337,8 +339,14 @@ def test_twilio_send_sms_executes_through_runner():
         patch.object(runner, "is_agent_disabled", return_value=False),
         patch.object(runner, "broadcast_event") as mock_broadcast,
         patch.object(runner, "emit_count"),
-        patch("agent_hub.tools._outbound.get_integration_account", return_value=_integration_account("twilio", "arn:aws:secretsmanager:us-east-1:123:secret:twilio")),
-        patch("agent_hub.tools._outbound.get_secret_json", return_value={"account_sid": "AC123", "auth_token": "auth-token", "from_number": "+15551239999"}),
+        patch(
+            "agent_hub.tools._outbound.get_integration_account",
+            return_value=_integration_account("twilio", "arn:aws:secretsmanager:us-east-1:123:secret:twilio"),
+        ),
+        patch(
+            "agent_hub.tools._outbound.get_secret_json",
+            return_value={"account_sid": "AC123", "auth_token": "auth-token", "from_number": "+15551239999"},
+        ),
         patch("agent_hub.tools.twilio_send_sms.insert_integration_message") as mock_insert,
         patch("agent_hub.tools.twilio_send_sms.finalize_outbound_integration_message") as mock_finalize,
         patch(

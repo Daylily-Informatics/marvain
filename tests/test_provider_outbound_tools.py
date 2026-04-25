@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import urllib.error
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -42,12 +41,17 @@ def test_github_issue_comment_uses_account_and_persists_comment_id():
     pending = SimpleNamespace(inserted=True, message=SimpleNamespace(integration_message_id="msg-1"))
 
     with (
-        patch("agent_hub.tools.github_issue_comment.load_outbound_integration_account", return_value=(account, {"token": "gh-token"})),
+        patch(
+            "agent_hub.tools.github_issue_comment.load_outbound_integration_account",
+            return_value=(account, {"token": "gh-token"}),
+        ),
         patch("agent_hub.tools.github_issue_comment.insert_integration_message", return_value=pending) as mock_insert,
         patch("agent_hub.tools.github_issue_comment.finalize_outbound_integration_message") as mock_finalize,
         patch(
             "agent_hub.tools.github_issue_comment.urllib.request.urlopen",
-            return_value=_FakeResponse({"id": 987654321, "html_url": "https://github.com/org/repo/issues/1#issuecomment-1"}),
+            return_value=_FakeResponse(
+                {"id": 987654321, "html_url": "https://github.com/org/repo/issues/1#issuecomment-1"}
+            ),
         ) as mock_urlopen,
     ):
         result = _handler(
@@ -92,7 +96,10 @@ def test_github_issue_comment_finalizes_error_without_resend():
     )
 
     with (
-        patch("agent_hub.tools.github_issue_comment.load_outbound_integration_account", return_value=(account, {"token": "gh-token"})),
+        patch(
+            "agent_hub.tools.github_issue_comment.load_outbound_integration_account",
+            return_value=(account, {"token": "gh-token"}),
+        ),
         patch("agent_hub.tools.github_issue_comment.insert_integration_message", return_value=existing),
         patch("agent_hub.tools.github_issue_comment.finalize_outbound_integration_message") as mock_finalize,
         patch("agent_hub.tools.github_issue_comment.urllib.request.urlopen") as mock_urlopen,
@@ -121,7 +128,10 @@ def test_linear_comment_create_uses_account_and_persists_comment_id():
     pending = SimpleNamespace(inserted=True, message=SimpleNamespace(integration_message_id="msg-2"))
 
     with (
-        patch("agent_hub.tools.linear_comment_create.load_outbound_integration_account", return_value=(account, {"api_key": "lin-token"})),
+        patch(
+            "agent_hub.tools.linear_comment_create.load_outbound_integration_account",
+            return_value=(account, {"api_key": "lin-token"}),
+        ),
         patch("agent_hub.tools.linear_comment_create.insert_integration_message", return_value=pending) as mock_insert,
         patch("agent_hub.tools.linear_comment_create.finalize_outbound_integration_message") as mock_finalize,
         patch(
@@ -179,7 +189,10 @@ def test_linear_comment_create_records_http_error():
     )
 
     with (
-        patch("agent_hub.tools.linear_comment_create.load_outbound_integration_account", return_value=(account, {"api_key": "lin-token"})),
+        patch(
+            "agent_hub.tools.linear_comment_create.load_outbound_integration_account",
+            return_value=(account, {"api_key": "lin-token"}),
+        ),
         patch("agent_hub.tools.linear_comment_create.insert_integration_message", return_value=pending),
         patch("agent_hub.tools.linear_comment_create.finalize_outbound_integration_message") as mock_finalize,
         patch("agent_hub.tools.linear_comment_create.urllib.request.urlopen", side_effect=http_error),

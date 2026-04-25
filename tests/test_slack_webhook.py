@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import dataclasses
-import hmac
 import hashlib
+import hmac
 import importlib.util
 import json
 import os
@@ -12,7 +12,6 @@ import unittest
 import uuid
 from pathlib import Path
 from unittest import mock
-
 
 AGENT_ID = "11111111-1111-1111-1111-111111111111"
 SPACE_ID = "22222222-2222-2222-2222-222222222222"

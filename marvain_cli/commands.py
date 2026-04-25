@@ -8,10 +8,19 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from click import ClickException
 from cli_core_yo import output
 from cli_core_yo.runtime import get_context
+from click import ClickException
 from typer import Argument, Exit, Option, confirm
+
+from marvain_cli._registry_v2 import (
+    EXEMPT,
+    EXEMPT_JSON,
+    EXEMPT_LONG_RUNNING_DRY_RUN,
+    EXEMPT_MUTATING_DRY_RUN,
+    EXEMPT_MUTATING_INTERACTIVE_DRY_RUN,
+    register_group_commands,
+)
 from marvain_cli.config import ConfigError, find_config_path, render_config_yaml, sanitize_name_for_stack
 from marvain_cli.ops import (
     GUI_DEFAULT_HOST,
@@ -51,15 +60,6 @@ from marvain_cli.ops import (
     sam_logs,
     status,
     teardown,
-)
-
-from marvain_cli._registry_v2 import (
-    EXEMPT,
-    EXEMPT_JSON,
-    EXEMPT_LONG_RUNNING_DRY_RUN,
-    EXEMPT_MUTATING_DRY_RUN,
-    EXEMPT_MUTATING_INTERACTIVE_DRY_RUN,
-    register_group_commands,
 )
 
 if TYPE_CHECKING:
@@ -426,7 +426,9 @@ def devices_detect(
     """Detect USB and direct-attach devices."""
     from marvain_cli.ops import list_detected_devices
 
-    devices = list_detected_devices(device_type=device_type, connection_type=connection_type, output_format=output_format)
+    devices = list_detected_devices(
+        device_type=device_type, connection_type=connection_type, output_format=output_format
+    )
     if output_format == "json":
         output.print_text(json.dumps(devices, indent=2))
         return
@@ -636,13 +638,29 @@ def register(registry: CommandRegistry, spec: CliSpec) -> None:
         ],
     )
     registry.add_command(None, "build", build, help_text="Build the SAM application.", policy=EXEMPT_MUTATING_DRY_RUN)
-    registry.add_command(None, "deploy", deploy, help_text="Deploy the SAM application.", policy=EXEMPT_MUTATING_INTERACTIVE_DRY_RUN)
+    registry.add_command(
+        None, "deploy", deploy, help_text="Deploy the SAM application.", policy=EXEMPT_MUTATING_INTERACTIVE_DRY_RUN
+    )
     registry.add_command(None, "logs", logs, help_text="Show SAM logs.", policy=EXEMPT_LONG_RUNNING_DRY_RUN)
-    registry.add_command(None, "status", status_cmd, help_text="Show deployment status.", policy=EXEMPT_MUTATING_DRY_RUN)
-    registry.add_command(None, "teardown", teardown_cmd, help_text="Delete the SAM stack.", policy=EXEMPT_MUTATING_INTERACTIVE_DRY_RUN)
-    registry.add_command(None, "doctor", doctor_cmd, help_text="Run Marvain diagnostics.", policy=EXEMPT_MUTATING_DRY_RUN)
-    registry.add_command(None, "bootstrap", bootstrap_cmd, help_text="Bootstrap an agent, space, and device.", policy=EXEMPT_MUTATING_DRY_RUN)
-    registry.add_command(None, "test", test_cmd, help_text="Run the local unit test suite.", policy=EXEMPT_MUTATING_DRY_RUN)
+    registry.add_command(
+        None, "status", status_cmd, help_text="Show deployment status.", policy=EXEMPT_MUTATING_DRY_RUN
+    )
+    registry.add_command(
+        None, "teardown", teardown_cmd, help_text="Delete the SAM stack.", policy=EXEMPT_MUTATING_INTERACTIVE_DRY_RUN
+    )
+    registry.add_command(
+        None, "doctor", doctor_cmd, help_text="Run Marvain diagnostics.", policy=EXEMPT_MUTATING_DRY_RUN
+    )
+    registry.add_command(
+        None,
+        "bootstrap",
+        bootstrap_cmd,
+        help_text="Bootstrap an agent, space, and device.",
+        policy=EXEMPT_MUTATING_DRY_RUN,
+    )
+    registry.add_command(
+        None, "test", test_cmd, help_text="Run the local unit test suite.", policy=EXEMPT_MUTATING_DRY_RUN
+    )
     register_group_commands(
         registry,
         "monitor",

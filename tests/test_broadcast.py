@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-
 # Add shared layer to import path.
 repo_root = Path(__file__).resolve().parents[1]
 shared = repo_root / "layers" / "shared" / "python"

@@ -11,8 +11,8 @@ _SHARED = Path(__file__).resolve().parents[1] / "layers" / "shared" / "python"
 if str(_SHARED) not in sys.path:
     sys.path.insert(0, str(_SHARED))
 
-from agent_hub.config import load_config
-from agent_hub.integrations.queue import (
+from agent_hub.config import load_config  # noqa: E402
+from agent_hub.integrations.queue import (  # noqa: E402
     IntegrationQueueMessage,
     enqueue_integration_event,
     parse_integration_queue_message,

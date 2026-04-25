@@ -183,7 +183,9 @@ class LocationNode:
         logger.info("LiveKit connected")
 
         if self.cfg.publish_audio:
-            self._audio_source = rtc.AudioSource(sample_rate=int(self.cfg.sample_rate), num_channels=int(self.cfg.channels))
+            self._audio_source = rtc.AudioSource(
+                sample_rate=int(self.cfg.sample_rate), num_channels=int(self.cfg.channels)
+            )
             track = rtc.LocalAudioTrack.create_audio_track("mic", self._audio_source)
             await room.local_participant.publish_track(track)
 
@@ -229,12 +231,13 @@ class LocationNode:
         except Exception:
             return
 
-        self._session_tasks.append(asyncio.create_task(self._play_remote_audio(track), name="location_node.audio_playback"))
+        self._session_tasks.append(
+            asyncio.create_task(self._play_remote_audio(track), name="location_node.audio_playback")
+        )
 
     async def _play_remote_audio(self, track: Any) -> None:
-        from livekit import rtc  # type: ignore
-
         import sounddevice as sd  # type: ignore
+        from livekit import rtc  # type: ignore
 
         sample_rate = int(self.cfg.sample_rate)
         channels = int(self.cfg.channels)
@@ -274,11 +277,15 @@ class LocationNode:
 
         # Audio capture is needed for either publish_audio or VAD monitoring.
         if self.cfg.publish_audio or self.cfg.vad_enabled:
-            self._capture_tasks.append(asyncio.create_task(self._audio_capture_loop(), name="location_node.audio_capture"))
+            self._capture_tasks.append(
+                asyncio.create_task(self._audio_capture_loop(), name="location_node.audio_capture")
+            )
 
         # Video capture is needed for either publish_video or motion monitoring.
         if self.cfg.publish_video or self.cfg.motion_enabled:
-            self._capture_tasks.append(asyncio.create_task(self._video_capture_loop(), name="location_node.video_capture"))
+            self._capture_tasks.append(
+                asyncio.create_task(self._video_capture_loop(), name="location_node.video_capture")
+            )
 
     async def _mark_activity(self) -> None:
         self._last_activity_s = time.time()
@@ -369,9 +376,8 @@ class LocationNode:
             logger.debug("artifact event failed type=%s: %s", ev_type, exc)
 
     async def _audio_capture_loop(self) -> None:
-        from livekit import rtc  # type: ignore
-
         import sounddevice as sd  # type: ignore
+        from livekit import rtc  # type: ignore
 
         sample_rate = int(self.cfg.sample_rate)
         channels = int(self.cfg.channels)
@@ -572,8 +578,3 @@ class LocationNode:
         finally:
             with contextlib.suppress(Exception):
                 cap.release()
-            try:
-                out_stream.stop()
-                out_stream.close()
-            except Exception:
-                pass

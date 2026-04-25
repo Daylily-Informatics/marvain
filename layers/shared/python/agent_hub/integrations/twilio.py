@@ -74,8 +74,7 @@ def verify_twilio_request(
     expected_without_port = build_twilio_signature(auth_token, url=_remove_port(parsed_url), params=params or {})
     expected_with_port = build_twilio_signature(auth_token, url=_add_port(parsed_url), params=params or {})
     if not (
-        hmac.compare_digest(expected_without_port, signature_n)
-        or hmac.compare_digest(expected_with_port, signature_n)
+        hmac.compare_digest(expected_without_port, signature_n) or hmac.compare_digest(expected_with_port, signature_n)
     ):
         raise ValueError("invalid Twilio signature")
 
