@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import dataclasses
-import hashlib
-import hmac
 import importlib.util
 import json
 import os
 import sys
 import unittest
 import uuid
-from base64 import b64encode
 from pathlib import Path
 from unittest import mock
 from urllib.parse import urlencode
@@ -23,11 +20,15 @@ TWILIO_ACCOUNT_SID = "AC123"
 TWILIO_AUTH_TOKEN = "twilio-auth-token"
 
 
-def _load_hub_api_app_module():
-    repo_root = Path(__file__).resolve().parents[1]
-    shared = repo_root / "layers" / "shared" / "python"
+def _ensure_shared_path() -> None:
+    shared = Path(__file__).resolve().parents[1] / "layers" / "shared" / "python"
     if str(shared) not in sys.path:
         sys.path.insert(0, str(shared))
+
+
+def _load_hub_api_app_module():
+    repo_root = Path(__file__).resolve().parents[1]
+    _ensure_shared_path()
 
     hub_api_dir = repo_root / "functions" / "hub_api"
     if str(hub_api_dir) not in sys.path:
@@ -53,11 +54,10 @@ def _load_hub_api_app_module():
 
 
 def _twilio_signature(url: str, payload: dict[str, str], auth_token: str = TWILIO_AUTH_TOKEN) -> str:
-    base = url
-    for key in sorted(set(payload)):
-        base += f"{key}{payload[key]}"
-    digest = hmac.new(auth_token.encode("utf-8"), base.encode("utf-8"), hashlib.sha1).digest()
-    return b64encode(digest).decode("utf-8")
+    _ensure_shared_path()
+    from agent_hub.integrations.twilio import build_twilio_signature
+
+    return build_twilio_signature(auth_token, url=url, params=payload)
 
 
 def _integration_row(

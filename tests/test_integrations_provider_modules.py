@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import sys
-from base64 import b64encode
 from pathlib import Path
 
 repo_root = Path(__file__).resolve().parents[1]
@@ -13,7 +12,11 @@ if str(shared) not in sys.path:
 
 from agent_hub.integrations.github import normalize_github_webhook, verify_github_request  # noqa: E402
 from agent_hub.integrations.slack import normalize_slack_webhook, verify_slack_request  # noqa: E402
-from agent_hub.integrations.twilio import normalize_twilio_webhook, verify_twilio_request  # noqa: E402
+from agent_hub.integrations.twilio import (  # noqa: E402
+    build_twilio_signature,
+    normalize_twilio_webhook,
+    verify_twilio_request,
+)
 
 
 def _slack_signature(timestamp: str, body: str, signing_secret: str) -> str:
@@ -28,11 +31,7 @@ def _github_signature(body: str, webhook_secret: str) -> str:
 
 
 def _twilio_signature(url: str, payload: dict[str, str], auth_token: str) -> str:
-    base = url
-    for key in sorted(set(payload)):
-        base += f"{key}{payload[key]}"
-    digest = hmac.new(auth_token.encode("utf-8"), base.encode("utf-8"), hashlib.sha1).digest()
-    return b64encode(digest).decode("utf-8")
+    return build_twilio_signature(auth_token, url=url, params=payload)
 
 
 def test_slack_normalize_is_account_aware_and_provider_stable() -> None:
