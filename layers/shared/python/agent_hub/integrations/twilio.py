@@ -58,8 +58,8 @@ def build_twilio_signature(
             for value in sorted(set(_signature_values(params[param_name]))):
                 payload += f"{param_name}{value}"
 
-    # lgtm[py/weak-sensitive-data-hashing]
     # Twilio webhook signatures are externally specified as HMAC-SHA1.
+    # codeql[py/weak-sensitive-data-hashing]
     digest = hmac.new(auth_token_n.encode("utf-8"), payload.encode("utf-8"), hashlib.sha1).digest()
     return base64.b64encode(digest).decode("utf-8").strip()
 
