@@ -281,9 +281,8 @@ class TestApproveAction:
     @patch("handler._mgmt_api")
     @patch("handler._sqs")
     @patch("handler._get_cfg")
-    @patch("handler.append_audit_entry")
     @patch("handler._ACTION_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/action-queue")
-    def test_approve_action_queues_for_execution(self, mock_audit, mock_cfg, mock_sqs, mock_mgmt, mock_db, mock_dynamo):
+    def test_approve_action_queues_for_execution(self, mock_cfg, mock_sqs, mock_mgmt, mock_db, mock_dynamo):
         """Admin should be able to approve action and it gets queued."""
         from handler import handler
 
@@ -304,7 +303,7 @@ class TestApproveAction:
         ]
         mock_db.return_value = mock_db_instance
 
-        mock_cfg.return_value.audit_bucket = "test-audit-bucket"
+        mock_cfg.return_value.audit_bucket = None
 
         with patch("handler.check_agent_permission", return_value=True):
             mock_post = MagicMock()
@@ -326,8 +325,7 @@ class TestApproveAction:
             assert sent_data["type"] == "approve_action"
             assert sent_data["ok"] is True
             assert sent_data["new_status"] == "approved"
-            # Verify audit was called
-            mock_audit.assert_called_once()
+            mock_sqs.send_message.assert_called_once()
 
     @patch("handler._dynamo")
     @patch("handler._get_db")
@@ -380,8 +378,7 @@ class TestRejectAction:
     @patch("handler._get_db")
     @patch("handler._mgmt_api")
     @patch("handler._get_cfg")
-    @patch("handler.append_audit_entry")
-    def test_reject_action_updates_status(self, mock_audit, mock_cfg, mock_mgmt, mock_db, mock_dynamo):
+    def test_reject_action_updates_status(self, mock_cfg, mock_mgmt, mock_db, mock_dynamo):
         """Admin should be able to reject action."""
         from handler import handler
 
@@ -402,7 +399,7 @@ class TestRejectAction:
         ]
         mock_db.return_value = mock_db_instance
 
-        mock_cfg.return_value.audit_bucket = "test-audit-bucket"
+        mock_cfg.return_value.audit_bucket = None
 
         with patch("handler.check_agent_permission", return_value=True):
             mock_post = MagicMock()
@@ -424,8 +421,6 @@ class TestRejectAction:
             assert sent_data["type"] == "reject_action"
             assert sent_data["ok"] is True
             assert sent_data["new_status"] == "rejected"
-            # Verify audit was called with reason
-            mock_audit.assert_called_once()
 
 
 class TestSubscribePresence:
@@ -727,7 +722,7 @@ class TestCmdPingBroadcast:
     @patch("handler._mgmt_api")
     @patch("handler.time")
     def test_cmd_ping_broadcasts_to_device_connection(self, mock_time, mock_mgmt, mock_db, mock_dynamo):
-        """cmd.ping should be broadcast to target device connections."""
+        """cmd.ping should queue an auditable action."""
         from handler import handler
 
         mock_time.time.return_value = 1700000000.123
@@ -742,18 +737,19 @@ class TestCmdPingBroadcast:
                 "user_id": "user-abc",
             }
         }
-        # Mock GSI query to find device connections (used by _get_device_connections)
-        mock_table.query.return_value = {
-            "Items": [{"connection_id": "device-conn-1", "device_id": "device-xyz", "status": "authenticated"}]
-        }
         mock_dynamo.Table.return_value = mock_table
 
-        # Mock DB query for device ownership
         mock_db_instance = MagicMock()
         mock_db_instance.query.return_value = [{"agent_id": "agent-xyz"}]
         mock_db.return_value = mock_db_instance
 
-        with patch("handler.check_agent_permission", return_value=True):
+        with (
+            patch("handler.check_agent_permission", return_value=True),
+            patch(
+                "handler.create_action",
+                return_value={"action_id": "action-ping-1", "kind": "device_command", "status": "approved"},
+            ) as mock_create_action,
+        ):
             mock_post = MagicMock()
             mock_mgmt.return_value.post_to_connection = mock_post
 
@@ -763,35 +759,28 @@ class TestCmdPingBroadcast:
                     "domainName": "test.execute-api.us-east-1.amazonaws.com",
                     "stage": "prod",
                 },
-                "body": json.dumps({"action": "cmd.ping", "target_device_id": "device-xyz"}),
+                "body": json.dumps(
+                    {"action": "cmd.ping", "target_device_id": "device-xyz", "idempotency_key": "ping-req-1"}
+                ),
             }
 
             result = handler(event, {})
 
             assert result["statusCode"] == 200
-            # Should have been called twice: once for device, once for response to user
-            assert mock_post.call_count == 2
-
-            # Check the device received the ping
-            device_call = mock_post.call_args_list[0]
-            device_data = json.loads(device_call[1]["Data"].decode())
-            assert device_data["type"] == "cmd.ping"
-            assert device_data["from_connection_id"] == "user-conn"
-
-            # Check user received acknowledgment
-            user_call = mock_post.call_args_list[1]
-            user_data = json.loads(user_call[1]["Data"].decode())
+            assert mock_post.call_count == 1
+            mock_create_action.assert_called_once()
+            user_data = json.loads(mock_post.call_args[1]["Data"].decode())
             assert user_data["type"] == "cmd.ping"
             assert user_data["ok"] is True
-            assert user_data["device_online"] is True
-            assert user_data["device_connections"] == 1
+            assert user_data["action_id"] == "action-ping-1"
+            assert user_data["queued"] is True
 
     @patch("handler._dynamo")
     @patch("handler._get_db")
     @patch("handler._mgmt_api")
     @patch("handler.time")
     def test_cmd_ping_device_not_connected(self, mock_time, mock_mgmt, mock_db, mock_dynamo):
-        """cmd.ping to offline device should still succeed but indicate device_online=False."""
+        """cmd.ping should still queue when connectivity is unknown."""
         from handler import handler
 
         mock_time.time.return_value = 1700000000.123
@@ -805,15 +794,19 @@ class TestCmdPingBroadcast:
                 "user_id": "user-abc",
             }
         }
-        # No device connections found
-        mock_table.scan.return_value = {"Items": []}
         mock_dynamo.Table.return_value = mock_table
 
         mock_db_instance = MagicMock()
         mock_db_instance.query.return_value = [{"agent_id": "agent-xyz"}]
         mock_db.return_value = mock_db_instance
 
-        with patch("handler.check_agent_permission", return_value=True):
+        with (
+            patch("handler.check_agent_permission", return_value=True),
+            patch(
+                "handler.create_action",
+                return_value={"action_id": "action-ping-2", "kind": "device_command", "status": "approved"},
+            ),
+        ):
             mock_post = MagicMock()
             mock_mgmt.return_value.post_to_connection = mock_post
 
@@ -823,7 +816,9 @@ class TestCmdPingBroadcast:
                     "domainName": "test.execute-api.us-east-1.amazonaws.com",
                     "stage": "prod",
                 },
-                "body": json.dumps({"action": "cmd.ping", "target_device_id": "device-xyz"}),
+                "body": json.dumps(
+                    {"action": "cmd.ping", "target_device_id": "device-xyz", "idempotency_key": "ping-req-2"}
+                ),
             }
 
             result = handler(event, {})
@@ -832,8 +827,8 @@ class TestCmdPingBroadcast:
             sent_data = json.loads(mock_post.call_args[1]["Data"].decode())
             assert sent_data["type"] == "cmd.ping"
             assert sent_data["ok"] is True
-            assert sent_data["device_online"] is False
-            assert sent_data["device_connections"] == 0
+            assert sent_data["status"] == "approved"
+            assert sent_data["queued"] is True
 
 
 class TestCmdRunActionBroadcast:
@@ -842,9 +837,10 @@ class TestCmdRunActionBroadcast:
     @patch("handler._dynamo")
     @patch("handler._get_db")
     @patch("handler._mgmt_api")
+    @patch("handler._sqs")
     @patch("handler.time")
-    def test_cmd_run_action_broadcasts_to_device(self, mock_time, mock_mgmt, mock_db, mock_dynamo):
-        """cmd.run_action should be broadcast to target device connections."""
+    def test_cmd_run_action_broadcasts_to_device(self, mock_time, mock_sqs, mock_mgmt, mock_db, mock_dynamo):
+        """cmd.run_action should create and queue an approved action."""
         from handler import handler
 
         mock_time.time.return_value = 1700000000.123
@@ -868,7 +864,13 @@ class TestCmdRunActionBroadcast:
         mock_db_instance.query.return_value = [{"agent_id": "agent-xyz"}]
         mock_db.return_value = mock_db_instance
 
-        with patch("handler.check_agent_permission", return_value=True):
+        with (
+            patch("handler.check_agent_permission", return_value=True),
+            patch(
+                "handler.create_action",
+                return_value={"action_id": "action-run-1", "kind": "device_command", "status": "approved"},
+            ) as mock_create_action,
+        ):
             mock_post = MagicMock()
             mock_mgmt.return_value.post_to_connection = mock_post
 
@@ -884,6 +886,7 @@ class TestCmdRunActionBroadcast:
                         "target_device_id": "device-xyz",
                         "kind": "status",
                         "payload": {"include_disk": True},
+                        "idempotency_key": "run-req-1",
                     }
                 ),
             }
@@ -891,26 +894,24 @@ class TestCmdRunActionBroadcast:
             result = handler(event, {})
 
             assert result["statusCode"] == 200
-            assert mock_post.call_count == 2
+            assert mock_post.call_count == 1
+            mock_create_action.assert_called_once()
 
-            # Check device received the run_action command
-            device_call = mock_post.call_args_list[0]
-            device_data = json.loads(device_call[1]["Data"].decode())
-            assert device_data["type"] == "cmd.run_action"
-            assert device_data["kind"] == "status"
-            assert device_data["payload"] == {"include_disk": True}
-
-            # Check user received acknowledgment
-            user_call = mock_post.call_args_list[1]
-            user_data = json.loads(user_call[1]["Data"].decode())
+            user_data = json.loads(mock_post.call_args[1]["Data"].decode())
+            assert user_data["type"] == "cmd.run_action"
             assert user_data["ok"] is True
-            assert user_data["device_connections"] == 1
+            assert user_data["status"] == "approved"
+            assert user_data["queued"] is True
+            assert user_data["kind"] == "status"
+            assert user_data["target_device_id"] == "device-xyz"
+            assert user_data["action_id"] == "action-run-1"
 
     @patch("handler._dynamo")
     @patch("handler._get_db")
     @patch("handler._mgmt_api")
-    def test_cmd_run_action_requires_connected_device(self, mock_mgmt, mock_db, mock_dynamo):
-        """cmd.run_action should fail if device not connected."""
+    @patch("handler._sqs")
+    def test_cmd_run_action_requires_connected_device(self, mock_sqs, mock_mgmt, mock_db, mock_dynamo):
+        """cmd.run_action now queues the lifecycle action even if connectivity is unknown."""
         from handler import handler
 
         mock_table = MagicMock()
@@ -922,14 +923,19 @@ class TestCmdRunActionBroadcast:
                 "user_id": "user-abc",
             }
         }
-        mock_table.scan.return_value = {"Items": []}  # No device connections
         mock_dynamo.Table.return_value = mock_table
 
         mock_db_instance = MagicMock()
         mock_db_instance.query.return_value = [{"agent_id": "agent-xyz"}]
         mock_db.return_value = mock_db_instance
 
-        with patch("handler.check_agent_permission", return_value=True):
+        with (
+            patch("handler.check_agent_permission", return_value=True),
+            patch(
+                "handler.create_action",
+                return_value={"action_id": "action-run-2", "kind": "device_command", "status": "approved"},
+            ),
+        ):
             mock_post = MagicMock()
             mock_mgmt.return_value.post_to_connection = mock_post
 
@@ -939,14 +945,22 @@ class TestCmdRunActionBroadcast:
                     "domainName": "test.execute-api.us-east-1.amazonaws.com",
                     "stage": "prod",
                 },
-                "body": json.dumps({"action": "cmd.run_action", "target_device_id": "device-xyz", "kind": "status"}),
+                "body": json.dumps(
+                    {
+                        "action": "cmd.run_action",
+                        "target_device_id": "device-xyz",
+                        "kind": "status",
+                        "idempotency_key": "run-req-2",
+                    }
+                ),
             }
 
             handler(event, {})
 
             sent_data = json.loads(mock_post.call_args[1]["Data"].decode())
-            assert sent_data["ok"] is False
-            assert sent_data["error"] == "device_not_connected"
+            assert sent_data["ok"] is True
+            assert sent_data["status"] == "approved"
+            assert sent_data["queued"] is True
 
 
 class TestCmdConfigBroadcast:
@@ -955,9 +969,10 @@ class TestCmdConfigBroadcast:
     @patch("handler._dynamo")
     @patch("handler._get_db")
     @patch("handler._mgmt_api")
+    @patch("handler._sqs")
     @patch("handler.time")
-    def test_cmd_config_broadcasts_to_device(self, mock_time, mock_mgmt, mock_db, mock_dynamo):
-        """cmd.config should be broadcast to target device connections."""
+    def test_cmd_config_broadcasts_to_device(self, mock_time, mock_sqs, mock_mgmt, mock_db, mock_dynamo):
+        """cmd.config should create and queue an approved action."""
         from handler import handler
 
         mock_time.time.return_value = 1700000000.123
@@ -981,7 +996,13 @@ class TestCmdConfigBroadcast:
         mock_db_instance.query.return_value = [{"agent_id": "agent-xyz"}]
         mock_db.return_value = mock_db_instance
 
-        with patch("handler.check_agent_permission", return_value=True):
+        with (
+            patch("handler.check_agent_permission", return_value=True),
+            patch(
+                "handler.create_action",
+                return_value={"action_id": "action-config-1", "kind": "device_command", "status": "approved"},
+            ) as mock_create_action,
+        ):
             mock_post = MagicMock()
             mock_mgmt.return_value.post_to_connection = mock_post
 
@@ -996,6 +1017,7 @@ class TestCmdConfigBroadcast:
                         "action": "cmd.config",
                         "target_device_id": "device-xyz",
                         "config": {"log_level": "DEBUG", "heartbeat_interval": 30},
+                        "idempotency_key": "config-req-1",
                     }
                 ),
             }
@@ -1003,16 +1025,13 @@ class TestCmdConfigBroadcast:
             result = handler(event, {})
 
             assert result["statusCode"] == 200
-            assert mock_post.call_count == 2
+            assert mock_post.call_count == 1
+            mock_create_action.assert_called_once()
 
-            # Check device received the config command
-            device_call = mock_post.call_args_list[0]
-            device_data = json.loads(device_call[1]["Data"].decode())
-            assert device_data["type"] == "cmd.config"
-            assert device_data["config"] == {"log_level": "DEBUG", "heartbeat_interval": 30}
-
-            # Check user received acknowledgment
-            user_call = mock_post.call_args_list[1]
-            user_data = json.loads(user_call[1]["Data"].decode())
+            user_data = json.loads(mock_post.call_args[1]["Data"].decode())
+            assert user_data["type"] == "cmd.config"
             assert user_data["ok"] is True
-            assert user_data["device_connections"] == 1
+            assert user_data["status"] == "approved"
+            assert user_data["queued"] is True
+            assert user_data["target_device_id"] == "device-xyz"
+            assert user_data["action_id"] == "action-config-1"

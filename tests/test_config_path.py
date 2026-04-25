@@ -64,6 +64,30 @@ class TestFindConfigPath(unittest.TestCase):
                 else:
                     os.environ["XDG_CONFIG_HOME"] = old_xdg
 
+    def test_ignores_legacy_user_config_locations(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            old_home = os.environ.get("HOME")
+            old_xdg = os.environ.get("XDG_CONFIG_HOME")
+            old_cwd = os.getcwd()
+            os.environ["HOME"] = td
+            os.environ["XDG_CONFIG_HOME"] = os.path.join(td, ".config")
+            try:
+                os.chdir(td)
+                legacy = Path(os.environ["XDG_CONFIG_HOME"]) / "marvain" / "marvain.yaml"
+                legacy.parent.mkdir(parents=True, exist_ok=True)
+                legacy.write_text("version: 1\n", encoding="utf-8")
+                self.assertIsNone(find_config_path(None))
+            finally:
+                os.chdir(old_cwd)
+                if old_home is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = old_home
+                if old_xdg is None:
+                    os.environ.pop("XDG_CONFIG_HOME", None)
+                else:
+                    os.environ["XDG_CONFIG_HOME"] = old_xdg
+
 
 if __name__ == "__main__":
     unittest.main()

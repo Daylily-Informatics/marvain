@@ -345,6 +345,7 @@ class TestDeviceTokenRotation(unittest.TestCase):
         self.assertTrue(len(data["token"]) > 20)
         mock_db.execute.assert_called_once()
 
+
 class TestDevicesPage(unittest.TestCase):
     """Tests for devices page rendering."""
 

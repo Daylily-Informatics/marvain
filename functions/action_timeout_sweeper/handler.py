@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
 from typing import Any
 
+from agent_hub.action_service import mark_action_timed_out
 from agent_hub.broadcast import broadcast_event
 from agent_hub.config import load_config
 from agent_hub.metrics import emit_count
@@ -38,20 +38,10 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     timed_out = 0
     for row in overdue:
         action_id = str(row["action_id"])
-        _db.execute(
-            """
-            UPDATE actions
-            SET status = 'device_timeout',
-                updated_at = now(),
-                completed_at = now(),
-                device_response_at = now(),
-                error = :error
-            WHERE action_id = :action_id::uuid
-            """,
-            {
-                "action_id": action_id,
-                "error": "device_timeout",
-            },
+        mark_action_timed_out(
+            _db,
+            action_id=action_id,
+            audit_bucket=_cfg.audit_bucket,
         )
 
         try:

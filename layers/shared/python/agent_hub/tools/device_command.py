@@ -10,7 +10,6 @@ import json
 import logging
 import os
 import time
-import uuid
 from typing import TYPE_CHECKING, Any
 
 from agent_hub.contracts import CmdRunAction
@@ -26,9 +25,7 @@ _DEVICE_RESULT_TIMEOUT_SECONDS = int(os.getenv("DEVICE_RESULT_TIMEOUT_SECONDS", 
 
 
 def _model_dump(model: Any) -> dict[str, Any]:
-    if hasattr(model, "model_dump"):
-        return model.model_dump()
-    return model.dict()  # pragma: no cover - pydantic v1 fallback
+    return model.model_dump()
 
 
 def _get_dynamodb():
@@ -100,7 +97,7 @@ def device_command_handler(payload: dict[str, Any], ctx: "ToolContext") -> "Tool
     # Verify device belongs to this agent
     rows = ctx.db.query(
         """
-        SELECT device_id::TEXT, agent_id::TEXT, name
+        SELECT device_id::TEXT, agent_id::TEXT, name, COALESCE(scopes, '[]'::jsonb)::TEXT as scopes
         FROM devices
         WHERE device_id = :device_id::uuid
           AND agent_id = :agent_id::uuid
@@ -136,11 +133,14 @@ def device_command_handler(payload: dict[str, Any], ctx: "ToolContext") -> "Tool
     # Normalize command shapes. Non-control commands are treated as run_action kinds.
     message: dict[str, Any]
     action_kind = ""
-    correlation_id = str(uuid.uuid4())
+    correlation_id = str(payload.get("correlation_id") or "").strip()
+    timeout_seconds = int(payload.get("timeout_seconds") or _DEVICE_RESULT_TIMEOUT_SECONDS)
     if command == "run_action":
         action_kind = str(payload.get("kind") or data.get("kind") or "").strip()
         if not action_kind:
             return ToolResult(ok=False, error="missing_kind")
+        if not correlation_id:
+            return ToolResult(ok=False, error="missing_correlation_id")
         action_payload = payload.get("payload")
         if not isinstance(action_payload, dict):
             action_payload = data.get("payload")
@@ -157,24 +157,30 @@ def device_command_handler(payload: dict[str, Any], ctx: "ToolContext") -> "Tool
         )
         message = _model_dump(message)
     elif command == "config":
-        correlation_id = ""
+        if not correlation_id:
+            return ToolResult(ok=False, error="missing_correlation_id")
         message = {
             "type": "cmd.config",
             "action_id": ctx.action_id,
             "device_id": device_id,
+            "correlation_id": correlation_id,
             "config": data.get("config", data),
             "sent_at": int(time.time() * 1000),
         }
     elif command == "ping":
-        correlation_id = ""
+        if not correlation_id:
+            return ToolResult(ok=False, error="missing_correlation_id")
         message = {
             "type": "cmd.ping",
             "action_id": ctx.action_id,
             "device_id": device_id,
+            "correlation_id": correlation_id,
             "sent_at": int(time.time() * 1000),
         }
     else:
         action_kind = command
+        if not correlation_id:
+            return ToolResult(ok=False, error="missing_correlation_id")
         message = CmdRunAction(
             action_id=ctx.action_id,
             correlation_id=correlation_id,
@@ -207,7 +213,7 @@ def device_command_handler(payload: dict[str, Any], ctx: "ToolContext") -> "Tool
             "command": command,
             "kind": action_kind or None,
             "correlation_id": correlation_id or None,
-            "timeout_seconds": _DEVICE_RESULT_TIMEOUT_SECONDS,
+            "timeout_seconds": timeout_seconds,
             "connections_sent": sent,
         },
     )

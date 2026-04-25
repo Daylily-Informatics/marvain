@@ -515,7 +515,7 @@ async function launchSatellite(deviceId, deviceToken) {
     const resp = await fetch(`/api/devices/${deviceId}/launch-satellite`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({device_token: deviceToken}),
+      body: JSON.stringify({device_token: deviceToken, idempotency_key: crypto.randomUUID()}),
     });
     const data = await resp.json();
 

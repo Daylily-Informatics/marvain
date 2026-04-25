@@ -22,13 +22,23 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from agent_hub.auto_approve_policy import evaluate_auto_approve
-from agent_hub.contracts import validate_tool_payload
+from agent_hub.action_service import (
+    ActionServiceError,
+    approve_action,
+    create_action,
+    load_action,
+    mark_action_completed,
+    record_action_dispatch_started,
+    reject_action,
+    reserve_action_for_execution,
+)
 from agent_hub.auth import (
     AuthenticatedUser,
     ensure_user_row,
+    list_cognito_users,
     lookup_cognito_user_by_email,
 )
+from agent_hub.broadcast import broadcast_event
 from agent_hub.cognito import (
     CognitoAuthError,
     CognitoUserInfo,  # noqa: F401 — used via module attr in tests
@@ -38,7 +48,6 @@ from agent_hub.cognito import (
     get_user_info_from_tokens,
     refresh_tokens,
 )
-from agent_hub.broadcast import broadcast_event
 from agent_hub.livekit_tokens import mint_livekit_join_token  # noqa: F401 — used via module attr in tests
 from agent_hub.memberships import (
     SpaceInfo,  # noqa: F401 — used via module attr in tests
@@ -290,7 +299,8 @@ def _parse_expires_at(value: str | None):
     v = str(value).strip()
     if not v:
         return None
-    from datetime import date, datetime, time as dt_time, timezone
+    from datetime import date, datetime, timezone
+    from datetime import time as dt_time
 
     try:
         if len(v) == 10 and v[4] == "-" and v[7] == "-":
@@ -647,7 +657,6 @@ def gui_logout(request: Request) -> Response:
     # Clear session
     request.session.clear()
 
-    # Also clear old cookies for backward compatibility
     resp: Response
     if _cfg.cognito_domain and _cfg.cognito_user_pool_client_id:
         # Redirect to Cognito logout
@@ -659,7 +668,7 @@ def gui_logout(request: Request) -> Response:
     else:
         resp = RedirectResponse(url=_gui_path(request, "/logged-out"), status_code=302)
 
-    # Clear old cookies
+    # Clear GUI auth cookies.
     resp.delete_cookie(_GUI_ACCESS_TOKEN_COOKIE, path="/")
     resp.delete_cookie(_GUI_REFRESH_TOKEN_COOKIE, path="/")
     resp.delete_cookie(_GUI_OAUTH_STATE_COOKIE, path="/")
@@ -930,7 +939,6 @@ def gui_home(request: Request) -> Response:
     )
 
 
-
 # ---------------------------------------------------------------------------
 # Dashboard HTMX partial endpoints (auto-refresh fragments)
 # ---------------------------------------------------------------------------
@@ -982,7 +990,7 @@ def gui_dashboard_kpi(request: Request) -> Response:
         f'<div class="kpi-item"><span class="kpi-value">{online_agents}</span>'
         '<span class="kpi-label">Agents Online</span></div>'
         f'<div class="kpi-item {warn}"><span class="kpi-value">'
-        f'{pending_actions}</span>'
+        f"{pending_actions}</span>"
         '<span class="kpi-label">Pending Actions</span></div>'
         f'<div class="kpi-item"><span class="kpi-value">{devices_count}'
         '</span><span class="kpi-label">Devices</span></div>'
@@ -1026,10 +1034,7 @@ def gui_dashboard_activity(request: Request) -> Response:
                 ts = (row.get("created_at") or "")[:19]
                 agent = row.get("agent_name", "")
                 space = row.get("space_name") or ""
-                space_tag = (
-                    f' <span class="badge badge-outline">'
-                    f"{space}</span>" if space else ""
-                )
+                space_tag = f' <span class="badge badge-outline">{space}</span>' if space else ""
                 events_html += (
                     f'<div class="feed-item">'
                     f'<span class="feed-time">{ts}</span>'
@@ -1079,8 +1084,10 @@ def gui_dashboard_actions(request: Request) -> Response:
                 aid = row.get("action_id", "")
                 status = row.get("status", "")
                 _bcls = {
-                    "proposed": "warning", "approved": "info",
-                    "executed": "success", "failed": "error",
+                    "proposed": "warning",
+                    "approved": "info",
+                    "executed": "success",
+                    "failed": "error",
                     "rejected": "error",
                 }
                 badge_cls = _bcls.get(status, "info")
@@ -1126,7 +1133,6 @@ def gui_dashboard_actions(request: Request) -> Response:
         f"<tbody>{rows_html}</tbody></table>"
     )
     return HTMLResponse(content=table_html)
-
 
 
 # ---------------------------------------------------------------------------
@@ -1198,34 +1204,19 @@ def api_create_space(request: Request, body: SpaceCreate) -> SpaceResponse:
     if room_mode not in ("ephemeral", "stable"):
         raise HTTPException(status_code=400, detail="Invalid livekit_room_mode (expected 'ephemeral' or 'stable')")
     try:
-        try:
-            db.execute(
-                """
-                INSERT INTO spaces (space_id, agent_id, name, privacy_mode, livekit_room_mode)
-                VALUES (:space_id::uuid, :agent_id::uuid, :name, :privacy_mode, :livekit_room_mode)
-            """,
-                {
-                    "space_id": space_id,
-                    "agent_id": body.agent_id,
-                    "name": body.name,
-                    "privacy_mode": body.privacy_mode,
-                    "livekit_room_mode": room_mode,
-                },
-            )
-        except Exception:
-            # Back-compat: before 015_spaces_livekit_room_mode.sql.
-            db.execute(
-                """
-                INSERT INTO spaces (space_id, agent_id, name, privacy_mode)
-                VALUES (:space_id::uuid, :agent_id::uuid, :name, :privacy_mode)
-            """,
-                {
-                    "space_id": space_id,
-                    "agent_id": body.agent_id,
-                    "name": body.name,
-                    "privacy_mode": body.privacy_mode,
-                },
-            )
+        db.execute(
+            """
+            INSERT INTO spaces (space_id, agent_id, name, privacy_mode, livekit_room_mode)
+            VALUES (:space_id::uuid, :agent_id::uuid, :name, :privacy_mode, :livekit_room_mode)
+        """,
+            {
+                "space_id": space_id,
+                "agent_id": body.agent_id,
+                "name": body.name,
+                "privacy_mode": body.privacy_mode,
+                "livekit_room_mode": room_mode,
+            },
+        )
     except Exception as e:
         logger.error(f"Failed to create space: {e}")
         raise HTTPException(status_code=500, detail="Failed to create space")
@@ -1392,7 +1383,9 @@ class DeviceCreate(BaseModel):
     agent_id: str = Field(..., description="ID of the agent this device belongs to")
     name: str = Field(..., description="Name of the device")
     scopes: list[str] = Field(default_factory=list, description="Scopes assigned to the device")
-    location_label: str | None = Field(default=None, description="Human-readable location label (e.g., Kitchen, Lab Bench 3)")
+    location_label: str | None = Field(
+        default=None, description="Human-readable location label (e.g., Kitchen, Lab Bench 3)"
+    )
     location_coords: dict | None = Field(default=None, description="Optional geographic coordinates: {lat, lng}")
 
 
@@ -1651,6 +1644,99 @@ class DeviceLaunchSatellite(BaseModel):
     """Request body for launching a satellite daemon for a device."""
 
     device_token: str = Field(..., description="Device authentication token")
+    idempotency_key: str = Field(..., description="Client-generated idempotency key")
+
+
+class HostProcessRequest(BaseModel):
+    idempotency_key: str = Field(..., description="Client-generated idempotency key")
+
+
+class AgentWorkerHostProcessRequest(HostProcessRequest):
+    agent_id: str = Field(..., description="Agent that owns the worker lifecycle action")
+
+
+def _create_host_process_action(
+    *,
+    db,
+    agent_id: str,
+    user_id: str,
+    operation: str,
+    args: dict[str, Any],
+    idempotency_key: str,
+) -> dict[str, Any]:
+    return create_action(
+        db,
+        agent_id=agent_id,
+        space_id=None,
+        kind="host_process",
+        payload={"operation": operation, "args": args},
+        required_scopes=["devices:launch"],
+        requested_approval_mode="manual_immediate",
+        approved_by_user_id=user_id,
+        idempotency_key=idempotency_key,
+        request_actor_type="user",
+        request_actor_id=user_id,
+        request_origin=f"gui:{operation}",
+        audit_bucket=_cfg.audit_bucket,
+    )
+
+
+def _run_host_process_action(
+    *,
+    db,
+    created: dict[str, Any],
+    dispatch_details: dict[str, Any],
+    execute_fn,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    action_id = str(created["action_id"])
+    current = load_action(db, action_id) or created
+    current_status = str(current.get("status") or created.get("status") or "")
+    if current_status in {"executed", "failed", "rejected", "device_timeout"}:
+        return current, current.get("result") or {}
+
+    reserved = reserve_action_for_execution(db, action_id)
+    if not reserved:
+        current = load_action(db, action_id) or current
+        return current, current.get("result") or {}
+
+    record_action_dispatch_started(
+        db,
+        action_id=action_id,
+        audit_bucket=_cfg.audit_bucket,
+        details=dispatch_details,
+    )
+
+    try:
+        result = execute_fn()
+        action = mark_action_completed(
+            db,
+            action_id=action_id,
+            ok=True,
+            result=result,
+            error=None,
+            audit_bucket=_cfg.audit_bucket,
+        )
+        return action, result
+    except HTTPException as exc:
+        mark_action_completed(
+            db,
+            action_id=action_id,
+            ok=False,
+            result=None,
+            error=str(exc.detail),
+            audit_bucket=_cfg.audit_bucket,
+        )
+        raise
+    except Exception as exc:
+        mark_action_completed(
+            db,
+            action_id=action_id,
+            ok=False,
+            result=None,
+            error=str(exc),
+            audit_bucket=_cfg.audit_bucket,
+        )
+        raise
 
 
 @app.post("/api/devices/{device_id}/launch-satellite", name="api_launch_satellite")
@@ -1716,44 +1802,60 @@ def api_launch_satellite(request: Request, device_id: str, body: DeviceLaunchSat
     pid_file = repo_root / f".marvain-satellite-{verified_device_id}.pid"
     log_file = repo_root / f".marvain-satellite-{verified_device_id}.log"
 
-    # Check if already running
-    if pid_file.exists():
+    created = _create_host_process_action(
+        db=db,
+        agent_id=str(rows[0]["agent_id"]),
+        user_id=str(user.user_id),
+        operation="launch_satellite",
+        args={"device_id": verified_device_id},
+        idempotency_key=body.idempotency_key,
+    )
+
+    def _execute() -> dict[str, Any]:
+        if pid_file.exists():
+            try:
+                old_pid = int(pid_file.read_text().strip())
+                os.kill(old_pid, 0)
+                return {
+                    "status": "already_running",
+                    "pid": old_pid,
+                    "device_id": verified_device_id,
+                    "message": f"Satellite daemon already running (PID {old_pid})",
+                }
+            except (ProcessLookupError, ValueError, OSError):
+                pid_file.unlink(missing_ok=True)
         try:
-            old_pid = int(pid_file.read_text().strip())
-            os.kill(old_pid, 0)
-            return {
-                "status": "already_running",
-                "pid": old_pid,
-                "device_id": verified_device_id,
-                "message": f"Satellite daemon already running (PID {old_pid})",
-            }
-        except (ProcessLookupError, ValueError, OSError):
-            pid_file.unlink(missing_ok=True)
+            with open(log_file, "w") as lf:
+                proc = _sp.Popen(
+                    cmd,
+                    stdin=_sp.DEVNULL,
+                    stdout=lf,
+                    stderr=_sp.STDOUT,
+                    start_new_session=True,
+                    env=env,
+                )
+            pid_file.write_text(str(proc.pid))
+            logger.info(f"Launched satellite daemon for device {verified_device_id} (PID {proc.pid})")
+        except Exception as e:
+            logger.error(f"Failed to launch satellite daemon: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to launch satellite: {e}")
 
-    try:
-        with open(log_file, "w") as lf:
-            proc = _sp.Popen(
-                cmd,
-                stdin=_sp.DEVNULL,
-                stdout=lf,
-                stderr=_sp.STDOUT,
-                start_new_session=True,
-                env=env,
-            )
-        pid_file.write_text(str(proc.pid))
-        logger.info(f"Launched satellite daemon for device {verified_device_id} (PID {proc.pid})")
-    except Exception as e:
-        logger.error(f"Failed to launch satellite daemon: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to launch satellite: {e}")
+        return {
+            "status": "launched",
+            "pid": proc.pid,
+            "device_id": verified_device_id,
+            "device_name": rows[0].get("name", ""),
+            "log_file": str(log_file),
+            "message": f"Satellite daemon started (PID {proc.pid})",
+        }
 
-    return {
-        "status": "launched",
-        "pid": proc.pid,
-        "device_id": verified_device_id,
-        "device_name": rows[0].get("name", ""),
-        "log_file": str(log_file),
-        "message": f"Satellite daemon started (PID {proc.pid})",
-    }
+    action, result = _run_host_process_action(
+        db=db,
+        created=created,
+        dispatch_details={"operation": "launch_satellite", "device_id": verified_device_id},
+        execute_fn=_execute,
+    )
+    return {**result, "action_id": action["action_id"], "action_status": action["status"]}
 
 
 # ---------------------------------------------------------------------------
@@ -1822,7 +1924,7 @@ def api_agent_worker_status(request: Request) -> dict:
 
 
 @app.post("/api/agent-worker/stop", name="api_agent_worker_stop")
-def api_agent_worker_stop(request: Request) -> dict:
+def api_agent_worker_stop(request: Request, body: AgentWorkerHostProcessRequest) -> dict:
     """Stop the agent worker process."""
     import signal
     import time
@@ -1830,45 +1932,65 @@ def api_agent_worker_stop(request: Request) -> dict:
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    db = _get_db()
+    if not check_agent_permission(db, user_id=user.user_id, agent_id=body.agent_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Requires admin permission on the agent")
 
-    pid_file = _agent_pid_file()
-    if not pid_file.exists():
-        return {"status": "stopped", "message": "Agent worker is not running (no PID file)"}
+    created = _create_host_process_action(
+        db=db,
+        agent_id=body.agent_id,
+        user_id=str(user.user_id),
+        operation="stop_agent_worker",
+        args={},
+        idempotency_key=body.idempotency_key,
+    )
 
-    try:
-        pid = int(pid_file.read_text().strip())
-    except (ValueError, OSError):
+    def _execute() -> dict[str, Any]:
+        pid_file = _agent_pid_file()
+        if not pid_file.exists():
+            return {"status": "stopped", "message": "Agent worker is not running (no PID file)"}
+
+        try:
+            pid = int(pid_file.read_text().strip())
+        except (ValueError, OSError):
+            pid_file.unlink(missing_ok=True)
+            return {"status": "stopped", "message": "Removed invalid PID file"}
+
+        if not _process_alive(pid):
+            pid_file.unlink(missing_ok=True)
+            return {"status": "stopped", "message": "Agent worker was already stopped (stale PID)"}
+
+        try:
+            os.kill(pid, signal.SIGTERM)
+            for _ in range(20):
+                time.sleep(0.25)
+                if not _process_alive(pid):
+                    break
+            else:
+                os.kill(pid, signal.SIGKILL)
+                time.sleep(0.5)
+        except (OSError, ProcessLookupError):
+            pass
+
         pid_file.unlink(missing_ok=True)
-        return {"status": "stopped", "message": "Removed invalid PID file"}
+        stopped = not _process_alive(pid)
+        return {
+            "status": "stopped" if stopped else "error",
+            "pid": None if stopped else pid,
+            "message": "Agent worker stopped" if stopped else f"Failed to stop PID {pid}",
+        }
 
-    if not _process_alive(pid):
-        pid_file.unlink(missing_ok=True)
-        return {"status": "stopped", "message": "Agent worker was already stopped (stale PID)"}
-
-    # SIGTERM first, then SIGKILL if needed
-    try:
-        os.kill(pid, signal.SIGTERM)
-        for _ in range(20):
-            time.sleep(0.25)
-            if not _process_alive(pid):
-                break
-        else:
-            os.kill(pid, signal.SIGKILL)
-            time.sleep(0.5)
-    except (OSError, ProcessLookupError):
-        pass
-
-    pid_file.unlink(missing_ok=True)
-    stopped = not _process_alive(pid)
-    return {
-        "status": "stopped" if stopped else "error",
-        "pid": None if stopped else pid,
-        "message": "Agent worker stopped" if stopped else f"Failed to stop PID {pid}",
-    }
+    action, result = _run_host_process_action(
+        db=db,
+        created=created,
+        dispatch_details={"operation": "stop_agent_worker"},
+        execute_fn=_execute,
+    )
+    return {**result, "action_id": action["action_id"], "action_status": action["status"]}
 
 
 @app.post("/api/agent-worker/launch", name="api_agent_worker_launch")
-def api_agent_worker_launch(request: Request) -> dict:
+def api_agent_worker_launch(request: Request, body: AgentWorkerHostProcessRequest) -> dict:
     """Launch the agent worker process.
 
     Reads marvain-config.yaml for LiveKit/OpenAI secret ARNs and bootstrap
@@ -1881,15 +2003,9 @@ def api_agent_worker_launch(request: Request) -> dict:
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-
-    # Already running?
-    cur = _agent_worker_status_dict()
-    if cur["status"] == "running":
-        return {
-            "status": "already_running",
-            "pid": cur["pid"],
-            "message": f"Agent worker already running (PID {cur['pid']})",
-        }
+    db = _get_db()
+    if not check_agent_permission(db, user_id=user.user_id, agent_id=body.agent_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Requires admin permission on the agent")
 
     repo_root = Path(__file__).resolve().parent.parent.parent
     worker_dir = repo_root / "apps" / "agent_worker"
@@ -1966,45 +2082,96 @@ def api_agent_worker_launch(request: Request) -> dict:
     cmd = [sys.executable, "worker.py", "dev"]
     log_file = _agent_log_file()
     pid_file = _agent_pid_file()
+    created = _create_host_process_action(
+        db=db,
+        agent_id=body.agent_id,
+        user_id=str(user.user_id),
+        operation="launch_agent_worker",
+        args={},
+        idempotency_key=body.idempotency_key,
+    )
 
-    try:
-        with open(log_file, "w") as lf:
-            proc = _sp.Popen(
-                cmd,
-                cwd=str(worker_dir),
-                env=env,
-                stdin=_sp.DEVNULL,
-                stdout=lf,
-                stderr=_sp.STDOUT,
-                start_new_session=True,
-            )
-        pid_file.write_text(str(proc.pid))
-        logger.info("Launched agent worker (PID %s)", proc.pid)
-    except Exception as exc:
-        logger.error("Failed to launch agent worker: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Failed to launch agent worker: {exc}")
+    def _execute() -> dict[str, Any]:
+        cur = _agent_worker_status_dict()
+        if cur["status"] == "running":
+            return {
+                "status": "already_running",
+                "pid": cur["pid"],
+                "message": f"Agent worker already running (PID {cur['pid']})",
+            }
+        try:
+            with open(log_file, "w") as lf:
+                proc = _sp.Popen(
+                    cmd,
+                    cwd=str(worker_dir),
+                    env=env,
+                    stdin=_sp.DEVNULL,
+                    stdout=lf,
+                    stderr=_sp.STDOUT,
+                    start_new_session=True,
+                )
+            pid_file.write_text(str(proc.pid))
+            logger.info("Launched agent worker (PID %s)", proc.pid)
+        except Exception as exc:
+            logger.error("Failed to launch agent worker: %s", exc)
+            raise HTTPException(status_code=500, detail=f"Failed to launch agent worker: {exc}")
 
-    return {
-        "status": "launched",
-        "pid": proc.pid,
-        "log_file": str(log_file),
-        "message": f"Agent worker started (PID {proc.pid})",
-    }
+        return {
+            "status": "launched",
+            "pid": proc.pid,
+            "log_file": str(log_file),
+            "message": f"Agent worker started (PID {proc.pid})",
+        }
+
+    action, result = _run_host_process_action(
+        db=db,
+        created=created,
+        dispatch_details={"operation": "launch_agent_worker"},
+        execute_fn=_execute,
+    )
+    return {**result, "action_id": action["action_id"], "action_status": action["status"]}
 
 
 @app.post("/api/agent-worker/restart", name="api_agent_worker_restart")
-def api_agent_worker_restart(request: Request) -> dict:
+def api_agent_worker_restart(request: Request, body: AgentWorkerHostProcessRequest) -> dict:
     """Restart the agent worker (stop then launch)."""
     import time
 
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    db = _get_db()
+    if not check_agent_permission(db, user_id=user.user_id, agent_id=body.agent_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Requires admin permission on the agent")
 
-    # Stop first (ignore result — may already be stopped)
-    api_agent_worker_stop(request)
-    time.sleep(1)
-    return api_agent_worker_launch(request)
+    created = _create_host_process_action(
+        db=db,
+        agent_id=body.agent_id,
+        user_id=str(user.user_id),
+        operation="restart_agent_worker",
+        args={},
+        idempotency_key=body.idempotency_key,
+    )
+
+    def _execute() -> dict[str, Any]:
+        stop_result = api_agent_worker_stop(
+            request,
+            AgentWorkerHostProcessRequest(agent_id=body.agent_id, idempotency_key=f"{body.idempotency_key}:stop"),
+        )
+        time.sleep(1)
+        launch_result = api_agent_worker_launch(
+            request,
+            AgentWorkerHostProcessRequest(agent_id=body.agent_id, idempotency_key=f"{body.idempotency_key}:launch"),
+        )
+        return {"status": "restarted", "stop": stop_result, "launch": launch_result}
+
+    action, result = _run_host_process_action(
+        db=db,
+        created=created,
+        dispatch_details={"operation": "restart_agent_worker"},
+        execute_fn=_execute,
+    )
+    return {**result, "action_id": action["action_id"], "action_status": action["status"]}
 
 
 # ---------------------------------------------------------------------------
@@ -2272,23 +2439,18 @@ def api_list_cognito_users(request: Request) -> list[dict]:
     if not _cfg.cognito_user_pool_id:
         raise HTTPException(status_code=500, detail="Cognito not configured")
 
-    import boto3
-
-    client = boto3.client("cognito-idp")
     users = []
-    paginator = client.get_paginator("list_users")
-    for page in paginator.paginate(UserPoolId=_cfg.cognito_user_pool_id):
-        for u in page.get("Users", []):
-            attrs = {a["Name"]: a["Value"] for a in u.get("Attributes", [])}
-            email = attrs.get("email", u.get("Username", ""))
-            if email:
-                users.append(
-                    {
-                        "email": email,
-                        "status": u.get("UserStatus", "UNKNOWN"),
-                        "enabled": u.get("Enabled", False),
-                    }
-                )
+    for u in list_cognito_users(user_pool_id=_cfg.cognito_user_pool_id, region=_cfg.cognito_region):
+        attrs = {a["Name"]: a["Value"] for a in u.get("Attributes", [])}
+        email = attrs.get("email", u.get("Username", ""))
+        if email:
+            users.append(
+                {
+                    "email": email,
+                    "status": u.get("UserStatus", "UNKNOWN"),
+                    "enabled": u.get("Enabled", False),
+                }
+            )
     return users
 
 
@@ -3302,7 +3464,9 @@ def _pick_space_for_agent(*, db, agent_id: str) -> str:
     return str(rows[0]["space_id"])
 
 
-def _enqueue_recognition_event(*, event_id: str, agent_id: str, space_id: str, person_id: str, event_type: str, payload: dict) -> bool:
+def _enqueue_recognition_event(
+    *, event_id: str, agent_id: str, space_id: str, person_id: str, event_type: str, payload: dict
+) -> bool:
     qurl = str(os.getenv("RECOGNITION_QUEUE_URL", "")).strip()
     if not qurl:
         return False
@@ -4031,29 +4195,25 @@ def api_approve_action(request: Request, action_id: str) -> dict:
         )
 
     try:
-        db.execute(
-            """
-            UPDATE actions
-            SET status = 'approved', updated_at = now(),
-                approved_by = :user_id::uuid, approved_at = now()
-            WHERE action_id = :action_id::uuid
-        """,
-            {"action_id": action_id, "user_id": str(user.user_id)},
+        approve_action(
+            db,
+            action_id=action_id,
+            user_id=str(user.user_id),
+            audit_bucket=_cfg.audit_bucket,
+            sqs_client=_get_sqs(),
+            action_queue_url=_cfg.action_queue_url,
         )
-    except Exception as e:
-        logger.error(f"Failed to approve action: {e}")
-        raise HTTPException(status_code=500, detail="Failed to approve action")
-
-    # Queue for execution via Tool Runner Lambda
-    agent_id = str(action.get("agent_id", ""))
-    if _cfg.action_queue_url:
-        try:
-            _get_sqs().send_message(
-                QueueUrl=_cfg.action_queue_url,
-                MessageBody=json.dumps({"action_id": action_id, "agent_id": agent_id}),
-            )
-        except Exception as e:
-            logger.error(f"Failed to queue action {action_id} to SQS: {e}")
+    except ActionServiceError as exc:
+        if exc.code == "action_not_found":
+            raise HTTPException(status_code=404, detail="Action not found") from exc
+        if exc.code == "invalid_status":
+            current_status = exc.extra.get("current_status")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Action is not in proposed status (current: {current_status})",
+            ) from exc
+        logger.error("Failed to approve action %s: %s", action_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to approve action") from exc
 
     return {"message": "Action approved", "action_id": action_id, "status": "approved"}
 
@@ -4088,15 +4248,24 @@ def api_reject_action(request: Request, action_id: str, body: ActionApproveRejec
         )
 
     try:
-        db.execute(
-            """
-            UPDATE actions SET status = 'rejected', updated_at = now() WHERE action_id = :action_id::uuid
-        """,
-            {"action_id": action_id},
+        reject_action(
+            db,
+            action_id=action_id,
+            user_id=str(user.user_id),
+            reason=(body.reason if body else ""),
+            audit_bucket=_cfg.audit_bucket,
         )
-    except Exception as e:
-        logger.error(f"Failed to reject action: {e}")
-        raise HTTPException(status_code=500, detail="Failed to reject action")
+    except ActionServiceError as exc:
+        if exc.code == "action_not_found":
+            raise HTTPException(status_code=404, detail="Action not found") from exc
+        if exc.code == "invalid_status":
+            current_status = exc.extra.get("current_status")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Action is not in proposed status (current: {current_status})",
+            ) from exc
+        logger.error("Failed to reject action %s: %s", action_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to reject action") from exc
 
     return {"message": "Action rejected", "action_id": action_id, "status": "rejected"}
 
@@ -4108,6 +4277,7 @@ class ActionCreate(BaseModel):
     payload: dict
     required_scopes: list[str] = []
     auto_approve: bool = False
+    idempotency_key: str
 
 
 @app.post("/api/actions", name="api_create_action")
@@ -4123,15 +4293,6 @@ def api_create_action(request: Request, body: ActionCreate) -> dict:
     if not check_agent_permission(db, user_id=user.user_id, agent_id=body.agent_id, required_role="admin"):
         raise HTTPException(status_code=403, detail="Requires admin permission on the agent")
 
-    # Validate kind and payload contract
-    valid_kinds = ["send_message", "create_memory", "http_request", "device_command", "shell_command"]
-    if body.kind not in valid_kinds:
-        raise HTTPException(status_code=400, detail=f"Invalid action kind. Valid kinds: {valid_kinds}")
-    try:
-        normalized_payload = validate_tool_payload(body.kind, body.payload)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
     # If space_id provided, verify it belongs to the agent
     if body.space_id:
         space_rows = db.query(
@@ -4143,117 +4304,37 @@ def api_create_action(request: Request, body: ActionCreate) -> dict:
         if not space_rows:
             raise HTTPException(status_code=400, detail="Space not found or does not belong to agent")
 
-    import json
-
-    action_id = str(uuid.uuid4())
-    policy_mode = str(os.getenv("AUTO_APPROVE_POLICY_MODE", "enforce")).strip().lower()
-    policy = evaluate_auto_approve(
-        db,
-        agent_id=body.agent_id,
-        action_kind=body.kind,
-        action_required_scopes=[str(s) for s in (body.required_scopes or [])],
-    )
-
-    approval_source = None
-    approval_policy_id = None
-    status = "proposed"
-    decision_kind = "no_match"
-    decision_reason = "no_policy_match"
-    if body.auto_approve:
-        status = "approved"
-        approval_source = "manual"
-        decision_kind = "manual_auto_approved"
-        decision_reason = "manual_auto_approve=true"
-    elif policy.matched and policy_mode == "enforce":
-        status = "approved"
-        approval_source = "policy"
-        approval_policy_id = policy.policy_id
-        decision_kind = "policy_auto_approved"
-        decision_reason = policy.reason
-
     try:
-        db.execute(
-            """
-            INSERT INTO actions (
-                action_id, agent_id, space_id, kind, payload, required_scopes, status, approval_source, approval_policy_id
-            )
-            VALUES (
-                :action_id::uuid, :agent_id::uuid, :space_id::uuid, :kind, :payload::jsonb, :scopes::jsonb, :status,
-                :approval_source,
-                CASE WHEN :approval_policy_id IS NULL OR :approval_policy_id = '' THEN NULL ELSE :approval_policy_id::uuid END
-            )
-        """,
-            {
-                "action_id": action_id,
-                "agent_id": body.agent_id,
-                "space_id": body.space_id,
-                "kind": body.kind,
-                "payload": json.dumps(normalized_payload),
-                "scopes": json.dumps(body.required_scopes),
-                "status": status,
-                "approval_source": approval_source,
-                "approval_policy_id": approval_policy_id,
-            },
+        created = create_action(
+            db,
+            agent_id=body.agent_id,
+            space_id=body.space_id,
+            kind=body.kind,
+            payload=body.payload,
+            required_scopes=[str(s) for s in (body.required_scopes or [])],
+            requested_approval_mode="manual_immediate" if body.auto_approve else "policy_only",
+            approved_by_user_id=str(user.user_id) if body.auto_approve else None,
+            idempotency_key=body.idempotency_key,
+            request_actor_type="user",
+            request_actor_id=str(user.user_id),
+            request_origin="gui:api_create_action",
+            policy_mode=str(os.getenv("AUTO_APPROVE_POLICY_MODE", "enforce")).strip().lower(),
+            audit_bucket=_cfg.audit_bucket,
+            sqs_client=_get_sqs(),
+            action_queue_url=_cfg.action_queue_url,
         )
-
-        # If approved, stamp approver metadata.
-        if status == "approved" and body.auto_approve:
-            db.execute(
-                """
-                UPDATE actions SET approved_by = :user_id::uuid, approved_at = now() WHERE action_id = :action_id::uuid
-            """,
-                {"action_id": action_id, "user_id": str(user.user_id)},
-            )
-        elif status == "approved":
-            db.execute(
-                """
-                UPDATE actions SET approved_by = NULL, approved_at = now() WHERE action_id = :action_id::uuid
-            """,
-                {"action_id": action_id},
-            )
-
-        # Record policy evaluation decision when table exists.
-        try:
-            db.execute(
-                """
-                INSERT INTO action_policy_decisions(action_id, policy_id, decision, reason)
-                VALUES(
-                  :action_id::uuid,
-                  CASE WHEN :policy_id IS NULL OR :policy_id = '' THEN NULL ELSE :policy_id::uuid END,
-                  :decision,
-                  :reason
-                )
-                """,
-                {
-                    "action_id": action_id,
-                    "policy_id": approval_policy_id if approval_policy_id else policy.policy_id,
-                    "decision": decision_kind,
-                    "reason": decision_reason[:500],
-                },
-            )
-        except Exception:
-            pass
-
-    except Exception as e:
-        logger.error(f"Failed to create action: {e}")
-        raise HTTPException(status_code=500, detail="Failed to create action")
-
-    # Queue auto-approved actions for execution via Tool Runner Lambda
-    if status == "approved" and _cfg.action_queue_url:
-        try:
-            _get_sqs().send_message(
-                QueueUrl=_cfg.action_queue_url,
-                MessageBody=json.dumps({"action_id": action_id, "agent_id": body.agent_id}),
-            )
-        except Exception as e:
-            logger.error(f"Failed to queue action {action_id} to SQS: {e}")
+    except ActionServiceError as exc:
+        if exc.code in {"unknown_action_kind", "invalid_payload", "missing_action_kind"}:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        logger.error("Failed to create action: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to create action") from exc
 
     return {
         "message": "Action created",
-        "action_id": action_id,
-        "status": status,
-        "auto_approved": status == "approved",
-        "approval_source": approval_source,
+        "action_id": created["action_id"],
+        "status": created["status"],
+        "auto_approved": created["status"] == "approved",
+        "approval_source": created.get("approval_source"),
     }
 
 
@@ -4562,7 +4643,6 @@ def gui_memories(request: Request) -> Response:
             **_get_ws_context(request),
         },
     )
-
 
 
 @app.post("/api/memories", name="api_create_memory")

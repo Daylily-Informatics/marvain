@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-
 _UUID0 = "00000000-0000-0000-0000-000000000000"
 _PATH_PARAM_RE = re.compile(r"{[^}]+}")
 
@@ -98,4 +97,3 @@ class TestRouteSmokeApi(unittest.TestCase):
                     500,
                     msg=f"Route crashed (500): {method} {path_template} (rendered {path})",
                 )
-

@@ -7,5 +7,3 @@ can execute device-local tools when commanded by the Hub.
 Usage:
     marvain-remote-satellite --hub-ws-url wss://example.com/ws --device-token TOKEN
 """
-
-__version__ = "0.3.11"

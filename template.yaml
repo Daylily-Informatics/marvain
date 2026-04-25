@@ -273,6 +273,11 @@ Resources:
     Properties:
       VisibilityTimeout: 60
 
+  IntegrationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 60
+
   # -----------------------------
   # WebSocket connection registry
   # -----------------------------
@@ -363,6 +368,7 @@ Resources:
           TRANSCRIPT_QUEUE_URL: !Ref TranscriptQueue
           ACTION_QUEUE_URL: !Ref ActionQueue
           RECOGNITION_QUEUE_URL: !Ref RecognitionQueue
+          INTEGRATION_QUEUE_URL: !Ref IntegrationQueue
           AUDIT_BUCKET: !Ref AuditBucket
           ARTIFACT_BUCKET: !Ref ArtifactBucket
           ADMIN_SECRET_ARN: !Ref AdminApiKeySecret
@@ -411,6 +417,7 @@ Resources:
                 - !Ref OpenAISecret
                 - !Ref LiveKitSecret
                 - !Ref SessionSecret
+                - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}/integrations/*
             - Effect: Allow
               Action:
                 - sqs:SendMessage
@@ -419,6 +426,7 @@ Resources:
                 - !GetAtt TranscriptQueue.Arn
                 - !GetAtt ActionQueue.Arn
                 - !GetAtt RecognitionQueue.Arn
+                - !GetAtt IntegrationQueue.Arn
             - Effect: Allow
               Action:
                 - logs:FilterLogEvents
@@ -582,9 +590,11 @@ Resources:
           DB_SECRET_ARN: !Ref DbCredentialsSecret
           DB_NAME: !Ref DbName
           ACTION_QUEUE_URL: !Ref ActionQueue
+          INTEGRATION_QUEUE_URL: !Ref IntegrationQueue
           AUDIT_BUCKET: !Ref AuditBucket
           OPENAI_SECRET_ARN: !Ref OpenAISecret
           PLANNER_MODEL: !Ref PlannerModel
+          STACK_NAME: !Ref AWS::StackName
           WS_TABLE: !Ref WsConnectionsTable
           WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
           WS_API_ENDPOINT: !Sub https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
@@ -611,6 +621,7 @@ Resources:
               Resource:
                 - !Ref DbCredentialsSecret
                 - !Ref OpenAISecret
+                - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}/integrations/*
             - Effect: Allow
               Action:
                 - sqs:SendMessage
@@ -631,6 +642,11 @@ Resources:
           Properties:
             Queue: !GetAtt TranscriptQueue.Arn
             BatchSize: 5
+        IntegrationQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt IntegrationQueue.Arn
+            BatchSize: 5
 
   # -----------------------------
   # Tool Runner (execution plane)
@@ -650,6 +666,7 @@ Resources:
           DB_SECRET_ARN: !Ref DbCredentialsSecret
           DB_NAME: !Ref DbName
           AUDIT_BUCKET: !Ref AuditBucket
+          STACK_NAME: !Ref AWS::StackName
           WS_TABLE: !Ref WsConnectionsTable
           WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
           WS_API_ENDPOINT: !Sub https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
@@ -675,6 +692,7 @@ Resources:
                 - secretsmanager:GetSecretValue
               Resource:
                 - !Ref DbCredentialsSecret
+                - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}/integrations/*
             - Effect: Allow
               Action:
                 - s3:PutObject
@@ -690,6 +708,57 @@ Resources:
           Properties:
             Queue: !GetAtt ActionQueue.Arn
             BatchSize: 5
+
+  GmailPollFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/gmail_poll/
+      Handler: handler.handler
+      Timeout: 60
+      MemorySize: 512
+      Layers:
+        - !Ref SharedLayer
+      Environment:
+        Variables:
+          DB_RESOURCE_ARN: !GetAtt AuroraCluster.DBClusterArn
+          DB_SECRET_ARN: !Ref DbCredentialsSecret
+          DB_NAME: !Ref DbName
+          INTEGRATION_QUEUE_URL: !Ref IntegrationQueue
+          AUDIT_BUCKET: !Ref AuditBucket
+          GMAIL_POLL_MAX_RESULTS: "25"
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+                - rds-data:BeginTransaction
+                - rds-data:CommitTransaction
+                - rds-data:RollbackTransaction
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DbCredentialsSecret
+                - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}/integrations/*
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:GetQueueAttributes
+              Resource:
+                - !GetAtt IntegrationQueue.Arn
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource:
+                - !Sub ${AuditBucket.Arn}/*
+      Events:
+        GmailPollSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
 
   ActionTimeoutSweeperFunction:
     Type: AWS::Serverless::Function
@@ -736,6 +805,49 @@ Resources:
           Type: Schedule
           Properties:
             Schedule: rate(1 minute)
+
+  RetentionSweeperFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/retention_sweeper/
+      Handler: handler.handler
+      Timeout: 60
+      MemorySize: 512
+      Layers:
+        - !Ref SharedLayer
+      Environment:
+        Variables:
+          DB_RESOURCE_ARN: !GetAtt AuroraCluster.DBClusterArn
+          DB_SECRET_ARN: !Ref DbCredentialsSecret
+          DB_NAME: !Ref DbName
+          AUDIT_BUCKET: !Ref AuditBucket
+          RETENTION_SWEEPER_BATCH_SIZE: "200"
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+                - rds-data:BeginTransaction
+                - rds-data:CommitTransaction
+                - rds-data:RollbackTransaction
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DbCredentialsSecret
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource:
+                - !Sub ${AuditBucket.Arn}/*
+      Events:
+        RetentionSweepSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
 
   # -----------------------------
   # WebSocket API (sideband control channel)
@@ -1135,6 +1247,9 @@ Outputs:
   RecognitionQueueUrl:
     Description: SQS queue URL for recognition events (voice.sample / face.snapshot)
     Value: !Ref RecognitionQueue
+  IntegrationQueueUrl:
+    Description: SQS queue URL for normalized inbound integration events
+    Value: !Ref IntegrationQueue
   AuditBucketName:
     Description: Bucket for tamper-evident audit log (Object Lock)
     Value: !Ref AuditBucket

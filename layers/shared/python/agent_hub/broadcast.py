@@ -10,21 +10,27 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from typing import Any
 
 import boto3
-from agent_hub.contracts import build_ws_envelope
-from agent_hub.metrics import emit_count, emit_metric
 from botocore.exceptions import ClientError
+
+from agent_hub.contracts import build_ws_envelope
+from agent_hub.memberships import check_agent_permission
+from agent_hub.metrics import emit_count, emit_metric
+from agent_hub.rds_data import RdsData, RdsDataEnv
 
 logger = logging.getLogger(__name__)
 
 _WS_TABLE_NAME = os.getenv("WS_TABLE")
 _WS_SUBSCRIPTIONS_TABLE = os.getenv("WS_SUBSCRIPTIONS_TABLE")
 _WS_API_ENDPOINT = os.getenv("WS_API_ENDPOINT")  # e.g., https://{api-id}.execute-api.{region}.amazonaws.com/{stage}
+_WS_AUTH_TTL = int(os.getenv("WS_AUTH_TTL_SECONDS", "3600"))
 
 _dynamo = None
 _mgmt_api = None
+_db = None
 
 
 def _get_dynamodb():
@@ -32,6 +38,19 @@ def _get_dynamodb():
     if _dynamo is None:
         _dynamo = boto3.resource("dynamodb")
     return _dynamo
+
+
+def _get_db() -> RdsData | None:
+    global _db
+    if _db is not None:
+        return _db
+    resource_arn = os.getenv("DB_RESOURCE_ARN", "").strip()
+    secret_arn = os.getenv("DB_SECRET_ARN", "").strip()
+    database = os.getenv("DB_NAME", "").strip()
+    if not resource_arn or not secret_arn or not database:
+        return None
+    _db = RdsData(RdsDataEnv(resource_arn=resource_arn, secret_arn=secret_arn, database=database))
+    return _db
 
 
 def _get_mgmt_api():
@@ -100,6 +119,20 @@ def _connection_can_access_agent(conn: dict[str, Any], agent_id: str) -> bool:
     if principal_type == "device":
         return str(conn.get("agent_id") or "") == agent_id
     if principal_type == "user":
+        authenticated_at = conn.get("authenticated_at")
+        if authenticated_at is not None:
+            try:
+                if int(authenticated_at) + _WS_AUTH_TTL < int(time.time()):
+                    return False
+            except Exception:
+                return False
+        user_id = str(conn.get("user_id") or "").strip()
+        db = _get_db()
+        if user_id and db is not None:
+            try:
+                return check_agent_permission(db, agent_id=agent_id, user_id=user_id, required_role="member")
+            except Exception as exc:
+                logger.warning("Live WS membership check failed for user %s: %s", user_id, exc)
         agents = conn.get("agents") or []
         for a in agents:
             if isinstance(a, dict) and str(a.get("agent_id") or "") == agent_id:
@@ -131,7 +164,9 @@ def _find_topic_subscribers(*, topic: str, agent_id: str, space_id: str | None =
     return _find_topic_subscribers_from_index(topic=topic, agent_id=agent_id, space_id=space_id)
 
 
-def _find_topic_subscribers_from_index(*, topic: str, agent_id: str, space_id: str | None = None) -> list[dict[str, Any]]:
+def _find_topic_subscribers_from_index(
+    *, topic: str, agent_id: str, space_id: str | None = None
+) -> list[dict[str, Any]]:
     """Return subscribers from the subscription index."""
     subs_table = _get_subscriptions_table()
     if subs_table is None:

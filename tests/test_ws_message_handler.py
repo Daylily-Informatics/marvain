@@ -149,5 +149,5 @@ class TestWsMessageHelloAuth(unittest.TestCase):
 
         self.assertEqual(
             self.sent[-1]["payload"],
-            {"type": "hello", "ok": False, "error": "missing_access_token_or_device_token"},
+            {"type": "hello", "ok": False, "error": "missing_access_token"},
         )

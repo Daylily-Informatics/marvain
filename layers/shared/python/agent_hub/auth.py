@@ -27,35 +27,27 @@ class AuthenticatedDevice:
 
 @dataclass(frozen=True)
 class AuthenticatedUser:
-    """Represents an authenticated user.
-
-    NOTE: The cognito_sub field is being retained for database compatibility
-    during the authentication rebuild. It will be populated from the new
-    session-based auth implementation.
-    """
+    """Represents an authenticated user."""
 
     user_id: str
-    cognito_sub: str  # Keep for DB schema compatibility
+    cognito_sub: str
     email: str | None
 
 
 def authenticate_user_access_token(db: RdsData, access_token: str) -> AuthenticatedUser:
     """Authenticate a human user via a Cognito access token.
 
-    This calls Cognito `GetUser` to retrieve `sub` and `email`, ensures a users
-    row exists, then returns the AuthenticatedUser.
-
-    Kept as a thin, testable boundary for API routes that accept
-    `Authorization: Bearer <access_token>`.
+    Uses the shared daylily-auth-cognito admin client boundary to retrieve `sub`
+    and `email`, ensures a users row exists, then returns the AuthenticatedUser.
     """
 
     if not access_token:
         raise PermissionError("Missing access token")
 
     try:
-        client = _boto3_client("cognito-idp")
-        resp = client.get_user(AccessToken=access_token)
-    except Exception as e:  # boto3 raises various ClientError subclasses
+        admin = _cognito_admin_client()
+        resp = admin.cognito.get_user(AccessToken=access_token)
+    except Exception as e:
         raise PermissionError(f"Invalid access token: {e}")
 
     sub: str | None = None
@@ -77,11 +69,16 @@ def authenticate_user_access_token(db: RdsData, access_token: str) -> Authentica
     return AuthenticatedUser(user_id=user_id, cognito_sub=sub, email=email)
 
 
-def _boto3_client(service_name: str):
-    # Lazy import so local unit tests don't require boto3 installed.
-    import boto3  # type: ignore
+def _cognito_admin_client(*, user_pool_id: str | None = None):
+    from daylily_auth_cognito.admin.client import CognitoAdminClient
 
-    return boto3.client(service_name)
+    from agent_hub.config import load_config
+
+    cfg = load_config()
+    return CognitoAdminClient(
+        region=str(cfg.cognito_region or "us-east-1"),
+        user_pool_id=user_pool_id,
+    )
 
 
 def lookup_cognito_user_by_email(*, user_pool_id: str, email: str) -> tuple[str, str | None]:
@@ -99,13 +96,10 @@ def lookup_cognito_user_by_email(*, user_pool_id: str, email: str) -> tuple[str,
 
     # Escape double-quotes for the Cognito filter string.
     safe_email = email.replace('"', '\\"')
-    client = _boto3_client("cognito-idp")
-    resp: Any = client.list_users(
-        UserPoolId=user_pool_id,
-        Filter=f'email = "{safe_email}"',
-        Limit=2,
-    )
-    users = resp.get("Users") or []
+    from daylily_auth_cognito.admin.users import list_users as list_cognito_admin_users
+
+    admin = _cognito_admin_client(user_pool_id=user_pool_id)
+    users = list_cognito_admin_users(admin, limit=2, filter_expression=f'email = "{safe_email}"')
     if not users:
         raise LookupError("user not found")
     if len(users) > 1:
@@ -117,6 +111,21 @@ def lookup_cognito_user_by_email(*, user_pool_id: str, email: str) -> tuple[str,
         raise LookupError("missing sub attribute")
     em = attrs.get("email")
     return str(sub), (str(em).strip() if em else None)
+
+
+def list_cognito_users(*, user_pool_id: str, region: str | None = None) -> list[dict[str, Any]]:
+    """List Cognito users through the shared daylily-auth-cognito boundary."""
+    from daylily_auth_cognito.admin.client import CognitoAdminClient
+    from daylily_auth_cognito.admin.users import list_users as list_cognito_admin_users
+
+    from agent_hub.config import load_config
+
+    cfg = load_config()
+    admin = CognitoAdminClient(
+        region=str(region or cfg.cognito_region or "us-east-1"),
+        user_pool_id=user_pool_id,
+    )
+    return list_cognito_admin_users(admin)
 
 
 def authenticate_device(db: RdsData, bearer_token: str) -> AuthenticatedDevice | None:
@@ -183,12 +192,8 @@ def require_scope(device: AuthenticatedDevice, scope: str) -> None:
         raise HTTPException(status_code=403, detail=f"Missing required scope: {scope}")
 
 
-def _ensure_user_row(db: RdsData, *, cognito_sub: str, email: str | None) -> str:
-    """Insert or update a user row in the database.
-
-    NOTE: cognito_sub is used as the unique identifier for now.
-    This will be refactored once the new auth system is in place.
-    """
+def ensure_user_row(db: RdsData, *, cognito_sub: str, email: str | None) -> str:
+    """Insert or update a user row in the database."""
     rows = db.query(
         """
         INSERT INTO users (cognito_sub, email)
@@ -202,15 +207,6 @@ def _ensure_user_row(db: RdsData, *, cognito_sub: str, email: str | None) -> str
     if not rows:
         raise RuntimeError("Failed to ensure users row")
     return str(rows[0].get("user_id") or "").strip()
-
-
-def ensure_user_row(db: RdsData, *, cognito_sub: str, email: str | None) -> str:
-    """Public wrapper used by other modules to upsert a user.
-
-    NOTE: cognito_sub parameter name retained for compatibility.
-    Will be refactored with new auth implementation.
-    """
-    return _ensure_user_row(db, cognito_sub=cognito_sub, email=email)
 
 
 # -----------------------------------------------------------------------------

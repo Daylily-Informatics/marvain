@@ -61,7 +61,13 @@ class TestHubApiLiveKit(unittest.TestCase):
         self.mod.check_agent_permission = mock.Mock(return_value=True)
 
         fake_db = mock.Mock()
-        fake_db.query = mock.Mock(return_value=[{"agent_id": "a1"}])
+        fake_db.query = mock.Mock(
+            side_effect=lambda sql, params=None, **kwargs: (
+                [{"agent_id": "a1"}]
+                if "SELECT agent_id::text AS agent_id FROM spaces" in sql
+                else [{"livekit_room_mode": "ephemeral"}]
+            )
+        )
         self.mod._db = fake_db
 
     def test_v1_livekit_token_mints_token(self) -> None:

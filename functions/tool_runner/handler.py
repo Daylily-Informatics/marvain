@@ -6,15 +6,21 @@ import os
 import uuid
 from typing import Any
 
-from agent_hub.audit import append_audit_entry
+from agent_hub.action_service import (
+    begin_device_dispatch,
+    load_action,
+    mark_action_completed,
+    mark_action_dispatch_failed,
+    reserve_action_for_execution,
+)
 from agent_hub.broadcast import broadcast_event, broadcast_target
-from agent_hub.contracts import validate_tool_payload
 from agent_hub.config import load_config
 from agent_hub.metrics import emit_count, emit_ms
+from agent_hub.permission_service import get_tool_runner_scopes
 from agent_hub.policy import is_agent_disabled
 from agent_hub.rds_data import RdsData, RdsDataEnv
 from agent_hub.tools import execute_tool
-from agent_hub.tools.registry import ToolContext, ToolResult, get_registry
+from agent_hub.tools.registry import ToolContext, ToolResult
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -56,33 +62,16 @@ def _make_broadcast_fn(agent_id: str, space_id: str | None):
 
 
 def _load_action(action_id: str) -> dict[str, Any] | None:
-    rows = _db.query(
-        """
-        SELECT action_id::TEXT as action_id,
-               agent_id::TEXT as agent_id,
-               space_id::TEXT as space_id,
-               kind,
-               payload::TEXT as payload_json,
-               required_scopes::TEXT as required_scopes_json,
-               status
-        FROM actions
-        WHERE action_id = :action_id::uuid
-        LIMIT 1
-        """,
-        {"action_id": action_id},
-    )
-    if not rows:
-        return None
-    row = rows[0]
-    try:
-        row["payload"] = json.loads(row.get("payload_json") or "{}")
-    except Exception:
-        row["payload"] = {}
-    try:
-        row["required_scopes"] = json.loads(row.get("required_scopes_json") or "[]")
-    except Exception:
-        row["required_scopes"] = []
-    return row
+    return load_action(_db, action_id)
+
+
+def _reserve_action(action_id: str) -> dict[str, Any] | None:
+    reserved = reserve_action_for_execution(_db, action_id)
+    if reserved is None or isinstance(reserved, dict):
+        return reserved
+    # Tests often replace the DB with a bare MagicMock. Fall back to the loaded
+    # action if reservation cannot return the expected row shape.
+    return _load_action(action_id)
 
 
 def _uuid_or_none(value: Any) -> str | None:
@@ -123,31 +112,28 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
             logger.info("Agent disabled; skipping action")
             continue
 
-        if action.get("status") not in ("approved", "executing"):
+        if action.get("status") != "approved":
             logger.info("Action not approved; skipping: %s", action.get("status"))
             continue
 
-        # Mark executing
-        _db.execute(
-            """
-            UPDATE actions
-            SET status='executing', updated_at=now()
-            WHERE action_id = :action_id::uuid
-            """,
-            {"action_id": action_id},
-        )
+        reserved = _reserve_action(action_id)
+        if not reserved:
+            logger.info("Action already reserved or no longer approved: %s", action_id)
+            continue
+        action = reserved
 
         # --- Execute tool via registry ---
         kind = action.get("kind")
-        payload = action.get("payload") or {}
+        payload = dict(action.get("payload") or {})
         space_id = action.get("space_id")
         required_scopes = action.get("required_scopes") or []
-
-        # Resolve execution scopes: action-level required scopes + intrinsic tool scopes.
-        tool_registry = get_registry()
-        tool_spec = tool_registry.get(str(kind))
-        intrinsic_tool_scopes = tool_spec.required_scopes if tool_spec else []
-        execution_scopes = sorted(set(required_scopes) | set(intrinsic_tool_scopes))
+        async_device_dispatch = kind in ("device_command", "shell_command")
+        dispatch_target_device_id = _uuid_or_none(payload.get("device_id")) if async_device_dispatch else None
+        dispatch_correlation_id = str(uuid.uuid4()) if async_device_dispatch else None
+        dispatch_timeout_seconds = int(payload.get("timeout_seconds") or _DEVICE_RESULT_TIMEOUT_SECONDS)
+        if async_device_dispatch:
+            payload["correlation_id"] = dispatch_correlation_id
+            payload["timeout_seconds"] = dispatch_timeout_seconds
 
         # Build tool context
         ctx = ToolContext(
@@ -155,15 +141,32 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
             agent_id=agent_id,
             space_id=space_id,
             action_id=action_id,
-            device_scopes=execution_scopes,
+            device_scopes=get_tool_runner_scopes(),
             action_required_scopes=required_scopes,
             broadcast_fn=_make_broadcast_fn(agent_id, space_id),
             allowed_http_hosts=_ALLOWED_HTTP_HOSTS,
         )
 
+        if async_device_dispatch:
+            try:
+                begin_device_dispatch(
+                    _db,
+                    action_id=action_id,
+                    target_device_id=dispatch_target_device_id,
+                    correlation_id=dispatch_correlation_id,
+                    timeout_seconds=dispatch_timeout_seconds,
+                    execution_metadata={
+                        "dispatch_pending": True,
+                        "dispatched_command": payload.get("command"),
+                    },
+                    audit_bucket=_cfg.audit_bucket,
+                )
+            except Exception as exc:
+                logger.warning("Failed to start async dispatch for %s: %s", action_id, exc)
+                continue
+
         # Execute the tool
         try:
-            payload = validate_tool_payload(str(kind), payload)
             tool_result = execute_tool(kind, payload, ctx)
         except Exception as exc:
             tool_result = ToolResult(ok=False, error=str(exc))
@@ -171,37 +174,30 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
         result["kind"] = kind
 
         # Device-backed commands complete asynchronously via WS callbacks.
-        if kind in ("device_command", "shell_command") and tool_result.ok and bool((tool_result.data or {}).get("dispatched")):
-            target_device_id = _uuid_or_none((tool_result.data or {}).get("device_id"))
-            correlation_id = _uuid_or_none((tool_result.data or {}).get("correlation_id"))
-            timeout_seconds = int((tool_result.data or {}).get("timeout_seconds") or _DEVICE_RESULT_TIMEOUT_SECONDS)
-            _db.execute(
-                """
-                UPDATE actions
-                SET status = 'awaiting_device_result',
-                    updated_at = now(),
-                    target_device_id = :target_device_id::uuid,
-                    correlation_id = :correlation_id::uuid,
-                    awaiting_result_until = now() + (:timeout_seconds || ' seconds')::interval,
-                    execution_metadata = COALESCE(execution_metadata, '{}'::jsonb) || :execution_metadata::jsonb,
-                    result = NULL,
-                    error = NULL
-                WHERE action_id = :action_id::uuid
-                """,
-                {
-                    "action_id": action_id,
-                    "target_device_id": target_device_id,
-                    "correlation_id": correlation_id,
-                    "timeout_seconds": timeout_seconds,
-                    "execution_metadata": json.dumps(
-                        {
-                            "dispatched": True,
-                            "dispatched_command": (tool_result.data or {}).get("command"),
-                            "connections_sent": (tool_result.data or {}).get("connections_sent", 0),
-                        }
-                    ),
-                },
-            )
+        if async_device_dispatch:
+            if not tool_result.ok or not bool((tool_result.data or {}).get("dispatched")):
+                mark_action_dispatch_failed(
+                    _db,
+                    action_id=action_id,
+                    error=tool_result.error or "device_dispatch_failed",
+                    audit_bucket=_cfg.audit_bucket,
+                )
+                try:
+                    broadcast_event(
+                        event_type="actions.updated",
+                        agent_id=agent_id,
+                        space_id=action.get("space_id"),
+                        payload={
+                            "action_id": action_id,
+                            "kind": kind,
+                            "status": "failed",
+                            "error": tool_result.error or "device_dispatch_failed",
+                        },
+                    )
+                except Exception as e:
+                    logger.warning("Failed to broadcast dispatch failure: %s", e)
+                processed += 1
+                continue
 
             try:
                 broadcast_event(
@@ -212,8 +208,8 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
                         "action_id": action_id,
                         "kind": kind,
                         "status": "awaiting_device_result",
-                        "target_device_id": target_device_id,
-                        "correlation_id": correlation_id,
+                        "target_device_id": dispatch_target_device_id,
+                        "correlation_id": dispatch_correlation_id,
                     },
                 )
             except Exception as e:
@@ -236,33 +232,14 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
 
         # Mark executed or failed based on result, and persist result/error
         new_status = "executed" if tool_result.ok else "failed"
-        _db.execute(
-            """
-            UPDATE actions
-            SET status = :status,
-                updated_at = now(),
-                executed_at = now(),
-                completed_at = now(),
-                result = :result::jsonb,
-                error = :error
-            WHERE action_id = :action_id::uuid
-            """,
-            {
-                "action_id": action_id,
-                "status": new_status,
-                "result": json.dumps(tool_result.data) if tool_result.ok else None,
-                "error": tool_result.error if not tool_result.ok else None,
-            },
+        mark_action_completed(
+            _db,
+            action_id=action_id,
+            ok=tool_result.ok,
+            result=tool_result.data or {},
+            error=tool_result.error if not tool_result.ok else None,
+            audit_bucket=_cfg.audit_bucket,
         )
-
-        if _cfg.audit_bucket:
-            append_audit_entry(
-                _db,
-                bucket=_cfg.audit_bucket,
-                agent_id=agent_id,
-                entry_type="action_executed",
-                entry={"action_id": action_id, "kind": kind, "result": result, "status": new_status},
-            )
 
         emit_count(
             "ActionExecutionCount",

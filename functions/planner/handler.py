@@ -8,11 +8,11 @@ import uuid
 from typing import Any
 
 import boto3
-from agent_hub.auto_approve_policy import evaluate_auto_approve
+from agent_hub.action_service import create_action
 from agent_hub.audit import append_audit_entry
 from agent_hub.broadcast import broadcast_event
-from agent_hub.contracts import validate_tool_payload
 from agent_hub.config import load_config
+from agent_hub.integrations import get_integration_message, parse_integration_queue_message
 from agent_hub.openai_http import call_embeddings, call_responses, extract_output_text
 from agent_hub.policy import is_agent_disabled, is_privacy_mode
 from agent_hub.rate_limit import RateLimitError
@@ -33,14 +33,14 @@ _AUTO_APPROVE_POLICY_MODE = str(os.getenv("AUTO_APPROVE_POLICY_MODE", "enforce")
 _PROCESSED_EVENTS: set[str] = set()
 
 
-def _compute_idempotency_key(event_id: str, transcript_text: str) -> str:
-    """Compute a deterministic idempotency key for an event.
-
-    This ensures that the same event with the same content produces
-    the same key, allowing us to detect duplicate processing.
-    """
-    content = f"{event_id}:{transcript_text}"
+def _compute_action_idempotency_key(event_id: str, action_index: int, kind: str) -> str:
+    """Compute a deterministic idempotency key for planner-created actions."""
+    content = f"{event_id}:{action_index}:{kind}"
     return hashlib.sha256(content.encode("utf-8")).hexdigest()[:32]
+
+
+def _planner_request_origin(event_id: str) -> str:
+    return f"planner:{event_id}"
 
 
 def _is_already_processed(event_id: str) -> bool:
@@ -59,6 +59,18 @@ def _is_already_processed(event_id: str) -> bool:
         LIMIT 1
         """,
         {"event_id": event_id},
+    )
+    if rows:
+        _PROCESSED_EVENTS.add(event_id)
+        return True
+
+    rows = _db.query(
+        """
+        SELECT 1 FROM actions
+        WHERE request_origin = :request_origin
+        LIMIT 1
+        """,
+        {"request_origin": _planner_request_origin(event_id)},
     )
     if rows:
         _PROCESSED_EVENTS.add(event_id)
@@ -103,6 +115,197 @@ def _load_event(event_id: str) -> dict[str, Any] | None:
     except Exception:
         row["payload"] = {}
     return row
+
+
+def _bounded_optional_text(value: Any, *, limit: int) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text[:limit]
+
+
+def _field_value(message: Any, field_name: str, default: Any = None) -> Any:
+    if isinstance(message, dict):
+        return message.get(field_name, default)
+    return getattr(message, field_name, default)
+
+
+def _bounded_integration_metadata(message: Any) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+
+    for field_name, limit in (
+        ("provider", 32),
+        ("channel_type", 32),
+        ("object_type", 64),
+        ("subject", 256),
+        ("external_thread_id", 128),
+        ("external_message_id", 128),
+    ):
+        value = _bounded_optional_text(_field_value(message, field_name), limit=limit)
+        if value:
+            metadata[field_name] = value
+
+    sender_value = _field_value(message, "sender", None)
+    if sender_value is None:
+        sender_value = _field_value(message, "sender_json", {})
+    if isinstance(sender_value, str):
+        try:
+            sender_value = json.loads(sender_value)
+        except Exception:
+            sender_value = {}
+    if isinstance(sender_value, dict):
+        sender: dict[str, str] = {}
+        for key in ("user_id", "bot_id", "team_id", "email", "phone_number"):
+            value = _bounded_optional_text(sender_value.get(key), limit=128)
+            if value:
+                sender[key] = value
+        if sender:
+            metadata["sender"] = sender
+
+    recipients_value = _field_value(message, "recipients", None)
+    if recipients_value is None:
+        recipients_value = _field_value(message, "recipients_json", [])
+    if isinstance(recipients_value, str):
+        try:
+            recipients_value = json.loads(recipients_value)
+        except Exception:
+            recipients_value = []
+    if isinstance(recipients_value, list):
+        recipients: list[dict[str, str]] = []
+        for item in recipients_value[:5]:
+            if not isinstance(item, dict):
+                continue
+            recipient: dict[str, str] = {}
+            for key in ("channel_id", "user_id", "email", "phone_number"):
+                value = _bounded_optional_text(item.get(key), limit=128)
+                if value:
+                    recipient[key] = value
+            if recipient:
+                recipients.append(recipient)
+        if recipients:
+            metadata["recipients"] = recipients
+
+    return metadata
+
+
+def _load_integration_thread_context(integration_message: Any) -> list[dict[str, Any]]:
+    external_thread_id = _bounded_optional_text(_field_value(integration_message, "external_thread_id"), limit=128)
+    if not external_thread_id:
+        return []
+
+    agent_id = _bounded_optional_text(_field_value(integration_message, "agent_id"), limit=64)
+    provider = _bounded_optional_text(_field_value(integration_message, "provider"), limit=32)
+    integration_message_id = _bounded_optional_text(
+        _field_value(integration_message, "integration_message_id"), limit=64
+    )
+    created_at = _field_value(integration_message, "created_at")
+    if not agent_id or not provider or not integration_message_id or not created_at:
+        return []
+
+    rows = _db.query(
+        """
+        SELECT integration_message_id::TEXT as integration_message_id,
+               agent_id::TEXT as agent_id,
+               space_id::TEXT as space_id,
+               event_id::TEXT as event_id,
+               provider,
+               direction,
+               channel_type,
+               object_type,
+               external_thread_id,
+               external_message_id,
+               dedupe_key,
+               sender::TEXT as sender_json,
+               recipients::TEXT as recipients_json,
+               subject,
+               body_text,
+               body_html,
+               payload::TEXT as payload_json,
+               status,
+               created_at::TEXT as created_at,
+               updated_at::TEXT as updated_at
+        FROM integration_messages
+        WHERE agent_id = :agent_id::uuid
+          AND provider = :provider
+          AND external_thread_id = :external_thread_id
+          AND (
+            created_at < :created_at::timestamptz
+            OR (
+              created_at = :created_at::timestamptz
+              AND integration_message_id <> :integration_message_id::uuid
+            )
+          )
+        ORDER BY created_at DESC, integration_message_id DESC
+        LIMIT 10
+        """,
+        {
+            "agent_id": agent_id,
+            "provider": provider,
+            "external_thread_id": external_thread_id,
+            "integration_message_id": integration_message_id,
+            "created_at": str(created_at),
+        },
+    )
+    if not isinstance(rows, list):
+        return []
+    thread_context: list[dict[str, Any]] = []
+    for row in rows or []:
+        thread_context.append(
+            {
+                "integration_message_id": str(row.get("integration_message_id") or "").strip(),
+                "agent_id": str(row.get("agent_id") or "").strip(),
+                "space_id": str(row.get("space_id") or "").strip() or None,
+                "event_id": str(row.get("event_id") or "").strip() or None,
+                "provider": str(row.get("provider") or "").strip(),
+                "direction": str(row.get("direction") or "").strip(),
+                "channel_type": str(row.get("channel_type") or "").strip(),
+                "object_type": str(row.get("object_type") or "").strip(),
+                "external_thread_id": str(row.get("external_thread_id") or "").strip() or None,
+                "external_message_id": str(row.get("external_message_id") or "").strip() or None,
+                "dedupe_key": str(row.get("dedupe_key") or "").strip(),
+                "status": str(row.get("status") or "").strip(),
+                "text": str(row.get("body_text") or "").strip(),
+                "integration": _bounded_integration_metadata(row),
+            }
+        )
+    return thread_context
+
+
+def _build_planner_event_context(
+    ev: dict[str, Any],
+    *,
+    integration_message: Any | None = None,
+    thread_context: list[dict[str, Any]] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    payload = ev.get("payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    if integration_message is None:
+        text = str(payload.get("text") or payload.get("transcript") or "").strip()
+        return text, {
+            "event_id": ev["event_id"],
+            "space_id": ev["space_id"],
+            "person_id": ev.get("person_id"),
+            "type": ev["type"],
+            "text": text,
+        }
+
+    text = str(getattr(integration_message, "body_text", "") or "").strip()
+    integration = _bounded_integration_metadata(integration_message)
+    if thread_context is not None:
+        integration["thread_context"] = thread_context
+    event_context = {
+        "event_id": ev["event_id"],
+        "space_id": ev["space_id"],
+        "person_id": ev.get("person_id"),
+        "type": ev["type"],
+        "text": text,
+        "integration": integration,
+    }
+    return text, event_context
 
 
 def _vector_recall(agent_id: str, query_text: str) -> list[dict[str, Any]]:
@@ -179,29 +382,6 @@ def _insert_memory(
     return memory_id
 
 
-def _record_policy_decision(*, action_id: str, policy_id: str | None, decision: str, reason: str) -> None:
-    try:
-        _db.execute(
-            """
-            INSERT INTO action_policy_decisions(action_id, policy_id, decision, reason)
-            VALUES(
-              :action_id::uuid,
-              CASE WHEN :policy_id IS NULL OR :policy_id = '' THEN NULL ELSE :policy_id::uuid END,
-              :decision,
-              :reason
-            )
-            """,
-            {
-                "action_id": action_id,
-                "policy_id": policy_id,
-                "decision": decision,
-                "reason": reason[:500],
-            },
-        )
-    except Exception as exc:
-        logger.warning("Failed to record policy decision for %s: %s", action_id, exc)
-
-
 def handler(event: dict, context: Any) -> dict[str, Any]:
     records = event.get("Records") or []
     processed = 0
@@ -218,7 +398,17 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
             logger.warning("Bad message body: %s", safe_body)
             continue
 
-        event_id = msg.get("event_id")
+        integration_message_id: str | None = None
+        if msg.get("event_type"):
+            try:
+                integration_queue_message = parse_integration_queue_message(msg)
+            except ValueError as exc:
+                logger.warning("Bad integration queue message: %s", exc)
+                continue
+            event_id = integration_queue_message.event_id
+            integration_message_id = integration_queue_message.integration_message_id
+        else:
+            event_id = msg.get("event_id")
         if not event_id:
             continue
 
@@ -245,8 +435,25 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
             skipped_privacy += 1
             continue
 
-        payload = ev.get("payload") or {}
-        transcript_text = str(payload.get("text") or payload.get("transcript") or "").strip()
+        integration_message = None
+        thread_context: list[dict[str, Any]] | None = None
+        if ev.get("type") == "integration.event.received":
+            integration_message_id_n = str(integration_message_id or "").strip()
+            if not integration_message_id_n:
+                logger.warning("Integration event missing integration_message_id: %s", event_id)
+                continue
+            integration_message = get_integration_message(_db, integration_message_id=integration_message_id_n)
+            if integration_message is None:
+                logger.warning("Integration message not found: %s", integration_message_id_n)
+                continue
+            if _field_value(integration_message, "external_thread_id"):
+                thread_context = _load_integration_thread_context(integration_message)
+
+        transcript_text, planner_event = _build_planner_event_context(
+            ev,
+            integration_message=integration_message,
+            thread_context=thread_context,
+        )
         if not transcript_text:
             # nothing to plan on
             continue
@@ -273,15 +480,11 @@ Output STRICT JSON with keys:
 Rules:
 - Keep memory minimal, high-signal.
 - If uncertain, do not write semantic facts; write an episodic note instead.
+- When event.integration is present, it is bounded metadata for an inbound external message.
 """.strip()
 
         user = {
-            "event": {
-                "event_id": ev["event_id"],
-                "space_id": ev["space_id"],
-                "person_id": ev.get("person_id"),
-                "text": transcript_text,
-            },
+            "event": planner_event,
             "recalled_memories": recalled,
         }
 
@@ -352,81 +555,32 @@ Rules:
             created_memory_ids.append(mid)
 
         created_action_ids: list[str] = []
-        for a in actions:
-            # Validate payload against tool contract.
+        for action_index, a in enumerate(actions):
             try:
-                normalized_payload = validate_tool_payload(str(a["kind"]), a["payload"])
+                created_action = create_action(
+                    _db,
+                    agent_id=agent_id,
+                    space_id=ev["space_id"],
+                    kind=str(a["kind"]),
+                    payload=a["payload"],
+                    required_scopes=[str(s) for s in (a.get("required_scopes") or [])],
+                    manual_auto_approve=False,
+                    idempotency_key=_compute_action_idempotency_key(ev["event_id"], action_index, str(a["kind"])),
+                    request_actor_type="planner",
+                    request_actor_id=agent_id,
+                    request_origin=_planner_request_origin(ev["event_id"]),
+                    policy_mode=_AUTO_APPROVE_POLICY_MODE,
+                    audit_bucket=_cfg.audit_bucket,
+                    sqs_client=_sqs,
+                    action_queue_url=_cfg.action_queue_url,
+                )
             except Exception as exc:
-                logger.warning("Skipping planner action with invalid payload kind=%s err=%s", a.get("kind"), exc)
+                logger.warning("Skipping planner action kind=%s err=%s", a.get("kind"), exc)
                 continue
 
-            action_id = str(uuid.uuid4())
-            policy = evaluate_auto_approve(
-                _db,
-                agent_id=agent_id,
-                action_kind=str(a["kind"]),
-                action_required_scopes=[str(s) for s in (a.get("required_scopes") or [])],
-            )
-
-            approval_source = None
-            approval_policy_id = None
-            status = "proposed"
-            decision_reason = "no_match"
-            decision_kind = "no_match"
-            if policy.matched and _AUTO_APPROVE_POLICY_MODE == "enforce":
-                status = "approved"
-                approval_source = "policy"
-                approval_policy_id = policy.policy_id
-                decision_reason = policy.reason
-                decision_kind = "policy_auto_approved"
-            elif bool(a.get("auto_approve")):
-                status = "approved"
-                approval_source = "planner_hint"
-                decision_reason = "planner_auto_approve_hint"
-                decision_kind = "planner_auto_approved"
-
-            _db.execute(
-                """
-                INSERT INTO actions(
-                  action_id, agent_id, space_id, kind, payload, required_scopes, status, approval_source, approval_policy_id
-                )
-                VALUES(
-                  :action_id::uuid,
-                  :agent_id::uuid,
-                  :space_id::uuid,
-                  :kind,
-                  :payload::jsonb,
-                  :required_scopes::jsonb,
-                  :status,
-                  :approval_source,
-                  CASE WHEN :approval_policy_id IS NULL OR :approval_policy_id = '' THEN NULL ELSE :approval_policy_id::uuid END
-                )
-                """,
-                {
-                    "action_id": action_id,
-                    "agent_id": agent_id,
-                    "space_id": ev["space_id"],
-                    "kind": a["kind"],
-                    "payload": json.dumps(normalized_payload),
-                    "required_scopes": json.dumps(a["required_scopes"]),
-                    "status": status,
-                    "approval_source": approval_source,
-                    "approval_policy_id": approval_policy_id,
-                },
-            )
+            action_id = created_action["action_id"]
+            status = created_action["status"]
             created_action_ids.append(action_id)
-            _record_policy_decision(
-                action_id=action_id,
-                policy_id=approval_policy_id if approval_policy_id else policy.policy_id,
-                decision=decision_kind,
-                reason=decision_reason,
-            )
-
-            if status == "approved" and _cfg.action_queue_url:
-                _sqs.send_message(
-                    QueueUrl=_cfg.action_queue_url,
-                    MessageBody=json.dumps({"action_id": action_id, "agent_id": agent_id}),
-                )
 
             # Broadcast action creation to subscribed clients
             try:

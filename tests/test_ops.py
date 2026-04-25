@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from marvain_cli.config import ResolvedEnv
+from marvain_cli.config import ConfigError, ResolvedEnv
 from marvain_cli.ops import (
     GUI_DEFAULT_HOST,
     GUI_DEFAULT_PORT,
@@ -15,6 +15,7 @@ from marvain_cli.ops import (
     Ctx,
     _get_gui_log_file,
     _get_gui_pid_file,
+    _get_user_pool_id,
     _is_port_in_use,
     _is_process_running,
     _read_pid_file,
@@ -22,9 +23,8 @@ from marvain_cli.ops import (
     _split_sql,
     _write_pid_file,
     bootstrap,
-    cognito_admin_create_user,
+    cognito_create_user,
     examples_create,
-    cognito_admin_delete_user,
     gui_logs,
     gui_restart,
     gui_start,
@@ -224,8 +224,18 @@ class TestOps(unittest.TestCase):
         self.assertIn("sql/001_init.sql", joined)
         self.assertIn("sql/002_users_and_memberships.sql", joined)
         self.assertIn("sql/003_owner_unique_index.sql", joined)
+        self.assertIn("sql/017_integration_messages.sql", joined)
+        self.assertIn("sql/018_integration_accounts.sql", joined)
+        self.assertIn("sql/019_integration_sync_state.sql", joined)
         self.assertLess(joined.find("sql/001_init.sql"), joined.find("sql/002_users_and_memberships.sql"))
         self.assertLess(joined.find("sql/002_users_and_memberships.sql"), joined.find("sql/003_owner_unique_index.sql"))
+        self.assertLess(joined.find("sql/016_action_idempotency.sql"), joined.find("sql/017_integration_messages.sql"))
+        self.assertLess(
+            joined.find("sql/017_integration_messages.sql"), joined.find("sql/018_integration_accounts.sql")
+        )
+        self.assertLess(
+            joined.find("sql/018_integration_accounts.sql"), joined.find("sql/019_integration_sync_state.sql")
+        )
 
     def test_hub_claim_first_owner_dry_run_emits_http_request_without_leaking_token(self) -> None:
         emitted: list[str] = []
@@ -256,7 +266,7 @@ class TestOps(unittest.TestCase):
         self.assertIn("Authorization: Bearer abcdef...", joined)
         self.assertNotIn("abcdef1234567890", joined)
 
-    def test_cognito_admin_create_user_dry_run_uses_admin_create_user(self) -> None:
+    def test_cognito_create_user_dry_run_uses_configured_pool_id(self) -> None:
         emitted: list[str] = []
 
         def cap(msg: str) -> None:
@@ -269,34 +279,23 @@ class TestOps(unittest.TestCase):
         )
 
         with mock.patch("marvain_cli.ops._eprint", side_effect=cap):
-            data = cognito_admin_create_user(ctx, email="x@example.com", dry_run=True)
+            data = cognito_create_user(ctx, email="x@example.com", dry_run=True)
 
-        self.assertEqual(data, {})
+        self.assertEqual(data, {"Username": "x@example.com", "dry_run": True})
         joined = "\n".join(emitted)
-        self.assertIn("aws cognito-idp admin-create-user", joined)
-        self.assertIn("--user-pool-id pool-123", joined)
-        self.assertIn("--username x@example.com", joined)
+        self.assertIn("Creating Cognito user: x@example.com in pool pool-123", joined)
+        self.assertIn("[DRY RUN] cognito-idp.admin_create_user", joined)
 
-    def test_cognito_admin_delete_user_dry_run_uses_admin_delete_user(self) -> None:
-        emitted: list[str] = []
-
-        def cap(msg: str) -> None:
-            emitted.append(msg)
-
+    def test_get_user_pool_id_requires_config_and_does_not_fallback(self) -> None:
         ctx = Ctx(
             config_path=Path("/tmp/marvain.yaml"),
-            cfg={"envs": {"dev": {"resources": {"CognitoUserPoolId": "pool-123"}}}},
+            cfg={"envs": {"dev": {"resources": {}}}},
             env=ResolvedEnv(env="dev", aws_profile="p", aws_region="r", stack_name="s", raw={}),
         )
 
-        with mock.patch("marvain_cli.ops._eprint", side_effect=cap):
-            rc = cognito_admin_delete_user(ctx, dry_run=True, email="x@example.com")
-
-        self.assertEqual(rc, 0)
-        joined = "\n".join(emitted)
-        self.assertIn("aws cognito-idp admin-delete-user", joined)
-        self.assertIn("--user-pool-id pool-123", joined)
-        self.assertIn("--username x@example.com", joined)
+        with mock.patch("marvain_cli.ops.aws_stack_outputs", side_effect=AssertionError("should not be called")):
+            with self.assertRaisesRegex(ConfigError, "CognitoUserPoolId not found in config"):
+                _get_user_pool_id(ctx)
 
 
 class TestGuiLifecycle(unittest.TestCase):

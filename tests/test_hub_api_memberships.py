@@ -301,36 +301,19 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         _, params = fake_db.execute.call_args[0]
         self.assertEqual(params["agent_id"], "a2")
 
-    def test_recall_memories_falls_back_to_recent_when_embeddings_unconfigured(self) -> None:
+    def test_recall_memories_fails_when_embeddings_unconfigured(self) -> None:
         self.mod.authenticate_device = mock.Mock(
             return_value=self.mod.AuthenticatedDevice(device_id="d1", agent_id="a1", scopes=["memories:read"])
         )
         self.mod._cfg = dataclasses.replace(self.mod._cfg, openai_secret_arn=None)
-
-        fake_db = mock.Mock()
-        fake_db.query = mock.Mock(
-            return_value=[
-                {
-                    "memory_id": "m1",
-                    "tier": "episodic",
-                    "content": "User said they are tired",
-                    "created_at": "2026-03-03T10:00:00Z",
-                }
-            ]
-        )
-        self.mod._db = fake_db
 
         r = self.client.post(
             "/v1/recall",
             headers={"Authorization": "Bearer devtok"},
             json={"agent_id": "a1", "query": "tired", "k": 3},
         )
-        self.assertEqual(r.status_code, 200)
-        body = r.json()
-        self.assertEqual(len(body["memories"]), 1)
-        self.assertEqual(body["memories"][0]["memory_id"], "m1")
-        self.assertEqual(body["memories"][0]["distance"], 1.0)
-        fake_db.query.assert_called_once()
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("OPENAI_SECRET_ARN not configured", r.text)
 
     def test_recall_memories_allows_admin_device_across_agents_with_space(self) -> None:
         self.mod.authenticate_device = mock.Mock(
@@ -364,10 +347,8 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
             headers={"Authorization": "Bearer devtok"},
             json={"agent_id": "a2", "space_id": "space-1", "query": "memory", "k": 3},
         )
-        self.assertEqual(r.status_code, 200)
-        body = r.json()
-        self.assertEqual(len(body["memories"]), 1)
-        self.assertEqual(body["memories"][0]["memory_id"], "m1")
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("OPENAI_SECRET_ARN not configured", r.text)
 
     def test_recall_memories_admin_cross_agent_requires_space_id(self) -> None:
         self.mod.authenticate_device = mock.Mock(

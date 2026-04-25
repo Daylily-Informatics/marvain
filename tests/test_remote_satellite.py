@@ -11,6 +11,9 @@ import platform
 import sys
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 # Directory containing the remote satellite code
 _REMOTE_SAT_DIR = Path(__file__).parent.parent / "apps" / "remote_satellite"
@@ -130,10 +133,12 @@ class TestConfigCommand:
         result = _run_async(handle_command(msg))
 
         assert result is not None
-        assert result["action"] == "config_ack"
-        assert result["status"] == "applied"
-        assert "log_level" in result["config_keys"]
-        assert "heartbeat_interval" in result["config_keys"]
+        assert result["action"] == "device_action_result"
+        assert result["kind"] == "config"
+        assert result["status"] == "success"
+        assert result["result"]["applied"] is True
+        assert "log_level" in result["result"]["config_keys"]
+        assert "heartbeat_interval" in result["result"]["config_keys"]
 
         # Verify config was stored
         config = get_device_config()
@@ -233,9 +238,9 @@ class TestConfigEdgeCases:
         result = _run_async(handle_command(msg))
 
         assert result is not None
-        assert result["action"] == "config_ack"
-        assert result["status"] == "applied"
-        assert result["config_keys"] == []
+        assert result["action"] == "device_action_result"
+        assert result["status"] == "success"
+        assert result["result"]["config_keys"] == []
 
     def test_config_overwrites_existing_keys(self):
         """Config command should overwrite existing keys."""
@@ -260,7 +265,7 @@ class TestConfigEdgeCases:
         result = _run_async(handle_command(msg))
 
         assert result is not None
-        assert result["status"] == "applied"
+        assert result["status"] == "success"
         config = get_device_config()
         assert config["nullable"] is None
         assert config["valid"] == "value"
@@ -276,7 +281,50 @@ class TestActionPayloadVariations:
 
         assert result is not None
         assert result["status"] == "success"
-        assert result["result"]["status"] == "ok"
+
+
+class TestSecurityHardening:
+    """Tests for hardened satellite execution paths."""
+
+    def test_shell_command_rejects_shell_tokens(self):
+        result = _daemon_module._action_shell_command({"command": "echo hello && whoami"})
+
+        assert result["status"] == "error"
+        assert "disallowed_shell_token" in result["error"]
+
+    def test_http_request_blocks_loopback_targets(self):
+        result = _daemon_module._action_http_request({"url": "http://127.0.0.1/internal", "method": "GET"})
+
+        assert result["status"] == "error"
+        assert "disallowed_host_ip" in result["error"]
+
+    def test_hub_client_rejects_non_local_insecure_ws_url(self):
+        client = _daemon_module.HubClient(
+            _daemon_module.HubClientConfig(
+                ws_url="ws://example.com/ws",
+                rest_url="https://example.com",
+                device_token="token-123",
+            ),
+            on_command=None,
+        )
+
+        with pytest.raises(ValueError, match="wss_required_for_non_local_endpoint"):
+            _run_async(client.connect())
+
+    def test_hub_client_allows_local_ws_for_development(self):
+        client = _daemon_module.HubClient(
+            _daemon_module.HubClientConfig(
+                ws_url="ws://localhost:9000/ws",
+                rest_url="http://localhost:8000",
+                device_token="token-123",
+            ),
+            on_command=None,
+        )
+        hub_client_module = sys.modules["hub_client"]
+
+        with patch.object(hub_client_module.websockets, "connect", new=AsyncMock(side_effect=RuntimeError("stop"))):
+            with pytest.raises(RuntimeError, match="stop"):
+                _run_async(client.connect())
 
     def test_status_returns_disk_info(self):
         """Status action should return disk usage information."""
