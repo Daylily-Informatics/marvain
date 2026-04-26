@@ -25,6 +25,8 @@ class TestCliCoreSmoke(unittest.TestCase):
 
                 assert_exit_code(invoke(app, ["--help"], prog_name="marvain"), 0)
                 assert_exit_code(invoke(app, ["version"], prog_name="marvain"), 0)
+                assert_exit_code(invoke(app, ["env", "status"], prog_name="marvain"), 0)
+                assert_exit_code(invoke(app, ["runtime", "status"], prog_name="marvain"), 0)
                 assert_exit_code(invoke(app, ["--dry-run", "build"], prog_name="marvain"), 0)
             finally:
                 os.chdir(old_cwd)
@@ -104,8 +106,20 @@ class TestCliCoreSmoke(unittest.TestCase):
                 else:
                     os.environ["XDG_CONFIG_HOME"] = old_xdg
 
+    def test_runtime_guard_requires_activation_marker(self) -> None:
+        from marvain_cli import cli
+
+        app = cli.build_app()
+        with mock.patch.dict(os.environ, {"MARVAIN_ACTIVE": ""}, clear=False):
+            result = invoke(app, ["--dry-run", "build"], prog_name="marvain")
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Runtime validation failed", result.output)
+
     def test_cli_uses_cli_core_pattern_without_local_typer_shim(self) -> None:
         from pathlib import Path
+
+        from marvain_cli import cli
 
         repo_root = Path(__file__).resolve().parents[1]
         pyproject_text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
@@ -113,6 +127,10 @@ class TestCliCoreSmoke(unittest.TestCase):
 
         self.assertNotIn('"typer",', pyproject_text)
         self.assertIn("from typer import Argument, Exit, Option, confirm", commands_text)
+        self.assertIsNotNone(cli.spec.env)
+        self.assertIsNotNone(cli.spec.runtime)
+        self.assertEqual(cli.spec.runtime.guard_mode, "enforced")
+        self.assertFalse(cli.spec.runtime.allow_skip_check)
         self.assertFalse((repo_root / "marvain_cli" / "cli_primitives.py").exists())
 
     def test_project_uses_scm_versioning(self) -> None:

@@ -1,0 +1,570 @@
+{
+  "$comment": "Marvain greenfield semantic object template pack for TapDB.",
+  "templates": [
+    {
+      "name": "Marvain Companion Agent",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "agent",
+      "subtype": "companion",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Durable semantic agent identity.",
+        "default_status": "active",
+        "properties": {
+          "agent_id": "",
+          "display_name": "",
+          "lifecycle_state": "active"
+        },
+        "allowed_lifecycle_states": ["active", "disabled", "deleted"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Human Person",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "person",
+      "subtype": "human",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Semantic human identity; unknown observations do not auto-create this object.",
+        "default_status": "active",
+        "properties": {
+          "person_id": "",
+          "agent_id": "",
+          "display_name": "",
+          "aliases": [],
+          "lifecycle_state": "active"
+        },
+        "allowed_lifecycle_states": ["candidate", "active", "merged", "deleted"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain User Account",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "account",
+      "subtype": "user",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Authenticated account mapped to a person by policy.",
+        "default_status": "active",
+        "properties": {
+          "user_id": "",
+          "cognito_sub": "",
+          "email": "",
+          "lifecycle_state": "active"
+        },
+        "allowed_lifecycle_states": ["active", "revoked", "deleted"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Physical Location",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "location",
+      "subtype": "physical_site",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Physical site that contains spaces or rooms.",
+        "default_status": "active",
+        "properties": {
+          "location_id": "",
+          "agent_id": "",
+          "display_name": "",
+          "address_label": "",
+          "lifecycle_state": "active"
+        },
+        "allowed_lifecycle_states": ["active", "disabled", "deleted"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Physical Space",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "space",
+      "subtype": "physical_room",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Room or interaction boundary within a location.",
+        "default_status": "active",
+        "properties": {
+          "space_id": "",
+          "location_id": "",
+          "agent_id": "",
+          "display_name": "",
+          "livekit_room_mode": "ephemeral",
+          "lifecycle_state": "active"
+        },
+        "allowed_lifecycle_states": ["active", "private", "disabled", "deleted"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Satellite Device",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "device",
+      "subtype": "satellite",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Token-authenticated satellite or local device node.",
+        "default_status": "provisioned",
+        "properties": {
+          "device_id": "",
+          "agent_id": "",
+          "location_id": "",
+          "space_id": "",
+          "display_name": "",
+          "lifecycle_state": "provisioned"
+        },
+        "allowed_lifecycle_states": ["provisioned", "online", "offline", "revoked", "deleted"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Device Capability",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "device",
+      "subtype": "capability",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Declared device capability, scope, or local actuator.",
+        "default_status": "active",
+        "properties": {
+          "capability_id": "",
+          "device_id": "",
+          "name": "",
+          "risk": "low",
+          "lifecycle_state": "active"
+        },
+        "allowed_lifecycle_states": ["active", "disabled", "deleted"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Conversation Session",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "session",
+      "subtype": "conversation",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Explicit conversation or media session.",
+        "default_status": "open",
+        "properties": {
+          "session_id": "",
+          "agent_id": "",
+          "space_id": "",
+          "location_id": "",
+          "persona_id": "",
+          "livekit_room": "",
+          "lifecycle_state": "open"
+        },
+        "allowed_lifecycle_states": ["open", "paused", "closed", "failed"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Transcript Event",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "event",
+      "subtype": "transcript",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Transcript or utterance evidence event.",
+        "default_status": "recorded",
+        "properties": {
+          "event_id": "",
+          "agent_id": "",
+          "space_id": "",
+          "session_id": "",
+          "device_id": "",
+          "person_id": "",
+          "text": "",
+          "lifecycle_state": "recorded"
+        },
+        "allowed_lifecycle_states": ["recorded", "redacted", "deleted"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Sensor Event",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "event",
+      "subtype": "sensor",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Sensor, device, or integration evidence event.",
+        "default_status": "recorded",
+        "properties": {
+          "event_id": "",
+          "agent_id": "",
+          "space_id": "",
+          "session_id": "",
+          "device_id": "",
+          "event_type": "",
+          "lifecycle_state": "recorded"
+        },
+        "allowed_lifecycle_states": ["recorded", "redacted", "deleted"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Memory Candidate",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "memory",
+      "subtype": "candidate",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Uncommitted memory candidate created from source evidence.",
+        "default_status": "candidate",
+        "properties": {
+          "memory_candidate_id": "",
+          "agent_id": "",
+          "source_event_id": "",
+          "content": "",
+          "tier": "",
+          "confidence": 0,
+          "lifecycle_state": "candidate"
+        },
+        "allowed_lifecycle_states": ["candidate", "scored", "rejected", "committed"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Committed Memory",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "memory",
+      "subtype": "committed",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Committed memory with candidate and source-evidence lineage.",
+        "default_status": "committed",
+        "properties": {
+          "memory_id": "",
+          "memory_candidate_id": "",
+          "agent_id": "",
+          "content": "",
+          "tier": "",
+          "lifecycle_state": "committed"
+        },
+        "allowed_lifecycle_states": ["committed", "edited", "superseded", "tombstoned"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Memory Tombstone",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "memory",
+      "subtype": "tombstone",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Tombstone that preserves removal provenance for committed memory.",
+        "default_status": "tombstoned",
+        "properties": {
+          "memory_tombstone_id": "",
+          "memory_id": "",
+          "agent_id": "",
+          "reason": "",
+          "lifecycle_state": "tombstoned"
+        },
+        "allowed_lifecycle_states": ["tombstoned"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Recognition Observation",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "recognition",
+      "subtype": "observation",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Biometric or sensor observation before identity confirmation.",
+        "default_status": "observed",
+        "properties": {
+          "recognition_observation_id": "",
+          "agent_id": "",
+          "space_id": "",
+          "device_id": "",
+          "artifact_id": "",
+          "modality": "",
+          "lifecycle_state": "observed"
+        },
+        "allowed_lifecycle_states": ["observed", "embedded", "matched", "no_match", "expired"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Identity Hypothesis",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "recognition",
+      "subtype": "identity_hypothesis",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Candidate identity produced from an observation and policy context.",
+        "default_status": "proposed",
+        "properties": {
+          "identity_hypothesis_id": "",
+          "recognition_observation_id": "",
+          "candidate_person_id": "",
+          "confidence": 0,
+          "lifecycle_state": "proposed"
+        },
+        "allowed_lifecycle_states": ["proposed", "accepted", "rejected", "no_match"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Presence Assertion",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "presence",
+      "subtype": "assertion",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Durable assertion that a person was present in a space.",
+        "default_status": "asserted",
+        "properties": {
+          "presence_assertion_id": "",
+          "agent_id": "",
+          "space_id": "",
+          "person_id": "",
+          "confidence": 0,
+          "lifecycle_state": "asserted"
+        },
+        "allowed_lifecycle_states": ["asserted", "expired", "retracted"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Consent Grant",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "policy",
+      "subtype": "consent_grant",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Consent and policy grant used by memory, recognition, and disclosure decisions.",
+        "default_status": "granted",
+        "properties": {
+          "consent_id": "",
+          "agent_id": "",
+          "person_id": "",
+          "consent_type": "",
+          "lifecycle_state": "granted"
+        },
+        "allowed_lifecycle_states": ["granted", "expired", "revoked"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Artifact Reference",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "artifact",
+      "subtype": "reference",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Reference to S3 or external artifact bytes; bytes are not stored in TapDB.",
+        "default_status": "available",
+        "properties": {
+          "artifact_id": "",
+          "agent_id": "",
+          "bucket": "",
+          "key": "",
+          "media_type": "",
+          "lifecycle_state": "available"
+        },
+        "allowed_lifecycle_states": ["available", "expired", "redacted", "deleted"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Action Proposal",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "action",
+      "subtype": "proposal",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Proposed tool or device action.",
+        "default_status": "proposed",
+        "properties": {
+          "action_id": "",
+          "agent_id": "",
+          "space_id": "",
+          "kind": "",
+          "lifecycle_state": "proposed"
+        },
+        "allowed_lifecycle_states": ["proposed", "approved", "rejected", "canceled"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Action Approval",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "action",
+      "subtype": "approval",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Policy or manual approval decision for an action.",
+        "default_status": "approved",
+        "properties": {
+          "action_approval_id": "",
+          "action_id": "",
+          "approval_source": "",
+          "approved_by": "",
+          "lifecycle_state": "approved"
+        },
+        "allowed_lifecycle_states": ["approved", "rejected", "expired"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Action Execution",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "action",
+      "subtype": "execution",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Dispatch/ack execution record for a proposed action.",
+        "default_status": "executing",
+        "properties": {
+          "action_execution_id": "",
+          "action_id": "",
+          "target_device_id": "",
+          "correlation_id": "",
+          "lifecycle_state": "executing"
+        },
+        "allowed_lifecycle_states": ["dispatching", "awaiting_device_result", "device_acknowledged", "executing", "timed_out"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Action Result",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "action",
+      "subtype": "result",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Final action result or failure record.",
+        "default_status": "recorded",
+        "properties": {
+          "action_result_id": "",
+          "action_id": "",
+          "status": "",
+          "error": "",
+          "lifecycle_state": "recorded"
+        },
+        "allowed_lifecycle_states": ["recorded", "failed", "redacted"],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Persona",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "persona",
+      "subtype": "agent_persona",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Configurable agent persona for sessions and prompt hydration.",
+        "default_status": "active",
+        "properties": {
+          "persona_id": "",
+          "agent_id": "",
+          "display_name": "",
+          "instructions": "",
+          "lifecycle_state": "active"
+        },
+        "allowed_lifecycle_states": ["draft", "active", "disabled", "deleted"],
+        "instantiation_layouts": []
+      }
+    }
+  ]
+}

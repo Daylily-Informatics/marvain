@@ -9,10 +9,39 @@ description = "Marvain repository CLI (Makefile replacement)."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "amazon-transcribe",
   "boto3",
-  "cli-core-yo==2.0.0",
-  "daylily-auth-cognito==2.0.1",
+  "cli-core-yo==2.1.0",
+  "daylily-auth-cognito==2.1.1",
+  "daylily-tapdb==6.0.5",
+  "fastapi",
+  "httpx",
+  "insightface",
+  "itsdangerous",
+  "jinja2",
+  "livekit-agents[openai]",
+  "livekit-plugins-noise-cancellation",
+  "mangum",
+  "numpy",
+  "onnxruntime",
+  "opencv-python",
+  "pillow",
+  "python-dateutil",
+  "python-dotenv",
+  "python-jose[cryptography]",
+  "python-multipart",
   "pyyaml",
+  "requests",
+  "resemblyzer",
+  "soundfile",
+  "uvicorn",
+  "websockets",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "ruff",
 ]
 
 [project.scripts]
@@ -26,10 +55,10 @@ version_scheme = "guess-next-dev"
 local_scheme = "no-local-version"
 
 [tool.marvain]
-# This repo is orchestrated via a Conda env (primary) rather than an in-repo venv.
+# This repo is orchestrated via a checkout-managed Conda env.
 env_manager = "conda"
 conda_env = "marvain"
-conda_file = "config/marvain_conda.yaml"
+conda_file = "environment.yaml"
 python = "3.11"
 
 [tool.pytest.ini_options]

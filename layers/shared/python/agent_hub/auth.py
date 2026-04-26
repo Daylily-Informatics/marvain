@@ -37,36 +37,39 @@ class AuthenticatedUser:
 def authenticate_user_access_token(db: RdsData, access_token: str) -> AuthenticatedUser:
     """Authenticate a human user via a Cognito access token.
 
-    Uses the shared daylily-auth-cognito admin client boundary to retrieve `sub`
-    and `email`, ensures a users row exists, then returns the AuthenticatedUser.
+    Uses the shared daylily-auth-cognito runtime verifier boundary, ensures a
+    users row exists, then returns the AuthenticatedUser.
     """
 
     if not access_token:
         raise PermissionError("Missing access token")
 
     try:
-        admin = _cognito_admin_client()
-        resp = admin.cognito.get_user(AccessToken=access_token)
+        claims = _cognito_token_verifier().verify_token(access_token)
     except Exception as e:
         raise PermissionError(f"Invalid access token: {e}")
 
-    sub: str | None = None
-    email: str | None = None
-    for attr in resp.get("UserAttributes", []) or []:
-        name = attr.get("Name")
-        val = attr.get("Value")
-        if name == "sub" and val:
-            sub = str(val)
-        elif name == "email" and val:
-            email = str(val)
-
+    sub = str(claims.get("sub") or claims.get("username") or claims.get("cognito:username") or "").strip() or None
     if not sub:
-        sub = str(resp.get("Username") or "").strip() or None
-    if not sub:
-        raise PermissionError("Cognito response missing sub")
+        raise PermissionError("Cognito token missing sub")
+    email = str(claims.get("email") or "").strip() or None
 
     user_id = ensure_user_row(db, cognito_sub=sub, email=email)
     return AuthenticatedUser(user_id=user_id, cognito_sub=sub, email=email)
+
+
+def _cognito_token_verifier():
+    from daylily_auth_cognito.runtime.verifier import CognitoTokenVerifier
+
+    from agent_hub.config import load_config
+
+    cfg = load_config()
+    region = str(cfg.cognito_region or "us-east-1")
+    user_pool_id = str(cfg.cognito_user_pool_id or "").strip()
+    app_client_id = str(cfg.cognito_user_pool_client_id or "").strip()
+    if not user_pool_id or not app_client_id:
+        raise PermissionError("Cognito runtime verifier is not configured")
+    return CognitoTokenVerifier(region=region, user_pool_id=user_pool_id, app_client_id=app_client_id)
 
 
 def _cognito_admin_client(*, user_pool_id: str | None = None):

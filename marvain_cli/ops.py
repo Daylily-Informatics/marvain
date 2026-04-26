@@ -8,6 +8,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import urllib.error
 import urllib.request
@@ -25,8 +26,14 @@ from marvain_cli.config import (
 )
 
 MARVAIN_CONDA_ENV_NAME = "marvain"
-MARVAIN_CONDA_ENV_FILE = "config/marvain_conda.yaml"
-MARVAIN_ALLOW_VENV_ENVVAR = "MARVAIN_ALLOW_VENV"
+MARVAIN_CONDA_ENV_FILE = "environment.yaml"
+DEFAULT_AGENT_PERSONA_NAME = "Forge"
+DEFAULT_AGENT_PERSONA_INSTRUCTIONS = (
+    "You are Forge, a persistent personal AI agent and companion. "
+    "Be concise, curious, and pragmatic. "
+    "If you are unsure, ask a clarifying question. "
+    "You may be proactive with suggestions, but avoid being pushy."
+)
 
 
 @dataclass(frozen=True)
@@ -150,11 +157,6 @@ def require_tools(names: Iterable[str]) -> list[str]:
     return missing
 
 
-def _truthy_env(name: str) -> bool:
-    v = (os.environ.get(name) or "").strip().lower()
-    return v in ("1", "true", "yes", "y", "on")
-
-
 def _conda_env_is_active(env_name: str) -> bool:
     if (os.environ.get("CONDA_DEFAULT_ENV") or "") == env_name:
         return True
@@ -186,8 +188,6 @@ def _python_is_311() -> bool:
 def _conda_preflight(*, enforce: bool) -> int:
     """Ensure the primary Conda env exists and is active.
 
-    We keep an escape hatch via MARVAIN_ALLOW_VENV=1.
-
     Returns:
       0 on success
       2 on preflight failure (matches other CLI error semantics)
@@ -195,14 +195,9 @@ def _conda_preflight(*, enforce: bool) -> int:
 
     if not enforce:
         return 0
-    if _truthy_env(MARVAIN_ALLOW_VENV_ENVVAR):
-        return 0
 
     if shutil.which("conda") is None:
-        _eprint(
-            "Conda is required for marvain. Install Miniconda/Mambaforge, then create env with: "
-            f"conda env create -f {MARVAIN_CONDA_ENV_FILE} (or set {MARVAIN_ALLOW_VENV_ENVVAR}=1 to bypass)"
-        )
+        _eprint("Conda is required for marvain. Install Miniconda/Mambaforge, then create env with: source ./activate")
         return 2
 
     if not _conda_env_exists(MARVAIN_CONDA_ENV_NAME):
@@ -212,9 +207,7 @@ def _conda_preflight(*, enforce: bool) -> int:
         return 2
 
     if not _conda_env_is_active(MARVAIN_CONDA_ENV_NAME):
-        _eprint(
-            f"Conda env '{MARVAIN_CONDA_ENV_NAME}' exists but is not active. Activate with: conda activate {MARVAIN_CONDA_ENV_NAME} (or source ./marvain_activate)"
-        )
+        _eprint(f"Conda env '{MARVAIN_CONDA_ENV_NAME}' exists but is not active. Activate with: source ./activate")
         return 2
 
     if not _python_is_311():
@@ -227,7 +220,7 @@ def _conda_preflight(*, enforce: bool) -> int:
     if shutil.which("python3.11") is None:
         _eprint(
             "python3.11 not found on PATH (required by `sam build` for runtime python3.11). "
-            f"Activate conda env '{MARVAIN_CONDA_ENV_NAME}' (or source ./marvain_activate)."
+            "Activate with: source ./activate."
         )
         return 2
 
@@ -1687,8 +1680,8 @@ def agent_start(
         return 3
 
     _eprint(f"  LiveKit URL: {livekit_url}")
-    _eprint(f"  LiveKit API Key: {livekit_api_key[:8]}...")
-    _eprint(f"  OpenAI API Key: {openai_api_key[:12]}...")
+    _eprint("  LiveKit credentials: loaded")
+    _eprint("  OpenAI credentials: loaded")
 
     # Build command
     cmd = ["python", "worker.py", "dev"]
@@ -1702,6 +1695,9 @@ def agent_start(
     env["AWS_PROFILE"] = ctx.env.aws_profile
     env["AWS_REGION"] = ctx.env.aws_region
     env["AWS_DEFAULT_REGION"] = ctx.env.aws_region
+    shared_layer = repo_root / "layers" / "shared" / "python"
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{shared_layer}:{existing_pythonpath}" if existing_pythonpath else str(shared_layer)
 
     # Optional: Hub API base for transcript ingestion
     hub_api_base = resources.get("HubRestApiBase")
@@ -2079,6 +2075,53 @@ def init_db(ctx: Ctx, *, dry_run: bool, sql_file: str | None) -> int:
     return 0
 
 
+def init_tapdb(ctx: Ctx, *, dry_run: bool, overwrite: bool) -> int:
+    rc = _conda_preflight(enforce=not dry_run)
+    if rc != 0:
+        return rc
+
+    if dry_run:
+        _eprint(f"[dry-run] Would invoke TapdbWriterFunctionName for stack {ctx.env.stack_name}")
+        _eprint(f"[dry-run] Would seed Marvain TapDB templates overwrite={overwrite}")
+        return 0
+
+    function_name = resolve_stack_output(ctx, key="TapdbWriterFunctionName", dry_run=False)
+    payload = json.dumps({"action": "seed_templates", "overwrite": bool(overwrite)})
+    with (
+        tempfile.NamedTemporaryFile(prefix="marvain-tapdb-payload-", suffix=".json") as payload_file,
+        tempfile.NamedTemporaryFile(prefix="marvain-tapdb-init-", suffix=".json") as out,
+    ):
+        payload_file.write(payload.encode("utf-8"))
+        payload_file.flush()
+        cmd = [
+            "aws",
+            "lambda",
+            "invoke",
+            *aws_cli_args(ctx.env),
+            "--function-name",
+            function_name,
+            "--payload",
+            f"fileb://{payload_file.name}",
+            out.name,
+        ]
+        rc = run_cmd(cmd, env=cmd_env(ctx.env), dry_run=False)
+        if rc != 0:
+            return rc
+        try:
+            data = json.loads(Path(out.name).read_text(encoding="utf-8") or "{}")
+        except Exception:
+            data = {}
+        if not data.get("ok"):
+            _eprint(f"TapDB template initialization failed: {data.get('error') or data}")
+            return 1
+        _eprint(
+            "TapDB templates initialized: "
+            f"loaded={data.get('templates_loaded')} inserted={data.get('inserted')} "
+            f"updated={data.get('updated')} skipped={data.get('skipped')}"
+        )
+    return 0
+
+
 def _rds_execute(
     ctx: Ctx,
     *,
@@ -2125,6 +2168,35 @@ def _first_cell_as_string(result: Any) -> str:
     raise ConfigError("Unexpected RDS Data API cell value")
 
 
+def _insert_default_persona(
+    ctx: Ctx,
+    *,
+    resource_arn: str,
+    secret_arn: str,
+    db_name: str,
+    agent_id: str,
+    dry_run: bool,
+) -> str:
+    persona_res = _rds_execute(
+        ctx,
+        resource_arn=resource_arn,
+        secret_arn=secret_arn,
+        db_name=db_name,
+        sql=(
+            "INSERT INTO personas (agent_id, name, instructions, is_default, lifecycle_state)"
+            " VALUES (CAST(:a AS uuid), :n, :i, true, 'active')"
+            " RETURNING persona_id"
+        ),
+        parameters=[
+            {"name": "a", "value": {"stringValue": agent_id}},
+            {"name": "n", "value": {"stringValue": DEFAULT_AGENT_PERSONA_NAME}},
+            {"name": "i", "value": {"stringValue": DEFAULT_AGENT_PERSONA_INSTRUCTIONS}},
+        ],
+        dry_run=dry_run,
+    )
+    return _first_cell_as_string(persona_res)
+
+
 def bootstrap(
     ctx: Ctx,
     *,
@@ -2139,7 +2211,7 @@ def bootstrap(
         return rc
     if dry_run:
         _eprint(f"[dry-run] Would resolve DB outputs for stack: {ctx.env.stack_name}")
-        _eprint("[dry-run] Would create: agent, default space, and device; would update config bootstrap block")
+        _eprint("[dry-run] Would create: agent, default persona, default space, and device; would update config")
         return 0
 
     resource_arn, secret_arn, db_name = _db_outputs(ctx, dry_run=dry_run)
@@ -2171,6 +2243,14 @@ def bootstrap(
         dry_run=dry_run,
     )
     agent_id = _first_cell_as_string(agent_res)
+    persona_id = _insert_default_persona(
+        ctx,
+        resource_arn=resource_arn,
+        secret_arn=secret_arn,
+        db_name=db_name,
+        agent_id=agent_id,
+        dry_run=dry_run,
+    )
 
     space_res = _rds_execute(
         ctx,
@@ -2269,6 +2349,7 @@ def bootstrap(
         json.dumps(
             {
                 "agent_id": agent_id,
+                "persona_id": persona_id,
                 "space_id": space_id,
                 "device_id": device_id,
                 "device_name": d_name,
@@ -2283,6 +2364,7 @@ def bootstrap(
     if not dry_run:
         env_cfg["bootstrap"] = {
             "agent_id": agent_id,
+            "persona_id": persona_id,
             "space_id": space_id,
             "device_id": device_id,
             "device_name": d_name,
@@ -2371,7 +2453,7 @@ def examples_create(
     if rc != 0:
         return rc
     if dry_run:
-        _eprint("[dry-run] Would create example agent, space, device, membership, and seed memories")
+        _eprint("[dry-run] Would create example agent, default persona, space, device, membership, and seed memories")
         return 0
 
     resource_arn, secret_arn, db_name = _db_outputs(ctx, dry_run=dry_run)
@@ -2395,6 +2477,15 @@ def examples_create(
     )
     agent_id = _first_cell_as_string(agent_res)
     _eprint(f"  agent_id: {agent_id}")
+    persona_id = _insert_default_persona(
+        ctx,
+        resource_arn=resource_arn,
+        secret_arn=secret_arn,
+        db_name=db_name,
+        agent_id=agent_id,
+        dry_run=dry_run,
+    )
+    _eprint(f"  persona_id: {persona_id}")
 
     # 2. Create space
     _eprint(f"Creating space '{space_name}'...")
@@ -2552,6 +2643,7 @@ def examples_create(
     result = {
         "agent_id": agent_id,
         "agent_name": agent_name,
+        "persona_id": persona_id,
         "space_id": space_id,
         "space_name": space_name,
         "device_id": device_id,
@@ -2570,6 +2662,7 @@ def examples_create(
             if isinstance(env_cfg, dict):
                 env_cfg["bootstrap"] = {
                     "agent_id": agent_id,
+                    "persona_id": persona_id,
                     "space_id": space_id,
                     "device_id": device_id,
                     "device_name": d_name,

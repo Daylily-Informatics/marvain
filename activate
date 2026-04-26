@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+
+# Source this file from bash or zsh to activate the checkout-managed Marvain
+# conda environment.
+
+__marvain_env_is_sourced() {
+  if [ -n "${ZSH_VERSION:-}" ]; then
+    case "${ZSH_EVAL_CONTEXT:-}" in
+      *:file|*:file:*) return 0 ;;
+    esac
+    return 1
+  fi
+
+  if [ -n "${BASH_VERSION:-}" ]; then
+    [ "${BASH_SOURCE[0]}" != "$0" ]
+    return
+  fi
+
+  return 1
+}
+
+if ! __marvain_env_is_sourced; then
+  echo "Error: this script must be sourced." >&2
+  echo "Usage: source ./activate" >&2
+  exit 1
+fi
+
+__marvain_env_script_path() {
+  if [ -n "${BASH_VERSION:-}" ]; then
+    printf '%s\n' "${BASH_SOURCE[0]}"
+    return 0
+  fi
+
+  if [ -n "${ZSH_VERSION:-}" ]; then
+    eval 'printf "%s\n" "${(%):-%N}"'
+    return 0
+  fi
+
+  return 1
+}
+
+__marvain_env_conda_is_function() {
+  case "$(type conda 2>/dev/null)" in
+    *"shell function"*|*"function"*) return 0 ;;
+  esac
+  return 1
+}
+
+__marvain_env_conda_exe() {
+  if [ -n "${CONDA_EXE:-}" ] && [ -x "${CONDA_EXE}" ]; then
+    printf '%s\n' "${CONDA_EXE}"
+    return 0
+  fi
+
+  if [ -n "${BASH_VERSION:-}" ]; then
+    type -p conda
+    return
+  fi
+
+  if [ -n "${ZSH_VERSION:-}" ]; then
+    whence -p conda
+    return
+  fi
+
+  command -v conda
+}
+
+__marvain_env_load_conda() {
+  if ! command -v conda >/dev/null 2>&1; then
+    return 1
+  fi
+
+  if __marvain_env_conda_is_function; then
+    return 0
+  fi
+
+  local conda_exe conda_shell conda_hook conda_base
+  conda_exe="$(__marvain_env_conda_exe 2>/dev/null || true)"
+  if [ -z "${conda_exe}" ]; then
+    return 1
+  fi
+
+  if [ -n "${BASH_VERSION:-}" ]; then
+    conda_shell="bash"
+  elif [ -n "${ZSH_VERSION:-}" ]; then
+    conda_shell="zsh"
+  else
+    conda_shell="posix"
+  fi
+
+  conda_hook="$("${conda_exe}" "shell.${conda_shell}" hook 2>/dev/null || "${conda_exe}" shell.posix hook 2>/dev/null || true)"
+  if [ -n "${conda_hook}" ]; then
+    eval "${conda_hook}"
+    return 0
+  fi
+
+  conda_base="$("${conda_exe}" info --base 2>/dev/null || true)"
+  if [ -n "${conda_base}" ] && [ -f "${conda_base}/etc/profile.d/conda.sh" ]; then
+    . "${conda_base}/etc/profile.d/conda.sh"
+    return 0
+  fi
+
+  return 1
+}
+
+__marvain_env_refresh_command_cache() {
+  hash -r 2>/dev/null || true
+  rehash 2>/dev/null || true
+}
+
+__marvain_env_env_exists() {
+  conda env list 2>/dev/null | awk '{print $1}' | grep -qx 'marvain'
+}
+
+__marvain_env_repo_root="$(
+  cd "$(dirname "$(__marvain_env_script_path)")" && pwd
+)"
+export MARVAIN_REPO_ROOT="${__marvain_env_repo_root}"
+export MARVAIN_ACTIVE="1"
+
+__marvain_env_load_conda || {
+  echo "Error: conda is not available in this shell." >&2
+  return 1
+}
+
+__marvain_env_created_env=0
+if ! __marvain_env_env_exists; then
+  __marvain_env_env_yaml="${MARVAIN_REPO_ROOT}/environment.yaml"
+  if [ ! -f "${__marvain_env_env_yaml}" ]; then
+    echo "Error: Marvain environment spec not found at ${__marvain_env_env_yaml}." >&2
+    return 1
+  fi
+
+  echo "Creating marvain from ${__marvain_env_env_yaml} ..." >&2
+  conda env create -n marvain -f "${__marvain_env_env_yaml}" || return 1
+  __marvain_env_created_env=1
+fi
+
+conda activate marvain || {
+  echo "Error: failed to activate the marvain conda environment." >&2
+  return 1
+}
+__marvain_env_refresh_command_cache
+
+if [ "${__marvain_env_created_env}" = "1" ]; then
+  echo "Installing Marvain into marvain from ${MARVAIN_REPO_ROOT} ..." >&2
+  python -m pip install --editable "${MARVAIN_REPO_ROOT}[dev]" || {
+    echo "Error: failed to install Marvain into marvain." >&2
+    return 1
+  }
+  __marvain_env_refresh_command_cache
+  echo "Installed Marvain into marvain from ${MARVAIN_REPO_ROOT}." >&2
+fi
+
+unset __marvain_env_created_env
+unset __marvain_env_env_yaml
+unset __marvain_env_repo_root
+unset -f __marvain_env_is_sourced
+unset -f __marvain_env_script_path
+unset -f __marvain_env_conda_is_function
+unset -f __marvain_env_conda_exe
+unset -f __marvain_env_load_conda
+unset -f __marvain_env_refresh_command_cache
+unset -f __marvain_env_env_exists
+
+echo "Marvain activated."

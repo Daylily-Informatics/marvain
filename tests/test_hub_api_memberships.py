@@ -381,13 +381,14 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         self.mod.call_embeddings = mock.Mock(return_value=[0.125, -0.5, 0.25])
 
         fake_db = mock.Mock()
+        fake_db.query = mock.Mock(return_value=[{"agent_id": "a1"}])
         fake_db.execute = mock.Mock()
         self.mod._db = fake_db
 
         r = self.client.post(
             "/v1/memories",
             headers={"Authorization": "Bearer devtok"},
-            json={"tier": "episodic", "content": "hello memory"},
+            json={"space_id": "space-1", "tier": "episodic", "content": "hello memory"},
         )
         self.assertEqual(r.status_code, 200)
         self.mod.call_embeddings.assert_called_once()
@@ -396,6 +397,7 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         self.assertIn("embedding", params)
         self.assertIsInstance(params["embedding"], str)
         self.assertTrue(params["embedding"].startswith("[0.125000,-0.500000,0.250000"))
+        self.assertTrue(r.json().get("source_event_id"))
 
     def test_create_memory_allows_admin_device_across_agents(self) -> None:
         self.mod.authenticate_device = mock.Mock(
@@ -419,9 +421,9 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
             json={"space_id": "space-1", "tier": "episodic", "content": "hello memory"},
         )
         self.assertEqual(r.status_code, 200)
-        fake_db.execute.assert_called_once()
         _, params = fake_db.execute.call_args[0]
         self.assertEqual(params["agent_id"], "a2")
+        self.assertTrue(r.json().get("memory_candidate_id"))
 
     def test_get_space_events_allows_admin_device_across_agents(self) -> None:
         self.mod.authenticate_device = mock.Mock(
@@ -484,8 +486,8 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         # Verify transaction was used
         fake_db.begin.assert_called_once()
         fake_db.commit.assert_called_once_with("tx123")
-        # Two execute calls: one for agent insert, one for membership insert
-        self.assertEqual(fake_db.execute.call_count, 2)
+        # Agent insert, membership insert, and default persona seed.
+        self.assertEqual(fake_db.execute.call_count, 3)
 
     def test_create_agent_without_relationship_label(self) -> None:
         """Test POST /v1/agents creates an agent without relationship_label."""

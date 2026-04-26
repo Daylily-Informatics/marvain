@@ -17,9 +17,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import requests
+from agent_hub.personas import DEFAULT_AGENT_PERSONA_NAME
 from dotenv import load_dotenv
 from livekit import agents, rtc
 from livekit.agents import Agent, AgentServer, AgentSession, room_io
@@ -91,7 +93,8 @@ def hub_ingest_transcript(
     role: str,
     participant_identity: str | None = None,
     input_modality: str = "voice",
-) -> None:
+    session_id: str | None = None,
+) -> str | None:
     """Send a transcript chunk to the Hub for persistence.
 
     Args:
@@ -101,14 +104,16 @@ def hub_ingest_transcript(
         participant_identity: The LiveKit participant identity
         input_modality: Either "voice" or "text"
     """
-    if not HUB_API_BASE or not HUB_DEVICE_TOKEN or not space_id:
+    hub_api_base = str(os.getenv("HUB_API_BASE") or HUB_API_BASE or "").rstrip("/")
+    hub_device_token = str(os.getenv("HUB_DEVICE_TOKEN") or HUB_DEVICE_TOKEN or "").strip()
+    if not hub_api_base or not hub_device_token or not space_id:
         logger.debug("Skipping transcript ingest: missing HUB_API_BASE, HUB_DEVICE_TOKEN, or space_id")
-        return
+        return None
 
     try:
         resp = requests.post(
-            f"{HUB_API_BASE}/v1/events",
-            headers={"Authorization": f"Bearer {HUB_DEVICE_TOKEN}"},
+            f"{hub_api_base}/v1/events",
+            headers={"Authorization": f"Bearer {hub_device_token}"},
             json={
                 "space_id": space_id,
                 "type": "transcript_chunk",
@@ -119,16 +124,19 @@ def hub_ingest_transcript(
                     "source": "livekit_agent_worker",
                     "input_modality": input_modality,
                 },
+                "session_id": session_id,
             },
             timeout=3,
         )
         if resp.ok:
             logger.debug(f"Ingested transcript ({role}): {text[:50]}...")
+            return str(resp.json().get("event_id") or "").strip() or None
         else:
             logger.warning("Failed to ingest transcript: status=%s body=%s", resp.status_code, resp.text[:300])
     except Exception as e:
         # Don't crash the realtime loop
         logger.warning(f"Failed to ingest transcript: {e}")
+    return None
 
 
 def hub_create_memory(
@@ -137,6 +145,8 @@ def hub_create_memory(
     content: str,
     tier: str = "episodic",
     metadata: dict | None = None,
+    source_event_id: str,
+    session_id: str | None = None,
 ) -> None:
     """Create a memory in the Hub's memory system.
 
@@ -146,19 +156,23 @@ def hub_create_memory(
         tier: Memory tier (episodic, semantic, procedural)
         metadata: Additional metadata (input_modality, role, room_name, etc.)
     """
-    if not HUB_API_BASE or not HUB_DEVICE_TOKEN or not space_id:
+    hub_api_base = str(os.getenv("HUB_API_BASE") or HUB_API_BASE or "").rstrip("/")
+    hub_device_token = str(os.getenv("HUB_DEVICE_TOKEN") or HUB_DEVICE_TOKEN or "").strip()
+    if not hub_api_base or not hub_device_token or not space_id:
         logger.debug("Skipping memory creation: missing HUB_API_BASE, HUB_DEVICE_TOKEN, or space_id")
         return
 
     try:
         resp = requests.post(
-            f"{HUB_API_BASE}/v1/memories",
-            headers={"Authorization": f"Bearer {HUB_DEVICE_TOKEN}"},
+            f"{hub_api_base}/v1/memories",
+            headers={"Authorization": f"Bearer {hub_device_token}"},
             json={
                 "space_id": space_id,
                 "tier": tier,
                 "content": content,
                 "metadata": metadata or {},
+                "source_event_id": source_event_id,
+                "session_id": session_id,
             },
             timeout=3,
         )
@@ -253,7 +267,16 @@ def _build_context_block(events: list[dict], memories: list[dict]) -> str:
         for mem in memories[:5]:  # Limit to top 5
             tier = mem.get("tier", "")
             content = mem.get("content", "")[:500]  # Truncate long content
-            parts.append(f"- [{tier}] {content}")
+            explanation = mem.get("explanation") if isinstance(mem.get("explanation"), dict) else {}
+            source_event_id = str(explanation.get("source_event_id") or "").strip()
+            session_id = str(explanation.get("session_id") or "").strip()
+            source_bits = []
+            if source_event_id:
+                source_bits.append(f"event {source_event_id}")
+            if session_id:
+                source_bits.append(f"session {session_id}")
+            source_note = f" (source: {', '.join(source_bits)})" if source_bits else ""
+            parts.append(f"- [{tier}] {content}{source_note}")
 
     # Add recent conversation summary if available
     if events:
@@ -273,21 +296,64 @@ def _build_context_block(events: list[dict], memories: list[dict]) -> str:
     return "\n".join(parts)
 
 
-BASE_INSTRUCTIONS = (
-    "You are Forge, a persistent personal AI agent and companion. "
-    "Be concise, curious, and pragmatic. "
-    "If you are unsure, ask a clarifying question. "
-    "You may be proactive with suggestions, but avoid being pushy."
-)
+@dataclass(frozen=True)
+class PersonaConfig:
+    persona_id: str | None
+    name: str
+    instructions: str
+    source: str
 
 
 class ForgeAssistant(Agent):
-    def __init__(self, context_block: str = "") -> None:
+    def __init__(self, *, persona: PersonaConfig, context_block: str = "") -> None:
+        persona_instructions = persona.instructions.strip()
+        if not persona_instructions:
+            raise RuntimeError("persona instructions are empty")
         if context_block:
-            instructions = f"{BASE_INSTRUCTIONS}\n\n# Context from Prior Sessions\n{context_block}"
+            instructions = f"{persona_instructions}\n\n# Context from Prior Sessions\n{context_block}"
         else:
-            instructions = BASE_INSTRUCTIONS
+            instructions = persona_instructions
         super().__init__(instructions=instructions)
+
+
+def _resolve_persona(*, agent_id: str | None, space_id: str, session_id: str | None) -> PersonaConfig:
+    """Resolve the configured persona for this agent session."""
+    env_instructions = str(os.getenv("MARVAIN_AGENT_PERSONA_INSTRUCTIONS") or "").strip()
+    if env_instructions:
+        return PersonaConfig(
+            persona_id=None,
+            name=str(os.getenv("MARVAIN_AGENT_PERSONA_NAME") or DEFAULT_AGENT_PERSONA_NAME).strip()
+            or DEFAULT_AGENT_PERSONA_NAME,
+            instructions=env_instructions,
+            source="env",
+        )
+
+    if not agent_id:
+        raise RuntimeError("persona resolution requires agent_id in LiveKit dispatch metadata")
+
+    hub_api_base = str(os.getenv("HUB_API_BASE") or HUB_API_BASE or "").rstrip("/")
+    hub_device_token = str(os.getenv("HUB_DEVICE_TOKEN") or HUB_DEVICE_TOKEN or "").strip()
+    if not hub_api_base or not hub_device_token:
+        raise RuntimeError("persona resolution requires HUB_API_BASE and HUB_DEVICE_TOKEN")
+
+    resp = requests.get(
+        f"{hub_api_base}/v1/agents/{agent_id}/personas/default",
+        headers={"Authorization": f"Bearer {hub_device_token}"},
+        params={"space_id": space_id, "session_id": session_id or ""},
+        timeout=5,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"persona lookup failed: status={resp.status_code} body={resp.text[:300]}")
+    body = resp.json()
+    instructions = str(body.get("instructions") or "").strip()
+    if not instructions:
+        raise RuntimeError("persona lookup returned empty instructions")
+    return PersonaConfig(
+        persona_id=str(body.get("persona_id") or "").strip() or None,
+        name=str(body.get("name") or DEFAULT_AGENT_PERSONA_NAME).strip() or DEFAULT_AGENT_PERSONA_NAME,
+        instructions=instructions,
+        source=str(body.get("source") or "hub"),
+    )
 
 
 # Agent name for explicit dispatch - must match the name in tokens minted by Hub API
@@ -316,6 +382,7 @@ async def forge_agent(ctx: agents.JobContext):
     metadata = _json.loads(ctx.job.metadata or "{}")
     space_id = metadata.get("space_id")
     room_session_id = metadata.get("room_session_id", "unknown")
+    session_id = metadata.get("session_id")
 
     if not space_id:
         logger.error(f"No space_id in agent metadata; room={ctx.room.name}, metadata={ctx.job.metadata}")
@@ -323,6 +390,10 @@ async def forge_agent(ctx: agents.JobContext):
 
     agent_id = metadata.get("agent_id")
     logger.info(f"Agent dispatched to space: {space_id} (room: {ctx.room.name}, session: {room_session_id})")
+    persona = _resolve_persona(agent_id=agent_id, space_id=space_id, session_id=session_id)
+    logger.info(
+        "Resolved persona %s for session %s from %s", persona.name, session_id or room_session_id, persona.source
+    )
 
     # Context hydration: fetch prior events and memories for continuity
     context_block = ""
@@ -437,26 +508,30 @@ async def forge_agent(ctx: agents.JobContext):
             return
 
         logger.debug(f"Conversation item ({role}): {text[:50]}...")
-        hub_ingest_transcript(
+        source_event_id = hub_ingest_transcript(
             space_id=space_id,
             text=text,
             role=role,
             participant_identity=None,
             input_modality="voice",
+            session_id=session_id,
         )
         if AUTOSAVE_EPISODIC_MEMORIES:
             # Auto-save as episodic memory
-            hub_create_memory(
-                space_id=space_id,
-                content=text,
-                tier="episodic",
-                metadata={
-                    "role": role,
-                    "input_modality": "voice",
-                    "room_name": ctx.room.name,
-                    "room_session_id": room_session_id,
-                },
-            )
+            if source_event_id and source_event_id != "privacy_mode":
+                hub_create_memory(
+                    space_id=space_id,
+                    content=text,
+                    tier="episodic",
+                    metadata={
+                        "role": role,
+                        "input_modality": "voice",
+                        "room_name": ctx.room.name,
+                        "room_session_id": room_session_id,
+                    },
+                    source_event_id=source_event_id,
+                    session_id=session_id,
+                )
 
     session.on("conversation_item_added", on_conversation_item_added)
 
@@ -469,26 +544,30 @@ async def forge_agent(ctx: agents.JobContext):
             return
 
         participant_identity = str(event.speaker_id or "").strip() or None
-        hub_ingest_transcript(
+        source_event_id = hub_ingest_transcript(
             space_id=space_id,
             text=text,
             role="user",
             participant_identity=participant_identity,
             input_modality="voice",
+            session_id=session_id,
         )
         if AUTOSAVE_EPISODIC_MEMORIES:
-            hub_create_memory(
-                space_id=space_id,
-                content=text,
-                tier="episodic",
-                metadata={
-                    "role": "user",
-                    "input_modality": "voice",
-                    "room_name": ctx.room.name,
-                    "room_session_id": room_session_id,
-                    "participant_identity": participant_identity,
-                },
-            )
+            if source_event_id and source_event_id != "privacy_mode":
+                hub_create_memory(
+                    space_id=space_id,
+                    content=text,
+                    tier="episodic",
+                    metadata={
+                        "role": "user",
+                        "input_modality": "voice",
+                        "room_name": ctx.room.name,
+                        "room_session_id": room_session_id,
+                        "participant_identity": participant_identity,
+                    },
+                    source_event_id=source_event_id,
+                    session_id=session_id,
+                )
 
     session.on("user_input_transcribed", on_user_input_transcribed)
 
@@ -519,27 +598,31 @@ async def forge_agent(ctx: agents.JobContext):
             logger.info(f"Received typed chat from {sender}: {text[:50]}...")
 
             # Ingest to Hub for persistence
-            hub_ingest_transcript(
+            source_event_id = hub_ingest_transcript(
                 space_id=space_id,
                 text=text,
                 role="user",
                 participant_identity=sender,
                 input_modality="text",
+                session_id=session_id,
             )
             if AUTOSAVE_EPISODIC_MEMORIES:
                 # Auto-save as episodic memory
-                hub_create_memory(
-                    space_id=space_id,
-                    content=text,
-                    tier="episodic",
-                    metadata={
-                        "role": "user",
-                        "input_modality": "text",
-                        "room_name": ctx.room.name,
-                        "room_session_id": room_session_id,
-                        "participant_identity": sender,
-                    },
-                )
+                if source_event_id and source_event_id != "privacy_mode":
+                    hub_create_memory(
+                        space_id=space_id,
+                        content=text,
+                        tier="episodic",
+                        metadata={
+                            "role": "user",
+                            "input_modality": "text",
+                            "room_name": ctx.room.name,
+                            "room_session_id": room_session_id,
+                            "participant_identity": sender,
+                        },
+                        source_event_id=source_event_id,
+                        session_id=session_id,
+                    )
 
             # Inject the typed message into the agent's conversation
             # Use generate_reply with the user's text as instructions
@@ -571,7 +654,7 @@ async def forge_agent(ctx: agents.JobContext):
 
     await session.start(
         room=ctx.room,
-        agent=ForgeAssistant(context_block=context_block),
+        agent=ForgeAssistant(persona=persona, context_block=context_block),
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
                 noise_cancellation=lambda params: (

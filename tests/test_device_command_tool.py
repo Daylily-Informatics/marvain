@@ -112,6 +112,31 @@ class TestDeviceCommandHandler:
 
     @patch("agent_hub.tools.device_command._send_to_connection")
     @patch("agent_hub.tools.device_command._get_connections_for_device")
+    def test_target_device_does_not_need_runner_tool_scope(self, mock_get_connections, mock_send):
+        """Target devices need requested command scopes, not the runner's devices:write scope."""
+        from agent_hub.tools.device_command import device_command_handler
+
+        ctx = MockToolContext()
+        ctx.action_required_scopes = ["devices:write"]
+        ctx.db.query.return_value = [
+            {"device_id": "device-xyz", "agent_id": "agent-123", "name": "Test Device", "scopes": "[]"}
+        ]
+        mock_get_connections.return_value = ["conn-1"]
+        mock_send.return_value = True
+
+        result = device_command_handler(
+            {
+                "device_id": "device-xyz",
+                "command": "ping",
+                "correlation_id": "corr-ping-runner-scope",
+            },
+            ctx,
+        )
+
+        assert result.ok is True
+
+    @patch("agent_hub.tools.device_command._send_to_connection")
+    @patch("agent_hub.tools.device_command._get_connections_for_device")
     def test_partial_send_failure(self, mock_get_connections, mock_send):
         """Handler should report partial success if some connections fail."""
         from agent_hub.tools.device_command import device_command_handler

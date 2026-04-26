@@ -6,7 +6,6 @@
 # 3. Remove local config files
 # 4. Remove build artifacts
 # 5. Remove conda environment
-# 6. Remove venv (if exists)
 
 set -e
 
@@ -136,22 +135,10 @@ else
 fi
 echo ""
 
-# Step 7: Remove venv (if exists)
-log_info "Step 7: Checking for venv..."
-if [ -d "venv" ]; then
-  log_info "Removing venv directory"
-  rm -rf venv
-else
-  log_warn "No venv directory found"
-fi
-echo ""
-
 log_info "✓ Cleanup complete!"
 log_info ""
 log_info "Next steps to start fresh:"
-log_info "  1. conda env create -f config/marvain_conda.yaml"
-log_info "  2. . ./marvain_activate"
-log_info "  3. ./bin/marvain config init --profile $AWS_PROFILE --region $AWS_REGION --env dev"
-log_info "  4. ./bin/marvain build"
-log_info "  5. ./bin/marvain deploy"
-
+log_info "  1. source ./activate"
+log_info "  2. marvain config init --profile $AWS_PROFILE --region $AWS_REGION --env dev"
+log_info "  3. marvain build"
+log_info "  4. marvain deploy"

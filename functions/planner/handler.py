@@ -329,6 +329,8 @@ def _vector_recall(agent_id: str, query_text: str) -> list[dict[str, Any]]:
         FROM memories
         WHERE agent_id = :agent_id::uuid
           AND embedding IS NOT NULL
+          AND lifecycle_state = 'committed'
+          AND tombstoned_at IS NULL
         ORDER BY embedding <=> CAST(:q AS vector)
         LIMIT 8
         """,
@@ -340,6 +342,11 @@ def _vector_recall(agent_id: str, query_text: str) -> list[dict[str, Any]]:
 def _insert_memory(
     *, agent_id: str, space_id: str | None, tier: str, content: str, participants: list[str], provenance: dict[str, Any]
 ) -> str:
+    source_event_id = str(provenance.get("source_event_id") or "").strip()
+    if not source_event_id:
+        raise ValueError("semantic memory requires source_event_id evidence")
+
+    candidate_id = str(uuid.uuid4())
     memory_id = str(uuid.uuid4())
 
     embedding = None
@@ -352,33 +359,86 @@ def _insert_memory(
         except Exception as e:
             logger.warning("Embedding failed: %s", e)
 
-    _db.execute(
-        """
-        INSERT INTO memories(memory_id, agent_id, space_id, tier, content, participants, provenance, retention, embedding)
-        VALUES(
-          :memory_id::uuid,
-          :agent_id::uuid,
-          CASE WHEN :space_id IS NULL THEN NULL ELSE :space_id::uuid END,
-          :tier,
-          :content,
-          :participants::jsonb,
-          :provenance::jsonb,
-          :retention::jsonb,
-          CASE WHEN :embedding IS NULL THEN NULL ELSE CAST(:embedding AS vector) END
+    tx = _db.begin()
+    try:
+        _db.execute(
+            """
+            INSERT INTO memory_candidates(
+              memory_candidate_id, agent_id, source_event_id, space_id, tier, content,
+              participants, confidence, lifecycle_state
+            )
+            VALUES(
+              :memory_candidate_id::uuid,
+              :agent_id::uuid,
+              :source_event_id::uuid,
+              CASE WHEN :space_id IS NULL THEN NULL ELSE :space_id::uuid END,
+              :tier,
+              :content,
+              :participants::jsonb,
+              :confidence,
+              'committed'
+            )
+            """,
+            {
+                "memory_candidate_id": candidate_id,
+                "agent_id": agent_id,
+                "source_event_id": source_event_id,
+                "space_id": space_id,
+                "tier": tier,
+                "content": content,
+                "participants": json.dumps(participants),
+                "confidence": 1.0,
+            },
+            transaction_id=tx,
         )
-        """,
-        {
-            "memory_id": memory_id,
-            "agent_id": agent_id,
-            "space_id": space_id,
-            "tier": tier,
-            "content": content,
-            "participants": json.dumps(participants),
-            "provenance": json.dumps(provenance),
-            "retention": json.dumps({"policy": "v1"}),
-            "embedding": emb_str,
-        },
-    )
+        _db.execute(
+            """
+            INSERT INTO memories(
+              memory_id, agent_id, space_id, tier, content, participants, provenance, retention, embedding,
+              memory_candidate_id, source_event_id, lifecycle_state, recall_explanation
+            )
+            VALUES(
+              :memory_id::uuid,
+              :agent_id::uuid,
+              CASE WHEN :space_id IS NULL THEN NULL ELSE :space_id::uuid END,
+              :tier,
+              :content,
+              :participants::jsonb,
+              :provenance::jsonb,
+              :retention::jsonb,
+              CASE WHEN :embedding IS NULL THEN NULL ELSE CAST(:embedding AS vector) END,
+              :memory_candidate_id::uuid,
+              :source_event_id::uuid,
+              'committed',
+              :recall_explanation::jsonb
+            )
+            """,
+            {
+                "memory_id": memory_id,
+                "agent_id": agent_id,
+                "space_id": space_id,
+                "tier": tier,
+                "content": content,
+                "participants": json.dumps(participants),
+                "provenance": json.dumps(provenance),
+                "retention": json.dumps({"policy": "v1"}),
+                "embedding": emb_str,
+                "memory_candidate_id": candidate_id,
+                "source_event_id": source_event_id,
+                "recall_explanation": json.dumps(
+                    {
+                        "source_event_id": source_event_id,
+                        "candidate_id": candidate_id,
+                        "commit_policy": "planner_auto_commit_v1",
+                    }
+                ),
+            },
+            transaction_id=tx,
+        )
+        _db.commit(tx)
+    except Exception:
+        _db.rollback(tx)
+        raise
     return memory_id
 
 

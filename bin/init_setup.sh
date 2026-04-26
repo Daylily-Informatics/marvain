@@ -1,7 +1,4 @@
-# 1. Create environment
-conda env create -f config/marvain_conda.yaml
+# 1. Create or activate environment
+source ./activate
 
-# 2. Activate
-. ./marvain_activate
-
-# 3. Follow QUICKSTART.md from step 4 onwards
+# 2. Follow QUICKSTART.md from step 4 onwards

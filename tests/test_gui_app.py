@@ -162,13 +162,16 @@ class TestGuiApp(unittest.TestCase):
         r = self.client.get("/auth/callback?code=c1&state=s1", follow_redirects=False)
         self.assertEqual(r.status_code, 400)
 
-    def test_auth_callback_sets_access_cookie_on_success(self) -> None:
+    def test_auth_callback_sets_browser_session_on_success(self) -> None:
         # First hit /login to establish a session cookie with deterministic state.
         with mock.patch.object(self.mod.secrets, "token_urlsafe", return_value="s1"):
             self.client.get("/login", follow_redirects=False)
 
-        with mock.patch.object(self.mod, "exchange_code_for_tokens", new_callable=mock.AsyncMock) as ex:
-            ex.return_value = {"id_token": "itok"}
+        with mock.patch(
+            "daylily_auth_cognito.browser.session.exchange_authorization_code_async",
+            new_callable=mock.AsyncMock,
+        ) as ex:
+            ex.return_value = {"id_token": "itok", "access_token": "atok"}
             with mock.patch.object(self.mod, "get_user_info_from_tokens", new_callable=mock.AsyncMock) as gui:
                 gui.return_value = self.mod.CognitoUserInfo(
                     sub="sub-1",
@@ -224,27 +227,10 @@ class TestGuiApp(unittest.TestCase):
         self.assertIn("Agent One", r.text)
         self.assertIn("Agent Two", r.text)
 
-    def test_home_redirects_to_login_and_clears_invalid_access_cookie(self) -> None:
-        # We no longer authenticate via `marvain_access_token`, but we still clear it
-        # for backward-compat when an unauthenticated browser shows up with it.
-        self.client.cookies.set("marvain_access_token", "atok")
-
+    def test_home_redirects_to_login_when_unauthenticated(self) -> None:
         r = self.client.get("/", follow_redirects=False)
         self.assertEqual(r.status_code, 302)
         self.assertEqual(r.headers.get("location"), "/login?next=%2F")
-
-        if hasattr(r.headers, "get_list"):
-            set_cookie_headers = r.headers.get_list("set-cookie")
-        elif hasattr(r.headers, "getlist"):
-            set_cookie_headers = r.headers.getlist("set-cookie")
-        else:
-            v = r.headers.get("set-cookie")
-            set_cookie_headers = [v] if v else []
-
-        set_cookie = "\n".join(set_cookie_headers)
-        # Starlette delete_cookie emits a Set-Cookie that includes Max-Age=0 and empty value.
-        self.assertIn("marvain_access_token=", set_cookie)
-        self.assertIn("Max-Age=0", set_cookie)
 
     def test_livekit_test_renders_when_authenticated(self) -> None:
         self.mod._gui_get_user = mock.Mock(
@@ -1575,12 +1561,21 @@ class TestWebSocketContext(unittest.TestCase):
         # Access token must not be rendered into HTML.
         self.assertNotIn("test-token", r.text)
 
-    def test_ws_auth_token_api_returns_cookie_token(self):
-        """WS auth token endpoint should return token from secure cookie."""
-        self.mod._gui_get_user = mock.Mock(return_value=mock.Mock(user_id="user-1", email="test@example.com"))
+    def test_ws_auth_token_api_returns_session_token(self):
+        """WS auth token endpoint should mint a Marvain session token, not return OAuth cookies."""
+        from agent_hub.session_tokens import verify_ws_session_token
+
+        self.mod._gui_get_user = mock.Mock(
+            return_value=mock.Mock(user_id="user-1", cognito_sub="sub-1", email="test@example.com")
+        )
         r = self.client.get("/api/ws-auth-token", cookies={"marvain_access_token": "test-token"})
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json(), {"access_token": "test-token"})
+        data = r.json()
+        self.assertEqual(data["token_type"], "marvain_session")
+        self.assertNotEqual(data["access_token"], "test-token")
+        payload = verify_ws_session_token(secret_key=self.mod._session_secret, token=data["access_token"])
+        self.assertEqual(payload["user_id"], "user-1")
+        self.assertEqual(payload["cognito_sub"], "sub-1")
         self.assertEqual(r.headers.get("cache-control"), "no-store")
 
     def test_ws_auth_token_api_requires_auth(self):
