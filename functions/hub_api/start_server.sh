@@ -6,9 +6,9 @@ set -eu
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 
-# Source marvain_activate to set up conda env and PATH
+# Source activate to set up conda env
 cd "$REPO_ROOT"
-. ./marvain_activate
+source ./activate
 
 # Set up PYTHONPATH to include shared layer
 export PYTHONPATH="$REPO_ROOT/layers/shared/python:${PYTHONPATH:-}"
@@ -16,4 +16,3 @@ export PYTHONPATH="$REPO_ROOT/layers/shared/python:${PYTHONPATH:-}"
 # Change to hub_api directory and run the server
 cd "$SCRIPT_DIR"
 python run_local.py
-

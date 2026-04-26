@@ -39,6 +39,7 @@ def _load_ws_message_module():
 
     os.environ.setdefault("AWS_DEFAULT_REGION", "us-west-2")
     os.environ.setdefault("WS_TABLE", "ws-table")
+    os.environ.setdefault("SESSION_SECRET_KEY", "test-session-secret")
 
     # Provide a tiny fake boto3 so this test does not depend on boto3 being installed.
     fake_table = _FakeTable()
@@ -79,6 +80,7 @@ class TestWsMessageHelloAuth(unittest.TestCase):
         self.table = _FakeTable()
         self.mod._dynamo = _FakeDynamo(self.table)
 
+        self.mod._session_secret = None
         # Avoid depending on DB env vars; note args are evaluated before the auth stub is called.
         self.mod._get_db = lambda: object()
 
@@ -126,6 +128,67 @@ class TestWsMessageHelloAuth(unittest.TestCase):
         self.assertIsInstance(vals[":aat"], int)
         self.assertGreater(vals[":ttl"], vals[":aat"])
 
+    def test_hello_browser_session_token_success_updates_connection(self) -> None:
+        from agent_hub.session_tokens import mint_ws_session_token
+
+        token = mint_ws_session_token(
+            secret_key="test-session-secret",
+            user_id="u-session",
+            cognito_sub="sub-session",
+            email="session@example.com",
+        )
+        self.mod.authenticate_user_access_token = mock.Mock(side_effect=AssertionError("must not use Cognito verifier"))
+        self.mod.list_agents_for_user = mock.Mock(
+            return_value=[
+                types.SimpleNamespace(
+                    agent_id="a1",
+                    name="Agent 1",
+                    role="owner",
+                    relationship_label="self",
+                    disabled=False,
+                )
+            ]
+        )
+
+        event = {
+            "requestContext": {"connectionId": "c1", "domainName": "example.com", "stage": "dev"},
+            "body": json.dumps({"action": "hello", "access_token": token}),
+        }
+        resp = self.mod.handler(event, context=None)
+        self.assertEqual(resp["statusCode"], 200)
+
+        vals = self.table.update_calls[0]["ExpressionAttributeValues"]
+        self.assertEqual(vals[":pt"], "user")
+        self.assertEqual(vals[":uid"], "u-session")
+        self.assertEqual(vals[":cs"], "sub-session")
+        self.assertEqual(vals[":em"], "session@example.com")
+        self.assertEqual(self.sent[-1]["payload"]["principal_type"], "user")
+
+    def test_hello_device_token_success_updates_connection(self) -> None:
+        self.mod.authenticate_device = mock.Mock(
+            return_value=types.SimpleNamespace(
+                device_id="d1",
+                agent_id="a1",
+                scopes=["events:write"],
+                capabilities={"audio": True},
+            )
+        )
+
+        event = {
+            "requestContext": {"connectionId": "c1", "domainName": "example.com", "stage": "dev"},
+            "body": json.dumps({"action": "hello", "device_token": "dtok", "space_id": "space-1"}),
+        }
+        resp = self.mod.handler(event, context=None)
+        self.assertEqual(resp["statusCode"], 200)
+
+        vals = self.table.update_calls[0]["ExpressionAttributeValues"]
+        self.assertEqual(vals[":pt"], "device")
+        self.assertEqual(vals[":did"], "d1")
+        self.assertEqual(vals[":agid"], "a1")
+        self.assertEqual(vals[":space"], "space-1")
+        self.assertEqual(self.sent[-1]["payload"]["principal_type"], "device")
+        self.assertEqual(self.sent[-1]["payload"]["device_id"], "d1")
+
     def test_hello_access_token_invalid_sends_error(self) -> None:
         self.mod.authenticate_user_access_token = mock.Mock(side_effect=PermissionError("bad token"))
 
@@ -149,5 +212,5 @@ class TestWsMessageHelloAuth(unittest.TestCase):
 
         self.assertEqual(
             self.sent[-1]["payload"],
-            {"type": "hello", "ok": False, "error": "missing_access_token"},
+            {"type": "hello", "ok": False, "error": "missing_token"},
         )

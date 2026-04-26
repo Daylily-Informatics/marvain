@@ -34,6 +34,7 @@ class HubConfig:
     db_name: str
     transcript_queue_url: str | None
     action_queue_url: str | None
+    tapdb_writer_queue_url: str | None
     integration_queue_url: str | None
     audit_bucket: str | None
     artifact_bucket: str | None
@@ -121,6 +122,7 @@ def load_config() -> HubConfig:
         db_name=_req("DB_NAME"),
         transcript_queue_url=os.getenv("TRANSCRIPT_QUEUE_URL"),
         action_queue_url=os.getenv("ACTION_QUEUE_URL"),
+        tapdb_writer_queue_url=os.getenv("TAPDB_WRITER_QUEUE_URL"),
         integration_queue_url=os.getenv("INTEGRATION_QUEUE_URL"),
         audit_bucket=os.getenv("AUDIT_BUCKET"),
         artifact_bucket=os.getenv("ARTIFACT_BUCKET"),

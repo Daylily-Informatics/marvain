@@ -56,6 +56,7 @@ def _load_agent_worker_module():
 
     # Speed up disconnect tests.
     os.environ["AGENT_DISCONNECT_DELAY_SECONDS"] = "0"
+    os.environ["MARVAIN_AGENT_PERSONA_INSTRUCTIONS"] = "Test persona instructions."
 
     spec = importlib.util.spec_from_file_location("agent_worker_for_tests_rejoin", worker_py)
     assert spec and spec.loader

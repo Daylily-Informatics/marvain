@@ -21,6 +21,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "functions" / "ws_message"))
 
 
+def test_ws_message_template_can_queue_and_dispatch_device_actions():
+    template = (Path(__file__).resolve().parents[1] / "template.yaml").read_text(encoding="utf-8")
+    ws_section = template.split("WsMessageFunction:", 1)[1].split("WsConnectIntegration:", 1)[0]
+
+    assert "ACTION_QUEUE_URL: !Ref ActionQueue" in ws_section
+    assert "WS_API_ENDPOINT: !Sub https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}" in ws_section
+    assert "sqs:SendMessage" in ws_section
+    assert "Resource: !GetAtt ActionQueue.Arn" in ws_section
+
+
 class TestPingAction:
     """Tests for the ping action."""
 

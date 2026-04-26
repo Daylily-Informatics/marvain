@@ -141,7 +141,7 @@
         S3 buckets are provisioned by the SAM/CloudFormation stack. To create missing buckets, redeploy the stack:
       </p>
       <code>
-        source marvain_activate && ./bin/marvain build && ./bin/marvain deploy --no-guided
+        source ./activate && marvain build && marvain deploy --no-guided
       </code>
     </div>
     {% endif %}

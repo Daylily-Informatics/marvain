@@ -41,6 +41,11 @@ MAX_MESSAGES = int(os.getenv("RECOGNITION_MAX_MESSAGES", "5"))
 VISIBILITY_TIMEOUT = int(os.getenv("RECOGNITION_VISIBILITY_TIMEOUT", "60"))
 
 DELETE_ARTIFACTS = str(os.getenv("RECOGNITION_DELETE_ARTIFACTS", "true")).strip().lower() in ("true", "1", "yes")
+ALLOW_DUMMY_EMBEDDINGS = str(os.getenv("RECOGNITION_ALLOW_DUMMY_EMBEDDINGS", "")).strip().lower() in (
+    "true",
+    "1",
+    "yes",
+)
 
 
 def _require_env() -> None:
@@ -58,11 +63,7 @@ def _require_env() -> None:
 
 
 def _dummy_embedding(data: bytes, dim: int) -> list[float]:
-    """Deterministic fallback embedding from content hash (for dev wiring).
-
-    Real deployments should use proper voice/face embedding models. This exists
-    so the end-to-end pipeline can be validated without heavy ML deps.
-    """
+    """Deterministic embedding for explicit local tests only."""
     seed = hashlib.sha256(data).digest()
     out: list[float] = []
     counter = 0
@@ -100,7 +101,7 @@ def _try_voice_embedding(audio_bytes: bytes) -> tuple[list[float], str] | None:
             emb = emb.astype("float32")
             return (emb.tolist(), "resemblyzer")
     except Exception as exc:
-        logger.warning("Voice embedding failed; falling back to dummy: %s", exc)
+        logger.warning("Voice embedding failed: %s", exc)
     return None
 
 
@@ -126,8 +127,30 @@ def _try_face_embedding(image_bytes: bytes) -> tuple[list[float], str] | None:
             emb = emb.astype("float32")
             return (emb.tolist(), "insightface-arcface")
     except Exception as exc:
-        logger.warning("Face embedding failed; falling back to dummy: %s", exc)
+        logger.warning("Face embedding failed: %s", exc)
     return None
+
+
+def _embedding_or_raise(*, modality: str, data: bytes) -> tuple[list[float], str]:
+    if modality == "voice":
+        emb_and_model = _try_voice_embedding(data)
+        dummy_dim = 256
+        dummy_model = "dummy-voice"
+    elif modality == "face":
+        emb_and_model = _try_face_embedding(data)
+        dummy_dim = 512
+        dummy_model = "dummy-face"
+    else:
+        raise RuntimeError(f"unsupported modality: {modality}")
+    if emb_and_model is not None:
+        return emb_and_model
+    if ALLOW_DUMMY_EMBEDDINGS:
+        logger.warning("Using explicit dummy %s recognition embedding", modality)
+        return _dummy_embedding(data, dummy_dim), dummy_model
+    raise RuntimeError(
+        f"recognizer_unavailable:{modality}. Install the production recognizer dependency "
+        "or set RECOGNITION_ALLOW_DUMMY_EMBEDDINGS=true for local tests only."
+    )
 
 
 def _hub_post(path: str, payload: dict[str, Any], timeout_s: int = 15) -> dict[str, Any]:
@@ -177,12 +200,7 @@ def _process_message(msg_body: dict[str, Any], s3: Any) -> None:
     enroll_person_id = str(payload.get("enroll_person_id") or "").strip() or None
     modality = "voice" if ev_type == "voice.sample" else "face"
 
-    if ev_type == "voice.sample":
-        emb_and_model = _try_voice_embedding(data) or (_dummy_embedding(data, 256), "dummy-voice")
-    else:
-        emb_and_model = _try_face_embedding(data) or (_dummy_embedding(data, 512), "dummy-face")
-
-    embedding, model_name = emb_and_model
+    embedding, model_name = _embedding_or_raise(modality=modality, data=data)
 
     if enroll_person_id:
         logger.info("Enrollment: %s person_id=%s event_id=%s", modality, enroll_person_id, event_id)
@@ -282,6 +300,7 @@ def main() -> int:
     logger.info("Queue: %s", RECOGNITION_QUEUE_URL)
     logger.info("Hub: %s", HUB_API_BASE)
     logger.info("Delete artifacts: %s", DELETE_ARTIFACTS)
+    logger.info("Dummy embeddings enabled: %s", ALLOW_DUMMY_EMBEDDINGS)
 
     while _running:
         try:

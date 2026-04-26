@@ -20,11 +20,8 @@ This guide walks you through the complete GUI-driven workflow for Marvain: from 
 git clone git@github.com:Daylily-Informatics/marvain.git
 cd marvain
 
-# Create the Conda environment (one-time)
-conda env create -f config/marvain_conda.yaml
-
-# Activate environment + put CLI on PATH
-. ./marvain_activate
+# Create or activate the Conda environment
+source ./activate
 
 # Verify toolchain
 marvain doctor
@@ -305,8 +302,7 @@ On the remote device:
 # 1) Clone the repo and set up Conda
 git clone git@github.com:Daylily-Informatics/marvain.git
 cd marvain
-conda env create -f config/marvain_conda.yaml
-. ./marvain_activate
+source ./activate
 
 # 2) Copy your config from your laptop
 scp laptop:~/.config/marvain/marvain-config.yaml \
@@ -333,7 +329,7 @@ After=network.target
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/marvain
-ExecStart=/bin/sh -c '. ./marvain_activate && marvain agent start --foreground'
+ExecStart=/bin/sh -c 'source ./activate && marvain agent start --foreground'
 Restart=on-failure
 RestartSec=10
 

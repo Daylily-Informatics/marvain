@@ -73,6 +73,7 @@ from agent_hub.memberships import (
 )
 from agent_hub.metrics import emit_count, emit_ms
 from agent_hub.openai_http import call_embeddings
+from agent_hub.personas import DEFAULT_AGENT_PERSONA_INSTRUCTIONS, DEFAULT_AGENT_PERSONA_NAME
 from agent_hub.policy import is_agent_disabled, is_privacy_mode
 from agent_hub.rds_data import RdsData, RdsDataEnv
 from agent_hub.secrets import get_secret_json
@@ -111,8 +112,6 @@ def _get_session_secret() -> str:
 
 # Add SessionMiddleware (needed for API routes that use sessions)
 _session_secret = _get_session_secret()
-# Use SameSite=none for OAuth flows (Cognito redirect requires cross-site cookie)
-# This requires https_only=True, which is fine since we default to HTTPS
 _is_https = os.getenv("HTTPS_ENABLED", "true").lower() in ("true", "1", "yes")
 _is_local = os.getenv("ENVIRONMENT", "").lower() in ("local", "dev", "test")
 api_app.add_middleware(
@@ -120,7 +119,7 @@ api_app.add_middleware(
     secret_key=_session_secret,
     session_cookie="marvain_session",
     max_age=3600 * 8,
-    same_site="none" if _is_https else "lax",
+    same_site="lax",
     https_only=_is_https or not _is_local,
 )
 
@@ -320,6 +319,7 @@ class IngestEventIn(BaseModel):
     type: str
     payload: dict[str, Any] = Field(default_factory=dict)
     person_id: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 class IngestEventOut(BaseModel):
@@ -388,6 +388,15 @@ class LiveKitTokenOut(BaseModel):
     token: str
     room: str
     identity: str
+    session_id: str | None = None
+
+
+class PersonaOut(BaseModel):
+    persona_id: str
+    agent_id: str
+    name: str
+    instructions: str
+    source: str
 
 
 class PresignIn(BaseModel):
@@ -480,6 +489,66 @@ def _space_livekit_room_mode(*, space_id: str) -> str:
     return v
 
 
+def _seed_default_persona(*, agent_id: str, transaction_id: str | None = None) -> str:
+    persona_id = str(uuid.uuid4())
+    _get_db().execute(
+        """
+        INSERT INTO personas(persona_id, agent_id, name, instructions, is_default, lifecycle_state)
+        VALUES (:persona_id::uuid, :agent_id::uuid, :name, :instructions, true, 'active')
+        """,
+        {
+            "persona_id": persona_id,
+            "agent_id": agent_id,
+            "name": DEFAULT_AGENT_PERSONA_NAME,
+            "instructions": DEFAULT_AGENT_PERSONA_INSTRUCTIONS,
+        },
+        transaction_id=transaction_id,
+    )
+    return persona_id
+
+
+def _create_session_record(
+    *,
+    agent_id: str,
+    space_id: str,
+    session_id: str,
+    livekit_room: str,
+    room_mode: str,
+    actor_type: str,
+    actor_id: str,
+) -> None:
+    _get_db().execute(
+        """
+        INSERT INTO sessions(session_id, agent_id, space_id, persona_id, livekit_room, status, metadata)
+        VALUES (
+            :session_id::uuid,
+            :agent_id::uuid,
+            :space_id::uuid,
+            (
+                SELECT persona_id
+                FROM personas
+                WHERE agent_id = :agent_id::uuid
+                  AND is_default
+                  AND lifecycle_state = 'active'
+                  AND disabled_at IS NULL
+                ORDER BY created_at DESC
+                LIMIT 1
+            ),
+            :livekit_room,
+            'open',
+            :metadata::jsonb
+        )
+        """,
+        {
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "space_id": space_id,
+            "livekit_room": livekit_room,
+            "metadata": json.dumps({"room_mode": room_mode, "actor_type": actor_type, "actor_id": actor_id}),
+        },
+    )
+
+
 def _device_is_admin(device: AuthenticatedDevice) -> bool:
     kind = str((device.capabilities or {}).get("kind") or "").strip().lower()
     # Local agent workers are trusted orchestrators and must access any space
@@ -535,8 +604,9 @@ async def _mint_livekit_token_for_user(
     if resolved_mode not in {"ephemeral", "stable"}:
         resolved_mode = "ephemeral"
 
-    # Always generate a session id for metadata/debugging, even in stable mode.
-    room_session_id = uuid.uuid4().hex[:12]
+    # Always generate a durable session row, even in stable room mode.
+    session_id = str(uuid.uuid4())
+    room_session_id = session_id.replace("-", "")[:12]
     if resolved_mode == "stable":
         room = str(space_id)
     else:
@@ -544,6 +614,15 @@ async def _mint_livekit_token_for_user(
         room = f"{space_id}:{room_session_id}"
 
     identity = f"user:{user.user_id}"
+    _create_session_record(
+        agent_id=str(agent_id),
+        space_id=str(space_id),
+        session_id=session_id,
+        livekit_room=room,
+        room_mode=resolved_mode,
+        actor_type="user",
+        actor_id=user.user_id,
+    )
     token = mint_livekit_join_token(
         api_key=api_key,
         api_secret=api_secret,
@@ -554,10 +633,11 @@ async def _mint_livekit_token_for_user(
         agent_metadata={
             "space_id": str(space_id),
             "agent_id": str(agent_id),
+            "session_id": session_id,
             "room_session_id": room_session_id,
         },
     )
-    return LiveKitTokenOut(url=url, token=token, room=room, identity=identity)
+    return LiveKitTokenOut(url=url, token=token, room=room, identity=identity, session_id=session_id)
 
 
 # -----------------------------
@@ -620,6 +700,7 @@ def create_agent(body: CreateAgentIn, user: AuthenticatedUser = Depends(get_user
             {"agent_id": agent_id, "user_id": user.user_id, "relationship_label": body.relationship_label},
             transaction_id=tx,
         )
+        _seed_default_persona(agent_id=agent_id, transaction_id=tx)
         _get_db().commit(tx)
     except Exception:
         _get_db().rollback(tx)
@@ -730,7 +811,8 @@ async def livekit_device_token(
 
     url, api_key, api_secret = _require_livekit_config()
 
-    room_session_id = uuid.uuid4().hex[:12]
+    session_id = str(uuid.uuid4())
+    room_session_id = session_id.replace("-", "")[:12]
     room = str(body.space_id)
     identity = f"device:{device.device_id}"
 
@@ -738,6 +820,16 @@ async def livekit_device_token(
     publish_audio = bool(caps.get("publish_audio", True))
     publish_video = bool(caps.get("publish_video", True))
     subscribe_audio = bool(caps.get("subscribe_audio", True))
+
+    _create_session_record(
+        agent_id=str(agent_id),
+        space_id=str(body.space_id),
+        session_id=session_id,
+        livekit_room=room,
+        room_mode="stable",
+        actor_type="device",
+        actor_id=device.device_id,
+    )
 
     # LiveKit grants do not separate audio/video publish; treat any publish as can_publish.
     token = mint_livekit_join_token(
@@ -752,10 +844,63 @@ async def livekit_device_token(
         agent_metadata={
             "space_id": str(body.space_id),
             "agent_id": str(agent_id),
+            "session_id": session_id,
             "room_session_id": room_session_id,
         },
     )
-    return LiveKitTokenOut(url=url, token=token, room=room, identity=identity)
+    return LiveKitTokenOut(url=url, token=token, room=room, identity=identity, session_id=session_id)
+
+
+@api_app.get("/v1/agents/{agent_id}/personas/default", response_model=PersonaOut)
+def get_default_persona(
+    agent_id: str,
+    space_id: str | None = None,
+    session_id: str | None = None,
+    device: AuthenticatedDevice = Depends(get_device),
+) -> PersonaOut:
+    """Return the active default persona for agent-worker prompt hydration."""
+    require_scope(device, "events:read")
+    _require_device_agent_access(device=device, agent_id=agent_id)
+    if is_agent_disabled(_get_db(), agent_id):
+        raise HTTPException(status_code=403, detail="Agent is disabled")
+    if space_id:
+        _require_agent_space(agent_id, space_id)
+
+    rows = _get_db().query(
+        """
+        SELECT persona_id::TEXT as persona_id, agent_id::TEXT as agent_id, name, instructions
+        FROM personas
+        WHERE agent_id = :agent_id::uuid
+          AND is_default
+          AND lifecycle_state = 'active'
+          AND disabled_at IS NULL
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        {"agent_id": agent_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Default persona not configured")
+    row = rows[0]
+
+    if session_id:
+        _get_db().execute(
+            """
+            UPDATE sessions
+            SET persona_id = :persona_id::uuid
+            WHERE session_id = :session_id::uuid
+              AND agent_id = :agent_id::uuid
+            """,
+            {"persona_id": row["persona_id"], "session_id": session_id, "agent_id": agent_id},
+        )
+
+    return PersonaOut(
+        persona_id=row["persona_id"],
+        agent_id=row["agent_id"],
+        name=row["name"],
+        instructions=row["instructions"],
+        source="hub",
+    )
 
 
 @api_app.post("/v1/agents/{agent_id}/claim_owner")
@@ -1147,6 +1292,7 @@ def admin_bootstrap(body: BootstrapIn) -> BootstrapOut:
             },
             transaction_id=tx,
         )
+        _seed_default_persona(agent_id=agent_id, transaction_id=tx)
         _get_db().commit(tx)
     except Exception:
         _get_db().rollback(tx)
@@ -1270,6 +1416,19 @@ def _parse_json_list(value: Any) -> list[Any]:
         except Exception:
             return []
     return []
+
+
+def _parse_json_obj(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
 
 
 @api_app.get("/v1/agents/{agent_id}/people", response_model=list[PersonV1Out])
@@ -1941,9 +2100,10 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
                 if rows and rows[0].get("person_id"):
                     resolved_person_id = str(rows[0]["person_id"])
     _get_db().execute(
-        """INSERT INTO events(event_id, agent_id, space_id, device_id, person_id, type, payload)
+        """INSERT INTO events(event_id, agent_id, space_id, device_id, person_id, type, payload, session_id)
            VALUES (:event_id::uuid, :agent_id::uuid, :space_id::uuid, :device_id::uuid,
-                   CASE WHEN :person_id = '' THEN NULL ELSE :person_id::uuid END, :type, :payload::jsonb)""",
+                   CASE WHEN :person_id = '' THEN NULL ELSE :person_id::uuid END, :type, :payload::jsonb,
+                   CASE WHEN :session_id IS NULL OR :session_id = '' THEN NULL ELSE :session_id::uuid END)""",
         {
             "event_id": event_id,
             "agent_id": space_agent_id,
@@ -1952,6 +2112,7 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
             "person_id": resolved_person_id or "",
             "type": body.type,
             "payload": json.dumps(body.payload),
+            "session_id": body.session_id,
         },
     )
     queued = False
@@ -2643,7 +2804,12 @@ def list_memories(limit: int = 50, device: AuthenticatedDevice = Depends(get_dev
                   participants::TEXT as participants, provenance::TEXT as provenance,
                   subject_person_id::TEXT as subject_person_id, tags, scene_context,
                   modality, confidence, related_memory_ids::TEXT[] as related_memory_ids
-           FROM memories WHERE agent_id = :agent_id::uuid ORDER BY created_at DESC LIMIT :limit""",
+           FROM memories
+           WHERE agent_id = :agent_id::uuid
+             AND lifecycle_state = 'committed'
+             AND tombstoned_at IS NULL
+           ORDER BY created_at DESC
+           LIMIT :limit""",
         {"agent_id": device.agent_id, "limit": limit},
     )
     return {"memories": rows}
@@ -2653,8 +2819,24 @@ def list_memories(limit: int = 50, device: AuthenticatedDevice = Depends(get_dev
 def delete_memory(memory_id: str, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
     require_scope(device, "memories:write")
     _get_db().execute(
-        "DELETE FROM memories WHERE memory_id = :memory_id::uuid AND agent_id = :agent_id::uuid",
-        {"memory_id": memory_id, "agent_id": device.agent_id},
+        """
+        WITH updated AS (
+          UPDATE memories
+          SET lifecycle_state = 'tombstoned',
+              tombstoned_at = COALESCE(tombstoned_at, now()),
+              recall_explanation = COALESCE(recall_explanation, '{}'::jsonb)
+                || jsonb_build_object('tombstone_reason', 'device_delete')
+          WHERE memory_id = :memory_id::uuid
+            AND agent_id = :agent_id::uuid
+            AND tombstoned_at IS NULL
+          RETURNING memory_id, agent_id
+        )
+        INSERT INTO memory_tombstones(memory_id, agent_id, reason, actor_type, actor_id)
+        SELECT memory_id, agent_id, 'device_delete', 'device', :device_id
+        FROM updated
+        ON CONFLICT (memory_id) DO NOTHING
+        """,
+        {"memory_id": memory_id, "agent_id": device.agent_id, "device_id": device.device_id},
     )
     if _cfg.audit_bucket:
         append_audit_entry(
@@ -2664,13 +2846,17 @@ def delete_memory(memory_id: str, device: AuthenticatedDevice = Depends(get_devi
             entry_type="memory_deleted",
             entry={"memory_id": memory_id},
         )
-    return {"deleted": True, "memory_id": memory_id}
+    return {"deleted": True, "memory_id": memory_id, "tombstoned": True}
 
 
 class MemoryCreateIn(BaseModel):
     """Request body for creating a memory from a device."""
 
     space_id: str | None = None
+    source_event_id: str | None = Field(
+        default=None, description="Required evidence event; created automatically when omitted"
+    )
+    session_id: str | None = None
     tier: str = Field(default="episodic", description="Memory tier: episodic, semantic, or procedural")
     content: str = Field(..., min_length=1, max_length=10000)
     metadata: dict[str, Any] = Field(
@@ -2689,18 +2875,22 @@ class MemoryCreateIn(BaseModel):
 def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
     """Create a memory for the device's agent (requires memories:write scope)."""
     require_scope(device, "memories:write")
+    if not body.space_id:
+        raise HTTPException(status_code=400, detail="space_id is required for memory evidence")
 
     target_agent_id = str(device.agent_id)
-    if body.space_id:
-        target_agent_id = _resolve_space_agent_for_device(
-            device=device,
-            space_id=body.space_id,
-            not_found_detail="Space not found",
-            mismatch_status=404,
-            mismatch_detail="Space not found for this agent",
-        )
+    target_agent_id = _resolve_space_agent_for_device(
+        device=device,
+        space_id=body.space_id,
+        not_found_detail="Space not found",
+        mismatch_status=404,
+        mismatch_detail="Space not found for this agent",
+    )
 
     memory_id = str(uuid.uuid4())
+    memory_candidate_id = str(uuid.uuid4())
+    source_event_id = str(body.source_event_id or "").strip() or str(uuid.uuid4())
+    created_source_event = not bool(body.source_event_id)
     provenance = {
         "source": "device",
         "device_id": device.device_id,
@@ -2719,44 +2909,136 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
         except Exception as e:
             logger.warning("Failed to generate memory embedding (continuing without embedding): %s", e)
 
-    _get_db().execute(
-        """
-        INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants, provenance, embedding,
-                              subject_person_id, tags, scene_context, modality, confidence, related_memory_ids)
-        VALUES (
-            :memory_id::uuid,
-            :agent_id::uuid,
-            CASE WHEN :space_id IS NULL THEN NULL ELSE :space_id::uuid END,
-            :tier,
-            :content,
-            :participants::jsonb,
-            :provenance::jsonb,
-            CASE WHEN :embedding IS NULL THEN NULL ELSE CAST(:embedding AS vector) END,
-            CASE WHEN :subject_person_id IS NULL THEN NULL ELSE :subject_person_id::uuid END,
-            :tags::text[],
-            :scene_context,
-            :modality,
-            :confidence,
-            :related_memory_ids::uuid[]
+    db = _get_db()
+    tx = db.begin()
+    try:
+        if created_source_event:
+            db.execute(
+                """
+                INSERT INTO events(event_id, agent_id, space_id, device_id, person_id, type, payload, session_id)
+                VALUES(
+                    :event_id::uuid,
+                    :agent_id::uuid,
+                    :space_id::uuid,
+                    :device_id::uuid,
+                    NULLIF(CAST(:person_id AS text), '')::uuid,
+                    'memory.evidence',
+                    :payload::jsonb,
+                    NULLIF(CAST(:session_id AS text), '')::uuid
+                )
+                """,
+                {
+                    "event_id": source_event_id,
+                    "agent_id": target_agent_id,
+                    "space_id": body.space_id,
+                    "device_id": device.device_id,
+                    "person_id": body.subject_person_id,
+                    "payload": json.dumps(
+                        {
+                            "source": "device_memory_create_v1",
+                            "content_preview": body.content[:500],
+                            "metadata": body.metadata,
+                        }
+                    ),
+                    "session_id": body.session_id,
+                },
+                transaction_id=tx,
+            )
+        db.execute(
+            """
+            INSERT INTO memory_candidates(memory_candidate_id, agent_id, source_event_id, space_id, session_id,
+                                          subject_person_id, tier, content, participants, confidence, lifecycle_state)
+            VALUES(
+                :memory_candidate_id::uuid,
+                :agent_id::uuid,
+                :source_event_id::uuid,
+                :space_id::uuid,
+                NULLIF(CAST(:session_id AS text), '')::uuid,
+                NULLIF(CAST(:subject_person_id AS text), '')::uuid,
+                CAST(:tier AS text),
+                CAST(:content AS text),
+                :participants::jsonb,
+                CAST(:confidence AS real),
+                'committed'
+            )
+            """,
+            {
+                "memory_candidate_id": memory_candidate_id,
+                "agent_id": target_agent_id,
+                "source_event_id": source_event_id,
+                "space_id": body.space_id,
+                "session_id": body.session_id,
+                "subject_person_id": body.subject_person_id,
+                "tier": body.tier,
+                "content": body.content,
+                "participants": json.dumps(body.participants),
+                "confidence": body.confidence,
+            },
+            transaction_id=tx,
         )
-        """,
-        {
-            "memory_id": memory_id,
-            "agent_id": target_agent_id,
-            "space_id": body.space_id,
-            "tier": body.tier,
-            "content": body.content,
-            "participants": json.dumps(body.participants),
-            "provenance": json.dumps(provenance),
-            "embedding": embedding,
-            "subject_person_id": body.subject_person_id,
-            "tags": "{" + ",".join(body.tags) + "}" if body.tags else "{}",
-            "scene_context": body.scene_context,
-            "modality": body.modality,
-            "confidence": body.confidence,
-            "related_memory_ids": "{" + ",".join(body.related_memory_ids) + "}" if body.related_memory_ids else "{}",
-        },
-    )
+        db.execute(
+            """
+            INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants, provenance, embedding,
+                                  subject_person_id, tags, scene_context, modality, confidence, related_memory_ids,
+                                  memory_candidate_id, source_event_id, session_id, lifecycle_state, recall_explanation)
+            VALUES (
+                :memory_id::uuid,
+                :agent_id::uuid,
+                :space_id::uuid,
+                CAST(:tier AS text),
+                CAST(:content AS text),
+                :participants::jsonb,
+                :provenance::jsonb,
+                NULLIF(CAST(:embedding AS text), '')::vector,
+                NULLIF(CAST(:subject_person_id AS text), '')::uuid,
+                :tags::text[],
+                CASE WHEN :scene_context IS NULL THEN NULL ELSE CAST(:scene_context AS text) END,
+                CAST(:modality AS text),
+                CAST(:confidence AS real),
+                :related_memory_ids::uuid[],
+                :memory_candidate_id::uuid,
+                :source_event_id::uuid,
+                NULLIF(CAST(:session_id AS text), '')::uuid,
+                'committed',
+                :recall_explanation::jsonb
+            )
+            """,
+            {
+                "memory_id": memory_id,
+                "agent_id": target_agent_id,
+                "space_id": body.space_id,
+                "tier": body.tier,
+                "content": body.content,
+                "participants": json.dumps(body.participants),
+                "provenance": json.dumps(provenance),
+                "embedding": embedding,
+                "subject_person_id": body.subject_person_id,
+                "tags": "{" + ",".join(body.tags) + "}" if body.tags else "{}",
+                "scene_context": body.scene_context,
+                "modality": body.modality,
+                "confidence": body.confidence,
+                "related_memory_ids": "{" + ",".join(body.related_memory_ids) + "}"
+                if body.related_memory_ids
+                else "{}",
+                "memory_candidate_id": memory_candidate_id,
+                "source_event_id": source_event_id,
+                "session_id": body.session_id,
+                "recall_explanation": json.dumps(
+                    {
+                        "source": "device",
+                        "device_id": device.device_id,
+                        "source_event_id": source_event_id,
+                        "memory_candidate_id": memory_candidate_id,
+                        "commit_policy": "device_memory_create_v1",
+                    }
+                ),
+            },
+            transaction_id=tx,
+        )
+        db.commit(tx)
+    except Exception:
+        db.rollback(tx)
+        raise
 
     if _cfg.audit_bucket:
         append_audit_entry(
@@ -2767,7 +3049,13 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
             entry={"memory_id": memory_id, "tier": body.tier, "source": "device"},
         )
 
-    return {"memory_id": memory_id, "tier": body.tier, "created": True}
+    return {
+        "memory_id": memory_id,
+        "memory_candidate_id": memory_candidate_id,
+        "source_event_id": source_event_id,
+        "tier": body.tier,
+        "created": True,
+    }
 
 
 # -----------------------------------------------------------------------------
@@ -2797,6 +3085,7 @@ class RecallMemoryOut(BaseModel):
     content: str
     created_at: str
     distance: float
+    explanation: dict[str, Any] = Field(default_factory=dict)
 
 
 class RecallOut(BaseModel):
@@ -2875,10 +3164,17 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
                tier,
                content,
                created_at::TEXT as created_at,
+               provenance::TEXT as provenance_json,
+               source_event_id::TEXT as source_event_id,
+               session_id::TEXT as session_id,
+               tapdb_euid,
+               recall_explanation::TEXT as recall_explanation_json,
                (embedding <=> CAST(:q AS vector))::DOUBLE PRECISION as distance
         FROM memories
         WHERE agent_id = :agent_id::uuid
           AND embedding IS NOT NULL
+          AND lifecycle_state = 'committed'
+          AND tombstoned_at IS NULL
           {tier_clause}
           {space_clause}
           {person_clause}
@@ -2895,6 +3191,17 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
             content=r["content"],
             created_at=r["created_at"],
             distance=float(r.get("distance", 0.0)),
+            explanation={
+                "ranking": {
+                    "distance": float(r.get("distance", 0.0)),
+                    "method": "pgvector_cosine",
+                },
+                "source_event_id": r.get("source_event_id"),
+                "session_id": r.get("session_id"),
+                "tapdb_euid": r.get("tapdb_euid"),
+                "stored": _parse_json_obj(r.get("recall_explanation_json") or "{}"),
+                "provenance": _parse_json_obj(r.get("provenance_json") or "{}"),
+            },
         )
         for r in rows
     ]
@@ -3630,6 +3937,8 @@ class DelegateMemoryIn(BaseModel):
     """Request body for creating a memory via delegation."""
 
     space_id: str | None = None
+    source_event_id: str | None = None
+    session_id: str | None = None
     tier: str = "short"
     content: str
     participants: list[str] = Field(default_factory=list)
@@ -3649,10 +3958,14 @@ def delegate_write_memory(
     """Create a memory for the issuing agent (requires write_memories scope)."""
     _require_agent_scope(agent, "write_memories")
 
-    if body.space_id:
-        _check_agent_space(agent, body.space_id)
+    if not body.space_id:
+        raise HTTPException(status_code=400, detail="space_id is required for memory evidence")
+    _check_agent_space(agent, body.space_id)
 
     memory_id = str(uuid.uuid4())
+    memory_candidate_id = str(uuid.uuid4())
+    source_event_id = str(body.source_event_id or "").strip() or str(uuid.uuid4())
+    created_source_event = not bool(body.source_event_id)
     embedding: str | None = None
     if _cfg.openai_secret_arn:
         try:
@@ -3666,41 +3979,137 @@ def delegate_write_memory(
         except Exception as e:
             logger.warning("Failed to generate delegate memory embedding (continuing): %s", e)
 
-    _get_db().execute(
-        """
-        INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants, embedding,
-                              subject_person_id, tags, scene_context, modality, confidence, related_memory_ids)
-        VALUES (
-            :memory_id::uuid,
-            :agent_id::uuid,
-            CASE WHEN :space_id IS NULL THEN NULL ELSE :space_id::uuid END,
-            :tier,
-            :content,
-            :participants::jsonb,
-            CASE WHEN :embedding IS NULL THEN NULL ELSE CAST(:embedding AS vector) END,
-            CASE WHEN :subject_person_id IS NULL THEN NULL ELSE :subject_person_id::uuid END,
-            :tags::text[],
-            :scene_context,
-            :modality,
-            :confidence,
-            :related_memory_ids::uuid[]
+    db = _get_db()
+    tx = db.begin()
+    try:
+        if created_source_event:
+            db.execute(
+                """
+                INSERT INTO events(event_id, agent_id, space_id, device_id, type, payload, session_id)
+                VALUES(
+                    :event_id::uuid,
+                    :agent_id::uuid,
+                    :space_id::uuid,
+                    NULL,
+                    'memory.evidence',
+                    :payload::jsonb,
+                    NULLIF(CAST(:session_id AS text), '')::uuid
+                )
+                """,
+                {
+                    "event_id": source_event_id,
+                    "agent_id": agent.issuer_agent_id,
+                    "space_id": body.space_id,
+                    "payload": json.dumps(
+                        {
+                            "source": "delegate_memory_create_v1",
+                            "content_preview": body.content[:500],
+                            "token_id": agent.token_id,
+                        }
+                    ),
+                    "session_id": body.session_id,
+                },
+                transaction_id=tx,
+            )
+        db.execute(
+            """
+            INSERT INTO memory_candidates(memory_candidate_id, agent_id, source_event_id, space_id, session_id,
+                                          subject_person_id, tier, content, participants, confidence, lifecycle_state)
+            VALUES(
+                :memory_candidate_id::uuid,
+                :agent_id::uuid,
+                :source_event_id::uuid,
+                :space_id::uuid,
+                NULLIF(CAST(:session_id AS text), '')::uuid,
+                NULLIF(CAST(:subject_person_id AS text), '')::uuid,
+                CAST(:tier AS text),
+                CAST(:content AS text),
+                :participants::jsonb,
+                CAST(:confidence AS real),
+                'committed'
+            )
+            """,
+            {
+                "memory_candidate_id": memory_candidate_id,
+                "agent_id": agent.issuer_agent_id,
+                "source_event_id": source_event_id,
+                "space_id": body.space_id,
+                "session_id": body.session_id,
+                "subject_person_id": body.subject_person_id,
+                "tier": body.tier,
+                "content": body.content,
+                "participants": json.dumps(body.participants),
+                "confidence": body.confidence,
+            },
+            transaction_id=tx,
         )
-        """,
-        {
-            "memory_id": memory_id,
-            "agent_id": agent.issuer_agent_id,
-            "space_id": body.space_id,
-            "tier": body.tier,
-            "content": body.content,
-            "participants": json.dumps(body.participants),
-            "embedding": embedding,
-            "subject_person_id": body.subject_person_id,
-            "tags": "{" + ",".join(body.tags) + "}" if body.tags else "{}",
-            "scene_context": body.scene_context,
-            "modality": body.modality,
-            "confidence": body.confidence,
-            "related_memory_ids": "{" + ",".join(body.related_memory_ids) + "}" if body.related_memory_ids else "{}",
-        },
-    )
+        db.execute(
+            """
+            INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants, provenance, embedding,
+                                  subject_person_id, tags, scene_context, modality, confidence, related_memory_ids,
+                                  memory_candidate_id, source_event_id, session_id, lifecycle_state, recall_explanation)
+            VALUES (
+                :memory_id::uuid,
+                :agent_id::uuid,
+                :space_id::uuid,
+                CAST(:tier AS text),
+                CAST(:content AS text),
+                :participants::jsonb,
+                :provenance::jsonb,
+                NULLIF(CAST(:embedding AS text), '')::vector,
+                NULLIF(CAST(:subject_person_id AS text), '')::uuid,
+                :tags::text[],
+                CASE WHEN :scene_context IS NULL THEN NULL ELSE CAST(:scene_context AS text) END,
+                CAST(:modality AS text),
+                CAST(:confidence AS real),
+                :related_memory_ids::uuid[],
+                :memory_candidate_id::uuid,
+                :source_event_id::uuid,
+                NULLIF(CAST(:session_id AS text), '')::uuid,
+                'committed',
+                :recall_explanation::jsonb
+            )
+            """,
+            {
+                "memory_id": memory_id,
+                "agent_id": agent.issuer_agent_id,
+                "space_id": body.space_id,
+                "tier": body.tier,
+                "content": body.content,
+                "participants": json.dumps(body.participants),
+                "provenance": json.dumps({"source": "delegate_agent", "token_id": agent.token_id}),
+                "embedding": embedding,
+                "subject_person_id": body.subject_person_id,
+                "tags": "{" + ",".join(body.tags) + "}" if body.tags else "{}",
+                "scene_context": body.scene_context,
+                "modality": body.modality,
+                "confidence": body.confidence,
+                "related_memory_ids": "{" + ",".join(body.related_memory_ids) + "}"
+                if body.related_memory_ids
+                else "{}",
+                "memory_candidate_id": memory_candidate_id,
+                "source_event_id": source_event_id,
+                "session_id": body.session_id,
+                "recall_explanation": json.dumps(
+                    {
+                        "source": "delegate_agent",
+                        "token_id": agent.token_id,
+                        "source_event_id": source_event_id,
+                        "memory_candidate_id": memory_candidate_id,
+                        "commit_policy": "delegate_memory_create_v1",
+                    }
+                ),
+            },
+            transaction_id=tx,
+        )
+        db.commit(tx)
+    except Exception:
+        db.rollback(tx)
+        raise
 
-    return {"memory_id": memory_id, "created": True}
+    return {
+        "memory_id": memory_id,
+        "memory_candidate_id": memory_candidate_id,
+        "source_event_id": source_event_id,
+        "created": True,
+    }

@@ -56,12 +56,11 @@ These are route-entry smoke/contract tests, not full behavioral proofs for every
 This repo uses a **Conda** env named `marvain` (Python **3.11**, matching the Lambda runtime in `template.yaml`).
 
 ```bash
-conda env create -f config/marvain_conda.yaml
-. ./marvain_activate
+source ./activate
 marvain doctor
 ```
 
-Escape hatch (not recommended): set `MARVAIN_ALLOW_VENV=1` to bypass Conda checks.
+The activation script creates the `marvain` Conda environment from `environment.yaml` when it is missing and installs this checkout in editable mode.
 
 ## Delete everything (reset) before reinstall/redeploy
 
@@ -74,16 +73,16 @@ If you want a true “start over”, follow `QUICKSTART.md` (full workflow). The
 1) (Recommended) capture the bucket names **before** teardown:
 
 ```sh
-. ./marvain_activate
-./bin/marvain --profile <aws-profile> --region <aws-region> monitor outputs
+source ./activate
+marvain --profile <aws-profile> --region <aws-region> monitor outputs
 # optional: write outputs into your config for later reference
-./bin/marvain --profile <aws-profile> --region <aws-region> monitor outputs --write-config
+marvain --profile <aws-profile> --region <aws-region> monitor outputs --write-config
 ```
 
 2) Tear down the stack:
 
 ```sh
-./bin/marvain --profile <aws-profile> --region <aws-region> teardown --yes --wait
+marvain --profile <aws-profile> --region <aws-region> teardown --yes --wait
 ```
 
 ### B) AWS: best-effort delete retained S3 buckets
@@ -98,7 +97,7 @@ That means stack deletion will **not** delete them.
 If you captured `ArtifactBucketName` / `AuditBucketName`, try:
 
 ```sh
-# Replace these with values printed by: ./bin/marvain ... monitor outputs
+# Replace these with values printed by: marvain ... monitor outputs
 ARTIFACT_BUCKET="..."
 AUDIT_BUCKET="..."
 
@@ -181,29 +180,29 @@ Prereqs:
 
 - Conda (Miniconda/Mambaforge)
 - AWS credentials configured (profile/region)
-- SAM CLI
+- SAM CLI available as `sam`
 - Docker
 
 ### 1) Build
 
 ```bash
-./bin/marvain build
-./bin/marvain build --dry-run
+marvain build
+marvain build --dry-run
 ```
 
 ### 2) Deploy (guided)
 
 ```bash
-./bin/marvain config init --profile <aws-profile> --region <aws-region> --env dev
-./bin/marvain deploy
-./bin/marvain deploy --dry-run
+marvain config init --profile <aws-profile> --region <aws-region> --env dev
+marvain deploy
+marvain deploy --dry-run
 ```
 
 Notes:
 
-- `./bin/marvain deploy` defaults to **guided** (interactive) SAM deploy.
+- `marvain deploy` defaults to **guided** (interactive) SAM deploy.
 - For a fully non-interactive deploy (no stdin prompts), use:
-  - `./bin/marvain deploy --no-guided`
+  - `marvain deploy --no-guided`
 - `deploy` runs a `sam build --clean` first so Lambda functions include vendored dependencies.
 
 Notes:
@@ -215,14 +214,14 @@ Notes:
 ### 3) Initialize the database schema (pgvector + tables)
 
 ```bash
-./bin/marvain init db
+marvain init db
 ```
 
 ### 4) Bootstrap your first agent/space/device
 
 ```bash
-./bin/marvain bootstrap --agent-name Forge --space-name home
-./bin/marvain bootstrap --dry-run --agent-name Forge --space-name home
+marvain bootstrap --agent-name Forge --space-name home
+marvain bootstrap --dry-run --agent-name Forge --space-name home
 ```
 
 ### 5) Start the Local GUI
@@ -231,13 +230,13 @@ The GUI runs locally on your machine and connects to deployed AWS resources (Aur
 
 ```bash
 # Write stack outputs to marvain-config.yaml
-./bin/marvain monitor outputs --write-config
+marvain monitor outputs --write-config
 
 # Start the local GUI server (background mode, default)
-./bin/marvain gui start
+marvain gui start
 
 # Or just `marvain gui` (defaults to start)
-./bin/marvain gui
+marvain gui
 ```
 
 Visit `http://localhost:8084/` — you'll be redirected to Cognito for login.
@@ -256,22 +255,22 @@ Visit `http://localhost:8084/` — you'll be redirected to Cognito for login.
 
 ```bash
 # Start in foreground (blocking, Ctrl+C to stop)
-./bin/marvain gui start --foreground
+marvain gui start --foreground
 
 # Use different host/port
-./bin/marvain gui start --host 0.0.0.0 --port 8080
+marvain gui start --host 0.0.0.0 --port 8080
 
 # Disable auto-reload
-./bin/marvain gui start --no-reload
+marvain gui start --no-reload
 
 # Force kill (SIGKILL instead of SIGTERM)
-./bin/marvain gui stop --force
+marvain gui stop --force
 
 # Follow logs in real-time
-./bin/marvain gui logs --follow
+marvain gui logs --follow
 
 # Show last 100 lines of logs
-./bin/marvain gui logs --lines 100
+marvain gui logs --lines 100
 ```
 
 **Files:**

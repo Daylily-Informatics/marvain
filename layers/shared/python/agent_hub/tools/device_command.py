@@ -111,8 +111,11 @@ def device_command_handler(payload: dict[str, Any], ctx: "ToolContext") -> "Tool
 
     device = rows[0]
 
-    # Enforce action-level target-device scope gate when configured.
-    required_scopes = list(getattr(ctx, "action_required_scopes", []) or [])
+    # Enforce action-level target-device scope gates, excluding the tool
+    # permission used by the runner itself.
+    required_scopes = [
+        scope for scope in list(getattr(ctx, "action_required_scopes", []) or []) if scope != "devices:write"
+    ]
     if required_scopes:
         device_scopes = device.get("scopes") or []
         if isinstance(device_scopes, str):

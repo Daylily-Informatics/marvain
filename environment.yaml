@@ -1,0 +1,16 @@
+---
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Python packages come from the editable pip install defined in pyproject.toml.
+  - python=3.11
+  - pip
+
+  # System and command-line tools used by local development and AWS operations.
+  - awscli
+  - aws-session-manager-plugin
+  - bash
+  - jq
+  - yq
+  - libsndfile

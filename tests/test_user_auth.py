@@ -25,53 +25,40 @@ class _FakeDb:
         return [{"user_id": self.user_id}]
 
 
-class _FakeCognito:
-    def __init__(self, resp):
-        self.resp = resp
+class _FakeVerifier:
+    def __init__(self, claims):
+        self.claims = claims
         self.last_access_token: str | None = None
 
-    def get_user(self, *, AccessToken: str):
-        self.last_access_token = AccessToken
-        return self.resp
-
-
-class _FakeAdmin:
-    def __init__(self, cognito):
-        self.cognito = cognito
+    def verify_token(self, access_token: str):
+        self.last_access_token = access_token
+        return self.claims
 
 
 class TestUserAuth(unittest.TestCase):
     def test_authenticate_user_access_token_uses_sub_and_email(self) -> None:
         fake_db = _FakeDb(user_id="u1")
-        fake_cog = _FakeCognito(
-            {
-                "Username": "ignored",
-                "UserAttributes": [
-                    {"Name": "sub", "Value": "sub-123"},
-                    {"Name": "email", "Value": "me@example.com"},
-                ],
-            }
-        )
+        fake_verifier = _FakeVerifier({"sub": "sub-123", "email": "me@example.com"})
 
-        with mock.patch("agent_hub.auth._cognito_admin_client", return_value=_FakeAdmin(fake_cog)):
+        with mock.patch("agent_hub.auth._cognito_token_verifier", return_value=fake_verifier):
             u = authenticate_user_access_token(fake_db, "atk")
 
         self.assertIsInstance(u, AuthenticatedUser)
         self.assertEqual(u.user_id, "u1")
         self.assertEqual(u.cognito_sub, "sub-123")
         self.assertEqual(u.email, "me@example.com")
-        self.assertEqual(fake_cog.last_access_token, "atk")
+        self.assertEqual(fake_verifier.last_access_token, "atk")
         self.assertIsNotNone(fake_db.last_sql)
         self.assertIn("INSERT INTO users", fake_db.last_sql or "")
         self.assertIn("ON CONFLICT", fake_db.last_sql or "")
         self.assertEqual((fake_db.last_params or {}).get("sub"), "sub-123")
         self.assertEqual((fake_db.last_params or {}).get("email"), "me@example.com")
 
-    def test_authenticate_user_access_token_falls_back_to_username(self) -> None:
+    def test_authenticate_user_access_token_uses_username_when_sub_absent(self) -> None:
         fake_db = _FakeDb(user_id="u2")
-        fake_cog = _FakeCognito({"Username": "userpool-username", "UserAttributes": []})
+        fake_verifier = _FakeVerifier({"username": "userpool-username"})
 
-        with mock.patch("agent_hub.auth._cognito_admin_client", return_value=_FakeAdmin(fake_cog)):
+        with mock.patch("agent_hub.auth._cognito_token_verifier", return_value=fake_verifier):
             u = authenticate_user_access_token(fake_db, "atk")
 
         self.assertEqual(u.user_id, "u2")

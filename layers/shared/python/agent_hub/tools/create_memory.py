@@ -82,24 +82,50 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
     confidence = max(0.0, min(1.0, confidence))
 
     try:
-        # Insert the memory
         rows = ctx.db.query(
             """
-            INSERT INTO memories (agent_id, space_id, tier, content, participants, provenance, retention,
-                                  subject_person_id, tags, scene_context, modality, confidence, related_memory_ids)
-            VALUES (
+            WITH candidate AS (
+                INSERT INTO memory_candidates(
+                    memory_candidate_id, agent_id, source_action_id, space_id, tier, content,
+                    participants, subject_person_id, confidence, lifecycle_state
+                )
+                VALUES (
+                    gen_random_uuid(),
+                    :agent_id::uuid,
+                    :source_action_id::uuid,
+                    :space_id::uuid,
+                    :tier,
+                    :content,
+                    :participants::jsonb,
+                    CASE WHEN :subject_person_id IS NULL
+                        THEN NULL ELSE :subject_person_id::uuid END,
+                    :confidence,
+                    'committed'
+                )
+                RETURNING memory_candidate_id
+            )
+            INSERT INTO memories (
+                agent_id, space_id, tier, content, participants, provenance, retention,
+                subject_person_id, tags, scene_context, modality, confidence, related_memory_ids,
+                memory_candidate_id, source_action_id, lifecycle_state, recall_explanation
+            )
+            SELECT
                 :agent_id::uuid, :space_id::uuid, :tier, :content,
                 :participants::jsonb, :provenance::jsonb, :retention::jsonb,
-                CASE WHEN :subject_person_id IS NULL
-                    THEN NULL ELSE :subject_person_id::uuid END,
+                CASE WHEN :subject_person_id IS NULL THEN NULL ELSE :subject_person_id::uuid END,
                 :tags::text[], :scene_context, :modality, :confidence,
-                :related_memory_ids::uuid[]
-            )
+                :related_memory_ids::uuid[],
+                candidate.memory_candidate_id,
+                :source_action_id::uuid,
+                'committed',
+                :recall_explanation::jsonb
+            FROM candidate
             RETURNING memory_id::TEXT as memory_id
             """,
             {
                 "agent_id": ctx.agent_id,
                 "space_id": ctx.space_id,
+                "source_action_id": ctx.action_id,
                 "tier": tier,
                 "content": content_str,
                 "participants": json.dumps(participants),
@@ -112,6 +138,13 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
                 "confidence": confidence,
                 "related_memory_ids": (
                     "{" + ",".join(str(r) for r in related_memory_ids) + "}" if related_memory_ids else "{}"
+                ),
+                "recall_explanation": json.dumps(
+                    {
+                        "source_action_id": ctx.action_id,
+                        "source_tool": TOOL_NAME,
+                        "commit_policy": "tool_action_commit_v1",
+                    }
                 ),
             },
         )

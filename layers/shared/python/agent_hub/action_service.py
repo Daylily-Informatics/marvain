@@ -313,23 +313,23 @@ def create_action(
             VALUES(
               :action_id::uuid,
               :agent_id::uuid,
-              CASE WHEN :space_id IS NULL OR :space_id = '' THEN NULL ELSE :space_id::uuid END,
-              :kind,
+              NULLIF(CAST(:space_id AS text), '')::uuid,
+              CAST(:kind AS text),
               :payload::jsonb,
               :required_scopes::jsonb,
-              :status,
-              :approval_source,
-              CASE WHEN :approval_policy_id IS NULL OR :approval_policy_id = '' THEN NULL ELSE :approval_policy_id::uuid END,
+              CAST(:status AS text),
+              CAST(:approval_source AS text),
+              NULLIF(CAST(:approval_policy_id AS text), '')::uuid,
               CASE
-                WHEN :approved_by_user_id IS NULL OR :status <> 'approved'
+                WHEN NULLIF(CAST(:approved_by_user_id AS text), '') IS NULL OR CAST(:status AS text) <> 'approved'
                 THEN NULL
-                ELSE :approved_by_user_id::uuid
+                ELSE NULLIF(CAST(:approved_by_user_id AS text), '')::uuid
               END,
-              CASE WHEN :status = 'approved' THEN now() ELSE NULL END,
-              CASE WHEN :request_idempotency_key = '' THEN NULL ELSE :request_idempotency_key END,
-              CASE WHEN :request_actor_type = '' THEN NULL ELSE :request_actor_type END,
-              CASE WHEN :request_actor_id = '' THEN NULL ELSE :request_actor_id END,
-              CASE WHEN :request_origin = '' THEN NULL ELSE :request_origin END
+              CASE WHEN CAST(:status AS text) = 'approved' THEN now() ELSE NULL END,
+              NULLIF(CAST(:request_idempotency_key AS text), ''),
+              NULLIF(CAST(:request_actor_type AS text), ''),
+              NULLIF(CAST(:request_actor_id AS text), ''),
+              NULLIF(CAST(:request_origin AS text), '')
             )
             """,
             {

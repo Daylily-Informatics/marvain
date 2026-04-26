@@ -15,11 +15,12 @@ from typer import Argument, Exit, Option, confirm
 
 from marvain_cli._registry_v2 import (
     EXEMPT,
-    EXEMPT_JSON,
-    EXEMPT_LONG_RUNNING_DRY_RUN,
     EXEMPT_MUTATING_DRY_RUN,
-    EXEMPT_MUTATING_INTERACTIVE_DRY_RUN,
+    MARVAIN_AWS_TAG,
+    MARVAIN_SAM_TAG,
     register_group_commands,
+    register_root_command,
+    required_policy,
 )
 from marvain_cli.config import ConfigError, find_config_path, render_config_yaml, sanitize_name_for_stack
 from marvain_cli.ops import (
@@ -51,6 +52,7 @@ from marvain_cli.ops import (
     hub_revoke_membership,
     hub_update_membership,
     init_db,
+    init_tapdb,
     load_ctx,
     monitor_outputs,
     monitor_status,
@@ -361,6 +363,11 @@ def init_db_cmd(sql_file: str | None = Option(None, "--sql-file")) -> None:
     _exit(init_db(_load(), dry_run=_dry_run(), sql_file=sql_file))
 
 
+def init_tapdb_cmd(overwrite: bool = Option(True, "--overwrite/--no-overwrite")) -> None:
+    """Seed Marvain TapDB semantic templates."""
+    _exit(init_tapdb(_load(), dry_run=_dry_run(), overwrite=overwrite))
+
+
 def bootstrap_cmd(
     agent_name: str | None = Option(None, "--agent-name"),
     space_name: str = Option("default", "--space-name"),
@@ -633,41 +640,83 @@ def register(registry: CommandRegistry, spec: CliSpec) -> None:
         [
             ("path", config_path, EXEMPT),
             ("init", config_init, EXEMPT_MUTATING_DRY_RUN),
-            ("validate", config_validate, EXEMPT),
-            ("show", config_show, EXEMPT_JSON),
+            ("validate", config_validate, required_policy()),
+            ("show", config_show, required_policy(supports_json=True)),
         ],
     )
-    registry.add_command(None, "build", build, help_text="Build the SAM application.", policy=EXEMPT_MUTATING_DRY_RUN)
-    registry.add_command(
-        None, "deploy", deploy, help_text="Deploy the SAM application.", policy=EXEMPT_MUTATING_INTERACTIVE_DRY_RUN
+    register_root_command(
+        registry,
+        "build",
+        build,
+        required_policy(mutates_state=True, supports_dry_run=True, prereq_tags={MARVAIN_SAM_TAG}),
     )
-    registry.add_command(None, "logs", logs, help_text="Show SAM logs.", policy=EXEMPT_LONG_RUNNING_DRY_RUN)
-    registry.add_command(
-        None, "status", status_cmd, help_text="Show deployment status.", policy=EXEMPT_MUTATING_DRY_RUN
+    register_root_command(
+        registry,
+        "deploy",
+        deploy,
+        required_policy(
+            mutates_state=True,
+            supports_dry_run=True,
+            interactive=True,
+            prereq_tags={MARVAIN_SAM_TAG},
+        ),
     )
-    registry.add_command(
-        None, "teardown", teardown_cmd, help_text="Delete the SAM stack.", policy=EXEMPT_MUTATING_INTERACTIVE_DRY_RUN
+    register_root_command(
+        registry,
+        "logs",
+        logs,
+        required_policy(mutates_state=True, supports_dry_run=True, long_running=True, prereq_tags={MARVAIN_SAM_TAG}),
     )
-    registry.add_command(
-        None, "doctor", doctor_cmd, help_text="Run Marvain diagnostics.", policy=EXEMPT_MUTATING_DRY_RUN
+    register_root_command(
+        registry,
+        "status",
+        status_cmd,
+        required_policy(mutates_state=True, supports_dry_run=True, prereq_tags={MARVAIN_AWS_TAG}),
     )
-    registry.add_command(
-        None,
+    register_root_command(
+        registry,
+        "teardown",
+        teardown_cmd,
+        required_policy(
+            mutates_state=True,
+            supports_dry_run=True,
+            interactive=True,
+            prereq_tags={MARVAIN_AWS_TAG},
+        ),
+    )
+    register_root_command(
+        registry,
+        "doctor",
+        doctor_cmd,
+        required_policy(mutates_state=True, supports_dry_run=True, prereq_tags={MARVAIN_AWS_TAG, MARVAIN_SAM_TAG}),
+    )
+    register_root_command(
+        registry,
         "bootstrap",
         bootstrap_cmd,
-        help_text="Bootstrap an agent, space, and device.",
-        policy=EXEMPT_MUTATING_DRY_RUN,
+        required_policy(mutates_state=True, supports_dry_run=True, prereq_tags={MARVAIN_AWS_TAG}),
     )
-    registry.add_command(
-        None, "test", test_cmd, help_text="Run the local unit test suite.", policy=EXEMPT_MUTATING_DRY_RUN
+    register_root_command(
+        registry,
+        "test",
+        test_cmd,
+        required_policy(mutates_state=True, supports_dry_run=True),
     )
     register_group_commands(
         registry,
         "monitor",
         "Monitoring helpers.",
         [
-            ("outputs", monitor_outputs_cmd, EXEMPT_MUTATING_DRY_RUN),
-            ("status", monitor_status_cmd, EXEMPT_MUTATING_DRY_RUN),
+            (
+                "outputs",
+                monitor_outputs_cmd,
+                required_policy(mutates_state=True, supports_dry_run=True, prereq_tags={MARVAIN_AWS_TAG}),
+            ),
+            (
+                "status",
+                monitor_status_cmd,
+                required_policy(mutates_state=True, supports_dry_run=True, prereq_tags={MARVAIN_AWS_TAG}),
+            ),
         ],
     )
     register_group_commands(
@@ -675,11 +724,11 @@ def register(registry: CommandRegistry, spec: CliSpec) -> None:
         "gui",
         "Local GUI server management.",
         [
-            ("start", gui_start_cmd, EXEMPT_LONG_RUNNING_DRY_RUN),
-            ("stop", gui_stop_cmd, EXEMPT_MUTATING_DRY_RUN),
-            ("restart", gui_restart_cmd, EXEMPT_LONG_RUNNING_DRY_RUN),
-            ("status", gui_status_cmd, EXEMPT_MUTATING_DRY_RUN),
-            ("logs", gui_logs_cmd, EXEMPT_LONG_RUNNING_DRY_RUN),
+            ("start", gui_start_cmd, required_policy(mutates_state=True, supports_dry_run=True, long_running=True)),
+            ("stop", gui_stop_cmd, required_policy(mutates_state=True, supports_dry_run=True)),
+            ("restart", gui_restart_cmd, required_policy(mutates_state=True, supports_dry_run=True, long_running=True)),
+            ("status", gui_status_cmd, required_policy(mutates_state=True, supports_dry_run=True)),
+            ("logs", gui_logs_cmd, required_policy(mutates_state=True, supports_dry_run=True, long_running=True)),
         ],
     )
     register_group_commands(
@@ -687,30 +736,69 @@ def register(registry: CommandRegistry, spec: CliSpec) -> None:
         "agent",
         "Agent worker management.",
         [
-            ("start", agent_start_cmd, EXEMPT_LONG_RUNNING_DRY_RUN),
-            ("stop", agent_stop_cmd, EXEMPT_MUTATING_DRY_RUN),
-            ("restart", agent_restart_cmd, EXEMPT_LONG_RUNNING_DRY_RUN),
-            ("rebuild", agent_rebuild_cmd, EXEMPT_LONG_RUNNING_DRY_RUN),
-            ("status", agent_status_cmd, EXEMPT_MUTATING_DRY_RUN),
-            ("logs", agent_logs_cmd, EXEMPT_LONG_RUNNING_DRY_RUN),
+            ("start", agent_start_cmd, required_policy(mutates_state=True, supports_dry_run=True, long_running=True)),
+            ("stop", agent_stop_cmd, required_policy(mutates_state=True, supports_dry_run=True)),
+            (
+                "restart",
+                agent_restart_cmd,
+                required_policy(mutates_state=True, supports_dry_run=True, long_running=True),
+            ),
+            (
+                "rebuild",
+                agent_rebuild_cmd,
+                required_policy(mutates_state=True, supports_dry_run=True, long_running=True),
+            ),
+            ("status", agent_status_cmd, required_policy(mutates_state=True, supports_dry_run=True)),
+            ("logs", agent_logs_cmd, required_policy(mutates_state=True, supports_dry_run=True, long_running=True)),
         ],
     )
     register_group_commands(
         registry,
         "init",
         "Initialization helpers.",
-        [("db", init_db_cmd, EXEMPT_MUTATING_DRY_RUN)],
+        [
+            (
+                "db",
+                init_db_cmd,
+                required_policy(mutates_state=True, supports_dry_run=True, prereq_tags={MARVAIN_AWS_TAG}),
+            ),
+            (
+                "tapdb",
+                init_tapdb_cmd,
+                required_policy(mutates_state=True, supports_dry_run=True, prereq_tags={MARVAIN_AWS_TAG}),
+            ),
+        ],
     )
     register_group_commands(
         registry,
         "members",
         "Agent membership management.",
         [
-            ("claim-owner", members_claim_owner, EXEMPT_MUTATING_DRY_RUN),
-            ("invite", members_invite, EXEMPT_MUTATING_DRY_RUN),
-            ("list", members_list, EXEMPT_MUTATING_DRY_RUN),
-            ("update", members_update, EXEMPT_MUTATING_DRY_RUN),
-            ("revoke", members_revoke, EXEMPT_MUTATING_DRY_RUN),
+            (
+                "claim-owner",
+                members_claim_owner,
+                required_policy(mutates_state=True, supports_dry_run=True, prereq_tags={MARVAIN_AWS_TAG}),
+            ),
+            (
+                "invite",
+                members_invite,
+                required_policy(mutates_state=True, supports_dry_run=True, prereq_tags={MARVAIN_AWS_TAG}),
+            ),
+            (
+                "list",
+                members_list,
+                required_policy(mutates_state=True, supports_dry_run=True, prereq_tags={MARVAIN_AWS_TAG}),
+            ),
+            (
+                "update",
+                members_update,
+                required_policy(mutates_state=True, supports_dry_run=True, prereq_tags={MARVAIN_AWS_TAG}),
+            ),
+            (
+                "revoke",
+                members_revoke,
+                required_policy(mutates_state=True, supports_dry_run=True, prereq_tags={MARVAIN_AWS_TAG}),
+            ),
         ],
     )
     register_group_commands(
@@ -718,8 +806,12 @@ def register(registry: CommandRegistry, spec: CliSpec) -> None:
         "devices",
         "Device token management and detection.",
         [
-            ("register", devices_register, EXEMPT_MUTATING_DRY_RUN),
-            ("detect", devices_detect, EXEMPT),
+            (
+                "register",
+                devices_register,
+                required_policy(mutates_state=True, supports_dry_run=True, prereq_tags={MARVAIN_AWS_TAG}),
+            ),
+            ("detect", devices_detect, required_policy()),
         ],
     )
     register_group_commands(
@@ -727,16 +819,39 @@ def register(registry: CommandRegistry, spec: CliSpec) -> None:
         "cognito",
         "Cognito user management commands.",
         [
-            ("create-user", cognito_create_user_cmd, EXEMPT_MUTATING_DRY_RUN),
-            ("set-password", cognito_set_password_cmd, EXEMPT_MUTATING_DRY_RUN),
-            ("list-users", cognito_list_users_cmd, EXEMPT_JSON),
-            ("get-user", cognito_get_user_cmd, EXEMPT_JSON),
-            ("delete-user", cognito_delete_user_cmd, EXEMPT_MUTATING_INTERACTIVE_DRY_RUN),
+            (
+                "create-user",
+                cognito_create_user_cmd,
+                required_policy(mutates_state=True, supports_dry_run=True, prereq_tags={MARVAIN_AWS_TAG}),
+            ),
+            (
+                "set-password",
+                cognito_set_password_cmd,
+                required_policy(mutates_state=True, supports_dry_run=True, prereq_tags={MARVAIN_AWS_TAG}),
+            ),
+            ("list-users", cognito_list_users_cmd, required_policy(supports_json=True, prereq_tags={MARVAIN_AWS_TAG})),
+            ("get-user", cognito_get_user_cmd, required_policy(supports_json=True, prereq_tags={MARVAIN_AWS_TAG})),
+            (
+                "delete-user",
+                cognito_delete_user_cmd,
+                required_policy(
+                    mutates_state=True,
+                    supports_dry_run=True,
+                    interactive=True,
+                    prereq_tags={MARVAIN_AWS_TAG},
+                ),
+            ),
         ],
     )
     register_group_commands(
         registry,
         "examples",
         "Example configuration management.",
-        [("create", examples_create_cmd, EXEMPT_MUTATING_DRY_RUN)],
+        [
+            (
+                "create",
+                examples_create_cmd,
+                required_policy(mutates_state=True, supports_dry_run=True, prereq_tags={MARVAIN_AWS_TAG}),
+            )
+        ],
     )

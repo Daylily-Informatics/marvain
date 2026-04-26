@@ -132,6 +132,43 @@ Resources:
       GroupDescription: !Sub ${AWS::StackName} Aurora SG
       VpcId: !Ref HubVpc
 
+  TapdbWriterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${AWS::StackName} TapDB writer SG
+      VpcId: !Ref HubVpc
+
+  DbIngressFromTapdbWriter:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DbSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref TapdbWriterSecurityGroup
+
+  TapdbWriterEndpointIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref TapdbWriterSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourceSecurityGroupId: !Ref TapdbWriterSecurityGroup
+
+  SecretsManagerVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref HubVpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.secretsmanager
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref TapdbWriterSecurityGroup
+
   DbSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
@@ -278,6 +315,19 @@ Resources:
     Properties:
       VisibilityTimeout: 60
 
+  TapdbWriterDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 60
+
+  TapdbWriterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 60
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt TapdbWriterDlq.Arn
+        maxReceiveCount: 3
+
   # -----------------------------
   # WebSocket connection registry
   # -----------------------------
@@ -368,6 +418,7 @@ Resources:
           TRANSCRIPT_QUEUE_URL: !Ref TranscriptQueue
           ACTION_QUEUE_URL: !Ref ActionQueue
           RECOGNITION_QUEUE_URL: !Ref RecognitionQueue
+          TAPDB_WRITER_QUEUE_URL: !Ref TapdbWriterQueue
           INTEGRATION_QUEUE_URL: !Ref IntegrationQueue
           AUDIT_BUCKET: !Ref AuditBucket
           ARTIFACT_BUCKET: !Ref ArtifactBucket
@@ -426,6 +477,7 @@ Resources:
                 - !GetAtt TranscriptQueue.Arn
                 - !GetAtt ActionQueue.Arn
                 - !GetAtt RecognitionQueue.Arn
+                - !GetAtt TapdbWriterQueue.Arn
                 - !GetAtt IntegrationQueue.Arn
             - Effect: Allow
               Action:
@@ -575,6 +627,50 @@ Resources:
   # -----------------------------
   # Planner (deliberative loop)
   # -----------------------------
+  TapdbWriterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/tapdb_writer/
+      Handler: handler.handler
+      Timeout: 60
+      MemorySize: 1024
+      Layers:
+        - !Ref SharedLayer
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref TapdbWriterSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnetA
+          - !Ref PrivateSubnetB
+      Environment:
+        Variables:
+          TAPDB_DB_HOST: !GetAtt AuroraCluster.Endpoint.Address
+          TAPDB_DB_PORT: !GetAtt AuroraCluster.Endpoint.Port
+          TAPDB_DB_SECRET_ARN: !Ref DbCredentialsSecret
+          TAPDB_DB_NAME: !Ref DbName
+          MERIDIAN_DOMAIN_CODE: MVN
+          TAPDB_OWNER_REPO: marvain
+          MARVAIN_METRICS_NAMESPACE: "Marvain"
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - VPCAccessPolicy: {}
+        - SQSPollerPolicy:
+            QueueName: !GetAtt TapdbWriterQueue.QueueName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DbCredentialsSecret
+      Events:
+        TapdbWriterQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt TapdbWriterQueue.Arn
+            BatchSize: 5
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+
   PlannerFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -590,6 +686,7 @@ Resources:
           DB_SECRET_ARN: !Ref DbCredentialsSecret
           DB_NAME: !Ref DbName
           ACTION_QUEUE_URL: !Ref ActionQueue
+          TAPDB_WRITER_QUEUE_URL: !Ref TapdbWriterQueue
           INTEGRATION_QUEUE_URL: !Ref IntegrationQueue
           AUDIT_BUCKET: !Ref AuditBucket
           OPENAI_SECRET_ARN: !Ref OpenAISecret
@@ -627,6 +724,12 @@ Resources:
                 - sqs:SendMessage
               Resource:
                 - !GetAtt ActionQueue.Arn
+                - !GetAtt TapdbWriterQueue.Arn
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource:
+                - !GetAtt TapdbWriterQueue.Arn
             - Effect: Allow
               Action:
                 - s3:PutObject
@@ -666,6 +769,7 @@ Resources:
           DB_SECRET_ARN: !Ref DbCredentialsSecret
           DB_NAME: !Ref DbName
           AUDIT_BUCKET: !Ref AuditBucket
+          TAPDB_WRITER_QUEUE_URL: !Ref TapdbWriterQueue
           STACK_NAME: !Ref AWS::StackName
           WS_TABLE: !Ref WsConnectionsTable
           WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
@@ -907,9 +1011,12 @@ Resources:
           WS_TABLE: !Ref WsConnectionsTable
           WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
           WS_AUTH_TTL_SECONDS: "3600"
+          SESSION_SECRET_ARN: !Ref SessionSecret
           DB_RESOURCE_ARN: !GetAtt AuroraCluster.DBClusterArn
           DB_SECRET_ARN: !Ref DbCredentialsSecret
           DB_NAME: !Ref DbName
+          ACTION_QUEUE_URL: !Ref ActionQueue
+          WS_API_ENDPOINT: !Sub https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
           MARVAIN_METRICS_NAMESPACE: "Marvain"
       Policies:
         - AWSLambdaBasicExecutionRole
@@ -927,14 +1034,15 @@ Resources:
                 - secretsmanager:GetSecretValue
               Resource:
                 - !Ref DbCredentialsSecret
+                - !Ref SessionSecret
             - Effect: Allow
               Action:
                 - execute-api:ManageConnections
               Resource: "*"
             - Effect: Allow
               Action:
-                - cognito-idp:GetUser
-              Resource: !GetAtt CognitoUserPool.Arn
+                - sqs:SendMessage
+              Resource: !GetAtt ActionQueue.Arn
 
   WsConnectIntegration:
     Type: AWS::ApiGatewayV2::Integration
@@ -1247,6 +1355,12 @@ Outputs:
   RecognitionQueueUrl:
     Description: SQS queue URL for recognition events (voice.sample / face.snapshot)
     Value: !Ref RecognitionQueue
+  TapdbWriterQueueUrl:
+    Description: SQS queue URL for TapDB semantic write requests
+    Value: !Ref TapdbWriterQueue
+  TapdbWriterFunctionName:
+    Description: Lambda function name for TapDB semantic writer and template seeding
+    Value: !Ref TapdbWriterFunction
   IntegrationQueueUrl:
     Description: SQS queue URL for normalized inbound integration events
     Value: !Ref IntegrationQueue

@@ -27,10 +27,10 @@ You’ll need these if you want to attempt bucket deletion later.
 
 <augment_code_snippet mode="EXCERPT">
 ````sh
-. ./marvain_activate
-./bin/marvain --profile daylily --region us-west-2 monitor outputs
+source ./activate
+marvain --profile daylily --region us-west-2 monitor outputs
 # optional: also write outputs into your config
-./bin/marvain --profile daylily --region us-west-2 monitor outputs --write-config
+marvain --profile daylily --region us-west-2 monitor outputs --write-config
 ````
 </augment_code_snippet>
 
@@ -40,7 +40,7 @@ Look for `ArtifactBucketName` and `AuditBucketName` in the printed JSON.
 
 <augment_code_snippet mode="EXCERPT">
 ````sh
-./bin/marvain --profile daylily --region us-west-2 teardown --yes --wait
+marvain --profile daylily --region us-west-2 teardown --yes --wait
 ````
 </augment_code_snippet>
 
@@ -107,8 +107,7 @@ conda env remove -n marvain
 
 <augment_code_snippet mode="EXCERPT">
 ````sh
-conda env create -f config/marvain_conda.yaml
-. ./marvain_activate
+source ./activate
 ````
 </augment_code_snippet>
 
@@ -116,7 +115,7 @@ conda env create -f config/marvain_conda.yaml
 
 <augment_code_snippet mode="EXCERPT">
 ````sh
-./bin/marvain --profile daylily --region us-west-2 doctor
+marvain --profile daylily --region us-west-2 doctor
 ````
 </augment_code_snippet>
 
@@ -125,24 +124,24 @@ conda env create -f config/marvain_conda.yaml
 <augment_code_snippet mode="EXCERPT">
 ````sh
 # Create a fresh config
-./bin/marvain config init --profile daylily --region us-west-2 --env dev
+marvain config init --profile daylily --region us-west-2 --env dev
 
 # Build + deploy (guided by default)
-./bin/marvain build
-./bin/marvain deploy
+marvain build
+marvain deploy
 
 # Record outputs into config for convenience
-./bin/marvain monitor outputs --write-config
+marvain monitor outputs --write-config
 
 # Initialize DB schema, then bootstrap your first device
-./bin/marvain init db
-./bin/marvain bootstrap --agent-name Forge --space-name home
+marvain init db
+marvain bootstrap --agent-name Forge --space-name home
 
 # Tailing logs + open GUI
-./bin/marvain logs --since 10m
+marvain logs --since 10m
 
 # Print the deployed GUI URL (HubRestApiBase)
-./bin/marvain gui
+marvain gui
 ````
 </augment_code_snippet>
 
@@ -150,7 +149,6 @@ conda env create -f config/marvain_conda.yaml
 
 <augment_code_snippet mode="EXCERPT">
 ````sh
-./bin/marvain --profile daylily --region us-west-2 teardown --yes --wait
+marvain --profile daylily --region us-west-2 teardown --yes --wait
 ````
 </augment_code_snippet>
-

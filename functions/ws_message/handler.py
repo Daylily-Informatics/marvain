@@ -16,13 +16,15 @@ from agent_hub.action_service import (
     reject_action,
 )
 from agent_hub.audit import append_audit_entry  # noqa: F401 - kept for existing tests
-from agent_hub.auth import authenticate_user_access_token
+from agent_hub.auth import AuthenticatedUser, authenticate_device, authenticate_user_access_token
 from agent_hub.broadcast import broadcast_event
 from agent_hub.config import load_config
 from agent_hub.contracts import DeviceActionAck, DeviceActionResult
 from agent_hub.memberships import check_agent_permission, list_agents_for_user
 from agent_hub.metrics import emit_count, emit_ms
 from agent_hub.rds_data import RdsData, RdsDataEnv
+from agent_hub.secrets import get_secret_json
+from agent_hub.session_tokens import verify_ws_session_token
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -36,6 +38,7 @@ _sqs = boto3.client("sqs")
 
 _db = None
 _cfg = None
+_session_secret = None
 
 
 def _get_db() -> RdsData:
@@ -56,6 +59,35 @@ def _get_cfg():
     if _cfg is None:
         _cfg = load_config()
     return _cfg
+
+
+def _get_session_secret() -> str:
+    global _session_secret
+    if _session_secret is not None:
+        return _session_secret
+    if os.getenv("SESSION_SECRET_KEY"):
+        _session_secret = str(os.environ["SESSION_SECRET_KEY"])
+        return _session_secret
+    if os.getenv("SESSION_SECRET_ARN"):
+        data = get_secret_json(str(os.environ["SESSION_SECRET_ARN"]))
+        key = str(data.get("session_secret_key") or "").strip()
+        if not key:
+            raise RuntimeError("session_secret_key missing from SESSION_SECRET_ARN")
+        _session_secret = key
+        return _session_secret
+    raise RuntimeError("SESSION_SECRET_KEY or SESSION_SECRET_ARN is required")
+
+
+def _authenticate_browser_or_cognito_token(access_token: str) -> AuthenticatedUser:
+    try:
+        payload = verify_ws_session_token(secret_key=_get_session_secret(), token=access_token, max_age=_WS_AUTH_TTL)
+        return AuthenticatedUser(
+            user_id=str(payload["user_id"]),
+            cognito_sub=str(payload["cognito_sub"]),
+            email=(str(payload.get("email")).strip() if payload.get("email") else None),
+        )
+    except PermissionError:
+        return authenticate_user_access_token(_get_db(), access_token)
 
 
 def _mgmt_api(event):
@@ -432,11 +464,63 @@ def handler(event, context):
 
     if action == "hello":
         access_token = str(msg.get("access_token") or "").strip()
+        device_token = str(msg.get("device_token") or "").strip()
+
+        if device_token:
+            device = authenticate_device(_get_db(), device_token)
+            if device is None:
+                _send(event, connection_id, {"type": "hello", "ok": False, "error": "invalid_device_token"})
+                return {"statusCode": 200, "body": "ok"}
+
+            now_ts = int(time.time())
+            expr_values = {
+                ":s": "authenticated",
+                ":pt": "device",
+                ":did": device.device_id,
+                ":agid": device.agent_id,
+                ":sc": device.scopes,
+                ":cap": device.capabilities,
+                ":aat": now_ts,
+                ":ttl": now_ts + _WS_AUTH_TTL,
+            }
+            set_parts = [
+                "#s=:s",
+                "principal_type=:pt",
+                "device_id=:did",
+                "agent_id=:agid",
+                "scopes=:sc",
+                "capabilities=:cap",
+                "authenticated_at=:aat",
+                "#ttl=:ttl",
+            ]
+            if msg.get("space_id"):
+                expr_values[":space"] = str(msg.get("space_id"))
+                set_parts.append("space_id=:space")
+            update_expr = "SET " + ", ".join(set_parts) + " REMOVE user_id, cognito_sub, email, agents"
+            table.update_item(
+                Key={"connection_id": connection_id},
+                UpdateExpression=update_expr,
+                ExpressionAttributeNames={"#s": "status", "#ttl": "ttl"},
+                ExpressionAttributeValues=expr_values,
+            )
+            _send(
+                event,
+                connection_id,
+                {
+                    "type": "hello",
+                    "ok": True,
+                    "principal_type": "device",
+                    "device_id": device.device_id,
+                    "agent_id": device.agent_id,
+                    "scopes": device.scopes,
+                },
+            )
+            return {"statusCode": 200, "body": "ok"}
 
         if access_token:
             try:
-                logger.info(f"[hello] Attempting to authenticate access_token, length={len(access_token)}")
-                user = authenticate_user_access_token(_get_db(), access_token)
+                logger.info("[hello] Attempting to authenticate browser/user token, length=%s", len(access_token))
+                user = _authenticate_browser_or_cognito_token(access_token)
                 logger.info(f"[hello] Authentication successful for user_id={user.user_id}")
             except PermissionError as e:
                 logger.error(f"[hello] Authentication failed: {e}")
@@ -505,7 +589,7 @@ def handler(event, context):
             )
             return {"statusCode": 200, "body": "ok"}
 
-        _send(event, connection_id, {"type": "hello", "ok": False, "error": "missing_access_token"})
+        _send(event, connection_id, {"type": "hello", "ok": False, "error": "missing_token"})
         return {"statusCode": 200, "body": "ok"}
 
     # Get connection info for authorization

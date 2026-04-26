@@ -16,7 +16,6 @@ import json
 import logging
 import os
 import secrets
-import time
 import urllib.parse
 import uuid
 from pathlib import Path
@@ -44,9 +43,7 @@ from agent_hub.cognito import (
     CognitoUserInfo,  # noqa: F401 — used via module attr in tests
     build_login_url,
     build_logout_url,
-    exchange_code_for_tokens,
     get_user_info_from_tokens,
-    refresh_tokens,
 )
 from agent_hub.livekit_tokens import mint_livekit_join_token  # noqa: F401 — used via module attr in tests
 from agent_hub.memberships import (
@@ -59,6 +56,7 @@ from agent_hub.memberships import (
     update_membership,
 )
 from agent_hub.secrets import get_secret_json
+from agent_hub.session_tokens import mint_ws_session_token
 
 # Import the API app and its shared state
 from api_app import (
@@ -68,8 +66,18 @@ from api_app import (
     _get_s3,
     _get_sqs,
     _mint_livekit_token_for_user,
+    _session_secret,
     api_app,
     get_config,
+)
+from daylily_auth_cognito.browser.session import (
+    CONFIG_STATE_KEY,
+    CognitoWebAuthError,
+    CognitoWebSessionConfig,
+    SessionPrincipal,
+    clear_session_principal,
+    complete_cognito_callback,
+    load_session_principal,
 )
 from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
@@ -251,42 +259,6 @@ async def startup_validate_configuration():
 # GUI Routes (local development only)
 # -----------------------------
 
-_GUI_ACCESS_TOKEN_COOKIE = "marvain_access_token"
-_GUI_REFRESH_TOKEN_COOKIE = "marvain_refresh_token"
-_GUI_OAUTH_STATE_COOKIE = "marvain_oauth_state"
-_GUI_OAUTH_VERIFIER_COOKIE = "marvain_oauth_verifier"
-_GUI_OAUTH_NEXT_COOKIE = "marvain_oauth_next"
-
-
-def _jwt_exp_unverified(token: str) -> int | None:
-    """Extract JWT exp without verifying signature.
-
-    Used only to decide whether to refresh tokens for WS auth.
-    """
-    try:
-        parts = str(token or "").split(".")
-        if len(parts) < 2:
-            return None
-        payload_b64 = parts[1].encode("ascii", errors="ignore")
-        payload_b64 += b"=" * ((4 - (len(payload_b64) % 4)) % 4)
-        payload_raw = base64.urlsafe_b64decode(payload_b64)
-        payload = json.loads(payload_raw.decode("utf-8", errors="replace"))
-        exp = payload.get("exp")
-        if isinstance(exp, (int, float)):
-            return int(exp)
-        if isinstance(exp, str) and exp.isdigit():
-            return int(exp)
-    except Exception:
-        return None
-    return None
-
-
-def _jwt_needs_refresh(token: str, *, now_s: int, refresh_window_s: int = 300) -> bool:
-    exp_s = _jwt_exp_unverified(token)
-    if exp_s is None:
-        return False
-    return exp_s <= (now_s + int(refresh_window_s))
-
 
 def _parse_expires_at(value: str | None):
     """Parse a consent expiry value.
@@ -350,6 +322,32 @@ def _public_base_url(request: Request) -> str:
     if raw:
         return raw.rstrip("/")
     return str(request.base_url).rstrip("/")
+
+
+def _web_session_config(request: Request) -> CognitoWebSessionConfig:
+    base_url = _public_base_url(request)
+    return CognitoWebSessionConfig(
+        domain=str(_cfg.cognito_domain or ""),
+        client_id=str(_cfg.cognito_user_pool_client_id or ""),
+        redirect_uri=f"{base_url}/auth/callback",
+        logout_uri=f"{base_url}/logged-out",
+        session_secret_key=_session_secret,
+        session_cookie_name="marvain_session",
+        session_max_age=3600 * 8,
+        public_base_url=base_url,
+        auth_mode="cognito",
+        scope="openid email profile aws.cognito.signin.user.admin",
+        client_secret=_cfg.cognito_user_pool_client_secret,
+        same_site="lax",
+        allow_insecure_http=base_url.startswith("http://"),
+        server_instance_id=f"marvain-{_cfg.stage}",
+    )
+
+
+def _register_web_session_config(request: Request) -> CognitoWebSessionConfig:
+    session_cfg = _web_session_config(request)
+    request.app.state.__dict__[CONFIG_STATE_KEY] = session_cfg
+    return session_cfg
 
 
 def _safe_next_path(next_path: str | None) -> str:
@@ -422,19 +420,27 @@ def _decode_next_cookie(value: Optional[str]) -> str:
 
 def _gui_get_user(request: Request) -> AuthenticatedUser | None:
     """Get the authenticated user from the session."""
-    session = request.session
-    user_sub = session.get("user_sub")
-    if not user_sub:
+    _register_web_session_config(request)
+    try:
+        principal = load_session_principal(request)
+    except Exception:
+        logger.exception("Invalid GUI session principal")
+        request.session.clear()
+        return None
+    if principal is None:
         return None
 
-    user_id = session.get("user_id")
-    email = session.get("email")
+    user_sub = principal.user_sub
+    email = principal.email
+    app_context = dict(principal.app_context or {})
+    user_id = str(app_context.get("user_id") or "").strip()
 
     if not user_id:
         # User exists in session but doesn't have a user_id - need to ensure row
         try:
             user_id = ensure_user_row(_get_db(), cognito_sub=user_sub, email=email)
-            session["user_id"] = user_id
+            app_context["user_id"] = user_id
+            request.session["app_context"] = app_context
         except Exception:
             logger.exception("Failed to ensure user row")
             return None
@@ -451,7 +457,7 @@ def _gui_redirect_to_login(*, request: Request, next_path: str | None = None, cl
     # nosec - next_path is validated by _safe_next_app_path (blocks //, schemes, CRLF injection)
     resp: Response = RedirectResponse(url=f"{_gui_path(request, '/login')}?{qs}", status_code=302)
     if clear_session:
-        resp.delete_cookie(_GUI_ACCESS_TOKEN_COOKIE, path="/")
+        clear_session_principal(request)
     return resp
 
 
@@ -490,18 +496,14 @@ def gui_login(request: Request, next: str | None = None) -> Response:
             status_code=503,
         )
 
-    # Generate state for CSRF protection
-    state = secrets.token_urlsafe(32)
-    request.session["oauth_state"] = state
+    session_cfg = _register_web_session_config(request)
 
-    # Store the next URL if provided
-    if next:
-        request.session["oauth_next"] = _safe_next_app_path(request, next)
+    state = secrets.token_urlsafe(32)
+    request.session[session_cfg.state_session_key] = state
+    request.session[session_cfg.next_path_session_key] = _safe_next_app_path(request, next)
 
     try:
-        redirect_uri = f"{_public_base_url(request)}/auth/callback"
-        request.session["oauth_redirect_uri"] = redirect_uri
-        cfg = dataclasses.replace(_cfg, cognito_redirect_uri=redirect_uri)
+        cfg = dataclasses.replace(_cfg, cognito_redirect_uri=session_cfg.redirect_uri)
         login_url = build_login_url(cfg, state=state)
         return RedirectResponse(url=login_url, status_code=302)
     except CognitoAuthError as e:
@@ -541,98 +543,51 @@ async def gui_auth_callback(
             status_code=400,
         )
 
-    # Verify state for CSRF protection
-    expected_state = request.session.get("oauth_state")
-    if not expected_state or state != expected_state:
-        logger.warning(f"Invalid OAuth state. Expected: {expected_state}, Got: {state}")
-        return _gui_error_page(
-            request=request,
-            title="Invalid State",
-            message="OAuth state mismatch. Please try logging in again.",
-            status_code=400,
-        )
-
-    # Clear state from session
-    request.session.pop("oauth_state", None)
-
     try:
-        redirect_uri = (
-            str(request.session.pop("oauth_redirect_uri", "")).strip() or f"{_public_base_url(request)}/auth/callback"
-        )
-        cfg = dataclasses.replace(_cfg, cognito_redirect_uri=redirect_uri)
-        # Exchange code for tokens
-        tokens = await exchange_code_for_tokens(cfg, code)
-        id_token = tokens.get("id_token")
-        access_token = tokens.get("access_token")
-        refresh_token = tokens.get("refresh_token")
+        session_cfg = _register_web_session_config(request)
+        cfg = dataclasses.replace(_cfg, cognito_redirect_uri=session_cfg.redirect_uri)
 
-        if not id_token:
-            return _gui_error_page(
-                request=request,
-                title="Authentication Error",
-                message="No ID token in response from identity provider.",
-                status_code=400,
+        async def resolve_principal(tokens: dict[str, Any], _request: Request) -> SessionPrincipal:
+            id_token = tokens.get("id_token")
+            access_token = tokens.get("access_token")
+
+            if not id_token:
+                raise CognitoWebAuthError("missing_id_token", "No ID token in response from identity provider")
+
+            cognito_user = await get_user_info_from_tokens(cfg, str(id_token), str(access_token or ""))
+            user_id = ensure_user_row(
+                _get_db(),
+                cognito_sub=cognito_user.sub,
+                email=cognito_user.email,
+            )
+            logger.info(f"User {cognito_user.email} ({cognito_user.sub}) logged in")
+            return SessionPrincipal(
+                user_sub=cognito_user.sub,
+                email=cognito_user.email,
+                name=cognito_user.name,
+                roles=cognito_user.roles,
+                cognito_groups=cognito_user.cognito_groups,
+                app_context={"user_id": user_id},
             )
 
-        # Get user info from tokens
-        cognito_user = await get_user_info_from_tokens(cfg, id_token)
-
-        # Ensure user exists in database
-        user_id = ensure_user_row(
-            _get_db(),
-            cognito_sub=cognito_user.sub,
-            email=cognito_user.email,
+        resp = await complete_cognito_callback(
+            request,
+            session_cfg,
+            code=code,
+            state=state,
+            resolve_principal=resolve_principal,
         )
-
-        # Create session
-        request.session.update(
-            {
-                "user_sub": cognito_user.sub,
-                "user_id": user_id,
-                "email": cognito_user.email,
-                "name": cognito_user.name,
-                "roles": cognito_user.roles,
-                "cognito_groups": cognito_user.cognito_groups,
-            }
-        )
-
-        logger.info(f"User {cognito_user.email} ({cognito_user.sub}) logged in")
-        logger.info(f"Access token received: {bool(access_token)}, length: {len(access_token) if access_token else 0}")
-
-        # Redirect to the next URL or home
-        next_url = request.session.pop("oauth_next", None) or "/"
-        resp = RedirectResponse(url=_gui_path(request, next_url), status_code=302)
-
-        # Store access token in cookie for WebSocket authentication
-        if access_token:
-            logger.info(f"Setting access token cookie, secure={_cookie_secure(request)}")
-            resp.set_cookie(
-                key=_GUI_ACCESS_TOKEN_COOKIE,
-                value=access_token,
-                httponly=True,
-                secure=_cookie_secure(request),
-                samesite="lax",
-                max_age=3600,  # 1 hour (Cognito access token default expiry)
-                path="/",
-            )
-        else:
-            logger.warning("No access token received from Cognito!")
-
-        # Keep refresh token in a secure, HttpOnly cookie so we can refresh WS auth without forcing re-login.
-        # NOTE: This is still a bearer credential; protect it with HTTPS and HttpOnly.
-        if refresh_token:
-            resp.set_cookie(
-                key=_GUI_REFRESH_TOKEN_COOKIE,
-                value=str(refresh_token),
-                httponly=True,
-                secure=_cookie_secure(request),
-                samesite="lax",
-                max_age=30 * 24 * 3600,  # 30 days
-                path="/",
-            )
-
+        resp.headers["Cache-Control"] = "no-store"
         return resp
 
+    except CognitoWebAuthError as e:
+        logger.error(f"Cognito web auth error: {e}")
+        return _gui_error_page(
+            request=request,
+            title="Authentication Error",
+            message=str(e),
+            status_code=e.status_code,
+        )
     except CognitoAuthError as e:
         logger.error(f"Cognito auth error: {e}")
         return _gui_error_page(
@@ -654,7 +609,7 @@ async def gui_auth_callback(
 @app.get("/logout", name="logout")
 def gui_logout(request: Request) -> Response:
     """Clear session and redirect to Cognito logout or logged-out page."""
-    # Clear session
+    clear_session_principal(request)
     request.session.clear()
 
     resp: Response
@@ -668,12 +623,6 @@ def gui_logout(request: Request) -> Response:
     else:
         resp = RedirectResponse(url=_gui_path(request, "/logged-out"), status_code=302)
 
-    # Clear GUI auth cookies.
-    resp.delete_cookie(_GUI_ACCESS_TOKEN_COOKIE, path="/")
-    resp.delete_cookie(_GUI_REFRESH_TOKEN_COOKIE, path="/")
-    resp.delete_cookie(_GUI_OAUTH_STATE_COOKIE, path="/")
-    resp.delete_cookie(_GUI_OAUTH_VERIFIER_COOKIE, path="/")
-    resp.delete_cookie(_GUI_OAUTH_NEXT_COOKIE, path="/")
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
@@ -686,55 +635,18 @@ def gui_logged_out(request: Request) -> HTMLResponse:
 
 @app.get("/api/ws-auth-token", name="api_ws_auth_token")
 async def api_ws_auth_token(request: Request) -> JSONResponse:
-    """Return current user's WS auth token, refreshing if needed (GUI only)."""
+    """Return a Marvain session-scoped WS auth token for the current GUI user."""
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    access_token = str(request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or "").strip()
-    refresh_token = str(request.cookies.get(_GUI_REFRESH_TOKEN_COOKIE) or "").strip()
-
-    now_s = int(time.time())
-    needs_refresh = (not access_token) or _jwt_needs_refresh(access_token, now_s=now_s, refresh_window_s=5 * 60)
-    refreshed_access_token: str | None = None
-    refreshed_expires_in: int | None = None
-
-    if needs_refresh:
-        if not refresh_token:
-            raise HTTPException(status_code=401, detail="Missing access token")
-        try:
-            tokens = await refresh_tokens(_cfg, refresh_token)
-            refreshed_access_token = str(tokens.get("access_token") or "").strip()
-            refreshed_expires_in = int(tokens.get("expires_in") or 3600)
-            if not refreshed_access_token:
-                raise CognitoAuthError("Token refresh returned no access_token")
-            access_token = refreshed_access_token
-        except CognitoAuthError as e:
-            # Force re-login by clearing cookies.
-            resp = JSONResponse({"detail": f"Token refresh failed: {e}"}, status_code=401)
-            resp.delete_cookie(_GUI_ACCESS_TOKEN_COOKIE, path="/")
-            resp.delete_cookie(_GUI_REFRESH_TOKEN_COOKIE, path="/")
-            resp.headers["Cache-Control"] = "no-store"
-            return resp
-        except Exception:
-            logger.exception("Token refresh failed")
-            resp = JSONResponse({"detail": "Token refresh failed"}, status_code=401)
-            resp.delete_cookie(_GUI_ACCESS_TOKEN_COOKIE, path="/")
-            resp.headers["Cache-Control"] = "no-store"
-            return resp
-
-    resp = JSONResponse({"access_token": access_token})
-    if refreshed_access_token:
-        # Refresh succeeded; update the cookie so future fetches work.
-        resp.set_cookie(
-            key=_GUI_ACCESS_TOKEN_COOKIE,
-            value=refreshed_access_token,
-            httponly=True,
-            secure=_cookie_secure(request),
-            samesite="lax",
-            max_age=int(refreshed_expires_in or 3600),
-            path="/",
-        )
+    token = mint_ws_session_token(
+        secret_key=_session_secret,
+        user_id=user.user_id,
+        cognito_sub=user.cognito_sub,
+        email=user.email,
+    )
+    resp = JSONResponse({"access_token": token, "token_type": "marvain_session"})
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
@@ -744,9 +656,8 @@ def gui_home(request: Request) -> Response:
     """Home dashboard - central hub with status overview and navigation."""
     user = _gui_get_user(request)
     if not user:
-        clear = bool(str(request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or "").strip())
         return _gui_redirect_to_login(
-            request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear
+            request=request, next_path=str(request.scope.get("path") or "/"), clear_session=False
         )
 
     db = _get_db()
@@ -4701,7 +4612,8 @@ def api_create_memory(request: Request) -> dict:
     db.execute(
         """
         INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants, provenance,
-                              subject_person_id, tags, scene_context, modality, confidence, related_memory_ids)
+                              subject_person_id, tags, scene_context, modality, confidence, related_memory_ids,
+                              lifecycle_state, recall_explanation)
         VALUES (
             :memory_id::uuid,
             :agent_id::uuid,
@@ -4715,7 +4627,9 @@ def api_create_memory(request: Request) -> dict:
             :scene_context,
             :modality,
             :confidence,
-            :related_memory_ids::uuid[]
+            :related_memory_ids::uuid[],
+            'committed',
+            :recall_explanation::jsonb
         )
         """,
         {
@@ -4731,6 +4645,13 @@ def api_create_memory(request: Request) -> dict:
             "modality": modality,
             "confidence": confidence,
             "related_memory_ids": "{" + ",".join(related_memory_ids) + "}" if related_memory_ids else "{}",
+            "recall_explanation": _json.dumps(
+                {
+                    "source": "gui_manual",
+                    "user_id": str(user.user_id),
+                    "commit_policy": "manual_gui_create_v1",
+                }
+            ),
         },
     )
 
@@ -4763,15 +4684,28 @@ def api_delete_memory(request: Request, memory_id: str) -> dict:
     try:
         db.execute(
             """
-            DELETE FROM memories WHERE memory_id = :memory_id::uuid
-        """,
-            {"memory_id": memory_id},
+            WITH updated AS (
+              UPDATE memories
+              SET lifecycle_state = 'tombstoned',
+                  tombstoned_at = COALESCE(tombstoned_at, now()),
+                  recall_explanation = COALESCE(recall_explanation, '{}'::jsonb)
+                    || jsonb_build_object('tombstone_reason', 'gui_delete')
+              WHERE memory_id = :memory_id::uuid
+                AND tombstoned_at IS NULL
+              RETURNING memory_id, agent_id
+            )
+            INSERT INTO memory_tombstones(memory_id, agent_id, reason, actor_type, actor_id)
+            SELECT memory_id, agent_id, 'gui_delete', 'user', :user_id
+            FROM updated
+            ON CONFLICT (memory_id) DO NOTHING
+            """,
+            {"memory_id": memory_id, "user_id": str(user.user_id)},
         )
     except Exception as e:
         logger.error(f"Failed to delete memory: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete memory")
 
-    return {"message": "Memory deleted", "memory_id": memory_id}
+    return {"message": "Memory deleted", "memory_id": memory_id, "tombstoned": True}
 
 
 @app.get("/api/memories/{memory_id}", name="api_get_memory")
@@ -5262,9 +5196,8 @@ def gui_profile(request: Request) -> Response:
     """User profile page - shows account info and agent memberships."""
     user = _gui_get_user(request)
     if not user:
-        clear = bool(str(request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or "").strip())
         return _gui_redirect_to_login(
-            request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear
+            request=request, next_path=str(request.scope.get("path") or "/"), clear_session=False
         )
 
     db = _get_db()
@@ -5322,9 +5255,8 @@ def gui_livekit_test(request: Request, space_id: str | None = None) -> Response:
     """LiveKit test page - join a LiveKit room mapped from a Marvain space."""
     user = _gui_get_user(request)
     if not user:
-        clear = bool(str(request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or "").strip())
         return _gui_redirect_to_login(
-            request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear
+            request=request, next_path=str(request.scope.get("path") or "/"), clear_session=False
         )
 
     # Fetch spaces for dropdown
@@ -5369,9 +5301,8 @@ async def gui_livekit_token(request: Request, body: LiveKitTokenIn) -> LiveKitTo
 def gui_agent_detail(request: Request, agent_id: str) -> Response:
     user = _gui_get_user(request)
     if not user:
-        clear = bool(str(request.cookies.get(_GUI_ACCESS_TOKEN_COOKIE) or "").strip())
         return _gui_redirect_to_login(
-            request=request, next_path=str(request.scope.get("path") or "/"), clear_session=clear
+            request=request, next_path=str(request.scope.get("path") or "/"), clear_session=False
         )
 
     db = _get_db()

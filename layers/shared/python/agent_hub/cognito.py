@@ -162,40 +162,6 @@ async def exchange_code_for_tokens(cfg: HubConfig, code: str) -> dict[str, Any]:
         raise CognitoAuthError(f"Token exchange failed: {exc}") from exc
 
 
-async def refresh_tokens(cfg: HubConfig, refresh_token: str) -> dict[str, Any]:
-    """Exchange a refresh token for new tokens.
-
-    Returns a token response containing a new access_token (and sometimes id_token).
-
-    NOTE: Cognito typically does not rotate refresh tokens for this flow.
-    """
-    import httpx
-
-    if not refresh_token:
-        raise CognitoAuthError("Missing refresh token")
-    if not cfg.cognito_token_url or not cfg.cognito_user_pool_client_id:
-        raise CognitoAuthError("Cognito is not fully configured")
-
-    data = {
-        "grant_type": "refresh_token",
-        "client_id": cfg.cognito_user_pool_client_id,
-        "refresh_token": refresh_token,
-    }
-    if cfg.cognito_user_pool_client_secret:
-        data["client_secret"] = cfg.cognito_user_pool_client_secret
-
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            cfg.cognito_token_url,
-            data=data,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        if response.status_code != 200:
-            logger.error(f"Token refresh failed: {response.text}")
-            raise CognitoAuthError(f"Token refresh failed: {response.status_code}")
-        return response.json()
-
-
 async def validate_id_token(cfg: HubConfig, id_token: str) -> dict[str, Any]:
     """Validate a Cognito ID token and return its claims.
 
@@ -230,28 +196,15 @@ async def validate_id_token(cfg: HubConfig, id_token: str) -> dict[str, Any]:
         return []
 
     try:
-        from jose import jwt
-
-        unverified_header = jwt.get_unverified_header(id_token)
-        kid = str(unverified_header.get("kid") or "").strip()
-        if not kid:
-            raise CognitoAuthError("Token validation failed: missing key id")
+        from daylily_auth_cognito.runtime.jwks import verify_token_with_jwks
 
         cache = _get_daylily_jwks_cache(cfg)
-        key = await asyncio.to_thread(cache.get_key, kid)
-
-        claims = jwt.decode(
+        claims = await asyncio.to_thread(
+            verify_token_with_jwks,
             id_token,
-            key=key,
-            algorithms=["RS256"],
-            issuer=str(cfg.cognito_issuer),
-            options={
-                "verify_signature": True,
-                "verify_exp": True,
-                "verify_iss": True,
-                "verify_aud": False,
-                "verify_at_hash": False,
-            },
+            str(cfg.cognito_region),
+            str(cfg.cognito_user_pool_id),
+            cache,
         )
         audiences = _extract_audiences(claims.get("aud")) + _extract_audiences(claims.get("client_id"))
         if expected_client_id not in audiences:
@@ -295,8 +248,18 @@ async def get_user_info_from_tokens(cfg: HubConfig, id_token: str, access_token:
     Raises:
         CognitoAuthError: If token validation fails
     """
-    # Validate and decode ID token
     id_claims = await validate_id_token(cfg, id_token)
+    if access_token:
+        from daylily_auth_cognito.runtime.verifier import CognitoTokenVerifier
+
+        verifier = CognitoTokenVerifier(
+            region=str(cfg.cognito_region or "us-east-1"),
+            user_pool_id=str(cfg.cognito_user_pool_id or ""),
+            app_client_id=str(cfg.cognito_user_pool_client_id or ""),
+        )
+        access_claims = await asyncio.to_thread(verifier.verify_token, access_token)
+        if str(access_claims.get("sub") or "") != str(id_claims.get("sub") or ""):
+            raise CognitoAuthError("Token validation failed: access token subject mismatch")
 
     # Extract basic user info
     sub = id_claims.get("sub", "")
