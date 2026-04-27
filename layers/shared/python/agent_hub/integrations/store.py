@@ -16,16 +16,16 @@ from agent_hub.integrations.models import (
 from agent_hub.rds_data import RdsData
 
 
-def _json_loads(value: Any, fallback: Any) -> Any:
+def _json_loads(value: Any, default: Any) -> Any:
     if value is None:
-        return fallback
-    if isinstance(value, type(fallback)):
+        return default
+    if isinstance(value, type(default)):
         return value
     try:
         parsed = json.loads(value)
     except Exception:
-        return fallback
-    return parsed if isinstance(parsed, type(fallback)) else fallback
+        return default
+    return parsed if isinstance(parsed, type(default)) else default
 
 
 _ROW_COLUMNS = """

@@ -144,7 +144,7 @@ Phase 5, core semantic model and projections:
 - New files: projection migrations for locations/spaces/sessions/account links/semantic write status and repository tests.
 - Tests: location/space, session/event, auth account/person links, projection rebuild, idempotent semantic write status.
 - AWS commands: `marvain --dry-run init db`.
-- Gate: fresh DB schema applies from zero; no data migration/backfill code exists.
+- Gate: fresh DB schema applies from zero; no stale data-transfer code exists.
 
 Phase 6, memory lifecycle and recall:
 - Likely touched: Hub API, planner, memory tool, shared memory service, recall routes, agent worker.
@@ -165,7 +165,7 @@ Phase 8, device, satellite, WebSocket, and location:
 
 Phase 9, persona, sessions, action lifecycle, and docs cleanup:
 - Likely touched: agent worker, shared prompt/context code, action service/tool runner, docs and generated status scripts.
-- Removed: hardcoded-only persona production behavior and stale fallback/dual-write/pilot docs as current guidance.
+- Removed: hardcoded-only persona production behavior and stale docs as current guidance.
 - Tests: persona selection, context hydration provenance, action proposal/approval/dispatch/result lineage, timeout lifecycle.
 - Gate: docs and implementation status match current behavior.
 

@@ -83,7 +83,10 @@ CREATE TABLE IF NOT EXISTS memories (
   provenance jsonb NOT NULL DEFAULT '{}'::jsonb,
   retention jsonb NOT NULL DEFAULT '{}'::jsonb,
   embedding vector(1536),
-  created_at timestamptz NOT NULL DEFAULT now()
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT memories_tier_chk CHECK (
+    tier IN ('episodic', 'semantic', 'procedural', 'preference', 'relationship', 'location', 'device', 'policy')
+  )
 );
 
 CREATE INDEX IF NOT EXISTS memories_agent_time_idx ON memories(agent_id, created_at DESC);

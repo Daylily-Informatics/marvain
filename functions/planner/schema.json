@@ -3,51 +3,73 @@
   "title": "PlannerOutput",
   "description": "Schema for validating planner LLM output",
   "type": "object",
+  "definitions": {
+    "memoryItem": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "The memory content"
+        },
+        "participants": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Person IDs or names involved"
+        }
+      },
+      "required": ["content"],
+      "additionalProperties": false
+    }
+  },
   "properties": {
     "episodic": {
       "type": "array",
-      "description": "Episodic memories - contextual, time-bound observations",
-      "items": {
-        "type": "object",
-        "properties": {
-          "content": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "description": "The memory content"
-          },
-          "participants": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "Person IDs or names involved"
-          }
-        },
-        "required": ["content"],
-        "additionalProperties": false
-      },
+      "description": "Time-bound events, observations, transcripts, and lived session facts",
+      "items": {"$ref": "#/definitions/memoryItem"},
       "default": []
     },
     "semantic": {
       "type": "array",
-      "description": "Semantic memories - generalized facts, cross-context",
-      "items": {
-        "type": "object",
-        "properties": {
-          "content": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 4096,
-            "description": "The memory content"
-          },
-          "participants": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "Person IDs or names involved"
-          }
-        },
-        "required": ["content"],
-        "additionalProperties": false
-      },
+      "description": "Stable facts and learned knowledge",
+      "items": {"$ref": "#/definitions/memoryItem"},
+      "default": []
+    },
+    "procedural": {
+      "type": "array",
+      "description": "How-to instructions, routines, and action recipes",
+      "items": {"$ref": "#/definitions/memoryItem"},
+      "default": []
+    },
+    "preference": {
+      "type": "array",
+      "description": "User likes, dislikes, defaults, and choices",
+      "items": {"$ref": "#/definitions/memoryItem"},
+      "default": []
+    },
+    "relationship": {
+      "type": "array",
+      "description": "Connections among people, agents, devices, and roles",
+      "items": {"$ref": "#/definitions/memoryItem"},
+      "default": []
+    },
+    "location": {
+      "type": "array",
+      "description": "Location and space-specific facts or observations",
+      "items": {"$ref": "#/definitions/memoryItem"},
+      "default": []
+    },
+    "device": {
+      "type": "array",
+      "description": "Device capabilities, state, routing, and behavior",
+      "items": {"$ref": "#/definitions/memoryItem"},
+      "default": []
+    },
+    "policy": {
+      "type": "array",
+      "description": "Consent, privacy, governance, and audit-supporting notes",
+      "items": {"$ref": "#/definitions/memoryItem"},
       "default": []
     },
     "actions": {
@@ -60,7 +82,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 128,
-            "description": "Action type identifier (e.g., send_message, create_memory)"
+            "description": "Action type identifier (for example send_message or create_memory)"
           },
           "payload": {
             "type": "object",
@@ -85,4 +107,3 @@
   },
   "additionalProperties": false
 }
-

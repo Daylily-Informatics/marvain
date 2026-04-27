@@ -1,0 +1,584 @@
+{% extends "base.html" %}
+
+{% macro status_badge(status) -%}
+  {% set value = (status if status is not none else 'unknown')|string %}
+  {% set normalized = value|lower %}
+  {% set success_states = ['accepted', 'active', 'matched', 'not revoked', 'present', 'ready', 'referenced'] %}
+  {% set warning_states = ['embedded', 'no_match', 'observed', 'pending', 'proposed', 'stale'] %}
+  {% set error_states = ['absent', 'blocked', 'expired', 'failed', 'rejected', 'revoked'] %}
+  {% if normalized in success_states %}
+    {% set variant = 'success' %}
+  {% elif normalized in warning_states %}
+    {% set variant = 'warning' %}
+  {% elif normalized in error_states %}
+    {% set variant = 'error' %}
+  {% else %}
+    {% set variant = 'info' %}
+  {% endif %}
+  <span class="badge badge-{{ variant }}">{{ value }}</span>
+{%- endmacro %}
+
+{% set recognition_observations = observations|default([], true) %}
+{% set recognition_hypotheses = hypotheses|default([], true) %}
+{% set unknown_records = unknown_observations|default([], true) %}
+{% set no_match_records = no_match_hypotheses|default([], true) %}
+{% set presence_records = presence|default([], true) %}
+{% set grants = consent_grants|default([], true) %}
+{% set artifacts = artifact_references|default([], true) %}
+{% set revocations = revocation_statuses|default([], true) %}
+{% set readiness = readiness_statuses|default([], true) %}
+
+{% block title %}Recognition - Marvain{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title"><i class="fas fa-fingerprint"></i> Recognition</h1>
+    <p class="text-muted">Review recognition observations, identity hypotheses, unknown/no-match records, presence, consent, and artifacts.</p>
+  </div>
+  <div class="page-actions">
+    <a href="/people" class="btn btn-outline">
+      <i class="fas fa-users"></i> People
+    </a>
+  </div>
+</div>
+
+{% if error %}
+<div class="card mb-lg">
+  <div class="card-body">
+    <span class="badge badge-error"><i class="fas fa-triangle-exclamation"></i> Recognition data unavailable</span>
+    <p class="text-muted mt-sm mb-0">{{ error }}</p>
+  </div>
+</div>
+{% endif %}
+
+<div class="filter-bar mb-lg">
+  <div class="filter-group">
+    <label for="agent-filter">Agent</label>
+    <select id="agent-filter" onchange="filterRecognitionRows()">
+      <option value="">All Agents</option>
+      {% for agent in agents|default([], true) %}
+      <option value="{{ agent.agent_id }}">{{ agent.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="filter-group">
+    <label for="modality-filter">Modality</label>
+    <select id="modality-filter" onchange="filterRecognitionRows()">
+      <option value="">All Modalities</option>
+      <option value="voice">Voice</option>
+      <option value="face">Face</option>
+      <option value="sensor">Sensor</option>
+    </select>
+  </div>
+  <div class="filter-group">
+    <label for="state-filter">State</label>
+    <select id="state-filter" onchange="filterRecognitionRows()">
+      <option value="">All States</option>
+      <option value="observed">Observed</option>
+      <option value="embedded">Embedded</option>
+      <option value="matched">Matched</option>
+      <option value="accepted">Accepted</option>
+      <option value="no_match">No Match</option>
+      <option value="revoked">Revoked</option>
+      <option value="ready">Ready</option>
+    </select>
+  </div>
+  <div class="filter-group flex-grow">
+    <label for="search-filter">Search</label>
+    <input type="text" id="search-filter" placeholder="Search recognition records..." oninput="filterRecognitionRows()">
+  </div>
+</div>
+
+<div class="stats-bar mb-lg">
+  <div class="stat-item">
+    <span class="stat-label">Observations</span>
+    <span class="stat-value">{{ recognition_observations|length }}</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">Hypotheses</span>
+    <span class="stat-value">{{ recognition_hypotheses|length }}</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">Unknown / No Match</span>
+    <span class="stat-value">{{ (unknown_records|length) + (no_match_records|length) }}</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">Presence</span>
+    <span class="stat-value">{{ presence_records|length }}</span>
+  </div>
+  <div class="stat-item">
+    <span class="stat-label">Consent Grants</span>
+    <span class="stat-value">{{ grants|length }}</span>
+  </div>
+</div>
+
+<div class="grid grid-2 mb-lg">
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title"><i class="fas fa-eye"></i> Observations</h2>
+    </div>
+    <div class="card-body">
+      {% if recognition_observations %}
+      <div class="detail-grid">
+        {% for observation in recognition_observations %}
+        {% set row_text = [
+          observation.observation_id,
+          observation.agent_name,
+          observation.space_name,
+          observation.location_name,
+          observation.device_name,
+          observation.modality,
+          observation.lifecycle_state,
+          observation.model_name,
+          observation.artifact_id
+        ]|join(' ')|lower %}
+        <article class="detail-section recognition-row"
+                 data-agent="{{ observation.agent_id or '' }}"
+                 data-modality="{{ observation.modality or '' }}"
+                 data-state="{{ observation.lifecycle_state or '' }}"
+                 data-search="{{ row_text }}">
+          <h4>
+            <i class="fas fa-circle-dot"></i>
+            {{ observation.modality|default('recognition', true) }}
+            {{ status_badge(observation.lifecycle_state) }}
+          </h4>
+          <div class="detail-grid">
+            <div class="detail-row">
+              <span class="detail-label">Observation</span>
+              <code class="detail-value">{{ observation.observation_id }}</code>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Agent</span>
+              <span class="detail-value">{{ observation.agent_name or observation.agent_id }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Place</span>
+              <span class="detail-value">{{ observation.space_name or observation.location_name or 'Unscoped' }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Device</span>
+              <span class="detail-value">{{ observation.device_name or observation.device_id or 'Unspecified' }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Model</span>
+              <span class="detail-value">{{ observation.model_name or 'Unspecified' }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Artifact</span>
+              <code class="detail-value">{{ observation.artifact_id or 'None' }}</code>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Created</span>
+              <span class="detail-value">{{ observation.created_at or 'Unknown' }}</span>
+            </div>
+          </div>
+          {% if observation.lifecycle_state not in ['matched', 'no_match', 'expired'] %}
+          <div class="mt-md">
+            <button type="button" class="btn btn-sm btn-outline" onclick="markObservationNoMatch('{{ observation.observation_id }}')">
+              <i class="fas fa-user-slash"></i> No Match
+            </button>
+          </div>
+          {% endif %}
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-state">
+        <i class="fas fa-eye fa-3x"></i>
+        <h3>Awaiting Recognition Observations</h3>
+        <p>No observation records were provided in the recognition context.</p>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title"><i class="fas fa-user-check"></i> Hypotheses</h2>
+    </div>
+    <div class="card-body">
+      {% if recognition_hypotheses %}
+      <div class="detail-grid">
+        {% for hypothesis in recognition_hypotheses %}
+        {% set row_text = [
+          hypothesis.hypothesis_id,
+          hypothesis.observation_id,
+          hypothesis.person_name,
+          hypothesis.candidate_person_id,
+          hypothesis.decision,
+          hypothesis.score,
+          hypothesis.consent_id
+        ]|join(' ')|lower %}
+        <article class="detail-section recognition-row"
+                 data-agent="{{ hypothesis.agent_id or '' }}"
+                 data-modality=""
+                 data-state="{{ hypothesis.decision or '' }}"
+                 data-search="{{ row_text }}">
+          <h4>
+            <i class="fas fa-user-check"></i>
+            {{ hypothesis.person_name or hypothesis.candidate_person_id or 'Unknown person' }}
+            {{ status_badge(hypothesis.decision) }}
+          </h4>
+          <div class="detail-grid">
+            <div class="detail-row">
+              <span class="detail-label">Hypothesis</span>
+              <code class="detail-value">{{ hypothesis.hypothesis_id }}</code>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Observation</span>
+              <code class="detail-value">{{ hypothesis.observation_id }}</code>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Score</span>
+              <span class="detail-value">{{ hypothesis.score if hypothesis.score is not none else 'Unscored' }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Consent</span>
+              <code class="detail-value">{{ hypothesis.consent_id or 'None' }}</code>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Created</span>
+              <span class="detail-value">{{ hypothesis.created_at or 'Unknown' }}</span>
+            </div>
+          </div>
+          {% if hypothesis.decision == 'proposed' %}
+          <div class="mt-md" style="display:flex; gap: var(--spacing-sm); flex-wrap: wrap;">
+            <button type="button" class="btn btn-sm btn-primary" onclick="acceptHypothesis('{{ hypothesis.hypothesis_id }}')">
+              <i class="fas fa-check"></i> Accept
+            </button>
+            <button type="button" class="btn btn-sm btn-outline" onclick="rejectHypothesis('{{ hypothesis.hypothesis_id }}')">
+              <i class="fas fa-xmark"></i> Reject
+            </button>
+          </div>
+          {% endif %}
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-state">
+        <i class="fas fa-user-check fa-3x"></i>
+        <h3>Awaiting Identity Hypotheses</h3>
+        <p>No hypothesis records were provided in the recognition context.</p>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+</div>
+
+<section class="card mb-lg">
+  <div class="card-header">
+    <h2 class="card-title"><i class="fas fa-user-slash"></i> Unknown / No-Match</h2>
+  </div>
+  <div class="card-body">
+    {% if unknown_records or no_match_records %}
+    <div class="grid grid-2">
+      {% for record in unknown_records %}
+      {% set row_text = [record.observation_id, record.modality, record.lifecycle_state, record.reason]|join(' ')|lower %}
+      <article class="detail-section recognition-row"
+               data-agent="{{ record.agent_id or '' }}"
+               data-modality="{{ record.modality or '' }}"
+               data-state="{{ record.lifecycle_state or 'no_match' }}"
+               data-search="{{ row_text }}">
+        <h4><i class="fas fa-question-circle"></i> {{ record.modality|default('unknown', true) }} {{ status_badge(record.lifecycle_state or 'no_match') }}</h4>
+        <div class="detail-row">
+          <span class="detail-label">Observation</span>
+          <code class="detail-value">{{ record.observation_id }}</code>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Reason</span>
+          <span class="detail-value">{{ record.reason or 'No accepted person match' }}</span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Created</span>
+          <span class="detail-value">{{ record.created_at or 'Unknown' }}</span>
+        </div>
+      </article>
+      {% endfor %}
+
+      {% for record in no_match_records %}
+      {% set row_text = [record.hypothesis_id, record.observation_id, record.decision, record.score, record.reason]|join(' ')|lower %}
+      <article class="detail-section recognition-row"
+               data-agent="{{ record.agent_id or '' }}"
+               data-modality=""
+               data-state="{{ record.decision or 'no_match' }}"
+               data-search="{{ row_text }}">
+        <h4><i class="fas fa-ban"></i> No-match hypothesis {{ status_badge(record.decision or 'no_match') }}</h4>
+        <div class="detail-row">
+          <span class="detail-label">Hypothesis</span>
+          <code class="detail-value">{{ record.hypothesis_id }}</code>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Observation</span>
+          <code class="detail-value">{{ record.observation_id }}</code>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Score</span>
+          <span class="detail-value">{{ record.score if record.score is not none else 'Unscored' }}</span>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <i class="fas fa-user-slash fa-3x"></i>
+      <h3>No Unknown / No-Match Context</h3>
+      <p>Unknown observations and no-match hypotheses will appear here when supplied by the route context.</p>
+    </div>
+    {% endif %}
+  </div>
+</section>
+
+<div class="grid grid-2 mb-lg">
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title"><i class="fas fa-location-dot"></i> Presence</h2>
+    </div>
+    <div class="card-body">
+      {% if presence_records %}
+      <div class="detail-grid">
+        {% for record in presence_records %}
+        {% set row_text = [record.presence_assertion_id, record.person_name, record.status, record.space_name, record.location_name, record.source]|join(' ')|lower %}
+        <article class="detail-section recognition-row"
+                 data-agent="{{ record.agent_id or '' }}"
+                 data-modality=""
+                 data-state="{{ record.status or '' }}"
+                 data-search="{{ row_text }}">
+          <h4><i class="fas fa-location-dot"></i> {{ record.person_name or record.person_id or 'Unknown person' }} {{ status_badge(record.status) }}</h4>
+          <div class="detail-row">
+            <span class="detail-label">Presence</span>
+            <code class="detail-value">{{ record.presence_assertion_id }}</code>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Place</span>
+            <span class="detail-value">{{ record.space_name or record.location_name or 'Unscoped' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Source</span>
+            <span class="detail-value">{{ record.source or 'Unspecified' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Asserted</span>
+            <span class="detail-value">{{ record.asserted_at or 'Unknown' }}</span>
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-state">
+        <i class="fas fa-location-dot fa-3x"></i>
+        <h3>Awaiting Presence Assertions</h3>
+        <p>No presence assertion records were provided in the recognition context.</p>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title"><i class="fas fa-shield-halved"></i> Consent Grants</h2>
+    </div>
+    <div class="card-body">
+      {% if grants %}
+      <div class="detail-grid">
+        {% for grant in grants %}
+        {% set row_text = [grant.consent_id, grant.person_name, grant.consent_type, grant.status, grant.expires_at, grant.revoked_at]|join(' ')|lower %}
+        <article class="detail-section recognition-row"
+                 data-agent="{{ grant.agent_id or '' }}"
+                 data-modality="{{ grant.consent_type or '' }}"
+                 data-state="{{ grant.status or '' }}"
+                 data-search="{{ row_text }}">
+          <h4><i class="fas fa-shield-halved"></i> {{ grant.person_name or grant.person_id or 'Unknown person' }} {{ status_badge(grant.status or 'active') }}</h4>
+          <div class="detail-row">
+            <span class="detail-label">Consent</span>
+            <code class="detail-value">{{ grant.consent_id }}</code>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Type</span>
+            <span class="detail-value">{{ grant.consent_type }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Expires</span>
+            <span class="detail-value">{{ grant.expires_at or 'No expiry' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Revoked</span>
+            <span class="detail-value">{{ grant.revoked_at or 'Not revoked' }}</span>
+          </div>
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-state">
+        <i class="fas fa-shield-halved fa-3x"></i>
+        <h3>Consent Grant Context Pending</h3>
+        <p>Consent grant records will appear here when the route provides them.</p>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+</div>
+
+<section class="card mb-lg">
+  <div class="card-header">
+    <h2 class="card-title"><i class="fas fa-paperclip"></i> Artifact References</h2>
+  </div>
+  <div class="card-body">
+    {% if artifacts %}
+    <div class="grid grid-2">
+      {% for artifact in artifacts %}
+      {% set row_text = [artifact.artifact_id, artifact.kind, artifact.uri, artifact.lifecycle_state, artifact.source]|join(' ')|lower %}
+      <article class="detail-section recognition-row"
+               data-agent="{{ artifact.agent_id or '' }}"
+               data-modality="{{ artifact.kind or '' }}"
+               data-state="{{ artifact.lifecycle_state or '' }}"
+               data-search="{{ row_text }}">
+        <h4><i class="fas fa-paperclip"></i> {{ artifact.kind or 'artifact' }} {{ status_badge(artifact.lifecycle_state or artifact.status or 'referenced') }}</h4>
+        <div class="detail-row">
+          <span class="detail-label">Artifact</span>
+          <code class="detail-value">{{ artifact.artifact_id }}</code>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">URI</span>
+          <code class="detail-value">{{ artifact.uri or artifact.url or 'Not provided' }}</code>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Observation</span>
+          <code class="detail-value">{{ artifact.observation_id or 'None' }}</code>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">Created</span>
+          <span class="detail-value">{{ artifact.created_at or 'Unknown' }}</span>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <i class="fas fa-paperclip fa-3x"></i>
+      <h3>Artifact Reference Context Pending</h3>
+      <p>Recognition artifact references will appear here when the route provides them.</p>
+    </div>
+    {% endif %}
+  </div>
+</section>
+
+<div class="grid grid-2">
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title"><i class="fas fa-user-lock"></i> Revocation Status</h2>
+    </div>
+    <div class="card-body">
+      {% if revocations %}
+      <div class="detail-grid">
+        {% for item in revocations %}
+        <div class="detail-section recognition-row" data-agent="{{ item.agent_id or '' }}" data-modality="" data-state="{{ item.status or '' }}" data-search="{{ [item.subject, item.status, item.detail]|join(' ')|lower }}">
+          <h4><i class="fas fa-user-lock"></i> {{ item.subject or item.person_name or item.person_id or 'Recognition subject' }} {{ status_badge(item.status) }}</h4>
+          <p class="text-muted">{{ item.detail or item.updated_at or 'No detail provided' }}</p>
+          {% if item.projection_id and item.status != 'revoked' %}
+          <div class="detail-row">
+            <span class="detail-label">Projection</span>
+            <code class="detail-value">{{ item.projection_id }}</code>
+          </div>
+          <button type="button" class="btn btn-sm btn-outline mt-sm" onclick="revokeBiometricProjection('{{ item.projection_id }}')">
+            <i class="fas fa-ban"></i> Revoke
+          </button>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-state">
+        <i class="fas fa-user-lock fa-3x"></i>
+        <h3>Revocation Status Pending</h3>
+        <p>Enrollment and consent revocation readiness will appear here when provided by the route context.</p>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">
+      <h2 class="card-title"><i class="fas fa-clipboard-check"></i> Readiness</h2>
+    </div>
+    <div class="card-body">
+      {% if readiness %}
+      <div class="detail-grid">
+        {% for item in readiness %}
+        <div class="detail-section recognition-row" data-agent="{{ item.agent_id or '' }}" data-modality="" data-state="{{ item.status or '' }}" data-search="{{ [item.name, item.status, item.detail]|join(' ')|lower }}">
+          <h4><i class="fas fa-clipboard-check"></i> {{ item.name or 'Recognition readiness' }} {{ status_badge(item.status) }}</h4>
+          <p class="text-muted mb-0">{{ item.detail or item.updated_at or 'No detail provided' }}</p>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-state">
+        <i class="fas fa-clipboard-check fa-3x"></i>
+        <h3>Readiness Status Pending</h3>
+        <p>Recognition worker, model, queue, and consent-readiness status will appear here when provided.</p>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function filterRecognitionRows() {
+  const agent = document.getElementById('agent-filter').value;
+  const modality = document.getElementById('modality-filter').value.toLowerCase();
+  const state = document.getElementById('state-filter').value.toLowerCase();
+  const search = document.getElementById('search-filter').value.toLowerCase();
+
+  document.querySelectorAll('.recognition-row').forEach(row => {
+    const rowAgent = row.dataset.agent || '';
+    const rowModality = (row.dataset.modality || '').toLowerCase();
+    const rowState = (row.dataset.state || '').toLowerCase();
+    const rowSearch = row.dataset.search || '';
+    const matchAgent = !agent || rowAgent === agent;
+    const matchModality = !modality || rowModality.includes(modality);
+    const matchState = !state || rowState === state;
+    const matchSearch = !search || rowSearch.includes(search);
+    row.style.display = matchAgent && matchModality && matchState && matchSearch ? '' : 'none';
+  });
+}
+
+async function postRecognitionDecision(url, successMessage) {
+  try {
+    Marvain.showLoading('Updating recognition record...');
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({})
+    });
+    if (!response.ok) {
+      const err = await response.json();
+      throw new Error(err.detail || 'Recognition update failed');
+    }
+    Marvain.hideLoading();
+    Marvain.showToast('success', 'Updated', successMessage);
+    setTimeout(() => location.reload(), 600);
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+}
+
+function acceptHypothesis(hypothesisId) {
+  postRecognitionDecision(`/api/recognition/hypotheses/${hypothesisId}/accept`, 'Hypothesis accepted');
+}
+
+function rejectHypothesis(hypothesisId) {
+  postRecognitionDecision(`/api/recognition/hypotheses/${hypothesisId}/reject`, 'Hypothesis rejected');
+}
+
+function markObservationNoMatch(observationId) {
+  postRecognitionDecision(`/api/recognition/observations/${observationId}/no-match`, 'Observation marked no-match');
+}
+
+function revokeBiometricProjection(projectionId) {
+  postRecognitionDecision(`/api/recognition/biometrics/${projectionId}/revoke`, 'Biometric projection revoked');
+}
+</script>
+{% endblock %}

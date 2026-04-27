@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block title %}Sessions - Marvain{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title"><i class="fas fa-comments"></i> Sessions</h1>
+    <p class="text-muted">Conversation/media sessions with persona, topology, memory, recognition, and action context.</p>
+  </div>
+  <a class="btn btn-primary" href="{{ url_for('gui_live_session') }}"><i class="fas fa-video"></i> Live Session</a>
+</div>
+
+{% if error %}
+<div class="alert alert-warning">Session records are not fully available: {{ error }}</div>
+{% endif %}
+
+<div class="card">
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Started</th>
+          <th>Agent</th>
+          <th>Space</th>
+          <th>Location</th>
+          <th>Persona</th>
+          <th>Status</th>
+          <th>Objects</th>
+          <th>Room</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for session in sessions %}
+        <tr>
+          <td>{{ session.started_at or "—" }}</td>
+          <td>{{ session.agent_name }}</td>
+          <td>{{ session.space_name or "—" }}</td>
+          <td>{{ session.location_name or "—" }}</td>
+          <td>{{ session.persona_name or "—" }}</td>
+          <td><span class="badge badge-info">{{ session.status }}</span></td>
+          <td>{{ session.event_count }} events / {{ session.memory_count }} memories / {{ session.action_count }} actions</td>
+          <td><code>{{ session.livekit_room or "—" }}</code></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8">No sessions yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

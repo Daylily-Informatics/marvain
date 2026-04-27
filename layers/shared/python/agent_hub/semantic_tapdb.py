@@ -1,8 +1,9 @@
 """Marvain-owned TapDB semantic boundary.
 
 All Marvain code outside this module should treat TapDB as a semantic object
-and lineage service. Direct TapDB ORM/session/table access belongs here or in
-the dedicated TapDB writer Lambda only.
+and lineage service through this adapter or the mounted TapDB web/DAG APIs.
+The adapter delegates canonical object and graph work to supported daylily-tapdb
+interfaces and fails loudly when a required public interface is unavailable.
 """
 
 from __future__ import annotations
@@ -34,24 +35,10 @@ def _find_template_root() -> Path:
     return candidates[0] if candidates else here.parent / "tapdb_templates"
 
 
-def _find_tapdb_schema_file() -> Path:
-    here = Path(__file__).resolve()
-    candidates: list[Path] = []
-    env_schema = os.getenv("MARVAIN_TAPDB_SCHEMA_FILE")
-    if env_schema:
-        candidates.append(Path(env_schema))
-    candidates.extend(parent / "tapdb_schema" / "tapdb_schema.sql" for parent in (here.parent, *here.parents))
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return candidates[0] if candidates else here.parent / "tapdb_schema" / "tapdb_schema.sql"
-
-
 MARVAIN_TAPDB_TEMPLATE_ROOT = _find_template_root()
 MARVAIN_TAPDB_TEMPLATE_DIR = MARVAIN_TAPDB_TEMPLATE_ROOT
 MARVAIN_TAPDB_DOMAIN_REGISTRY = MARVAIN_TAPDB_TEMPLATE_ROOT / "domain_code_registry.json"
 MARVAIN_TAPDB_PREFIX_REGISTRY = MARVAIN_TAPDB_TEMPLATE_ROOT / "prefix_ownership_registry.json"
-MARVAIN_TAPDB_SCHEMA_FILE = _find_tapdb_schema_file()
 
 TEMPLATE_CODES: dict[str, str] = {
     "agent": "MVN/agent/companion/1.0/",
@@ -293,11 +280,7 @@ class DaylilyTapdbSemanticStore:
     def seed_templates(self, *, overwrite: bool) -> TemplateSeedResult:
         from daylily_tapdb.templates.loader import find_tapdb_core_config_dir, load_template_configs, seed_templates
 
-        self.ensure_schema()
         templates = load_template_configs(self.template_dir)
-        self.ensure_identity_prefixes(
-            template_categories={str(item.get("instance_prefix") or item.get("category") or "") for item in templates}
-        )
         with self.connection.session_scope(commit=True) as session:
             summary = seed_templates(
                 session,
@@ -318,49 +301,12 @@ class DaylilyTapdbSemanticStore:
         )
 
     def ensure_schema(self) -> bool:
-        from sqlalchemy import text
-
-        with self.connection.engine.begin() as conn:
-            exists = conn.execute(text("SELECT to_regclass('public.generic_template')")).scalar()
-            if exists:
-                return False
-            schema_sql = MARVAIN_TAPDB_SCHEMA_FILE.read_text(encoding="utf-8").replace("%", "%%")
-            conn.exec_driver_sql(schema_sql)
-        return True
+        raise RuntimeError("TapDB schema initialization must be performed by TapDB public CLI/API before Marvain use")
 
     def ensure_identity_prefixes(self, *, template_categories: set[str]) -> int:
-        from daylily_tapdb.euid import AUDIT_LOG_PREFIX, GENERIC_INSTANCE_LINEAGE_PREFIX, GENERIC_TEMPLATE_PREFIX
-        from sqlalchemy import text
-
-        identity_prefixes = {
-            "generic_template": GENERIC_TEMPLATE_PREFIX,
-            "generic_instance_lineage": GENERIC_INSTANCE_LINEAGE_PREFIX,
-            "audit_log": AUDIT_LOG_PREFIX,
-        }
-        instance_prefixes = set(identity_prefixes.values()) | {
-            self._validate_prefix(item) for item in template_categories
-        }
-        with self.connection.engine.begin() as conn:
-            for entity, prefix in identity_prefixes.items():
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO tapdb_identity_prefix_config(entity, domain_code, issuer_app_code, prefix)
-                        VALUES (:entity, :domain_code, :issuer_app_code, :prefix)
-                        ON CONFLICT (entity, domain_code, issuer_app_code) DO UPDATE
-                          SET prefix = EXCLUDED.prefix, updated_dt = NOW()
-                        """
-                    ),
-                    {
-                        "entity": entity,
-                        "domain_code": self.domain_code,
-                        "issuer_app_code": self.owner_repo_name,
-                        "prefix": prefix,
-                    },
-                )
-            for prefix in sorted(instance_prefixes):
-                conn.exec_driver_sql(f'CREATE SEQUENCE IF NOT EXISTS "{prefix.lower()}_instance_seq"')
-        return len(identity_prefixes) + len(instance_prefixes)
+        for item in template_categories:
+            self._validate_prefix(item)
+        raise RuntimeError("TapDB identity prefix initialization must be performed by TapDB public CLI/API")
 
     @staticmethod
     def _validate_prefix(value: str) -> str:
@@ -402,18 +348,22 @@ class DaylilyTapdbSemanticStore:
         child_semantic_id: str,
         relationship_type: str,
     ) -> SemanticEdge:
-        from daylily_tapdb.models.instance import generic_instance
-
+        link_by_euid = getattr(self.factory, "link_instances_by_euid", None)
+        if link_by_euid is None:
+            raise RuntimeError("daylily-tapdb public API missing: InstanceFactory.link_instances_by_euid")
         with self.connection.session_scope(commit=True) as session:
-            parent = session.query(generic_instance).filter(generic_instance.euid == parent_semantic_id).one()
-            child = session.query(generic_instance).filter(generic_instance.euid == child_semantic_id).one()
-            lineage = self.factory.link_instances(session, parent, child, relationship_type=relationship_type)
-            return SemanticEdge(
-                edge_id=str(lineage.euid),
-                parent_semantic_id=parent_semantic_id,
-                child_semantic_id=child_semantic_id,
+            lineage = link_by_euid(
+                session,
+                parent_euid=parent_semantic_id,
+                child_euid=child_semantic_id,
                 relationship_type=relationship_type,
             )
+        return SemanticEdge(
+            edge_id=str(lineage.euid),
+            parent_semantic_id=parent_semantic_id,
+            child_semantic_id=child_semantic_id,
+            relationship_type=relationship_type,
+        )
 
     def graph_for(self, semantic_id: str, *, max_depth: int = 3) -> dict[str, Any]:
         from daylily_tapdb.lineage import get_lineage_graph

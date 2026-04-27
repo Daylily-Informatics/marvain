@@ -71,6 +71,7 @@ from agent_hub.memberships import (
     revoke_membership,
     update_membership,
 )
+from agent_hub.memory_taxonomy import normalize_memory_kind
 from agent_hub.metrics import emit_count, emit_ms
 from agent_hub.openai_http import call_embeddings
 from agent_hub.personas import DEFAULT_AGENT_PERSONA_INSTRUCTIONS, DEFAULT_AGENT_PERSONA_NAME
@@ -2103,7 +2104,7 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
         """INSERT INTO events(event_id, agent_id, space_id, device_id, person_id, type, payload, session_id)
            VALUES (:event_id::uuid, :agent_id::uuid, :space_id::uuid, :device_id::uuid,
                    CASE WHEN :person_id = '' THEN NULL ELSE :person_id::uuid END, :type, :payload::jsonb,
-                   CASE WHEN :session_id IS NULL OR :session_id = '' THEN NULL ELSE :session_id::uuid END)""",
+                   NULLIF(CAST(:session_id AS text), '')::uuid)""",
         {
             "event_id": event_id,
             "agent_id": space_agent_id,
@@ -2112,7 +2113,7 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
             "person_id": resolved_person_id or "",
             "type": body.type,
             "payload": json.dumps(body.payload),
-            "session_id": body.session_id,
+            "session_id": str(body.session_id or ""),
         },
     )
     queued = False
@@ -2857,7 +2858,7 @@ class MemoryCreateIn(BaseModel):
         default=None, description="Required evidence event; created automatically when omitted"
     )
     session_id: str | None = None
-    tier: str = Field(default="episodic", description="Memory tier: episodic, semantic, or procedural")
+    tier: str = Field(default="episodic", description="Memory kind from the Marvain memory taxonomy")
     content: str = Field(..., min_length=1, max_length=10000)
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Arbitrary metadata (input_modality, room_name, etc.)"
@@ -2877,6 +2878,10 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
     require_scope(device, "memories:write")
     if not body.space_id:
         raise HTTPException(status_code=400, detail="space_id is required for memory evidence")
+    try:
+        memory_tier = normalize_memory_kind(body.tier)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     target_agent_id = str(device.agent_id)
     target_agent_id = _resolve_space_agent_for_device(
@@ -2969,7 +2974,7 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
                 "space_id": body.space_id,
                 "session_id": body.session_id,
                 "subject_person_id": body.subject_person_id,
-                "tier": body.tier,
+                "tier": memory_tier,
                 "content": body.content,
                 "participants": json.dumps(body.participants),
                 "confidence": body.confidence,
@@ -2992,7 +2997,7 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
                 NULLIF(CAST(:embedding AS text), '')::vector,
                 NULLIF(CAST(:subject_person_id AS text), '')::uuid,
                 :tags::text[],
-                CASE WHEN :scene_context IS NULL THEN NULL ELSE CAST(:scene_context AS text) END,
+                NULLIF(CAST(:scene_context AS text), ''),
                 CAST(:modality AS text),
                 CAST(:confidence AS real),
                 :related_memory_ids::uuid[],
@@ -3007,7 +3012,7 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
                 "memory_id": memory_id,
                 "agent_id": target_agent_id,
                 "space_id": body.space_id,
-                "tier": body.tier,
+                "tier": memory_tier,
                 "content": body.content,
                 "participants": json.dumps(body.participants),
                 "provenance": json.dumps(provenance),
@@ -3036,9 +3041,13 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
             transaction_id=tx,
         )
         db.commit(tx)
-    except Exception:
+    except HTTPException:
         db.rollback(tx)
         raise
+    except Exception as exc:
+        db.rollback(tx)
+        logger.error("Failed to create memory from device evidence: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to create memory") from exc
 
     if _cfg.audit_bucket:
         append_audit_entry(
@@ -3046,14 +3055,14 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
             bucket=_cfg.audit_bucket,
             agent_id=target_agent_id,
             entry_type="memory_created",
-            entry={"memory_id": memory_id, "tier": body.tier, "source": "device"},
+            entry={"memory_id": memory_id, "tier": memory_tier, "source": "device"},
         )
 
     return {
         "memory_id": memory_id,
         "memory_candidate_id": memory_candidate_id,
         "source_event_id": source_event_id,
-        "tier": body.tier,
+        "tier": memory_tier,
         "created": True,
     }
 
@@ -3143,8 +3152,11 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
     }
 
     if body.tiers:
+        try:
+            params["tiers"] = [normalize_memory_kind(item) for item in body.tiers]
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         tier_clause = "AND tier = ANY(:tiers)"
-        params["tiers"] = body.tiers
 
     space_clause = ""
     if body.space_id:
@@ -3167,6 +3179,8 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
                provenance::TEXT as provenance_json,
                source_event_id::TEXT as source_event_id,
                session_id::TEXT as session_id,
+               space_id::TEXT as space_id,
+               subject_person_id::TEXT as subject_person_id,
                tapdb_euid,
                recall_explanation::TEXT as recall_explanation_json,
                (embedding <=> CAST(:q AS vector))::DOUBLE PRECISION as distance
@@ -3184,27 +3198,48 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
         params,
     )
 
-    memories = [
-        RecallMemoryOut(
-            memory_id=r["memory_id"],
-            tier=r["tier"],
-            content=r["content"],
-            created_at=r["created_at"],
-            distance=float(r.get("distance", 0.0)),
-            explanation={
-                "ranking": {
-                    "distance": float(r.get("distance", 0.0)),
-                    "method": "pgvector_cosine",
+    query_terms = {term.lower().strip(".,!?") for term in body.query.split() if term.strip()}
+    memories = []
+    for rank, r in enumerate(rows, start=1):
+        distance = float(r.get("distance", 0.0))
+        content = str(r.get("content") or "")
+        content_terms = {term.lower().strip(".,!?") for term in content.split() if term.strip()}
+        keyword_match = sorted(query_terms & content_terms)
+        provenance = _parse_json_obj(r.get("provenance_json") or "{}")
+        consent_filters = {
+            "agent_id": target_agent_id,
+            "space_id": body.space_id,
+            "person_id": body.person_id,
+            "privacy_mode_checked": True,
+        }
+        memories.append(
+            RecallMemoryOut(
+                memory_id=r["memory_id"],
+                tier=r["tier"],
+                content=content,
+                created_at=r["created_at"],
+                distance=distance,
+                explanation={
+                    "ranking": {
+                        "rank": rank,
+                        "distance": distance,
+                        "embedding_distance": distance,
+                        "method": "pgvector_cosine",
+                        "keyword_match": keyword_match,
+                    },
+                    "source_excerpt": content[:240],
+                    "source_event_id": r.get("source_event_id"),
+                    "device_id": provenance.get("device_id"),
+                    "space_id": r.get("space_id"),
+                    "session_id": r.get("session_id"),
+                    "person_id": r.get("subject_person_id"),
+                    "consent_filters": consent_filters,
+                    "tapdb_euid": r.get("tapdb_euid"),
+                    "stored": _parse_json_obj(r.get("recall_explanation_json") or "{}"),
+                    "provenance": provenance,
                 },
-                "source_event_id": r.get("source_event_id"),
-                "session_id": r.get("session_id"),
-                "tapdb_euid": r.get("tapdb_euid"),
-                "stored": _parse_json_obj(r.get("recall_explanation_json") or "{}"),
-                "provenance": _parse_json_obj(r.get("provenance_json") or "{}"),
-            },
+            )
         )
-        for r in rows
-    ]
 
     return RecallOut(memories=memories)
 
@@ -3939,7 +3974,7 @@ class DelegateMemoryIn(BaseModel):
     space_id: str | None = None
     source_event_id: str | None = None
     session_id: str | None = None
-    tier: str = "short"
+    tier: str = "episodic"
     content: str
     participants: list[str] = Field(default_factory=list)
     subject_person_id: str | None = None
@@ -3961,6 +3996,10 @@ def delegate_write_memory(
     if not body.space_id:
         raise HTTPException(status_code=400, detail="space_id is required for memory evidence")
     _check_agent_space(agent, body.space_id)
+    try:
+        memory_tier = normalize_memory_kind(body.tier)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     memory_id = str(uuid.uuid4())
     memory_candidate_id = str(uuid.uuid4())
@@ -4036,7 +4075,7 @@ def delegate_write_memory(
                 "space_id": body.space_id,
                 "session_id": body.session_id,
                 "subject_person_id": body.subject_person_id,
-                "tier": body.tier,
+                "tier": memory_tier,
                 "content": body.content,
                 "participants": json.dumps(body.participants),
                 "confidence": body.confidence,
@@ -4059,7 +4098,7 @@ def delegate_write_memory(
                 NULLIF(CAST(:embedding AS text), '')::vector,
                 NULLIF(CAST(:subject_person_id AS text), '')::uuid,
                 :tags::text[],
-                CASE WHEN :scene_context IS NULL THEN NULL ELSE CAST(:scene_context AS text) END,
+                NULLIF(CAST(:scene_context AS text), ''),
                 CAST(:modality AS text),
                 CAST(:confidence AS real),
                 :related_memory_ids::uuid[],
@@ -4074,7 +4113,7 @@ def delegate_write_memory(
                 "memory_id": memory_id,
                 "agent_id": agent.issuer_agent_id,
                 "space_id": body.space_id,
-                "tier": body.tier,
+                "tier": memory_tier,
                 "content": body.content,
                 "participants": json.dumps(body.participants),
                 "provenance": json.dumps({"source": "delegate_agent", "token_id": agent.token_id}),

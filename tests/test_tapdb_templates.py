@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agent_hub.semantic_tapdb import MARVAIN_TAPDB_SCHEMA_FILE, TEMPLATE_CODES, validate_marvain_template_pack
+from agent_hub.semantic_tapdb import TEMPLATE_CODES, validate_marvain_template_pack
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -15,11 +15,14 @@ def test_marvain_tapdb_template_pack_validates() -> None:
     assert result.templates_loaded >= 23
 
 
-def test_tapdb_base_schema_is_packaged_for_writer_bootstrap() -> None:
-    assert MARVAIN_TAPDB_SCHEMA_FILE.exists()
-    schema = MARVAIN_TAPDB_SCHEMA_FILE.read_text(encoding="utf-8")
-    assert "CREATE TABLE IF NOT EXISTS generic_template" in schema
-    assert "CREATE TABLE IF NOT EXISTS generic_instance" in schema
+def test_tapdb_base_schema_is_not_copied_into_marvain() -> None:
+    from daylily_tapdb.templates.loader import find_tapdb_core_config_dir
+
+    copied_schema_fragment = "/".join(("layers", "shared", "tapdb_schema"))
+    assert not (REPO_ROOT / copied_schema_fragment).exists()
+    core_config_dir = find_tapdb_core_config_dir()
+    assert "daylily_tapdb" in str(core_config_dir)
+    assert core_config_dir.exists()
 
 
 def test_marvain_tapdb_registry_claims_mvn_for_marvain() -> None:

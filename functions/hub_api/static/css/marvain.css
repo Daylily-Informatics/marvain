@@ -154,6 +154,7 @@ pre {
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
+  flex-shrink: 0;
 }
 
 .header-logo img {
@@ -175,8 +176,10 @@ pre {
 .header-nav {
   display: flex;
   align-items: center;
-  gap: var(--spacing-md);
+  gap: var(--spacing-xs);
   margin-left: var(--spacing-xl);
+  flex: 1;
+  min-width: 0;
 }
 
 .header-nav a {
@@ -184,6 +187,11 @@ pre {
   padding: var(--spacing-sm) var(--spacing-md);
   border-radius: var(--radius-sm);
   transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  white-space: nowrap;
+  font-size: 0.875rem;
 }
 
 .header-nav a:hover,
@@ -196,6 +204,7 @@ pre {
 /* Nav dropdown (More menu) */
 .nav-dropdown {
   position: relative;
+  flex-shrink: 0;
 }
 .nav-dropdown-toggle {
   color: var(--color-gray-300);
@@ -207,6 +216,10 @@ pre {
   font: inherit;
   font-size: 0.875rem;
   transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  white-space: nowrap;
 }
 .nav-dropdown-toggle:hover,
 .nav-dropdown-toggle.active {
@@ -218,7 +231,7 @@ pre {
   position: absolute;
   top: 100%;
   left: 0;
-  min-width: 180px;
+  min-width: 220px;
   background: var(--color-gray-800);
   border: 1px solid var(--color-gray-600);
   border-radius: var(--radius-md);
@@ -226,7 +239,8 @@ pre {
   z-index: 1000;
   box-shadow: 0 4px 12px rgba(0,0,0,0.4);
 }
-.nav-dropdown:hover .nav-dropdown-menu {
+.nav-dropdown:hover .nav-dropdown-menu,
+.nav-dropdown:focus-within .nav-dropdown-menu {
   display: flex;
   flex-direction: column;
 }
@@ -235,6 +249,11 @@ pre {
   padding: var(--spacing-sm) var(--spacing-md);
   transition: all 0.2s ease;
   white-space: nowrap;
+  gap: var(--spacing-sm);
+}
+.nav-dropdown-menu a i {
+  width: 18px;
+  text-align: center;
 }
 .nav-dropdown-menu a:hover,
 .nav-dropdown-menu a.active {
@@ -248,6 +267,7 @@ pre {
   display: flex;
   align-items: center;
   gap: var(--spacing-md);
+  flex-shrink: 0;
 }
 
 /* ==================== Cards ==================== */
@@ -329,6 +349,32 @@ pre {
 
 @media (max-width: 1024px) {
   .grid-4, .grid-5 { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 1180px) {
+  .header {
+    padding: 0 var(--spacing-md);
+  }
+
+  .header-logo span,
+  .header-actions .text-muted {
+    display: none;
+  }
+
+  .header-nav {
+    margin-left: var(--spacing-md);
+  }
+
+  .header-nav a,
+  .nav-dropdown-toggle {
+    padding: var(--spacing-sm);
+  }
+}
+
+@media (max-width: 900px) {
+  .header-nav {
+    display: none;
+  }
 }
 
 @media (max-width: 768px) {
@@ -1812,6 +1858,11 @@ pre {
   border: 1px solid rgba(245, 158, 11, 0.3);
 }
 
+.ws-indicator.unavailable {
+  background: rgba(100, 116, 139, 0.15);
+  border: 1px solid rgba(100, 116, 139, 0.3);
+}
+
 .ws-dot {
   width: 8px;
   height: 8px;
@@ -1834,6 +1885,10 @@ pre {
   animation: ws-blink 0.5s infinite;
 }
 
+.ws-indicator.unavailable .ws-dot {
+  background: var(--color-gray-500);
+}
+
 .ws-status-text {
   color: var(--color-gray-300);
 }
@@ -1844,6 +1899,10 @@ pre {
 
 .ws-indicator.disconnected .ws-status-text {
   color: var(--color-error);
+}
+
+.ws-indicator.unavailable .ws-status-text {
+  color: var(--color-gray-400);
 }
 
 @keyframes ws-pulse {
@@ -2508,6 +2567,79 @@ details > summary.card-header { cursor: pointer; }
 
 
 /* ==================== Dashboard — Dense Ops Console ==================== */
+
+/* Product surface overview */
+.gui-overview {
+  margin-bottom: var(--spacing-md);
+}
+.gui-overview-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-sm);
+}
+.gui-overview-header h2 {
+  font-size: 0.95rem;
+  margin: 0;
+  color: var(--color-gray-300);
+}
+.gui-surface-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+  gap: var(--spacing-xs);
+}
+.surface-card {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  min-height: 58px;
+  padding: var(--spacing-sm);
+  background: var(--color-gray-800);
+  border: 1px solid var(--color-gray-600);
+  border-radius: var(--radius-sm);
+  color: var(--color-gray-200);
+  text-decoration: none;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  min-width: 0;
+}
+.surface-card:hover,
+.surface-card.active {
+  background: var(--color-gray-700);
+  border-color: var(--color-highlight);
+  color: var(--color-white);
+  text-decoration: none;
+}
+.surface-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  background: rgba(99, 102, 241, 0.12);
+  color: var(--color-highlight);
+}
+.surface-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.surface-title {
+  color: var(--color-white);
+  font-size: 0.85rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.surface-meta {
+  color: var(--color-gray-400);
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* Dashboard header */
 .dash-header {

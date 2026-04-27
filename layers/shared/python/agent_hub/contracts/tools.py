@@ -58,7 +58,9 @@ class SetMessageStatusPayload(BaseModel):
 
 
 class CreateMemoryPayload(BaseModel):
-    tier: Literal["episodic", "semantic"] = "semantic"
+    tier: Literal[
+        "episodic", "semantic", "procedural", "preference", "relationship", "location", "device", "policy"
+    ] = "semantic"
     content: str
     participants: list[str] = Field(default_factory=list)
     provenance: dict[str, Any] = Field(default_factory=dict)

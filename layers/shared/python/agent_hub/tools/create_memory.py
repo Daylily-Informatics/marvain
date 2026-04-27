@@ -10,6 +10,8 @@ import json
 import logging
 from typing import Any
 
+from agent_hub.memory_taxonomy import MEMORY_KIND_VALUES, normalize_memory_kind
+
 from .registry import ToolContext, ToolRegistry, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -24,7 +26,7 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
     """Execute the create_memory tool.
 
     Payload:
-        tier: "episodic" | "semantic" (default: "semantic")
+        tier: one of the canonical Marvain memory kinds (default: "semantic")
         content: The memory content (string, required)
         participants: List of participant identifiers (optional)
         provenance: Dict with source info (optional)
@@ -42,8 +44,9 @@ def _handler(payload: dict[str, Any], ctx: ToolContext) -> ToolResult:
     confidence = float(payload.get("confidence", 1.0))
     related_memory_ids = payload.get("related_memory_ids", [])
 
-    # Validate tier
-    if tier not in ("episodic", "semantic"):
+    try:
+        tier = normalize_memory_kind(tier, default="semantic")
+    except ValueError:
         return ToolResult(ok=False, error=f"invalid_tier: {tier}")
 
     # Validate content
@@ -171,5 +174,5 @@ def register(registry: ToolRegistry) -> None:
         TOOL_NAME,
         required_scopes=REQUIRED_SCOPES,
         handler=_handler,
-        description="Create a semantic or episodic memory for the agent",
+        description=f"Create a Marvain memory for the agent ({', '.join(MEMORY_KIND_VALUES)})",
     )

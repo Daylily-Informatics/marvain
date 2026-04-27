@@ -102,6 +102,9 @@ CREATE TABLE IF NOT EXISTS memory_candidates (
   tapdb_euid text,
   created_at timestamptz NOT NULL DEFAULT now(),
   reviewed_at timestamptz,
+  CONSTRAINT memory_candidates_tier_chk CHECK (
+    tier IN ('episodic', 'semantic', 'procedural', 'preference', 'relationship', 'location', 'device', 'policy')
+  ),
   CONSTRAINT memory_candidates_lifecycle_state_chk CHECK (lifecycle_state IN ('candidate', 'scored', 'rejected', 'committed'))
 );
 
@@ -121,6 +124,14 @@ ALTER TABLE memories ADD COLUMN IF NOT EXISTS recall_explanation jsonb NOT NULL 
 
 DO $$
 BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'memories_tier_chk'
+  ) THEN
+    ALTER TABLE memories
+      ADD CONSTRAINT memories_tier_chk
+      CHECK (tier IN ('episodic', 'semantic', 'procedural', 'preference', 'relationship', 'location', 'device', 'policy'));
+  END IF;
+
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'memories_lifecycle_state_chk'
   ) THEN

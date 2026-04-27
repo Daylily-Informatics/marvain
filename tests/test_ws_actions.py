@@ -26,6 +26,9 @@ def test_ws_message_template_can_queue_and_dispatch_device_actions():
     ws_section = template.split("WsMessageFunction:", 1)[1].split("WsConnectIntegration:", 1)[0]
 
     assert "ACTION_QUEUE_URL: !Ref ActionQueue" in ws_section
+    assert "COGNITO_REGION: !Ref AWS::Region" in ws_section
+    assert "COGNITO_USER_POOL_ID: !Ref CognitoUserPool" in ws_section
+    assert "COGNITO_APP_CLIENT_ID:" in ws_section
     assert "WS_API_ENDPOINT: !Sub https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}" in ws_section
     assert "sqs:SendMessage" in ws_section
     assert "Resource: !GetAtt ActionQueue.Arn" in ws_section

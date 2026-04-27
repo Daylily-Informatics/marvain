@@ -1016,6 +1016,9 @@ Resources:
           DB_SECRET_ARN: !Ref DbCredentialsSecret
           DB_NAME: !Ref DbName
           ACTION_QUEUE_URL: !Ref ActionQueue
+          COGNITO_REGION: !Ref AWS::Region
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPool
+          COGNITO_APP_CLIENT_ID: !If [GoogleAuthEnabled, !Ref CognitoUserPoolClientGoogle, !Ref CognitoUserPoolClientNative]
           WS_API_ENDPOINT: !Sub https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
           MARVAIN_METRICS_NAMESPACE: "Marvain"
       Policies:

@@ -33,16 +33,16 @@ class ActionDecision:
     approval_reason: str
 
 
-def _json_loads(value: Any, fallback: Any) -> Any:
+def _json_loads(value: Any, default: Any) -> Any:
     if value is None:
-        return fallback
-    if isinstance(value, type(fallback)):
+        return default
+    if isinstance(value, type(default)):
         return value
     try:
         parsed = json.loads(value)
     except Exception:
-        return fallback
-    return parsed if isinstance(parsed, type(fallback)) else fallback
+        return default
+    return parsed if isinstance(parsed, type(default)) else default
 
 
 def _record_policy_decision(*, db: RdsData, action_id: str, policy_id: str | None, decision: str, reason: str) -> None:

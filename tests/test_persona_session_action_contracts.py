@@ -21,6 +21,7 @@ def test_hub_persists_livekit_sessions_and_exposes_default_persona_endpoint() ->
 
     assert "INSERT INTO sessions" in api
     assert '"session_id": session_id' in api
+    assert "NULLIF(CAST(:session_id AS text), '')::uuid" in api
     assert '@api_app.get("/v1/agents/{agent_id}/personas/default"' in api
     assert "Default persona not configured" in api
 

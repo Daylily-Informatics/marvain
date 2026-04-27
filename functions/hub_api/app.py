@@ -16,8 +16,8 @@ import json
 import logging
 import os
 import secrets
-import urllib.parse
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -55,6 +55,12 @@ from agent_hub.memberships import (
     revoke_membership,
     update_membership,
 )
+from agent_hub.memory_taxonomy import (
+    classify_memory_kinds,
+    memory_kind_options,
+    normalize_memory_kind,
+)
+from agent_hub.personas import DEFAULT_AGENT_PERSONA_INSTRUCTIONS, DEFAULT_AGENT_PERSONA_NAME
 from agent_hub.secrets import get_secret_json
 from agent_hub.session_tokens import mint_ws_session_token
 
@@ -79,6 +85,8 @@ from daylily_auth_cognito.browser.session import (
     complete_cognito_callback,
     load_session_principal,
 )
+from daylily_tapdb.web import TapdbHostBridge, TapdbHostNavLink, create_tapdb_dag_router, create_tapdb_web_app
+from fastapi import FastAPI as _FastAPI
 from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -182,26 +190,8 @@ def validate_configuration_or_fail():
     errors = _validate_critical_secrets(cfg)
 
     if errors:
-        error_msg = "\n".join(f"  - {e}" for e in errors)
-        full_msg = f"""
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                    CRITICAL CONFIGURATION ERROR                               ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║ The GUI cannot start because critical secrets are missing or invalid.        ║
-║                                                                              ║
-║ Fix the following issues:                                                    ║
-{chr(10).join(f"║ • {e[:72]:<72}║" for e in errors)}
-║                                                                              ║
-║ To update secrets in AWS Secrets Manager:                                    ║
-║   aws secretsmanager put-secret-value --secret-id <ARN> \\                   ║
-║       --secret-string '{{"api_key":"<YOUR_KEY>"}}'                            ║
-║                                                                              ║
-║ For LiveKit credentials, check: ~/.livekit/cli-config.yaml                   ║
-║ For OpenAI credentials, set your API key from platform.openai.com            ║
-╚══════════════════════════════════════════════════════════════════════════════╝
-"""
-        logger.critical(full_msg)  # nosec - private repo, helpful for debugging config issues
-        raise ConfigurationError(f"Critical configuration errors:\n{error_msg}")
+        logger.critical("Critical configuration validation failed with %d issue(s).", len(errors))
+        raise ConfigurationError("Critical configuration validation failed.")
 
 
 # Use the API app as the base - all API routes are already defined
@@ -219,6 +209,236 @@ app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 # Setup Jinja2 templates
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+
+
+@dataclass(frozen=True)
+class TapdbRuntimeConfig:
+    config_path: str
+    env_name: str
+
+
+class MarvainTapdbConfigError(RuntimeError):
+    """Raised when the embedded TapDB runtime is not configured."""
+
+
+_tapdb_web_asgi_app: Any | None = None
+_tapdb_dag_asgi_app: Any | None = None
+_TAPDB_MOUNT_PATH = "/tapdb"
+
+
+def _requested_app_path(scope: dict[str, Any]) -> str:
+    root_path = str(scope.get("root_path") or "").rstrip("/")
+    path = str(scope.get("path") or "") or "/"
+    target = f"{root_path}{path}" or "/"
+    query_string = scope.get("query_string") or b""
+    if query_string:
+        target = f"{target}?{query_string.decode('utf-8')}"
+    return target
+
+
+def _tapdb_child_scope(scope: dict[str, Any], user: AuthenticatedUser) -> dict[str, Any]:
+    scoped = dict(scope)
+    path = str(scoped.get("path") or "")
+    if path == _TAPDB_MOUNT_PATH:
+        scoped["path"] = "/"
+    elif path.startswith(f"{_TAPDB_MOUNT_PATH}/"):
+        scoped["path"] = path[len(_TAPDB_MOUNT_PATH) :]
+
+    root_path = str(scoped.get("root_path") or "").rstrip("/")
+    if not root_path.endswith(_TAPDB_MOUNT_PATH):
+        scoped["root_path"] = f"{root_path}{_TAPDB_MOUNT_PATH}"
+    scoped["marvain_authenticated_user"] = user
+    scoped["tapdb_host_user"] = _tapdb_user_payload(user)
+    return scoped
+
+
+def _resolve_tapdb_runtime_config() -> TapdbRuntimeConfig:
+    config_path = str(os.getenv("MARVAIN_TAPDB_CONFIG_PATH") or os.getenv("TAPDB_CONFIG_PATH") or "").strip()
+    if not config_path:
+        raise MarvainTapdbConfigError(
+            "TapDB runtime is not configured. Set TAPDB_CONFIG_PATH or MARVAIN_TAPDB_CONFIG_PATH."
+        )
+
+    resolved = Path(config_path).expanduser().resolve()
+    if not resolved.exists():
+        raise MarvainTapdbConfigError(f"TapDB config file not found: {resolved}")
+
+    env_name = str(os.getenv("MARVAIN_TAPDB_ENV") or os.getenv("TAPDB_ENV") or _cfg.stage or "").strip()
+    if not env_name:
+        raise MarvainTapdbConfigError("TapDB environment is not configured. Set TAPDB_ENV or MARVAIN_TAPDB_ENV.")
+
+    return TapdbRuntimeConfig(config_path=str(resolved), env_name=env_name)
+
+
+def _tapdb_user_payload(user: AuthenticatedUser) -> dict[str, Any]:
+    return {
+        "uid": str(user.user_id),
+        "username": str(user.email),
+        "email": str(user.email),
+        "display_name": str(user.email),
+        "role": "admin",
+        "is_active": True,
+    }
+
+
+def _tapdb_host_user(request: Request) -> dict[str, Any] | None:
+    scoped_tapdb_user = request.scope.get("tapdb_host_user")
+    if isinstance(scoped_tapdb_user, dict):
+        return scoped_tapdb_user
+    scoped_user = request.scope.get("marvain_authenticated_user")
+    user = scoped_user if isinstance(scoped_user, AuthenticatedUser) else _gui_get_user(request)
+    if not user:
+        return None
+    return _tapdb_user_payload(user)
+
+
+def _tapdb_host_bridge() -> TapdbHostBridge:
+    return TapdbHostBridge(
+        auth_mode="host_session",
+        service_name="marvain",
+        app_name="TapDB",
+        shell_title="Marvain TapDB",
+        shell_subtitle="Native semantic graph",
+        home_url="/",
+        login_url="/login",
+        logout_url="/logout",
+        resolve_user=_tapdb_host_user,
+        nav_links=(TapdbHostNavLink(label="Marvain", href="/"),),
+    )
+
+
+def _build_tapdb_web_asgi_app() -> Any:
+    cfg = _resolve_tapdb_runtime_config()
+    return create_tapdb_web_app(
+        config_path=cfg.config_path,
+        env_name=cfg.env_name,
+        host_bridge=_tapdb_host_bridge(),
+    )
+
+
+def _get_tapdb_web_asgi_app() -> Any:
+    global _tapdb_web_asgi_app
+    if _tapdb_web_asgi_app is None:
+        _tapdb_web_asgi_app = _build_tapdb_web_asgi_app()
+    return _tapdb_web_asgi_app
+
+
+def _build_tapdb_dag_asgi_app() -> _FastAPI:
+    cfg = _resolve_tapdb_runtime_config()
+    dag_app = _FastAPI()
+    router = create_tapdb_dag_router(
+        config_path=cfg.config_path,
+        env_name=cfg.env_name,
+        service_name="marvain",
+    )
+    dag_app.include_router(router)
+    return dag_app
+
+
+def _get_tapdb_dag_asgi_app() -> Any:
+    global _tapdb_dag_asgi_app
+    if _tapdb_dag_asgi_app is None:
+        _tapdb_dag_asgi_app = _build_tapdb_dag_asgi_app()
+    return _tapdb_dag_asgi_app
+
+
+def _tapdb_config_error_response(exc: Exception) -> JSONResponse:
+    logger.info("TapDB runtime configuration unavailable: %s", exc.__class__.__name__)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": "TapDB runtime is not configured. Set TAPDB_CONFIG_PATH or MARVAIN_TAPDB_CONFIG_PATH.",
+            "code": "tapdb_runtime_not_configured",
+        },
+    )
+
+
+def _tapdb_runtime_error_response(_exc: Exception) -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": (
+                "TapDB runtime is not available. Check TAPDB_CONFIG_PATH or MARVAIN_TAPDB_CONFIG_PATH "
+                "and TAPDB_ENV or MARVAIN_TAPDB_ENV."
+            ),
+            "code": "tapdb_runtime_unavailable",
+        },
+    )
+
+
+async def _dispatch_asgi_app(asgi_app: Any, request: Request) -> Response:
+    body = await request.body()
+    sent_body = False
+
+    async def receive() -> dict[str, Any]:
+        nonlocal sent_body
+        if sent_body:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        sent_body = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    status_code = 500
+    headers: list[tuple[bytes, bytes]] = []
+    chunks: list[bytes] = []
+
+    async def send(message: dict[str, Any]) -> None:
+        nonlocal status_code, headers
+        if message["type"] == "http.response.start":
+            status_code = int(message["status"])
+            headers = list(message.get("headers") or [])
+        elif message["type"] == "http.response.body":
+            chunks.append(message.get("body") or b"")
+
+    await asgi_app(request.scope, receive, send)
+    return Response(
+        content=b"".join(chunks),
+        status_code=status_code,
+        headers={k.decode("latin-1"): v.decode("latin-1") for k, v in headers},
+    )
+
+
+class MarvainTapdbMount:
+    """Lazy TapDB UI mount guarded by the Marvain browser session."""
+
+    async def __call__(self, scope, receive, send) -> None:
+        request = Request(scope, receive)
+        user = _gui_get_user(request)
+        if not user:
+            if str(scope.get("path") or "").startswith("/api/"):
+                await JSONResponse(status_code=401, content={"detail": "Not authenticated"})(scope, receive, send)
+                return
+            await RedirectResponse(url="/login", status_code=302)(scope, receive, send)
+            return
+
+        try:
+            tapdb_app = _get_tapdb_web_asgi_app()
+            await tapdb_app(_tapdb_child_scope(scope, user), receive, send)
+        except MarvainTapdbConfigError as exc:
+            await _tapdb_config_error_response(exc)(scope, receive, send)
+        except (RuntimeError, ValueError) as exc:
+            await _tapdb_config_error_response(exc)(scope, receive, send)
+        except Exception as exc:
+            logger.warning("Embedded TapDB request failed: %s", exc.__class__.__name__)
+            await _tapdb_runtime_error_response(exc)(scope, receive, send)
+
+
+app.mount("/tapdb", MarvainTapdbMount(), name="tapdb")
+
+
+async def _api_tapdb_dag_proxy(request: Request) -> Response:
+    user = _gui_get_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+    try:
+        return await _dispatch_asgi_app(_get_tapdb_dag_asgi_app(), request)
+    except MarvainTapdbConfigError as exc:
+        return _tapdb_config_error_response(exc)
+    except (RuntimeError, ValueError) as exc:
+        return _tapdb_config_error_response(exc)
+
+
+app.add_api_route("/api/dag", _api_tapdb_dag_proxy, methods=["GET", "POST"], name="api_tapdb_dag_root")
+app.add_api_route("/api/dag/{path:path}", _api_tapdb_dag_proxy, methods=["GET", "POST"], name="api_tapdb_dag")
 
 
 @app.middleware("http")
@@ -291,7 +511,8 @@ def _get_ws_context(request: Request) -> dict[str, str | None]:
 
     Returns dict with ws_url only; token is fetched via authenticated API call.
     """
-    ws_url = _cfg.ws_api_url
+    raw_ws_url = getattr(_cfg, "ws_api_url", None)
+    ws_url = raw_ws_url.strip() if isinstance(raw_ws_url, str) else None
     return {
         "ws_url": ws_url,
     }
@@ -420,6 +641,9 @@ def _decode_next_cookie(value: Optional[str]) -> str:
 
 def _gui_get_user(request: Request) -> AuthenticatedUser | None:
     """Get the authenticated user from the session."""
+    if not request.session.get("user_sub") or not request.session.get("email"):
+        return None
+
     _register_web_session_config(request)
     try:
         principal = load_session_principal(request)
@@ -453,11 +677,12 @@ def _gui_get_user(request: Request) -> AuthenticatedUser | None:
 
 
 def _gui_redirect_to_login(*, request: Request, next_path: str | None = None, clear_session: bool = False) -> Response:
-    qs = urllib.parse.urlencode({"next": _safe_next_app_path(request, next_path)})
-    # nosec - next_path is validated by _safe_next_app_path (blocks //, schemes, CRLF injection)
-    resp: Response = RedirectResponse(url=f"{_gui_path(request, '/login')}?{qs}", status_code=302)
+    safe_next = _safe_next_app_path(request, next_path)
+    request.session["_marvain_login_next"] = safe_next
+    resp: Response = RedirectResponse(url=_gui_path(request, "/login"), status_code=302)
     if clear_session:
         clear_session_principal(request)
+        request.session["_marvain_login_next"] = safe_next
     return resp
 
 
@@ -500,7 +725,8 @@ def gui_login(request: Request, next: str | None = None) -> Response:
 
     state = secrets.token_urlsafe(32)
     request.session[session_cfg.state_session_key] = state
-    request.session[session_cfg.next_path_session_key] = _safe_next_app_path(request, next)
+    stored_next = request.session.pop("_marvain_login_next", None)
+    request.session[session_cfg.next_path_session_key] = _safe_next_app_path(request, next or stored_next)
 
     try:
         cfg = dataclasses.replace(_cfg, cognito_redirect_uri=session_cfg.redirect_uri)
@@ -2107,6 +2333,25 @@ class AgentResponse(BaseModel):
     disabled: bool
 
 
+def _seed_default_persona(*, agent_id: str, transaction_id: str | None = None) -> str:
+    """Create the required active default persona for a newly created agent."""
+    persona_id = str(uuid.uuid4())
+    _get_db().execute(
+        """
+        INSERT INTO personas(persona_id, agent_id, name, instructions, is_default, lifecycle_state)
+        VALUES (:persona_id::uuid, :agent_id::uuid, :name, :instructions, true, 'active')
+        """,
+        {
+            "persona_id": persona_id,
+            "agent_id": agent_id,
+            "name": DEFAULT_AGENT_PERSONA_NAME,
+            "instructions": DEFAULT_AGENT_PERSONA_INSTRUCTIONS,
+        },
+        transaction_id=transaction_id,
+    )
+    return persona_id
+
+
 @app.post("/api/agents", name="api_create_agent")
 def api_create_agent(request: Request, body: AgentCreate) -> AgentResponse:
     """Create a new agent and make the creating user the owner."""
@@ -2137,6 +2382,7 @@ def api_create_agent(request: Request, body: AgentCreate) -> AgentResponse:
             transaction_id=tx,
         )
 
+        _seed_default_persona(agent_id=agent_id, transaction_id=tx)
         db.commit(tx)
     except Exception as e:
         db.rollback(tx)
@@ -3039,6 +3285,80 @@ class ConsentUpdate(BaseModel):
     consents: list[ConsentGrant] = Field(default_factory=list, description="List of consent grants")
 
 
+class RecognitionEnrollmentCreate(BaseModel):
+    """Consent-gated recognition enrollment request from the GUI."""
+
+    person_id: str
+    modality: str = Field(..., description="voice or face")
+    artifact_bucket: str | None = None
+    artifact_key: str | None = None
+    artifact_uri: str | None = None
+    content_type: str | None = None
+    embedding: list[float] | None = None
+    model: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RecognitionDecisionUpdate(BaseModel):
+    """Optional reason supplied when deciding a recognition hypothesis."""
+
+    reason: str | None = None
+
+
+class BiometricProjectionRevoke(BaseModel):
+    """Optional reason supplied when revoking a biometric projection."""
+
+    reason: str | None = None
+
+
+def _require_gui_admin_for_agent(db: Any, *, user: AuthenticatedUser, agent_id: str) -> None:
+    if not check_agent_permission(db, user_id=user.user_id, agent_id=agent_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Requires admin permission on the agent")
+
+
+def _active_consent_for_person(db: Any, *, agent_id: str, person_id: str, modality: str) -> dict[str, Any] | None:
+    consent_type = str(modality or "").strip().lower()
+    rows = db.query(
+        """
+        SELECT consent_id::TEXT AS consent_id, consent_type
+        FROM consent_grants
+        WHERE agent_id = :agent_id::uuid
+          AND person_id = :person_id::uuid
+          AND consent_type IN (:consent_type, 'global')
+          AND revoked_at IS NULL
+          AND (expires_at IS NULL OR expires_at > now())
+        ORDER BY CASE WHEN consent_type = :consent_type THEN 0 ELSE 1 END, granted_at DESC
+        LIMIT 1
+        """,
+        {"agent_id": agent_id, "person_id": person_id, "consent_type": consent_type},
+    )
+    return rows[0] if rows else None
+
+
+def _require_active_recognition_consent(db: Any, *, agent_id: str, person_id: str, modality: str) -> dict[str, Any]:
+    consent = _active_consent_for_person(db, agent_id=agent_id, person_id=person_id, modality=modality)
+    if not consent:
+        raise HTTPException(status_code=403, detail=f"Missing active consent for {modality}")
+    return consent
+
+
+def _recognition_vector_literal(values: list[float], expected_dim: int) -> str:
+    if len(values) != expected_dim:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid embedding dim (expected {expected_dim}, got {len(values)})"
+        )
+    return "[" + ",".join(f"{float(x):.6f}" for x in values) + "]"
+
+
+def _projection_table_for_modality(modality: str) -> tuple[str, str, int]:
+    normalized = str(modality or "").strip().lower()
+    if normalized == "voice":
+        return "voiceprints", "voiceprint_id", 256
+    if normalized == "face":
+        return "faceprints", "faceprint_id", 512
+    raise HTTPException(status_code=400, detail="modality must be voice or face")
+
+
 @app.post("/api/people", name="api_create_person")
 def api_create_person(request: Request, body: PersonCreate) -> PersonResponse:
     """Create a new person."""
@@ -3197,6 +3517,389 @@ def api_get_consent(request: Request, person_id: str) -> JSONResponse:
     resp = JSONResponse({"person_id": person_id, "consents": consents})
     resp.headers["Cache-Control"] = "no-store"
     return resp
+
+
+@app.post("/api/recognition/enrollments", name="api_recognition_create_enrollment")
+def api_recognition_create_enrollment(request: Request, body: RecognitionEnrollmentCreate) -> dict[str, Any]:
+    """Create a consent-gated enrollment observation and optional biometric projection."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    modality = str(body.modality or "").strip().lower()
+    table_name, id_column, expected_dim = _projection_table_for_modality(modality)
+    if body.embedding is None and not (body.artifact_key or body.artifact_uri):
+        raise HTTPException(status_code=400, detail="Enrollment requires an artifact or embedding")
+
+    db = _get_db()
+    person_rows = db.query(
+        """
+        SELECT person_id::TEXT AS person_id, agent_id::TEXT AS agent_id
+        FROM people
+        WHERE person_id = :person_id::uuid
+        LIMIT 1
+        """,
+        {"person_id": body.person_id},
+    )
+    if not person_rows:
+        raise HTTPException(status_code=404, detail="Person not found")
+
+    agent_id = str(person_rows[0].get("agent_id") or "")
+    _require_gui_admin_for_agent(db, user=user, agent_id=agent_id)
+    consent = _require_active_recognition_consent(db, agent_id=agent_id, person_id=body.person_id, modality=modality)
+    consent_id = str(consent.get("consent_id") or "")
+
+    artifact_id: str | None = None
+    if body.artifact_key or body.artifact_uri:
+        artifact_id = str(uuid.uuid4())
+        uri = body.artifact_uri or (
+            f"s3://{body.artifact_bucket}/{body.artifact_key}" if body.artifact_bucket and body.artifact_key else None
+        )
+        db.execute(
+            """
+            INSERT INTO artifact_references (
+              artifact_id, agent_id, bucket, object_key, uri, media_type, lifecycle_state
+            )
+            VALUES (
+              :artifact_id::uuid, :agent_id::uuid, :bucket, :object_key, :uri, :media_type, 'available'
+            )
+            """,
+            {
+                "artifact_id": artifact_id,
+                "agent_id": agent_id,
+                "bucket": body.artifact_bucket,
+                "object_key": body.artifact_key,
+                "uri": uri,
+                "media_type": body.content_type or ("audio/webm" if modality == "voice" else "image/jpeg"),
+            },
+        )
+
+    observation_id = str(uuid.uuid4())
+    db.execute(
+        """
+        INSERT INTO recognition_observations (
+          recognition_observation_id, agent_id, artifact_id, modality, lifecycle_state, model
+        )
+        VALUES (
+          :observation_id::uuid, :agent_id::uuid,
+          CASE WHEN :artifact_id IS NULL THEN NULL ELSE :artifact_id::uuid END,
+          :modality, :lifecycle_state, :model
+        )
+        """,
+        {
+            "observation_id": observation_id,
+            "agent_id": agent_id,
+            "artifact_id": artifact_id,
+            "modality": modality,
+            "lifecycle_state": "embedded" if body.embedding is not None else "observed",
+            "model": body.model,
+        },
+    )
+
+    hypothesis_id = str(uuid.uuid4())
+    db.execute(
+        """
+        INSERT INTO recognition_hypotheses (
+          identity_hypothesis_id, recognition_observation_id, candidate_person_id, consent_id,
+          confidence, decision, reason, decided_at
+        )
+        VALUES (
+          :hypothesis_id::uuid, :observation_id::uuid, :person_id::uuid, :consent_id::uuid,
+          :confidence, 'accepted', 'consented enrollment', now()
+        )
+        """,
+        {
+            "hypothesis_id": hypothesis_id,
+            "observation_id": observation_id,
+            "person_id": body.person_id,
+            "consent_id": consent_id,
+            "confidence": 1.0,
+        },
+    )
+
+    projection_id: str | None = None
+    if body.embedding is not None:
+        projection_id = str(uuid.uuid4())
+        db.execute(
+            f"""
+            INSERT INTO {table_name} (
+              {id_column}, agent_id, person_id, embedding, model, consent_id, metadata
+            )
+            VALUES (
+              :projection_id::uuid, :agent_id::uuid, :person_id::uuid,
+              CAST(:embedding AS vector), :model, :consent_id::uuid, :metadata::jsonb
+            )
+            """,
+            {
+                "projection_id": projection_id,
+                "agent_id": agent_id,
+                "person_id": body.person_id,
+                "embedding": _recognition_vector_literal(body.embedding, expected_dim),
+                "model": body.model or ("resemblyzer" if modality == "voice" else "insightface-arcface"),
+                "consent_id": consent_id,
+                "metadata": json.dumps(body.metadata or {}),
+            },
+        )
+
+    return {
+        "ok": True,
+        "person_id": body.person_id,
+        "agent_id": agent_id,
+        "modality": modality,
+        "consent_id": consent_id,
+        "artifact_id": artifact_id,
+        "observation_id": observation_id,
+        "hypothesis_id": hypothesis_id,
+        "projection_id": projection_id,
+    }
+
+
+@app.post("/api/recognition/hypotheses/{hypothesis_id}/accept", name="api_recognition_accept_hypothesis")
+def api_recognition_accept_hypothesis(
+    request: Request, hypothesis_id: str, body: RecognitionDecisionUpdate | None = None
+) -> dict[str, Any]:
+    """Accept a proposed recognition hypothesis with active consent."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    rows = db.query(
+        """
+        SELECT rh.identity_hypothesis_id::TEXT AS hypothesis_id,
+               rh.recognition_observation_id::TEXT AS observation_id,
+               rh.candidate_person_id::TEXT AS person_id,
+               rh.confidence,
+               ro.agent_id::TEXT AS agent_id,
+               ro.space_id::TEXT AS space_id,
+               ro.location_id::TEXT AS location_id,
+               ro.modality
+        FROM recognition_hypotheses rh
+        JOIN recognition_observations ro ON ro.recognition_observation_id = rh.recognition_observation_id
+        WHERE rh.identity_hypothesis_id = :hypothesis_id::uuid
+        LIMIT 1
+        """,
+        {"hypothesis_id": hypothesis_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Hypothesis not found")
+
+    row = rows[0]
+    agent_id = str(row.get("agent_id") or "")
+    person_id = str(row.get("person_id") or "")
+    modality = str(row.get("modality") or "").strip().lower()
+    if not person_id:
+        raise HTTPException(status_code=400, detail="No candidate person to accept")
+
+    _require_gui_admin_for_agent(db, user=user, agent_id=agent_id)
+    consent = _require_active_recognition_consent(db, agent_id=agent_id, person_id=person_id, modality=modality)
+    consent_id = str(consent.get("consent_id") or "")
+    reason = (body.reason if body else None) or "accepted by operator"
+
+    db.execute(
+        """
+        UPDATE recognition_hypotheses
+        SET decision = 'accepted', consent_id = :consent_id::uuid, reason = :reason, decided_at = now()
+        WHERE identity_hypothesis_id = :hypothesis_id::uuid
+        """,
+        {"hypothesis_id": hypothesis_id, "consent_id": consent_id, "reason": reason},
+    )
+    db.execute(
+        """
+        UPDATE recognition_hypotheses
+        SET decision = 'rejected', reason = 'superseded by accepted hypothesis', decided_at = now()
+        WHERE recognition_observation_id = :observation_id::uuid
+          AND identity_hypothesis_id <> :hypothesis_id::uuid
+          AND decision = 'proposed'
+        """,
+        {"observation_id": row.get("observation_id"), "hypothesis_id": hypothesis_id},
+    )
+    db.execute(
+        """
+        UPDATE recognition_observations
+        SET lifecycle_state = 'matched'
+        WHERE recognition_observation_id = :observation_id::uuid
+        """,
+        {"observation_id": row.get("observation_id")},
+    )
+
+    presence_id = str(uuid.uuid4())
+    db.execute(
+        """
+        INSERT INTO presence_assertions (
+          presence_assertion_id, agent_id, space_id, location_id, person_id,
+          identity_hypothesis_id, confidence, status
+        )
+        VALUES (
+          :presence_id::uuid, :agent_id::uuid,
+          CASE WHEN :space_id IS NULL THEN NULL ELSE :space_id::uuid END,
+          CASE WHEN :location_id IS NULL THEN NULL ELSE :location_id::uuid END,
+          :person_id::uuid, :hypothesis_id::uuid, :confidence, 'present'
+        )
+        """,
+        {
+            "presence_id": presence_id,
+            "agent_id": agent_id,
+            "space_id": row.get("space_id"),
+            "location_id": row.get("location_id"),
+            "person_id": person_id,
+            "hypothesis_id": hypothesis_id,
+            "confidence": float(row.get("confidence") or 0.0),
+        },
+    )
+    return {
+        "ok": True,
+        "hypothesis_id": hypothesis_id,
+        "decision": "accepted",
+        "consent_id": consent_id,
+        "presence_assertion_id": presence_id,
+    }
+
+
+@app.post("/api/recognition/hypotheses/{hypothesis_id}/reject", name="api_recognition_reject_hypothesis")
+def api_recognition_reject_hypothesis(
+    request: Request, hypothesis_id: str, body: RecognitionDecisionUpdate | None = None
+) -> dict[str, Any]:
+    """Reject a recognition hypothesis without creating a person."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    rows = db.query(
+        """
+        SELECT ro.agent_id::TEXT AS agent_id
+        FROM recognition_hypotheses rh
+        JOIN recognition_observations ro ON ro.recognition_observation_id = rh.recognition_observation_id
+        WHERE rh.identity_hypothesis_id = :hypothesis_id::uuid
+        LIMIT 1
+        """,
+        {"hypothesis_id": hypothesis_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Hypothesis not found")
+
+    agent_id = str(rows[0].get("agent_id") or "")
+    _require_gui_admin_for_agent(db, user=user, agent_id=agent_id)
+    db.execute(
+        """
+        UPDATE recognition_hypotheses
+        SET decision = 'rejected', reason = :reason, decided_at = now()
+        WHERE identity_hypothesis_id = :hypothesis_id::uuid
+        """,
+        {"hypothesis_id": hypothesis_id, "reason": (body.reason if body else None) or "rejected by operator"},
+    )
+    return {"ok": True, "hypothesis_id": hypothesis_id, "decision": "rejected"}
+
+
+@app.post("/api/recognition/observations/{observation_id}/no-match", name="api_recognition_observation_no_match")
+def api_recognition_observation_no_match(
+    request: Request, observation_id: str, body: RecognitionDecisionUpdate | None = None
+) -> dict[str, Any]:
+    """Mark an observation as no-match without creating a person."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    rows = db.query(
+        """
+        SELECT recognition_observation_id::TEXT AS observation_id, agent_id::TEXT AS agent_id
+        FROM recognition_observations
+        WHERE recognition_observation_id = :observation_id::uuid
+        LIMIT 1
+        """,
+        {"observation_id": observation_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Observation not found")
+
+    agent_id = str(rows[0].get("agent_id") or "")
+    _require_gui_admin_for_agent(db, user=user, agent_id=agent_id)
+    reason = (body.reason if body else None) or "marked no-match by operator"
+    db.execute(
+        """
+        UPDATE recognition_observations
+        SET lifecycle_state = 'no_match'
+        WHERE recognition_observation_id = :observation_id::uuid
+        """,
+        {"observation_id": observation_id},
+    )
+    db.execute(
+        """
+        UPDATE recognition_hypotheses
+        SET decision = 'rejected', reason = :reason, decided_at = now()
+        WHERE recognition_observation_id = :observation_id::uuid
+          AND decision = 'proposed'
+        """,
+        {"observation_id": observation_id, "reason": reason},
+    )
+    no_match_hypothesis_id = str(uuid.uuid4())
+    db.execute(
+        """
+        INSERT INTO recognition_hypotheses (
+          identity_hypothesis_id, recognition_observation_id, candidate_person_id,
+          confidence, decision, reason, decided_at
+        )
+        VALUES (
+          :hypothesis_id::uuid, :observation_id::uuid, NULL,
+          0, 'no_match', :reason, now()
+        )
+        """,
+        {"hypothesis_id": no_match_hypothesis_id, "observation_id": observation_id, "reason": reason},
+    )
+    return {
+        "ok": True,
+        "observation_id": observation_id,
+        "decision": "no_match",
+        "hypothesis_id": no_match_hypothesis_id,
+    }
+
+
+@app.post("/api/recognition/biometrics/{projection_id}/revoke", name="api_recognition_revoke_biometric")
+def api_recognition_revoke_biometric(
+    request: Request, projection_id: str, body: BiometricProjectionRevoke | None = None
+) -> dict[str, Any]:
+    """Revoke an active voiceprint or faceprint projection."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    rows = db.query(
+        """
+        SELECT 'voice' AS modality, voiceprint_id::TEXT AS projection_id,
+               agent_id::TEXT AS agent_id, person_id::TEXT AS person_id
+        FROM voiceprints
+        WHERE voiceprint_id = :projection_id::uuid
+        UNION ALL
+        SELECT 'face' AS modality, faceprint_id::TEXT AS projection_id,
+               agent_id::TEXT AS agent_id, person_id::TEXT AS person_id
+        FROM faceprints
+        WHERE faceprint_id = :projection_id::uuid
+        LIMIT 1
+        """,
+        {"projection_id": projection_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Biometric projection not found")
+
+    row = rows[0]
+    modality = str(row.get("modality") or "")
+    table_name, id_column, _expected_dim = _projection_table_for_modality(modality)
+    agent_id = str(row.get("agent_id") or "")
+    _require_gui_admin_for_agent(db, user=user, agent_id=agent_id)
+    metadata = {"revocation_reason": (body.reason if body else None) or "revoked by operator"}
+    db.execute(
+        f"""
+        UPDATE {table_name}
+        SET revoked_at = now(),
+            metadata = COALESCE(metadata, '{{}}'::jsonb) || :metadata::jsonb
+        WHERE {id_column} = :projection_id::uuid
+        """,
+        {"projection_id": projection_id, "metadata": json.dumps(metadata)},
+    )
+    return {"ok": True, "projection_id": projection_id, "modality": modality, "revoked": True}
 
 
 class PersonUpdate(BaseModel):
@@ -3428,6 +4131,9 @@ def _create_recognition_event(
     if not rows:
         raise HTTPException(status_code=404, detail="Person not found or permission denied")
     agent_id = str(rows[0].get("agent_id") or "").strip()
+    modality = "voice" if event_type == "voice.sample" else "face" if event_type == "face.snapshot" else ""
+    if modality:
+        _require_active_recognition_consent(db, agent_id=agent_id, person_id=person_id, modality=modality)
 
     # Choose a space for anchoring the event (events require space_id).
     space_id = str(artifact.space_id or "").strip()
@@ -3899,8 +4605,9 @@ def api_actions_diagnostics(request: Request) -> dict:
             queue_health["messages_available"] = int(attrs.get("ApproximateNumberOfMessages", 0))
             queue_health["messages_in_flight"] = int(attrs.get("ApproximateNumberOfMessagesNotVisible", 0))
             queue_health["messages_delayed"] = int(attrs.get("ApproximateNumberOfMessagesDelayed", 0))
-        except Exception as e:
-            queue_health["error"] = str(e)
+        except Exception:
+            logger.warning("Failed to read action queue health", exc_info=True)
+            queue_health["error"] = "Action queue health is unavailable."
     else:
         queue_health["error"] = "ACTION_QUEUE_URL not configured"
 
@@ -3943,7 +4650,6 @@ def api_actions_diagnostics(request: Request) -> dict:
             )
             for ev in resp.get("events", []):
                 ts = ev.get("timestamp", 0)
-                msg = ev.get("message", "").strip()
                 recent_executions.append(
                     {
                         "timestamp": ts,
@@ -3952,12 +4658,13 @@ def api_actions_diagnostics(request: Request) -> dict:
                         .isoformat()
                         if ts
                         else None,
-                        "message": msg[:500],
+                        "message": "Tool runner processed an event.",
                         "log_stream": ev.get("logStreamName", ""),
                     }
                 )
-        except Exception as e:
-            logs_error = str(e)
+        except Exception:
+            logger.warning("Failed to read tool runner logs", exc_info=True)
+            logs_error = "Tool runner logs are unavailable."
     else:
         logs_error = "Could not determine Tool Runner log group"
 
@@ -3990,7 +4697,7 @@ def api_actions_diagnostics(request: Request) -> dict:
                     "approved_at": row.get("approved_at"),
                     "executed_at": row.get("executed_at"),
                     "completed_at": row.get("completed_at"),
-                    "error": row.get("error"),
+                    "error": "Action failed." if row.get("error") else None,
                 }
             )
 
@@ -4189,6 +4896,138 @@ class ActionCreate(BaseModel):
     required_scopes: list[str] = []
     auto_approve: bool = False
     idempotency_key: str
+
+
+class PersonaCreate(BaseModel):
+    agent_id: str
+    name: str
+    instructions: str
+    is_default: bool = False
+
+
+class LiveSessionSmokeIn(BaseModel):
+    seed: str = "marvain-gui-live-session-smoke"
+    transcript_text: str
+    agent_id: str | None = None
+    space_id: str | None = None
+    device_id: str | None = None
+
+
+class LiveSessionChatIn(BaseModel):
+    text: str = Field(..., min_length=1, max_length=4000)
+
+
+def _live_session_config_error() -> str | None:
+    if not str(_cfg.livekit_url or "").strip():
+        return "LIVEKIT_URL not configured"
+    if not str(_cfg.livekit_secret_arn or "").strip():
+        return "LIVEKIT_SECRET_ARN not configured"
+    if not str(_cfg.openai_secret_arn or "").strip():
+        return "OPENAI_SECRET_ARN not configured"
+    return None
+
+
+def _require_live_session_config() -> None:
+    error = _live_session_config_error()
+    if error:
+        raise HTTPException(status_code=503, detail=error)
+
+    try:
+        livekit_secret = get_secret_json(str(_cfg.livekit_secret_arn))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Failed to read LiveKit secret: {exc}") from exc
+    if _is_placeholder(str(livekit_secret.get("api_key") or "")) or _is_placeholder(
+        str(livekit_secret.get("api_secret") or "")
+    ):
+        raise HTTPException(status_code=503, detail="LiveKit secret missing api_key/api_secret")
+
+    try:
+        openai_secret = get_secret_json(str(_cfg.openai_secret_arn))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Failed to read OpenAI secret: {exc}") from exc
+    if _is_placeholder(str(openai_secret.get("api_key") or "")):
+        raise HTTPException(status_code=503, detail="OpenAI secret missing api_key")
+
+
+def _live_session_for_user(db: Any, *, user: AuthenticatedUser, session_id: str) -> dict[str, Any]:
+    rows = db.query(
+        """
+        SELECT se.session_id::TEXT AS session_id, se.agent_id::TEXT AS agent_id,
+               se.space_id::TEXT AS space_id, se.livekit_room, se.status,
+               a.name AS agent_name, sp.name AS space_name
+        FROM sessions se
+        JOIN agents a ON a.agent_id = se.agent_id
+        LEFT JOIN spaces sp ON sp.space_id = se.space_id
+        JOIN agent_memberships mb ON mb.agent_id = se.agent_id
+        WHERE se.session_id = :session_id::uuid
+          AND mb.user_id = :user_id::uuid
+          AND mb.role IN ('member', 'admin', 'owner')
+          AND mb.revoked_at IS NULL
+        LIMIT 1
+        """,
+        {"session_id": session_id, "user_id": str(user.user_id)},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Live session not found")
+    return dict(rows[0])
+
+
+def _live_session_event_row(row: dict[str, Any]) -> dict[str, Any]:
+    payload = row.get("payload") or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+    return {
+        "event_id": str(row.get("event_id") or ""),
+        "session_id": str(row.get("session_id") or ""),
+        "agent_id": str(row.get("agent_id") or ""),
+        "space_id": str(row.get("space_id") or "") if row.get("space_id") else None,
+        "person_id": str(row.get("person_id") or "") if row.get("person_id") else None,
+        "type": str(row.get("type") or ""),
+        "payload": payload,
+        "created_at": str(row.get("created_at") or ""),
+    }
+
+
+class GuiMemoryCandidateCreate(BaseModel):
+    agent_id: str
+    space_id: str
+    content: str = Field(..., min_length=1, max_length=10000)
+    tier: str = "semantic"
+    session_id: str | None = None
+    subject_person_id: str | None = None
+    tags: list[str] = []
+    scene_context: str | None = None
+    modality: str = "text"
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    participants: list[str] = []
+    related_memory_ids: list[str] = []
+
+
+class MemoryCandidatePatch(BaseModel):
+    content: str | None = Field(default=None, min_length=1, max_length=10000)
+    tier: str | None = None
+    subject_person_id: str | None = None
+    participants: list[str] | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class MemoryCandidateCommit(BaseModel):
+    tags: list[str] = []
+    scene_context: str | None = None
+    modality: str = "text"
+    related_memory_ids: list[str] = []
+
+
+class MemoryCandidateReject(BaseModel):
+    reason: str | None = None
+
+
+class MemorySupersedeIn(BaseModel):
+    superseded_by_memory_id: str | None = None
+    reason: str | None = None
 
 
 @app.post("/api/actions", name="api_create_action")
@@ -4430,7 +5269,7 @@ def gui_memories(request: Request) -> Response:
     # Get memories for all agents the user has access to
     agent_ids = [a.agent_id for a in agents]
     memories_data = []
-    tier_counts = {"episodic": 0, "semantic": 0, "procedural": 0}
+    tier_counts = {item["value"]: 0 for item in memory_kind_options()}
 
     if agent_ids:
         import json
@@ -4458,7 +5297,7 @@ def gui_memories(request: Request) -> Response:
         )
 
         for row in rows:
-            tier = row.get("tier", "")
+            tier = str(row.get("tier", "") or "").lower()
             if tier in tier_counts:
                 tier_counts[tier] += 1
 
@@ -4546,6 +5385,7 @@ def gui_memories(request: Request) -> Response:
             "active_page": "memories",
             "memories": memories_data,
             "tier_counts": tier_counts,
+            "memory_kinds": memory_kind_options(),
             "agents": agents_data,
             "spaces": spaces_data,
             "people": people_data,
@@ -4556,36 +5396,914 @@ def gui_memories(request: Request) -> Response:
     )
 
 
-@app.post("/api/memories", name="api_create_memory")
-def api_create_memory(request: Request) -> dict:
-    """Create a memory from the GUI."""
-    import json as _json
+def _gui_agent_ids(user: AuthenticatedUser) -> tuple[list[Any], list[str], list[dict[str, Any]]]:
+    agents = list_agents_for_user(_get_db(), user_id=user.user_id)
+    ids = [a.agent_id for a in agents]
+    id_strings = [str(a.agent_id) for a in agents]
+    data = [{"agent_id": str(a.agent_id), "name": a.name, "role": a.role} for a in agents]
+    return ids, id_strings, data
 
+
+def _query_for_agent_ids(
+    sql: str, agent_ids: list[str], *, extra: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    if not agent_ids:
+        return []
+    placeholders = ", ".join(f":agent_id_{i}" for i in range(len(agent_ids)))
+    params: dict[str, Any] = {f"agent_id_{i}": agent_id for i, agent_id in enumerate(agent_ids)}
+    if extra:
+        params.update(extra)
+    return _get_db().query(sql.replace("__AGENT_IDS__", placeholders), params)
+
+
+def _json_or_empty(value: Any) -> Any:
+    if value is None:
+        return {}
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(str(value))
+    except Exception:
+        return {}
+
+
+def _gui_error_text(exc: Exception) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
+@app.get("/capabilities", name="gui_capabilities")
+def gui_capabilities(request: Request) -> Response:
+    """Capability exposure matrix for developed Marvain surfaces."""
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/capabilities")
+
+    matrix = _capability_matrix()
+    return templates.TemplateResponse(
+        request,
+        "capabilities.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "capabilities",
+            "capabilities": matrix,
+            "missing_count": sum(1 for item in matrix if item["exposure"] == "missing"),
+            **_get_ws_context(request),
+        },
+    )
+
+
+@app.get("/api/capabilities", name="api_capabilities")
+def api_capabilities(request: Request) -> JSONResponse:
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return JSONResponse({"capabilities": _capability_matrix()})
+
+
+def _capability_matrix() -> list[dict[str, str]]:
+    from agent_hub.tools.registry import get_registry
+
+    tool_names = ", ".join(sorted(t.name for t in get_registry().list_tools()))
+    return [
+        {
+            "capability": "Authenticated dashboard and account/session",
+            "backend": "Cognito Hosted UI, normalized browser principal, WS session token",
+            "gui": "Dashboard, Profile, global WebSocket connection",
+            "cli": "marvain gui, marvain cognito",
+            "exposure": "gui",
+        },
+        {
+            "capability": "Agent/member/person account management",
+            "backend": "agents, users, agent_memberships, person_accounts",
+            "gui": "Agents, Agent Detail, People, Personas",
+            "cli": "marvain members",
+            "exposure": "gui",
+        },
+        {
+            "capability": "Persona and prompt hydration",
+            "backend": "personas, sessions.persona_id, agent worker persona endpoint",
+            "gui": "Personas, Sessions, Live Session",
+            "cli": "marvain bootstrap seeds default persona",
+            "exposure": "gui",
+        },
+        {
+            "capability": "Location and space topology",
+            "backend": "locations, spaces.location_id, devices.location_id/current_space_id",
+            "gui": "Locations, Spaces, Devices",
+            "cli": "marvain devices",
+            "exposure": "gui",
+        },
+        {
+            "capability": "Live media session",
+            "backend": "LiveKit token minting, sessions, agent worker",
+            "gui": "Live Session",
+            "cli": "marvain agent, marvain smoke",
+            "exposure": "gui",
+        },
+        {
+            "capability": "Memory lifecycle and recall provenance",
+            "backend": "events, memory_candidates, memories, memory_tombstones, recall_explanation",
+            "gui": "Memories, Events, TapDB Lineage",
+            "cli": "marvain smoke",
+            "exposure": "gui",
+        },
+        {
+            "capability": "Recognition, consent, unknown observations, presence",
+            "backend": "recognition_observations, recognition_hypotheses, presence_assertions, consent_grants",
+            "gui": "Recognition, People",
+            "cli": "marvain smoke",
+            "exposure": "gui",
+        },
+        {
+            "capability": "Action proposal/approval/dispatch/result",
+            "backend": "actions, action_policy_decisions, SQS tool runner, device callbacks",
+            "gui": "Actions, Observability, TapDB Lineage",
+            "cli": "marvain smoke",
+            "exposure": "gui",
+        },
+        {
+            "capability": "TapDB semantic graph and lineage",
+            "backend": "daylily-tapdb boundary, template pack, semantic_sync_status",
+            "gui": "TapDB Lineage",
+            "cli": "marvain init tapdb",
+            "exposure": "gui",
+        },
+        {
+            "capability": "Tool registry",
+            "backend": f"Registered tools: {tool_names}",
+            "gui": "Tools, Actions",
+            "cli": "marvain smoke",
+            "exposure": "gui",
+        },
+        {
+            "capability": "Audit and observability",
+            "backend": "S3 audit chain, metrics, queues, worker/device heartbeat state",
+            "gui": "Audit, Observability",
+            "cli": "marvain status, marvain monitor",
+            "exposure": "gui",
+        },
+    ]
+
+
+@app.get("/personas", name="gui_personas")
+def gui_personas(request: Request) -> Response:
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/personas")
+
+    _agent_objs, agent_ids, agents_data = _gui_agent_ids(user)
+    personas: list[dict[str, Any]] = []
+    error: str | None = None
+    try:
+        personas = _query_for_agent_ids(
+            """
+            SELECT p.persona_id::TEXT AS persona_id, p.agent_id::TEXT AS agent_id,
+                   p.name, p.instructions, p.is_default, p.lifecycle_state,
+                   p.tapdb_euid, p.created_at::TEXT AS created_at, p.updated_at::TEXT AS updated_at,
+                   a.name AS agent_name, COUNT(se.session_id) AS session_count
+            FROM personas p
+            JOIN agents a ON a.agent_id = p.agent_id
+            LEFT JOIN sessions se ON se.persona_id = p.persona_id
+            WHERE p.agent_id::TEXT IN (__AGENT_IDS__)
+              AND p.disabled_at IS NULL
+              AND p.lifecycle_state <> 'deleted'
+            GROUP BY p.persona_id, p.agent_id, p.name, p.instructions, p.is_default,
+                     p.lifecycle_state, p.tapdb_euid, p.created_at, p.updated_at, a.name
+            ORDER BY a.name, p.is_default DESC, p.name
+            """,
+            agent_ids,
+        )
+    except Exception as exc:
+        error = _gui_error_text(exc)
+
+    return templates.TemplateResponse(
+        request,
+        "personas.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "personas",
+            "agents": agents_data,
+            "personas": personas,
+            "error": error,
+            **_get_ws_context(request),
+        },
+    )
+
+
+@app.post("/api/personas", name="api_create_persona")
+def api_create_persona(request: Request, body: PersonaCreate) -> dict[str, Any]:
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    name = body.name.strip()
+    instructions = body.instructions.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    if not instructions:
+        raise HTTPException(status_code=400, detail="instructions are required")
+
+    db = _get_db()
+    if not check_agent_permission(db, user_id=user.user_id, agent_id=body.agent_id, required_role="admin"):
+        raise HTTPException(status_code=403, detail="Requires admin permission on the agent")
+
+    persona_id = str(uuid.uuid4())
+    try:
+        if body.is_default:
+            db.execute(
+                """
+                UPDATE personas
+                SET is_default = false, updated_at = now()
+                WHERE agent_id = :agent_id::uuid
+                  AND is_default
+                  AND disabled_at IS NULL
+                """,
+                {"agent_id": body.agent_id},
+            )
+        db.execute(
+            """
+            INSERT INTO personas(persona_id, agent_id, name, instructions, is_default, lifecycle_state)
+            VALUES (:persona_id::uuid, :agent_id::uuid, :name, :instructions, :is_default, 'active')
+            """,
+            {
+                "persona_id": persona_id,
+                "agent_id": body.agent_id,
+                "name": name,
+                "instructions": instructions,
+                "is_default": bool(body.is_default),
+            },
+        )
+    except Exception as exc:
+        logger.error("Failed to create persona: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to create persona") from exc
+
+    return {"persona_id": persona_id, "agent_id": body.agent_id, "created": True, "is_default": bool(body.is_default)}
+
+
+@app.post("/api/personas/{persona_id}/make-default", name="api_make_persona_default")
+def api_make_persona_default(request: Request, persona_id: str) -> dict[str, Any]:
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    db = _get_db()
+    rows = db.query(
+        """
+        SELECT p.persona_id::TEXT AS persona_id, p.agent_id::TEXT AS agent_id
+        FROM personas p
+        JOIN agent_memberships mb ON mb.agent_id = p.agent_id
+        WHERE p.persona_id = :persona_id::uuid
+          AND mb.user_id = :user_id::uuid
+          AND mb.role IN ('admin', 'owner')
+          AND mb.revoked_at IS NULL
+          AND p.disabled_at IS NULL
+          AND p.lifecycle_state = 'active'
+        LIMIT 1
+        """,
+        {"persona_id": persona_id, "user_id": str(user.user_id)},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Persona not found or permission denied")
+    agent_id = rows[0]["agent_id"]
+    try:
+        db.execute(
+            """
+            UPDATE personas
+            SET is_default = false, updated_at = now()
+            WHERE agent_id = :agent_id::uuid
+              AND is_default
+              AND disabled_at IS NULL
+            """,
+            {"agent_id": agent_id},
+        )
+        db.execute(
+            """
+            UPDATE personas
+            SET is_default = true, updated_at = now()
+            WHERE persona_id = :persona_id::uuid
+            """,
+            {"persona_id": persona_id},
+        )
+    except Exception as exc:
+        logger.error("Failed to set default persona %s: %s", persona_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to set default persona") from exc
+
+    return {"persona_id": persona_id, "agent_id": agent_id, "is_default": True}
+
+
+@app.get("/locations", name="gui_locations")
+def gui_locations(request: Request) -> Response:
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/locations")
+
+    _agent_objs, agent_ids, agents_data = _gui_agent_ids(user)
+    locations: list[dict[str, Any]] = []
+    error: str | None = None
+    try:
+        rows = _query_for_agent_ids(
+            """
+            SELECT l.location_id::TEXT AS location_id, l.agent_id::TEXT AS agent_id,
+                   l.name, NULL::TEXT AS description, l.address_label AS address,
+                   l.metadata::TEXT AS metadata, l.tapdb_euid,
+                   a.name AS agent_name,
+                   COUNT(DISTINCT s.space_id) AS space_count,
+                   COUNT(DISTINCT d.device_id) AS device_count
+            FROM locations l
+            JOIN agents a ON a.agent_id = l.agent_id
+            LEFT JOIN spaces s ON s.location_id = l.location_id
+            LEFT JOIN devices d ON d.location_id = l.location_id AND d.revoked_at IS NULL
+            WHERE l.agent_id::TEXT IN (__AGENT_IDS__)
+            GROUP BY l.location_id, l.agent_id, l.name, l.address_label, l.metadata, l.tapdb_euid, a.name
+            ORDER BY a.name, l.name
+            """,
+            agent_ids,
+        )
+        for row in rows:
+            locations.append(
+                {
+                    "location_id": row.get("location_id"),
+                    "agent_id": row.get("agent_id"),
+                    "agent_name": row.get("agent_name"),
+                    "name": row.get("name"),
+                    "description": row.get("description"),
+                    "address": row.get("address"),
+                    "metadata": _json_or_empty(row.get("metadata")),
+                    "tapdb_euid": row.get("tapdb_euid"),
+                    "space_count": row.get("space_count") or 0,
+                    "device_count": row.get("device_count") or 0,
+                }
+            )
+    except Exception as exc:
+        error = _gui_error_text(exc)
+
+    return templates.TemplateResponse(
+        request,
+        "locations.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "locations",
+            "agents": agents_data,
+            "locations": locations,
+            "error": error,
+            **_get_ws_context(request),
+        },
+    )
+
+
+@app.get("/sessions", name="gui_sessions")
+def gui_sessions(request: Request) -> Response:
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/sessions")
+
+    _agent_objs, agent_ids, agents_data = _gui_agent_ids(user)
+    sessions: list[dict[str, Any]] = []
+    error: str | None = None
+    try:
+        rows = _query_for_agent_ids(
+            """
+            SELECT se.session_id::TEXT AS session_id, se.agent_id::TEXT AS agent_id,
+                   se.space_id::TEXT AS space_id, se.location_id::TEXT AS location_id,
+                   se.persona_id::TEXT AS persona_id, se.livekit_room, se.status,
+                   se.started_at::TEXT AS started_at, se.ended_at::TEXT AS ended_at,
+                   se.metadata::TEXT AS metadata,
+                   a.name AS agent_name, sp.name AS space_name, l.name AS location_name,
+                   pe.name AS persona_name,
+                   COUNT(DISTINCT e.event_id) AS event_count,
+                   COUNT(DISTINCT m.memory_id) AS memory_count,
+                   COUNT(DISTINCT ac.action_id) AS action_count
+            FROM sessions se
+            JOIN agents a ON a.agent_id = se.agent_id
+            LEFT JOIN spaces sp ON sp.space_id = se.space_id
+            LEFT JOIN locations l ON l.location_id = se.location_id
+            LEFT JOIN personas pe ON pe.persona_id = se.persona_id
+            LEFT JOIN events e ON e.session_id = se.session_id
+            LEFT JOIN memories m ON m.session_id = se.session_id
+            LEFT JOIN actions ac ON ac.session_id = se.session_id
+            WHERE se.agent_id::TEXT IN (__AGENT_IDS__)
+            GROUP BY se.session_id, se.agent_id, se.space_id, se.location_id, se.persona_id,
+                     se.livekit_room, se.status, se.started_at, se.ended_at, se.metadata,
+                     a.name, sp.name, l.name, pe.name
+            ORDER BY se.started_at DESC
+            LIMIT 200
+            """,
+            agent_ids,
+        )
+        sessions = [
+            {
+                "session_id": row.get("session_id"),
+                "agent_id": row.get("agent_id"),
+                "agent_name": row.get("agent_name"),
+                "space_id": row.get("space_id"),
+                "space_name": row.get("space_name"),
+                "location_id": row.get("location_id"),
+                "location_name": row.get("location_name"),
+                "persona_id": row.get("persona_id"),
+                "persona_name": row.get("persona_name"),
+                "livekit_room": row.get("livekit_room"),
+                "status": row.get("status"),
+                "started_at": row.get("started_at"),
+                "ended_at": row.get("ended_at"),
+                "metadata": _json_or_empty(row.get("metadata")),
+                "event_count": row.get("event_count") or 0,
+                "memory_count": row.get("memory_count") or 0,
+                "action_count": row.get("action_count") or 0,
+            }
+            for row in rows
+        ]
+    except Exception as exc:
+        error = _gui_error_text(exc)
+
+    return templates.TemplateResponse(
+        request,
+        "sessions.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "sessions",
+            "agents": agents_data,
+            "sessions": sessions,
+            "error": error,
+            **_get_ws_context(request),
+        },
+    )
+
+
+@app.get("/recognition", name="gui_recognition")
+def gui_recognition(request: Request) -> Response:
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/recognition")
+
+    _agent_objs, agent_ids, agents_data = _gui_agent_ids(user)
+    observations: list[dict[str, Any]] = []
+    hypotheses: list[dict[str, Any]] = []
+    unknown_observations: list[dict[str, Any]] = []
+    no_match_hypotheses: list[dict[str, Any]] = []
+    presence: list[dict[str, Any]] = []
+    consent_grants: list[dict[str, Any]] = []
+    artifact_references: list[dict[str, Any]] = []
+    revocation_statuses: list[dict[str, Any]] = []
+    readiness_statuses: list[dict[str, Any]] = []
+    error: str | None = None
+    try:
+        observations = _query_for_agent_ids(
+            """
+            SELECT ro.recognition_observation_id::TEXT AS observation_id,
+                   ro.agent_id::TEXT AS agent_id, ro.space_id::TEXT AS space_id,
+                   ro.location_id::TEXT AS location_id, ro.device_id::TEXT AS device_id,
+                   ro.session_id::TEXT AS session_id, ro.artifact_id::TEXT AS artifact_id,
+                   ro.modality, ro.lifecycle_state, ro.model AS model_name, ro.created_at::TEXT AS created_at,
+                   a.name AS agent_name, s.name AS space_name, l.name AS location_name, d.name AS device_name
+            FROM recognition_observations ro
+            JOIN agents a ON a.agent_id = ro.agent_id
+            LEFT JOIN spaces s ON s.space_id = ro.space_id
+            LEFT JOIN locations l ON l.location_id = ro.location_id
+            LEFT JOIN devices d ON d.device_id = ro.device_id
+            WHERE ro.agent_id::TEXT IN (__AGENT_IDS__)
+            ORDER BY ro.created_at DESC
+            LIMIT 100
+            """,
+            agent_ids,
+        )
+        hypotheses = _query_for_agent_ids(
+            """
+            SELECT rh.identity_hypothesis_id::TEXT AS hypothesis_id,
+                   rh.recognition_observation_id::TEXT AS observation_id,
+                   ro.agent_id::TEXT AS agent_id, rh.candidate_person_id::TEXT AS candidate_person_id,
+                   p.display_name AS person_name, rh.confidence AS score, rh.decision, rh.consent_id::TEXT AS consent_id,
+                   rh.created_at::TEXT AS created_at
+            FROM recognition_hypotheses rh
+            JOIN recognition_observations ro ON ro.recognition_observation_id = rh.recognition_observation_id
+            LEFT JOIN people p ON p.person_id = rh.candidate_person_id
+            WHERE ro.agent_id::TEXT IN (__AGENT_IDS__)
+            ORDER BY rh.created_at DESC
+            LIMIT 100
+            """,
+            agent_ids,
+        )
+        unknown_observations = _query_for_agent_ids(
+            """
+            SELECT ro.recognition_observation_id::TEXT AS observation_id,
+                   ro.agent_id::TEXT AS agent_id, ro.modality, ro.lifecycle_state,
+                   'No accepted person match' AS reason, ro.created_at::TEXT AS created_at
+            FROM recognition_observations ro
+            WHERE ro.agent_id::TEXT IN (__AGENT_IDS__)
+              AND ro.lifecycle_state = 'no_match'
+            ORDER BY ro.created_at DESC
+            LIMIT 100
+            """,
+            agent_ids,
+        )
+        no_match_hypotheses = _query_for_agent_ids(
+            """
+            SELECT rh.identity_hypothesis_id::TEXT AS hypothesis_id,
+                   rh.recognition_observation_id::TEXT AS observation_id,
+                   ro.agent_id::TEXT AS agent_id, rh.decision, rh.confidence AS score, rh.reason
+            FROM recognition_hypotheses rh
+            JOIN recognition_observations ro ON ro.recognition_observation_id = rh.recognition_observation_id
+            WHERE ro.agent_id::TEXT IN (__AGENT_IDS__)
+              AND rh.decision = 'no_match'
+            ORDER BY COALESCE(rh.decided_at, rh.created_at) DESC
+            LIMIT 100
+            """,
+            agent_ids,
+        )
+        presence = _query_for_agent_ids(
+            """
+            SELECT pa.presence_assertion_id::TEXT AS presence_assertion_id,
+                   pa.agent_id::TEXT AS agent_id, pa.person_id::TEXT AS person_id,
+                   p.display_name AS person_name, pa.space_id::TEXT AS space_id,
+                   s.name AS space_name, pa.location_id::TEXT AS location_id,
+                   l.name AS location_name, pa.status, 'recognition' AS source, pa.asserted_at::TEXT AS asserted_at
+            FROM presence_assertions pa
+            LEFT JOIN people p ON p.person_id = pa.person_id
+            LEFT JOIN spaces s ON s.space_id = pa.space_id
+            LEFT JOIN locations l ON l.location_id = pa.location_id
+            WHERE pa.agent_id::TEXT IN (__AGENT_IDS__)
+            ORDER BY pa.asserted_at DESC
+            LIMIT 100
+            """,
+            agent_ids,
+        )
+        consent_grants = _query_for_agent_ids(
+            """
+            SELECT cg.consent_id::TEXT AS consent_id, cg.agent_id::TEXT AS agent_id,
+                   cg.person_id::TEXT AS person_id, p.display_name AS person_name,
+                   cg.consent_type,
+                   CASE
+                     WHEN cg.revoked_at IS NOT NULL THEN 'revoked'
+                     WHEN cg.expires_at IS NOT NULL AND cg.expires_at <= now() THEN 'expired'
+                     ELSE 'active'
+                   END AS status,
+                   cg.expires_at::TEXT AS expires_at, cg.revoked_at::TEXT AS revoked_at
+            FROM consent_grants cg
+            JOIN people p ON p.person_id = cg.person_id
+            WHERE cg.agent_id::TEXT IN (__AGENT_IDS__)
+            ORDER BY cg.granted_at DESC
+            LIMIT 100
+            """,
+            agent_ids,
+        )
+        artifact_references = _query_for_agent_ids(
+            """
+            SELECT ar.artifact_id::TEXT AS artifact_id, ar.agent_id::TEXT AS agent_id,
+                   ro.recognition_observation_id::TEXT AS observation_id,
+                   ar.media_type AS kind,
+                   COALESCE(ar.uri, CASE WHEN ar.bucket IS NOT NULL AND ar.object_key IS NOT NULL
+                                      THEN 's3://' || ar.bucket || '/' || ar.object_key
+                                      ELSE NULL END) AS uri,
+                   ar.lifecycle_state, ar.created_at::TEXT AS created_at
+            FROM artifact_references ar
+            LEFT JOIN recognition_observations ro ON ro.artifact_id = ar.artifact_id
+            WHERE ar.agent_id::TEXT IN (__AGENT_IDS__)
+              AND (ro.recognition_observation_id IS NOT NULL OR ar.media_type LIKE 'audio/%' OR ar.media_type LIKE 'image/%')
+            ORDER BY ar.created_at DESC
+            LIMIT 100
+            """,
+            agent_ids,
+        )
+        revocation_statuses = _query_for_agent_ids(
+            """
+            SELECT vp.agent_id::TEXT AS agent_id,
+                   p.display_name || ' voice enrollment' AS subject,
+                   CASE
+                     WHEN vp.revoked_at IS NOT NULL THEN 'revoked'
+                     WHEN NOT EXISTS (
+                       SELECT 1 FROM consent_grants cg
+                       WHERE cg.agent_id = vp.agent_id
+                         AND cg.person_id = vp.person_id
+                         AND cg.consent_type IN ('voice', 'global')
+                         AND cg.revoked_at IS NULL
+                         AND (cg.expires_at IS NULL OR cg.expires_at > now())
+                     ) THEN 'stale'
+                     ELSE 'not revoked'
+                   END AS status,
+                   COALESCE(vp.revoked_at::TEXT, vp.created_at::TEXT) AS updated_at,
+                   vp.voiceprint_id::TEXT AS projection_id,
+                   'voice' AS modality
+            FROM voiceprints vp
+            JOIN people p ON p.person_id = vp.person_id
+            WHERE vp.agent_id::TEXT IN (__AGENT_IDS__)
+            UNION ALL
+            SELECT fp.agent_id::TEXT AS agent_id,
+                   p.display_name || ' face enrollment' AS subject,
+                   CASE
+                     WHEN fp.revoked_at IS NOT NULL THEN 'revoked'
+                     WHEN NOT EXISTS (
+                       SELECT 1 FROM consent_grants cg
+                       WHERE cg.agent_id = fp.agent_id
+                         AND cg.person_id = fp.person_id
+                         AND cg.consent_type IN ('face', 'global')
+                         AND cg.revoked_at IS NULL
+                         AND (cg.expires_at IS NULL OR cg.expires_at > now())
+                     ) THEN 'stale'
+                     ELSE 'not revoked'
+                   END AS status,
+                   COALESCE(fp.revoked_at::TEXT, fp.created_at::TEXT) AS updated_at,
+                   fp.faceprint_id::TEXT AS projection_id,
+                   'face' AS modality
+            FROM faceprints fp
+            JOIN people p ON p.person_id = fp.person_id
+            WHERE fp.agent_id::TEXT IN (__AGENT_IDS__)
+            ORDER BY updated_at DESC
+            LIMIT 100
+            """,
+            agent_ids,
+        )
+        readiness_statuses = [
+            {
+                "name": "Consent-gated recognition controls",
+                "agent_id": agent_ids[0] if agent_ids else "",
+                "status": "ready",
+                "detail": "Enrollment, hypothesis decisions, no-match, and projection revocation are available.",
+            }
+        ]
+    except Exception as exc:
+        error = _gui_error_text(exc)
+
+    return templates.TemplateResponse(
+        request,
+        "recognition.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "recognition",
+            "agents": agents_data,
+            "observations": observations,
+            "hypotheses": hypotheses,
+            "unknown_observations": unknown_observations,
+            "no_match_hypotheses": no_match_hypotheses,
+            "presence": presence,
+            "consent_grants": consent_grants,
+            "artifact_references": artifact_references,
+            "revocation_statuses": revocation_statuses,
+            "readiness_statuses": readiness_statuses,
+            "error": error,
+            **_get_ws_context(request),
+        },
+    )
+
+
+@app.get("/observability", name="gui_observability")
+def gui_observability(request: Request) -> Response:
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/observability")
+
+    _agent_objs, agent_ids, _agents_data = _gui_agent_ids(user)
+    metrics: list[dict[str, Any]] = []
+    error: str | None = None
+    try:
+        from marvain_cli.failure import failure_catalog
+
+        failure_scenarios = failure_catalog()
+    except Exception:
+        failure_scenarios = []
+    try:
+        rows = _query_for_agent_ids(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM devices d WHERE d.agent_id::TEXT IN (__AGENT_IDS__) AND d.revoked_at IS NULL) AS devices_total,
+              (SELECT COUNT(*) FROM devices d WHERE d.agent_id::TEXT IN (__AGENT_IDS__) AND d.revoked_at IS NULL AND d.last_heartbeat_at > now() - interval '60 seconds') AS devices_online,
+              (SELECT COUNT(*) FROM actions a WHERE a.agent_id::TEXT IN (__AGENT_IDS__) AND a.status = 'proposed') AS actions_pending,
+              (SELECT COUNT(*) FROM actions a WHERE a.agent_id::TEXT IN (__AGENT_IDS__) AND a.status IN ('awaiting_device_result','device_acknowledged')) AS actions_waiting,
+              (SELECT COUNT(*) FROM memories m WHERE m.agent_id::TEXT IN (__AGENT_IDS__) AND COALESCE(m.lifecycle_state, 'committed') = 'committed') AS memories_committed,
+              (SELECT COUNT(*) FROM recognition_observations ro WHERE ro.agent_id::TEXT IN (__AGENT_IDS__)) AS recognition_observations,
+              (SELECT COUNT(*) FROM semantic_sync_status ss WHERE ss.agent_id::TEXT IN (__AGENT_IDS__) AND ss.status = 'failed') AS semantic_failures
+            """,
+            agent_ids,
+        )
+        row = rows[0] if rows else {}
+        metrics = [
+            {"name": "Devices total", "value": row.get("devices_total") or 0},
+            {"name": "Devices online", "value": row.get("devices_online") or 0},
+            {"name": "Pending actions", "value": row.get("actions_pending") or 0},
+            {"name": "Actions awaiting device", "value": row.get("actions_waiting") or 0},
+            {"name": "Committed memories", "value": row.get("memories_committed") or 0},
+            {"name": "Recognition observations", "value": row.get("recognition_observations") or 0},
+            {"name": "Semantic sync failures", "value": row.get("semantic_failures") or 0},
+        ]
+    except Exception as exc:
+        error = _gui_error_text(exc)
+
+    return templates.TemplateResponse(
+        request,
+        "observability.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "observability",
+            "metrics": metrics,
+            "worker": _agent_worker_status_dict(),
+            "failure_scenarios": failure_scenarios,
+            "error": error,
+            **_get_ws_context(request),
+        },
+    )
+
+
+@app.get("/api/observability/failure-scenarios", name="api_observability_failure_scenarios")
+def api_observability_failure_scenarios(request: Request) -> JSONResponse:
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    from marvain_cli.failure import failure_catalog
+
+    return JSONResponse({"failure_scenarios": failure_catalog()})
+
+
+@app.get("/live-session", name="gui_live_session")
+def gui_live_session(request: Request, space_id: str | None = None) -> Response:
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/live-session")
+
+    spaces = list_spaces_for_user(_get_db(), user_id=user.user_id)
+    spaces_data = [
+        {
+            "space_id": sp.space_id,
+            "agent_id": sp.agent_id,
+            "name": sp.name,
+            "agent_name": sp.agent_name,
+            "livekit_room_mode": getattr(sp, "livekit_room_mode", "ephemeral"),
+        }
+        for sp in spaces
+    ]
+    return templates.TemplateResponse(
+        request,
+        "live_session.html",
+        {
+            "user": {"email": user.email, "user_id": str(user.user_id)},
+            "stage": _cfg.stage,
+            "active_page": "live_session",
+            "spaces": spaces_data,
+            "selected_space": str(space_id or "").strip(),
+            "token_url": _gui_path(request, "/livekit/token"),
+            "worker": _agent_worker_status_dict(),
+            "config_error": _live_session_config_error(),
+            **_get_ws_context(request),
+        },
+    )
+
+
+@app.post("/api/live-session/{session_id}/chat", name="api_live_session_chat")
+def api_live_session_chat(request: Request, session_id: str, body: LiveSessionChatIn) -> dict[str, Any]:
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    _require_live_session_config()
+
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+
+    db = _get_db()
+    session = _live_session_for_user(db, user=user, session_id=session_id)
+    event_id = str(uuid.uuid4())
+    payload = {
+        "text": text,
+        "author": {"type": "user", "user_id": str(user.user_id), "email": user.email},
+        "source": "gui_live_session",
+        "livekit_room": session.get("livekit_room"),
+    }
+    db.execute(
+        """
+        INSERT INTO events(event_id, agent_id, space_id, person_id, type, payload, session_id)
+        VALUES (
+            :event_id::uuid,
+            :agent_id::uuid,
+            :space_id::uuid,
+            NULL,
+            'chat.message',
+            :payload::jsonb,
+            :session_id::uuid
+        )
+        """,
+        {
+            "event_id": event_id,
+            "agent_id": session["agent_id"],
+            "space_id": session["space_id"],
+            "payload": json.dumps(payload),
+            "session_id": session["session_id"],
+        },
+    )
+    memory_candidate_id = _create_live_session_memory_candidate(
+        db,
+        event_id=event_id,
+        session=session,
+        user=user,
+        content=text,
+    )
+    try:
+        broadcast_event(
+            event_type="events.new",
+            agent_id=session["agent_id"],
+            space_id=session["space_id"],
+            payload={
+                "event": {
+                    "event_id": event_id,
+                    "agent_id": session["agent_id"],
+                    "space_id": session["space_id"],
+                    "session_id": session["session_id"],
+                    "type": "chat.message",
+                    "payload": payload,
+                    "memory_candidate_id": memory_candidate_id,
+                }
+            },
+        )
+    except Exception as exc:
+        logger.warning("Failed to broadcast live-session chat event %s: %s", event_id, exc)
+    return {
+        "event": {
+            "event_id": event_id,
+            "session_id": session["session_id"],
+            "agent_id": session["agent_id"],
+            "space_id": session["space_id"],
+            "type": "chat.message",
+            "payload": payload,
+            "memory_candidate_id": memory_candidate_id,
+        }
+    }
+
+
+@app.get("/api/live-session/{session_id}/events", name="api_live_session_events")
+def api_live_session_events(request: Request, session_id: str) -> dict[str, Any]:
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    db = _get_db()
+    session = _live_session_for_user(db, user=user, session_id=session_id)
+    rows = db.query(
+        """
+        SELECT event_id::TEXT AS event_id, session_id::TEXT AS session_id, agent_id::TEXT AS agent_id,
+               space_id::TEXT AS space_id, person_id::TEXT AS person_id, type, payload::TEXT AS payload,
+               created_at::TEXT AS created_at
+        FROM events
+        WHERE session_id = :session_id::uuid
+        ORDER BY created_at ASC
+        LIMIT 500
+        """,
+        {"session_id": session["session_id"]},
+    )
+    return {"session": session, "events": [_live_session_event_row(dict(row)) for row in rows]}
+
+
+@app.post("/api/live-session/smoke", name="api_live_session_smoke")
+def api_live_session_smoke(request: Request, body: LiveSessionSmokeIn) -> dict[str, Any]:
+    """Run the deterministic local V1 loop for GUI Live Session smoke coverage."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if _cfg.stage != "test" and os.getenv("MARVAIN_ENABLE_LIVE_SESSION_SMOKE") != "1":
+        raise HTTPException(status_code=404, detail="Live session smoke is only available in explicit test mode")
+    transcript_text = body.transcript_text.strip()
+    if not transcript_text:
+        raise HTTPException(status_code=400, detail="transcript_text is required")
+
+    from marvain_cli.smoke import LocalSmokeScenario, run_local_smoke
+
+    scenario = LocalSmokeScenario(
+        seed=body.seed.strip() or "marvain-gui-live-session-smoke",
+        agent_id=body.agent_id.strip() if body.agent_id else "agent-gui-smoke",
+        space_id=body.space_id.strip() if body.space_id else "space-gui-smoke",
+        device_id=body.device_id.strip() if body.device_id else "device-gui-satellite",
+        person_id=str(user.user_id),
+        transcript_text=transcript_text,
+        recall_query=transcript_text,
+        recognition_modality="voice",
+        action_kind="device.notify",
+    )
+    return {
+        "mode": "local_mocked_smoke",
+        "report": run_local_smoke(scenario=scenario).as_dict(),
+    }
+
+
+@app.post("/api/memories", name="api_create_memory")
+def api_create_memory(request: Request, body: GuiMemoryCandidateCreate) -> dict:
+    """Create a memory candidate from GUI evidence."""
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     db = _get_db()
 
-    # Parse JSON body
-    import asyncio
-
-    async def _read_body() -> bytes:
-        return await request.body()
-
-    body_bytes = asyncio.get_event_loop().run_until_complete(_read_body())
-    try:
-        body = _json.loads(body_bytes)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
-
-    agent_id = body.get("agent_id")
+    agent_id = body.agent_id
     if not agent_id:
         raise HTTPException(status_code=400, detail="agent_id required")
 
-    content = body.get("content", "").strip()
+    content = body.content.strip()
     if not content:
         raise HTTPException(status_code=400, detail="content required")
+    if not body.space_id:
+        raise HTTPException(status_code=400, detail="space_id required for memory evidence")
+    try:
+        tier = normalize_memory_kind(body.tier, default="semantic")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Verify user has access to this agent
     rows = db.query(
@@ -4599,20 +6317,366 @@ def api_create_memory(request: Request) -> dict:
 
     import uuid as _uuid
 
-    memory_id = str(_uuid.uuid4())
-    tier = body.get("tier", "semantic")
-    space_id = body.get("space_id") or None
-    subject_person_id = body.get("subject_person_id") or None
-    tags = body.get("tags", [])
-    scene_context = body.get("scene_context") or None
-    modality = body.get("modality", "text")
-    confidence = float(body.get("confidence", 1.0))
-    related_memory_ids = body.get("related_memory_ids", [])
+    event_id = str(_uuid.uuid4())
+    candidate_id = str(_uuid.uuid4())
+    metadata = {
+        "source": "gui_memory_candidate_v1",
+        "user_id": str(user.user_id),
+        "content_preview": content[:500],
+        "tags": body.tags,
+        "scene_context": body.scene_context,
+        "modality": body.modality,
+        "related_memory_ids": body.related_memory_ids,
+    }
+    db.execute(
+        """
+        INSERT INTO events(event_id, agent_id, space_id, person_id, type, payload, session_id)
+        VALUES (
+            :event_id::uuid,
+            :agent_id::uuid,
+            :space_id::uuid,
+            CASE WHEN :subject_person_id IS NULL THEN NULL ELSE :subject_person_id::uuid END,
+            'memory.evidence',
+            :payload::jsonb,
+            CASE WHEN :session_id IS NULL THEN NULL ELSE :session_id::uuid END
+        )
+        """,
+        {
+            "event_id": event_id,
+            "agent_id": agent_id,
+            "space_id": body.space_id,
+            "subject_person_id": body.subject_person_id,
+            "payload": json.dumps(metadata),
+            "session_id": body.session_id,
+        },
+    )
+    db.execute(
+        """
+        INSERT INTO memory_candidates(memory_candidate_id, agent_id, source_event_id, space_id, session_id,
+                                      subject_person_id, tier, content, participants, confidence, lifecycle_state)
+        VALUES (
+            :candidate_id::uuid,
+            :agent_id::uuid,
+            :event_id::uuid,
+            :space_id::uuid,
+            CASE WHEN :session_id IS NULL THEN NULL ELSE :session_id::uuid END,
+            CASE WHEN :subject_person_id IS NULL THEN NULL ELSE :subject_person_id::uuid END,
+            :tier,
+            :content,
+            :participants::jsonb,
+            :confidence,
+            'candidate'
+        )
+        """,
+        {
+            "candidate_id": candidate_id,
+            "agent_id": agent_id,
+            "event_id": event_id,
+            "space_id": body.space_id,
+            "session_id": body.session_id,
+            "subject_person_id": body.subject_person_id,
+            "tier": tier,
+            "content": content,
+            "participants": json.dumps(body.participants),
+            "confidence": body.confidence,
+        },
+    )
 
+    return {
+        "memory_candidate_id": candidate_id,
+        "source_event_id": event_id,
+        "created": True,
+        "status": "candidate",
+    }
+
+
+def _candidate_row_for_user(
+    db: Any, *, candidate_id: str, user_id: str, require_admin: bool = False
+) -> dict[str, Any] | None:
+    roles = "('admin', 'owner')" if require_admin else "('member', 'admin', 'owner')"
+    rows = db.query(
+        f"""
+        SELECT mc.memory_candidate_id::TEXT as memory_candidate_id,
+               mc.agent_id::TEXT as agent_id,
+               mc.source_event_id::TEXT as source_event_id,
+               mc.source_action_id::TEXT as source_action_id,
+               mc.space_id::TEXT as space_id,
+               mc.session_id::TEXT as session_id,
+               mc.subject_person_id::TEXT as subject_person_id,
+               p.display_name as subject_person_name,
+               mc.tier, mc.content, mc.participants::TEXT as participants,
+               mc.model, mc.confidence, mc.lifecycle_state,
+               mc.tapdb_euid, mc.created_at::TEXT as created_at,
+               mc.reviewed_at::TEXT as reviewed_at,
+               a.name as agent_name, s.name as space_name
+        FROM memory_candidates mc
+        JOIN agents a ON a.agent_id = mc.agent_id
+        LEFT JOIN spaces s ON s.space_id = mc.space_id
+        LEFT JOIN people p ON p.person_id = mc.subject_person_id
+        JOIN agent_memberships mb ON mb.agent_id = mc.agent_id
+        WHERE mc.memory_candidate_id = :candidate_id::uuid
+          AND mb.user_id = :user_id::uuid
+          AND mb.role IN {roles}
+          AND mb.revoked_at IS NULL
+        """,
+        {"candidate_id": candidate_id, "user_id": user_id},
+    )
+    return rows[0] if rows else None
+
+
+def _normalize_candidate_row(row: dict[str, Any]) -> dict[str, Any]:
+    try:
+        participants = json.loads(row.get("participants") or "[]")
+    except Exception:
+        participants = []
+    return {
+        "memory_candidate_id": row.get("memory_candidate_id"),
+        "agent_id": row.get("agent_id"),
+        "agent_name": row.get("agent_name"),
+        "source_event_id": row.get("source_event_id"),
+        "source_action_id": row.get("source_action_id"),
+        "space_id": row.get("space_id"),
+        "space_name": row.get("space_name"),
+        "session_id": row.get("session_id"),
+        "subject_person_id": row.get("subject_person_id"),
+        "subject_person_name": row.get("subject_person_name"),
+        "tier": row.get("tier"),
+        "content": row.get("content"),
+        "participants": participants,
+        "model": row.get("model"),
+        "confidence": row.get("confidence"),
+        "lifecycle_state": row.get("lifecycle_state"),
+        "tapdb_euid": row.get("tapdb_euid"),
+        "created_at": row.get("created_at"),
+        "reviewed_at": row.get("reviewed_at"),
+    }
+
+
+def _create_live_session_memory_candidate(
+    db: Any,
+    *,
+    event_id: str,
+    session: dict[str, Any],
+    user: AuthenticatedUser,
+    content: str,
+) -> str:
+    candidate_ids: list[str] = []
+    for tier in classify_memory_kinds(content):
+        candidate_id = str(uuid.uuid4())
+        db.execute(
+            """
+            INSERT INTO memory_candidates(memory_candidate_id, agent_id, source_event_id, space_id, session_id,
+                                          tier, content, participants, confidence, lifecycle_state)
+            VALUES (
+                :candidate_id::uuid,
+                :agent_id::uuid,
+                :event_id::uuid,
+                :space_id::uuid,
+                :session_id::uuid,
+                :tier,
+                :content,
+                :participants::jsonb,
+                1.0,
+                'candidate'
+            )
+            """,
+            {
+                "candidate_id": candidate_id,
+                "agent_id": session["agent_id"],
+                "event_id": event_id,
+                "space_id": session["space_id"],
+                "session_id": session["session_id"],
+                "tier": tier,
+                "content": content,
+                "participants": json.dumps([f"user:{user.user_id}"]),
+            },
+        )
+        candidate_ids.append(candidate_id)
+    return candidate_ids[0]
+
+
+@app.get("/api/memory-candidates", name="api_list_memory_candidates")
+def api_list_memory_candidates(request: Request, state: str | None = None, agent_id: str | None = None) -> dict:
+    """List memory candidates visible to the current user."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    state_filter = (state or "candidate").strip()
+    params: dict[str, Any] = {"user_id": str(user.user_id), "state": state_filter}
+    agent_filter_sql = ""
+    if agent_id:
+        params["agent_id"] = agent_id
+        agent_filter_sql = "AND mc.agent_id = :agent_id::uuid"
+    try:
+        rows = _get_db().query(
+            f"""
+            SELECT mc.memory_candidate_id::TEXT as memory_candidate_id,
+                   mc.agent_id::TEXT as agent_id,
+                   mc.source_event_id::TEXT as source_event_id,
+                   mc.source_action_id::TEXT as source_action_id,
+                   mc.space_id::TEXT as space_id,
+                   mc.session_id::TEXT as session_id,
+                   mc.subject_person_id::TEXT as subject_person_id,
+                   p.display_name as subject_person_name,
+                   mc.tier, mc.content, mc.participants::TEXT as participants,
+                   mc.model, mc.confidence, mc.lifecycle_state,
+                   mc.tapdb_euid, mc.created_at::TEXT as created_at,
+                   mc.reviewed_at::TEXT as reviewed_at,
+                   a.name as agent_name, s.name as space_name
+            FROM memory_candidates mc
+            JOIN agents a ON a.agent_id = mc.agent_id
+            LEFT JOIN spaces s ON s.space_id = mc.space_id
+            LEFT JOIN people p ON p.person_id = mc.subject_person_id
+            JOIN agent_memberships mb ON mb.agent_id = mc.agent_id
+            WHERE mb.user_id = :user_id::uuid
+              AND mb.role IN ('member', 'admin', 'owner')
+              AND mb.revoked_at IS NULL
+              AND (:state = '' OR mc.lifecycle_state = :state)
+              {agent_filter_sql}
+            ORDER BY mc.created_at DESC
+            LIMIT 100
+            """,
+            params,
+        )
+    except Exception as exc:
+        logger.error("Failed to list memory candidates: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to list memory candidates") from exc
+    return {"candidates": [_normalize_candidate_row(row) for row in rows]}
+
+
+@app.get("/api/memory-candidates/{candidate_id}", name="api_get_memory_candidate")
+def api_get_memory_candidate(request: Request, candidate_id: str) -> dict:
+    """Get a memory candidate detail record."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    row = _candidate_row_for_user(_get_db(), candidate_id=candidate_id, user_id=str(user.user_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="Memory candidate not found or permission denied")
+    return _normalize_candidate_row(row)
+
+
+@app.patch("/api/memory-candidates/{candidate_id}", name="api_patch_memory_candidate")
+def api_patch_memory_candidate(request: Request, candidate_id: str, body: MemoryCandidatePatch) -> dict:
+    """Edit a reviewable memory candidate."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    db = _get_db()
+    row = _candidate_row_for_user(db, candidate_id=candidate_id, user_id=str(user.user_id), require_admin=True)
+    if not row:
+        raise HTTPException(status_code=404, detail="Memory candidate not found or permission denied")
+    if row.get("lifecycle_state") not in ("candidate", "scored"):
+        raise HTTPException(status_code=409, detail="Only candidate or scored memory candidates can be edited")
+
+    updates: list[str] = []
+    params: dict[str, Any] = {"candidate_id": candidate_id}
+    if body.content is not None:
+        if not body.content.strip():
+            raise HTTPException(status_code=400, detail="content required")
+        updates.append("content = :content")
+        params["content"] = body.content.strip()
+    if body.tier is not None:
+        try:
+            normalize_memory_kind(body.tier)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        updates.append("tier = :tier")
+        params["tier"] = body.tier
+    if body.subject_person_id is not None:
+        updates.append(
+            "subject_person_id = CASE WHEN :subject_person_id = '' THEN NULL ELSE :subject_person_id::uuid END"
+        )
+        params["subject_person_id"] = body.subject_person_id
+    if body.participants is not None:
+        updates.append("participants = :participants::jsonb")
+        params["participants"] = json.dumps(body.participants)
+    if body.confidence is not None:
+        updates.append("confidence = :confidence")
+        params["confidence"] = body.confidence
+
+    if not updates:
+        return {"memory_candidate_id": candidate_id, "updated": False}
+
+    db.execute(
+        f"""
+        UPDATE memory_candidates
+        SET {", ".join(updates)}
+        WHERE memory_candidate_id = :candidate_id::uuid
+        """,
+        params,
+    )
+    return {"memory_candidate_id": candidate_id, "updated": True}
+
+
+@app.post("/api/memory-candidates/{candidate_id}/reject", name="api_reject_memory_candidate")
+def api_reject_memory_candidate(request: Request, candidate_id: str, body: MemoryCandidateReject | None = None) -> dict:
+    """Reject a memory candidate."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    db = _get_db()
+    row = _candidate_row_for_user(db, candidate_id=candidate_id, user_id=str(user.user_id), require_admin=True)
+    if not row:
+        raise HTTPException(status_code=404, detail="Memory candidate not found or permission denied")
+    if row.get("lifecycle_state") == "committed":
+        raise HTTPException(status_code=409, detail="Committed memory candidates cannot be rejected")
+    db.execute(
+        """
+        UPDATE memory_candidates
+        SET lifecycle_state = 'rejected',
+            reviewed_at = now()
+        WHERE memory_candidate_id = :candidate_id::uuid
+        """,
+        {"candidate_id": candidate_id},
+    )
+    return {"memory_candidate_id": candidate_id, "status": "rejected", "reason": body.reason if body else None}
+
+
+@app.post("/api/memory-candidates/{candidate_id}/commit", name="api_commit_memory_candidate")
+def api_commit_memory_candidate(request: Request, candidate_id: str, body: MemoryCandidateCommit | None = None) -> dict:
+    """Commit an evidence-backed memory candidate into the memories projection."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    db = _get_db()
+    row = _candidate_row_for_user(db, candidate_id=candidate_id, user_id=str(user.user_id), require_admin=True)
+    if not row:
+        raise HTTPException(status_code=404, detail="Memory candidate not found or permission denied")
+    if row.get("lifecycle_state") not in ("candidate", "scored"):
+        raise HTTPException(status_code=409, detail="Only candidate or scored memory candidates can be committed")
+    if not row.get("source_event_id"):
+        raise HTTPException(status_code=400, detail="Memory commit requires source evidence")
+
+    import uuid as _uuid
+
+    commit_body = body or MemoryCandidateCommit()
+    memory_id = str(_uuid.uuid4())
+    recall_explanation = {
+        "source": "gui_candidate_commit",
+        "user_id": str(user.user_id),
+        "source_event_id": row.get("source_event_id"),
+        "source_action_id": row.get("source_action_id"),
+        "memory_candidate_id": candidate_id,
+        "commit_policy": "manual_candidate_review_v1",
+        "ranking_features": {
+            "source_excerpt": str(row.get("content") or "")[:240],
+            "keyword_match": [],
+            "embedding_distance": None,
+            "source_event_id": row.get("source_event_id"),
+            "device_id": None,
+            "space_id": row.get("space_id"),
+            "session_id": row.get("session_id"),
+            "person_id": row.get("subject_person_id"),
+            "consent_filters": {"applied": True, "reason": "manual_candidate_review_v1"},
+        },
+    }
     db.execute(
         """
         INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants, provenance,
                               subject_person_id, tags, scene_context, modality, confidence, related_memory_ids,
+                              memory_candidate_id, source_event_id, source_action_id, session_id,
                               lifecycle_state, recall_explanation)
         VALUES (
             :memory_id::uuid,
@@ -4620,7 +6684,7 @@ def api_create_memory(request: Request) -> dict:
             CASE WHEN :space_id IS NULL THEN NULL ELSE :space_id::uuid END,
             :tier,
             :content,
-            '[]'::jsonb,
+            :participants::jsonb,
             :provenance::jsonb,
             CASE WHEN :subject_person_id IS NULL THEN NULL ELSE :subject_person_id::uuid END,
             :tags::text[],
@@ -4628,34 +6692,47 @@ def api_create_memory(request: Request) -> dict:
             :modality,
             :confidence,
             :related_memory_ids::uuid[],
+            :candidate_id::uuid,
+            CASE WHEN :source_event_id IS NULL THEN NULL ELSE :source_event_id::uuid END,
+            CASE WHEN :source_action_id IS NULL THEN NULL ELSE :source_action_id::uuid END,
+            CASE WHEN :session_id IS NULL THEN NULL ELSE :session_id::uuid END,
             'committed',
             :recall_explanation::jsonb
         )
         """,
         {
             "memory_id": memory_id,
-            "agent_id": agent_id,
-            "space_id": space_id,
-            "tier": tier,
-            "content": content,
-            "provenance": _json.dumps({"source": "gui", "user_id": str(user.user_id)}),
-            "subject_person_id": subject_person_id,
-            "tags": "{" + ",".join(tags) + "}" if tags else "{}",
-            "scene_context": scene_context,
-            "modality": modality,
-            "confidence": confidence,
-            "related_memory_ids": "{" + ",".join(related_memory_ids) + "}" if related_memory_ids else "{}",
-            "recall_explanation": _json.dumps(
-                {
-                    "source": "gui_manual",
-                    "user_id": str(user.user_id),
-                    "commit_policy": "manual_gui_create_v1",
-                }
-            ),
+            "agent_id": row["agent_id"],
+            "space_id": row.get("space_id"),
+            "tier": row["tier"],
+            "content": row["content"],
+            "participants": row.get("participants") or "[]",
+            "provenance": json.dumps({"source": "gui_candidate_commit", "user_id": str(user.user_id)}),
+            "subject_person_id": row.get("subject_person_id"),
+            "tags": "{" + ",".join(commit_body.tags) + "}" if commit_body.tags else "{}",
+            "scene_context": commit_body.scene_context,
+            "modality": commit_body.modality,
+            "confidence": row.get("confidence", 1.0),
+            "related_memory_ids": "{" + ",".join(commit_body.related_memory_ids) + "}"
+            if commit_body.related_memory_ids
+            else "{}",
+            "candidate_id": candidate_id,
+            "source_event_id": row.get("source_event_id"),
+            "source_action_id": row.get("source_action_id"),
+            "session_id": row.get("session_id"),
+            "recall_explanation": json.dumps(recall_explanation),
         },
     )
-
-    return {"memory_id": memory_id, "created": True}
+    db.execute(
+        """
+        UPDATE memory_candidates
+        SET lifecycle_state = 'committed',
+            reviewed_at = now()
+        WHERE memory_candidate_id = :candidate_id::uuid
+        """,
+        {"candidate_id": candidate_id},
+    )
+    return {"memory_id": memory_id, "memory_candidate_id": candidate_id, "status": "committed"}
 
 
 @app.delete("/api/memories/{memory_id}", name="api_delete_memory")
@@ -4708,6 +6785,57 @@ def api_delete_memory(request: Request, memory_id: str) -> dict:
     return {"message": "Memory deleted", "memory_id": memory_id, "tombstoned": True}
 
 
+@app.post("/api/memories/{memory_id}/supersede", name="api_supersede_memory")
+def api_supersede_memory(request: Request, memory_id: str, body: MemorySupersedeIn) -> dict:
+    """Mark a committed memory as superseded."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    db = _get_db()
+    rows = db.query(
+        """
+        SELECT m.memory_id::TEXT as memory_id, m.agent_id::TEXT as agent_id, m.lifecycle_state
+        FROM memories m
+        INNER JOIN agent_memberships mb ON m.agent_id = mb.agent_id
+        WHERE m.memory_id = :memory_id::uuid
+          AND mb.user_id = :user_id::uuid
+          AND mb.role IN ('admin', 'owner')
+          AND mb.revoked_at IS NULL
+        """,
+        {"memory_id": memory_id, "user_id": str(user.user_id)},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Memory not found or permission denied")
+    if rows[0].get("lifecycle_state") == "tombstoned":
+        raise HTTPException(status_code=409, detail="Tombstoned memories cannot be superseded")
+
+    db.execute(
+        """
+        UPDATE memories
+        SET lifecycle_state = 'superseded',
+            recall_explanation = COALESCE(recall_explanation, '{}'::jsonb)
+              || jsonb_build_object(
+                   'superseded_by_memory_id', NULLIF(CAST(:superseded_by_memory_id AS text), ''),
+                   'supersede_reason', NULLIF(CAST(:reason AS text), ''),
+                   'superseded_by_user_id', CAST(:user_id AS text)
+                 )
+        WHERE memory_id = :memory_id::uuid
+        """,
+        {
+            "memory_id": memory_id,
+            "user_id": str(user.user_id),
+            "superseded_by_memory_id": body.superseded_by_memory_id or "",
+            "reason": body.reason or "",
+        },
+    )
+    return {
+        "memory_id": memory_id,
+        "status": "superseded",
+        "superseded_by_memory_id": body.superseded_by_memory_id,
+    }
+
+
 @app.get("/api/memories/{memory_id}", name="api_get_memory")
 def api_get_memory(request: Request, memory_id: str) -> dict:
     """Get memory details."""
@@ -4725,6 +6853,22 @@ def api_get_memory(request: Request, memory_id: str) -> dict:
                m.participants::TEXT as participants,
                m.provenance::TEXT as provenance,
                m.retention::TEXT as retention,
+               m.memory_candidate_id::TEXT as memory_candidate_id,
+               m.source_event_id::TEXT as source_event_id,
+               m.source_action_id::TEXT as source_action_id,
+               m.session_id::TEXT as session_id,
+               m.location_id::TEXT as location_id,
+               l.name as location_name,
+               m.lifecycle_state,
+               m.tapdb_euid,
+               m.tombstoned_at::TEXT as tombstoned_at,
+               m.recall_explanation::TEXT as recall_explanation,
+               mt.memory_tombstone_id::TEXT as memory_tombstone_id,
+               mt.reason as tombstone_reason,
+               mt.actor_type as tombstone_actor_type,
+               mt.actor_id as tombstone_actor_id,
+               mt.tapdb_euid as tombstone_tapdb_euid,
+               mt.created_at::TEXT as tombstone_created_at,
                m.created_at::TEXT as created_at,
                a.name as agent_name, s.name as space_name,
                m.subject_person_id::TEXT as subject_person_id,
@@ -4734,7 +6878,9 @@ def api_get_memory(request: Request, memory_id: str) -> dict:
         FROM memories m
         INNER JOIN agents a ON m.agent_id = a.agent_id
         LEFT JOIN spaces s ON m.space_id = s.space_id
+        LEFT JOIN locations l ON l.location_id = m.location_id
         LEFT JOIN people p ON p.person_id = m.subject_person_id
+        LEFT JOIN memory_tombstones mt ON mt.memory_id = m.memory_id
         INNER JOIN agent_memberships mb ON m.agent_id = mb.agent_id
         WHERE m.memory_id = :memory_id::uuid
           AND mb.user_id = :user_id::uuid
@@ -4762,6 +6908,21 @@ def api_get_memory(request: Request, memory_id: str) -> dict:
         retention = json.loads(row.get("retention") or "{}")
     except Exception:
         retention = {}
+    try:
+        recall_explanation = json.loads(row.get("recall_explanation") or "{}")
+    except Exception:
+        recall_explanation = {}
+
+    tombstone = {}
+    if row.get("memory_tombstone_id") or row.get("tombstoned_at"):
+        tombstone = {
+            "memory_tombstone_id": row.get("memory_tombstone_id"),
+            "reason": row.get("tombstone_reason"),
+            "actor_type": row.get("tombstone_actor_type"),
+            "actor_id": row.get("tombstone_actor_id"),
+            "tapdb_euid": row.get("tombstone_tapdb_euid"),
+            "created_at": row.get("tombstone_created_at"),
+        }
 
     return {
         "memory_id": row["memory_id"],
@@ -4769,11 +6930,22 @@ def api_get_memory(request: Request, memory_id: str) -> dict:
         "agent_name": row.get("agent_name", ""),
         "space_id": row.get("space_id"),
         "space_name": row.get("space_name"),
+        "memory_candidate_id": row.get("memory_candidate_id"),
+        "source_event_id": row.get("source_event_id"),
+        "source_action_id": row.get("source_action_id"),
+        "session_id": row.get("session_id"),
+        "location_id": row.get("location_id"),
+        "location_name": row.get("location_name"),
+        "lifecycle_state": row.get("lifecycle_state"),
+        "tapdb_euid": row.get("tapdb_euid"),
+        "tombstoned_at": row.get("tombstoned_at"),
         "tier": row["tier"],
         "content": row["content"],
         "participants": participants,
         "provenance": provenance,
         "retention": retention,
+        "recall_explanation": recall_explanation,
+        "tombstone": tombstone,
         "created_at": row["created_at"],
         "subject_person_id": row.get("subject_person_id"),
         "subject_person_name": row.get("subject_person_name"),
@@ -4956,9 +7128,9 @@ def api_presign_upload(request: Request, body: ArtifactPresign) -> dict:
     import uuid as uuid_mod
 
     purpose = str(body.purpose or "general").strip().lower()
-    if purpose not in {"general", "recognition"}:
+    if purpose not in {"general", "recognition", "visual"}:
         purpose = "general"
-    prefix = "recognition" if purpose == "recognition" else "artifacts"
+    prefix = purpose if purpose in {"recognition", "visual"} else "artifacts"
     key = f"{prefix}/agent_id={body.agent_id}/{uuid_mod.uuid4()}_{body.filename}"
     s3 = _get_s3()
     url = s3.generate_presigned_url(
@@ -4993,9 +7165,13 @@ async def api_upload_artifact(request: Request) -> dict:
 
     import uuid as uuid_mod
 
+    purpose = str(form.get("purpose") or "general").strip().lower()
+    if purpose not in {"general", "recognition", "visual"}:
+        purpose = "general"
+    prefix = purpose if purpose in {"recognition", "visual"} else "artifacts"
     filename = getattr(upload_file, "filename", "unknown")
     content_type = getattr(upload_file, "content_type", "application/octet-stream") or "application/octet-stream"
-    key = f"artifacts/agent_id={agent_id}/{uuid_mod.uuid4()}_{filename}"
+    key = f"{prefix}/agent_id={agent_id}/{uuid_mod.uuid4()}_{filename}"
 
     file_content = await upload_file.read()
     s3 = _get_s3()
@@ -5006,7 +7182,13 @@ async def api_upload_artifact(request: Request) -> dict:
         ContentType=content_type,
     )
 
-    return {"key": key, "bucket": _cfg.artifact_bucket, "filename": filename}
+    return {
+        "key": key,
+        "bucket": _cfg.artifact_bucket,
+        "filename": filename,
+        "purpose": purpose,
+        "uri": f"s3://{_cfg.artifact_bucket}/{key}",
+    }
 
 
 @app.get("/audit", name="gui_audit")
@@ -5080,10 +7262,10 @@ def gui_audit(request: Request) -> Response:
                                     "data_preview": data_preview,
                                 }
                             )
-                        except Exception as e:
-                            logger.warning(f"Failed to parse audit entry {key}: {e}")
-            except Exception as e:
-                logger.warning(f"Failed to list audit entries for agent {agent_id}: {e}")
+                        except Exception:
+                            logger.warning("Failed to parse audit entry", exc_info=True)
+            except Exception:
+                logger.warning("Failed to list audit entries for an agent", exc_info=True)
 
         # Sort by timestamp (most recent first)
         entries_data.sort(key=lambda x: x.get("ts", ""), reverse=True)
@@ -5157,10 +7339,12 @@ def api_audit_verify(request: Request) -> dict:
                         body = resp["Body"].read().decode("utf-8")
                         entry = json.loads(body)
                         entries.append(entry)
-                    except Exception as e:
-                        errors.append(f"Failed to read {key}: {e}")
-        except Exception as e:
-            errors.append(f"Failed to list audit for agent {agent_id}: {e}")
+                    except Exception:
+                        logger.warning("Failed to read audit entry during verification", exc_info=True)
+                        errors.append("Failed to read an audit entry.")
+        except Exception:
+            logger.warning("Failed to list audit entries during verification", exc_info=True)
+            errors.append("Failed to list audit entries for an agent.")
             continue
 
         # Sort by timestamp
@@ -5186,7 +7370,7 @@ def api_audit_verify(request: Request) -> dict:
             entries_checked += 1
 
     if errors:
-        return {"valid": False, "error": "; ".join(errors[:5]), "entries_checked": entries_checked}
+        return {"valid": False, "error": "Audit verification failed.", "entries_checked": entries_checked}
 
     return {"valid": True, "entries_checked": entries_checked}
 
@@ -5265,6 +7449,7 @@ def gui_livekit_test(request: Request, space_id: str | None = None) -> Response:
         {
             "space_id": sp.space_id,
             "name": sp.name,
+            "agent_id": str(getattr(sp, "agent_id", "") or ""),
             "agent_name": sp.agent_name,
             "livekit_room_mode": getattr(sp, "livekit_room_mode", "ephemeral"),
         }

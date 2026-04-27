@@ -702,6 +702,38 @@ def register(registry: CommandRegistry, spec: CliSpec) -> None:
         test_cmd,
         required_policy(mutates_state=True, supports_dry_run=True),
     )
+    from marvain_cli.smoke import smoke_gui_guide_cmd, smoke_v1_dev_cmd, smoke_v1_local_cmd
+
+    register_group_commands(
+        registry,
+        "smoke",
+        "V1 runtime smoke commands.",
+        [
+            ("v1-local", smoke_v1_local_cmd, required_policy(supports_json=True)),
+            ("v1-dev", smoke_v1_dev_cmd, required_policy(supports_json=True, prereq_tags={MARVAIN_AWS_TAG})),
+            ("gui-guide", smoke_gui_guide_cmd, required_policy(supports_json=True)),
+        ],
+    )
+    from marvain_cli.simulate import two_devices_cmd
+
+    register_group_commands(
+        registry,
+        "simulate",
+        "Local deterministic simulation reports.",
+        [
+            ("two-devices", two_devices_cmd, required_policy(supports_json=True)),
+        ],
+    )
+    from marvain_cli.failure import inject_cmd
+
+    register_group_commands(
+        registry,
+        "failure",
+        "Local deterministic failure-injection reports.",
+        [
+            ("inject", inject_cmd, required_policy(supports_json=True)),
+        ],
+    )
     register_group_commands(
         registry,
         "monitor",
