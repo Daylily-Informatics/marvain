@@ -184,6 +184,11 @@
 
       if (wsUrl) {
         const wsAgentSubscriptions = new Set();
+        let wsAuthRefreshAttempts = 0;
+        let wsAuthRefreshTimer = null;
+        let wsConnectInFlight = false;
+        const wsMaxAuthRefreshAttempts = 5;
+
         function setRealtimeStatus(className, text, title) {
           const indicator = document.getElementById('ws-indicator');
           const statusText = document.getElementById('ws-status-text');
@@ -206,17 +211,32 @@
 
         // Update presence indicator on connection state changes
         Marvain.wsOn('connected', function() {
+          wsAuthRefreshAttempts = 0;
+          wsConnectInFlight = false;
+          if (wsAuthRefreshTimer) {
+            clearTimeout(wsAuthRefreshTimer);
+            wsAuthRefreshTimer = null;
+          }
           setRealtimeStatus('connected', 'Realtime live', 'Connected to browser real-time updates');
         });
 
         Marvain.wsOn('disconnected', function() {
+          wsConnectInFlight = false;
           setRealtimeStatus('disconnected', 'Realtime offline', 'Browser real-time updates disconnected - reconnecting');
         });
 
         // If the WS token is expired/invalid, re-fetch a fresh token (server will refresh via refresh_token cookie).
         Marvain.wsOn('auth_failed', function() {
+          wsConnectInFlight = false;
+          wsAuthRefreshAttempts += 1;
+          if (wsAuthRefreshAttempts > wsMaxAuthRefreshAttempts) {
+            setRealtimeStatus('disconnected', 'Realtime auth failed', 'Browser real-time authentication failed. Refresh after logging in again.');
+            return;
+          }
+          const delay = Math.min(30000, 1000 * Math.pow(2, wsAuthRefreshAttempts - 1));
           setRealtimeStatus('connecting', 'Realtime reconnecting', 'Refreshing browser real-time authentication');
-          setTimeout(connectWebSocket, 750);
+          if (wsAuthRefreshTimer) clearTimeout(wsAuthRefreshTimer);
+          wsAuthRefreshTimer = setTimeout(connectWebSocket, delay);
         });
 
         // Subscribe to topic streams once hello/auth succeeds.
@@ -230,6 +250,13 @@
         });
 
         async function connectWebSocket() {
+          if (wsConnectInFlight || (Marvain.ws && Marvain.ws.readyState === WebSocket.CONNECTING)) {
+            return;
+          }
+          if (Marvain.ws && Marvain.ws.readyState === WebSocket.OPEN) {
+            return;
+          }
+          wsConnectInFlight = true;
           setRealtimeStatus('connecting', 'Realtime connecting', 'Connecting to browser real-time updates');
           try {
             const resp = await fetch(wsAuthTokenPath, {
@@ -238,6 +265,7 @@
             });
             if (!resp.ok) {
               console.warn('[Marvain] Failed to fetch WS auth token:', resp.status);
+              wsConnectInFlight = false;
               setRealtimeStatus('disconnected', 'Realtime auth failed', 'Could not fetch browser real-time auth token');
               return;
             }
@@ -245,12 +273,14 @@
             const accessToken = String(data.access_token || '');
             if (!accessToken) {
               console.warn('[Marvain] Missing WS auth token');
+              wsConnectInFlight = false;
               setRealtimeStatus('disconnected', 'Realtime auth failed', 'Browser real-time auth token response was empty');
               return;
             }
             Marvain.wsConnect(wsUrl, accessToken);
           } catch (err) {
             console.error('[Marvain] Failed to initialize WebSocket:', err);
+            wsConnectInFlight = false;
             setRealtimeStatus('disconnected', 'Realtime offline', 'Browser real-time updates failed to initialize');
           }
         }

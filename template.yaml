@@ -648,7 +648,7 @@ Resources:
           TAPDB_DB_PORT: !GetAtt AuroraCluster.Endpoint.Port
           TAPDB_DB_SECRET_ARN: !Ref DbCredentialsSecret
           TAPDB_DB_NAME: !Ref DbName
-          MERIDIAN_DOMAIN_CODE: MVN
+          MERIDIAN_DOMAIN_CODE: M
           TAPDB_OWNER_REPO: marvain
           MARVAIN_METRICS_NAMESPACE: "Marvain"
       Policies:

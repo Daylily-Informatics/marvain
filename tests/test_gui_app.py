@@ -1782,6 +1782,24 @@ class TestTapdbNativeGraphIntegration(unittest.TestCase):
         self.assertEqual(r.json()["code"], "tapdb_runtime_unavailable")
         self.assertNotIn("database unavailable", r.json()["detail"])
 
+    def test_tapdb_query_mount_converts_child_internal_server_error_to_503_json(self) -> None:
+        async def fake_tapdb_app(scope, receive, send):
+            response = self.mod.PlainTextResponse("Internal Server Error", status_code=500)
+            await response(scope, receive, send)
+
+        self.mod._gui_get_user = mock.Mock(return_value=self._auth_user())
+        self.mod._resolve_tapdb_runtime_config = mock.Mock(
+            return_value=self.mod.TapdbRuntimeConfig(config_path="/tmp/tapdb-config.yaml", env_name="test")
+        )
+        self.mod.create_tapdb_web_app = mock.Mock(return_value=fake_tapdb_app)
+
+        r = self.client.get("/tapdb/query?kind=instance&category=&type=&subtype=&name_like=&euid_like=&limit=50")
+
+        self.assertEqual(r.status_code, 503)
+        self.assertEqual(r.headers.get("content-type"), "application/json")
+        self.assertEqual(r.json()["code"], "tapdb_runtime_unavailable")
+        self.assertNotIn("Internal Server Error", r.json()["detail"])
+
     def test_api_dag_routes_require_marvain_session_auth(self) -> None:
         self.mod._gui_get_user = mock.Mock(return_value=None)
 
@@ -2471,6 +2489,89 @@ class TestLiveKitTestGui(unittest.TestCase):
         self.assertIn('value="space-1" selected', r.text)
 
 
+class TestLiveSessionGui(unittest.TestCase):
+    """Tests for the real Live Session product page."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load_hub_api_app_module()
+        from fastapi.testclient import TestClient
+
+        cls._TestClient = TestClient
+        cls._orig_gui_get_user = cls.mod._gui_get_user
+        cls._orig_get_db = cls.mod._get_db
+        cls._orig_list_spaces_for_user = cls.mod.list_spaces_for_user
+        cls._orig_live_session_config_error = cls.mod._live_session_config_error
+        cls._orig_cfg = cls.mod._cfg
+
+    def setUp(self):
+        self.client = self.__class__._TestClient(self.mod.app, raise_server_exceptions=False)
+        self.mod._gui_get_user = self._orig_gui_get_user
+        self.mod._get_db = self._orig_get_db
+        self.mod.list_spaces_for_user = self._orig_list_spaces_for_user
+        self.mod._live_session_config_error = self._orig_live_session_config_error
+        self.mod._cfg = self._orig_cfg
+
+    def _mock_authenticated_live_session(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=mock.Mock(user_id="user-1", email="test@example.com"))
+        self.mod._get_db = mock.Mock(return_value=mock.Mock())
+        self.mod.list_spaces_for_user = mock.Mock(
+            return_value=[
+                mock.Mock(
+                    space_id="space-1",
+                    agent_id="agent-1",
+                    name="Kitchen",
+                    agent_name="Test Agent",
+                    livekit_room_mode="stable",
+                )
+            ]
+        )
+        self.mod._live_session_config_error = mock.Mock(return_value=None)
+        self.mod._cfg = mock.Mock(stage="dev", ws_api_url=None)
+
+    def test_live_session_requires_authentication(self):
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+        r = self.client.get("/live-session", follow_redirects=False)
+        self.assertIn(r.status_code, (302, 303))
+        self.assertIn("/login", r.headers.get("location", ""))
+
+    def test_live_session_renders_media_device_controls(self):
+        self._mock_authenticated_live_session()
+
+        r = self.client.get("/live-session?space_id=space-1", cookies={"marvain_access_token": "test-token"})
+
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Live Session", r.text)
+        self.assertIn("Media Devices", r.text)
+        self.assertIn('id="btn-mic"', r.text)
+        self.assertIn('id="btn-camera"', r.text)
+        self.assertIn('id="mic-select"', r.text)
+        self.assertIn('id="speaker-select"', r.text)
+        self.assertIn('id="cam-select"', r.text)
+        self.assertIn('id="btn-refresh-devices"', r.text)
+        self.assertIn('id="remote-media"', r.text)
+
+    def test_live_session_wires_device_switching_and_remote_audio(self):
+        self._mock_authenticated_live_session()
+
+        r = self.client.get("/live-session?space_id=space-1", cookies={"marvain_access_token": "test-token"})
+
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("enumerateDevices", r.text)
+        self.assertIn("getUserMedia({audio: true})", r.text)
+        self.assertIn("switchActiveDevice('audioinput'", r.text)
+        self.assertIn("switchActiveDevice('videoinput'", r.text)
+        self.assertIn("setSinkId", r.text)
+        self.assertIn("createElement('audio')", r.text)
+        self.assertIn("TrackSubscribed", r.text)
+        self.assertIn("camera_enabled_but_visual_analysis_unavailable", r.text)
+        self.assertIn("waitForCameraFrame", r.text)
+        self.assertIn("requestAnimationFrame", r.text)
+        self.assertIn("video.muted = true", r.text)
+        self.assertIn("await video.play()", r.text)
+        self.assertIn("browser did not produce a current frame", r.text)
+
+
 class TestWebSocketContext(unittest.TestCase):
     """Tests for WebSocket context in templates."""
 
@@ -2588,6 +2689,9 @@ class TestWebSocketContext(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn("document.readyState === 'loading'", r.text)
         self.assertIn("connectWhenReady()", r.text)
+        self.assertIn("wsMaxAuthRefreshAttempts", r.text)
+        self.assertIn("wsConnectInFlight", r.text)
+        self.assertIn("Browser real-time authentication failed", r.text)
 
 
 class TestProfileGui(unittest.TestCase):

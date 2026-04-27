@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import quote_plus
 
-MARVAIN_TAPDB_DOMAIN_CODE = "MVN"
+MARVAIN_TAPDB_DOMAIN_CODE = "M"
 MARVAIN_TAPDB_OWNER_REPO = "marvain"
 _MERIDIAN_PREFIX_RE = re.compile(r"^[0-9A-HJ-KMNP-TV-Z]{1,4}$")
 

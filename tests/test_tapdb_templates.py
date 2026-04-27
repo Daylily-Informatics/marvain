@@ -25,12 +25,26 @@ def test_tapdb_base_schema_is_not_copied_into_marvain() -> None:
     assert core_config_dir.exists()
 
 
-def test_marvain_tapdb_registry_claims_mvn_for_marvain() -> None:
+def test_marvain_tapdb_registry_claims_mvn_prefix_for_marvain_domain() -> None:
     domain = json.loads((REPO_ROOT / "tapdb_templates/domain_code_registry.json").read_text(encoding="utf-8"))
     prefix = json.loads((REPO_ROOT / "tapdb_templates/prefix_ownership_registry.json").read_text(encoding="utf-8"))
 
-    assert domain["domains"]["MVN"]["name"] == "marvain"
-    assert prefix["ownership"]["MVN"]["MVN"]["issuer_app_code"] == "marvain"
+    assert domain["domains"]["M"]["name"] == "marvain"
+    assert prefix["ownership"]["M"]["MVN"]["issuer_app_code"] == "marvain"
+
+
+def test_marvain_tapdb_registry_is_accepted_by_tapdb_governance() -> None:
+    from daylily_tapdb.governance import GovernanceContext
+
+    ctx = GovernanceContext.load(
+        domain_code="M",
+        owner_repo_name="marvain",
+        domain_registry_path=REPO_ROOT / "tapdb_templates/domain_code_registry.json",
+        prefix_ownership_registry_path=REPO_ROOT / "tapdb_templates/prefix_ownership_registry.json",
+    )
+
+    assert ctx.domain_code == "M"
+    assert ctx.require_prefix("MVN") == "marvain"
 
 
 def test_marvain_template_codes_cover_required_semantic_objects() -> None:

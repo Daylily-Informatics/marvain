@@ -3,7 +3,6 @@ default_env: dev
 
 envs:
   dev:
-    aws_profile: "REPLACE_ME"
     aws_region: "us-west-2"
 
     # Suggested convention: marvain-<git-user-name>-<env>

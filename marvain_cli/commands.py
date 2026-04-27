@@ -126,7 +126,6 @@ def config_path() -> None:
 def config_init(
     write: str | None = Option(None, "--write", help="Write config to this path"),
     env: str = Option("dev", "--env"),
-    profile: str | None = Option(None, "--profile"),
     region: str | None = Option(None, "--region"),
     stack: str | None = Option(None, "--stack"),
 ) -> None:
@@ -148,16 +147,13 @@ def config_init(
 
     git_name = git_user_name() or os.getenv("USER") or "user"
     suggested_stack = f"marvain-{sanitize_name_for_stack(git_name)}-{env}"
-    aws_profile = profile or os.getenv("AWS_PROFILE") or ""
     aws_region = region or os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or ""
     stack_name = stack or suggested_stack
 
-    if not aws_profile or aws_profile == "default":
-        raise ClickException("--profile (non-default) is required for config init")
     if not aws_region:
         raise ClickException("--region is required for config init")
 
-    text = render_config_yaml(env=env, aws_profile=aws_profile, aws_region=aws_region, stack_name=stack_name)
+    text = render_config_yaml(env=env, aws_region=aws_region, stack_name=stack_name)
     if _dry_run():
         output.detail(f"Would write config: {write_path}")
         output.detail(f"Suggested device_name: {socket.gethostname()}")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -336,6 +337,7 @@ class TestGuiLifecycle(unittest.TestCase):
                             "CognitoUserPoolId": "us-east-1_test",
                             "CognitoAppClientId": "testclientid",
                             "CognitoDomain": "test.auth.us-east-1.amazoncognito.com",
+                            "SessionSecretArn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:session",
                         }
                     }
                 }
@@ -384,7 +386,7 @@ class TestGuiLifecycle(unittest.TestCase):
             self.assertIn("engine_type: aurora", text)
             self.assertIn("host: db.example.com", text)
             self.assertIn("secret_arn:", text)
-            self.assertIn("domain_code: MVN", text)
+            self.assertIn("domain_code: M", text)
             run_json_mock.assert_called_once()
 
     def test_write_and_read_pid_file(self) -> None:
@@ -456,6 +458,25 @@ class TestGuiLifecycle(unittest.TestCase):
         joined = "\n".join(emitted)
         self.assertIn("[dry-run]", joined)
         self.assertIn("uvicorn", joined)
+
+    def test_gui_start_requires_explicit_session_secret_source(self) -> None:
+        """GUI start must not create local-only WS session secrets."""
+        emitted: list[str] = []
+        ctx = self._make_ctx()
+        ctx.cfg["envs"]["dev"]["resources"].pop("SessionSecretArn")
+
+        with (
+            mock.patch("marvain_cli.ops._conda_preflight", return_value=0),
+            mock.patch("marvain_cli.ops._is_port_in_use", return_value=False),
+            mock.patch("marvain_cli.ops._eprint", side_effect=lambda m: emitted.append(m)),
+            mock.patch("pathlib.Path.exists", return_value=True),
+            mock.patch("marvain_cli.ops._ensure_tapdb_runtime_config", return_value=None),
+            mock.patch.dict(os.environ, {"SESSION_SECRET_KEY": "", "SESSION_SECRET_ARN": ""}),
+        ):
+            rc = gui_start(ctx, dry_run=False, host=GUI_DEFAULT_HOST, port=GUI_DEFAULT_PORT, reload=True, https=False)
+
+        self.assertEqual(rc, 2)
+        self.assertIn("SESSION_SECRET_ARN or SESSION_SECRET_KEY is required", "\n".join(emitted))
 
     def test_gui_start_detects_port_conflict(self) -> None:
         """gui_start should fail when port is already in use."""

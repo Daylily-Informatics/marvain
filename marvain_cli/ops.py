@@ -350,7 +350,7 @@ def _ensure_tapdb_runtime_config(ctx: Ctx, *, resources: dict[str, Any]) -> Path
             "client_id": "marvain",
             "database_name": ctx.env.stack_name,
             "owner_repo_name": "marvain",
-            "domain_code": "MVN",
+            "domain_code": "M",
             "domain_registry_path": str(repo_root / "tapdb_templates" / "domain_code_registry.json"),
             "prefix_ownership_registry_path": str(repo_root / "tapdb_templates" / "prefix_ownership_registry.json"),
         },
@@ -367,7 +367,7 @@ def _ensure_tapdb_runtime_config(ctx: Ctx, *, resources: dict[str, Any]) -> Path
                 "region": ctx.env.aws_region,
                 "iam_auth": "false",
                 "ssl": "true",
-                "domain_code": "MVN",
+                "domain_code": "M",
             }
         },
     }
@@ -1543,7 +1543,7 @@ def gui_start(
         env["MARVAIN_TAPDB_CONFIG_PATH"] = str(tapdb_config_path)
         env["TAPDB_CONFIG_PATH"] = str(tapdb_config_path)
         env["TAPDB_ENV"] = ctx.env.env
-        env["MERIDIAN_DOMAIN_CODE"] = "MVN"
+        env["MERIDIAN_DOMAIN_CODE"] = "M"
         env["TAPDB_OWNER_REPO"] = "marvain"
         _eprint(f"TapDB config: {tapdb_config_path}")
 
@@ -1552,9 +1552,13 @@ def gui_start(
     env["LOG_LEVEL"] = env.get("LOG_LEVEL", "INFO")
     # Tell the app whether HTTPS is enabled (for SameSite cookie settings)
     env["HTTPS_ENABLED"] = "true" if https_enabled_for_cookies else "false"
-    # For local dev, use a static session secret (Lambda uses SESSION_SECRET_ARN)
-    if "SESSION_SECRET_KEY" not in env:
-        env["SESSION_SECRET_KEY"] = "local-dev-session-secret-key-change-in-production-123456"
+    # Browser WebSocket session tokens must be signed with the same secret the
+    # deployed WebSocket Lambda verifies. The stack-provided SESSION_SECRET_ARN
+    # is preferred; local-only SESSION_SECRET_KEY is allowed only when supplied
+    # explicitly by the operator.
+    if not env.get("SESSION_SECRET_KEY") and not env.get("SESSION_SECRET_ARN"):
+        _eprint("ERROR: SESSION_SECRET_ARN or SESSION_SECRET_KEY is required for GUI sessions.")
+        return 2
 
     # Set PYTHONPATH to include shared layer for agent_hub imports
     existing_pythonpath = env.get("PYTHONPATH", "")

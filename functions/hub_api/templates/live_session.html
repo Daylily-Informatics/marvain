@@ -48,10 +48,43 @@
     <h3 class="card-title"><i class="fas fa-camera"></i> Live Media</h3>
     <span id="visual-state" class="badge badge-outline">Camera off</span>
   </div>
+  <h4 class="text-sm mb-sm">Media Devices</h4>
+  <div class="d-flex align-center gap-md flex-wrap mb-md">
+    <button class="btn btn-outline" id="btn-mic" disabled><i class="fas fa-microphone-slash"></i> Mic Off</button>
+    <button class="btn btn-outline" id="btn-camera" disabled><i class="fas fa-video"></i> Enable Camera</button>
+    <span id="mic-state" class="badge badge-outline">Mic idle</span>
+    <span id="speaker-state" class="badge badge-outline">No remote audio</span>
+  </div>
+  <div class="grid grid-3 mb-md">
+    <div>
+      <label for="mic-select"><i class="fas fa-microphone"></i> Microphone</label>
+      <select id="mic-select">
+        <option value="">Default Microphone</option>
+      </select>
+    </div>
+    <div>
+      <label for="speaker-select"><i class="fas fa-volume-up"></i> Speaker</label>
+      <select id="speaker-select">
+        <option value="">Default Speaker</option>
+      </select>
+    </div>
+    <div>
+      <label for="cam-select"><i class="fas fa-video"></i> Camera</label>
+      <select id="cam-select">
+        <option value="">Default Camera</option>
+      </select>
+    </div>
+  </div>
+  <div class="mb-md">
+    <button class="btn btn-sm btn-outline" id="btn-refresh-devices"><i class="fas fa-sync-alt"></i> Refresh Devices</button>
+    <span id="device-hint" class="text-muted text-sm">Join a room to publish microphone audio. Speaker selection requires browser output-device support.</span>
+  </div>
   <div class="grid grid-2">
     <div>
-      <button class="btn btn-outline" id="btn-camera" disabled><i class="fas fa-video"></i> Enable Camera</button>
       <p class="text-muted mt-sm">Camera access is not treated as agent vision until the worker acknowledges a current visual observation.</p>
+      <div id="remote-media" class="lk-remote-media" aria-live="polite">
+        <em class="text-muted">Remote audio tracks will attach here.</em>
+      </div>
     </div>
     <div id="local-camera-preview" class="lk-video-container" style="min-height: 180px;">
       <em class="text-muted">No camera preview.</em>
@@ -85,9 +118,11 @@ let room = null;
 let activeSession = null;
 let eventsTimer = null;
 let seenEvents = new Set();
+let localAudioTrack = null;
 let localVideoTrack = null;
 let pendingVisualAck = null;
 let latestVisualObservation = null;
+let selectedSpeakerId = '';
 const CAMERA_VISUAL_ACCESS_ERROR = 'camera_enabled_but_visual_analysis_unavailable';
 
 function appendLog(id, message, kind) {
@@ -116,6 +151,205 @@ function livekitClient() {
   return lk;
 }
 
+function setBadgeText(id, text, kind) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'badge badge-' + (kind || 'outline');
+}
+
+function selectValue(id) {
+  const el = document.getElementById(id);
+  return el ? String(el.value || '') : '';
+}
+
+function preserveSelectValue(select, value) {
+  if (!select || !value) return;
+  for (let i = 0; i < select.options.length; i += 1) {
+    if (select.options[i].value === value) {
+      select.value = value;
+      return;
+    }
+  }
+}
+
+async function enumerateDevices(options) {
+  const requireAudio = !!(options && options.requireAudio);
+  if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+    throw new Error('This browser does not expose media device enumeration');
+  }
+  if (requireAudio) {
+    let permissionStream = null;
+    try {
+      permissionStream = await navigator.mediaDevices.getUserMedia({audio: true});
+    } finally {
+      if (permissionStream) permissionStream.getTracks().forEach(track => track.stop());
+    }
+  }
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const micSelect = document.getElementById('mic-select');
+  const speakerSelect = document.getElementById('speaker-select');
+  const camSelect = document.getElementById('cam-select');
+  const currentMic = micSelect.value;
+  const currentSpeaker = speakerSelect.value || selectedSpeakerId;
+  const currentCam = camSelect.value;
+  micSelect.innerHTML = '<option value="">Default Microphone</option>';
+  speakerSelect.innerHTML = '<option value="">Default Speaker</option>';
+  camSelect.innerHTML = '<option value="">Default Camera</option>';
+  let micCount = 0;
+  let speakerCount = 0;
+  let camCount = 0;
+  devices.forEach(device => {
+    const option = document.createElement('option');
+    option.value = device.deviceId;
+    option.text = device.label || (device.kind + ' ' + device.deviceId.substring(0, 8));
+    if (device.kind === 'audioinput') {
+      micSelect.appendChild(option);
+      micCount += 1;
+    } else if (device.kind === 'audiooutput') {
+      speakerSelect.appendChild(option);
+      speakerCount += 1;
+    } else if (device.kind === 'videoinput') {
+      camSelect.appendChild(option);
+      camCount += 1;
+    }
+  });
+  preserveSelectValue(micSelect, currentMic);
+  preserveSelectValue(speakerSelect, currentSpeaker);
+  preserveSelectValue(camSelect, currentCam);
+  selectedSpeakerId = speakerSelect.value || '';
+  if (!('setSinkId' in HTMLAudioElement.prototype)) {
+    speakerSelect.disabled = true;
+    speakerSelect.title = 'Speaker selection is not supported in this browser. System default output will be used.';
+    setBadgeText('speaker-state', 'Default output only', 'warning');
+  }
+  document.getElementById('device-hint').textContent =
+    'Devices: ' + micCount + ' mics, ' + speakerCount + ' speakers, ' + camCount + ' cameras';
+}
+
+function applySelectedSpeaker(audioElement) {
+  if (!audioElement) return;
+  if (selectedSpeakerId && typeof audioElement.setSinkId !== 'undefined') {
+    audioElement.setSinkId(selectedSpeakerId).catch(error => {
+      appendError('Speaker switch failed: ' + error.message);
+      Marvain.showToast('error', 'Speaker Error', error.message);
+    });
+  }
+}
+
+async function changeSpeaker(deviceId) {
+  selectedSpeakerId = deviceId || '';
+  const audioElements = document.querySelectorAll('#remote-media audio');
+  let updated = 0;
+  for (let i = 0; i < audioElements.length; i += 1) {
+    const audio = audioElements[i];
+    if (typeof audio.setSinkId !== 'undefined') {
+      await audio.setSinkId(selectedSpeakerId);
+      updated += 1;
+    }
+  }
+  appendLog('lifecycle-log', 'Speaker set to ' + (selectedSpeakerId || 'default') + ' for ' + updated + ' remote audio tracks');
+}
+
+function remoteTrackId(track) {
+  return 'remote-track-' + String(track.sid || track.mediaStreamTrack && track.mediaStreamTrack.id || Date.now()).replace(/[^a-zA-Z0-9_-]/g, '-');
+}
+
+function attachRemoteTrack(track, participant) {
+  if (!track) return;
+  const remoteMedia = document.getElementById('remote-media');
+  if (!remoteMedia) return;
+  const existing = document.getElementById(remoteTrackId(track));
+  if (existing) return;
+  if (remoteMedia.querySelector('em')) remoteMedia.innerHTML = '';
+  let el = null;
+  if (track.kind === 'audio') {
+    el = document.createElement('audio');
+    el.autoplay = true;
+    el.controls = false;
+    applySelectedSpeaker(el);
+    setBadgeText('speaker-state', 'Remote audio ready', 'success');
+  } else if (track.kind === 'video') {
+    el = document.createElement('video');
+    el.autoplay = true;
+    el.playsInline = true;
+    el.className = 'lk-remote-video';
+  }
+  if (!el) return;
+  el.id = remoteTrackId(track);
+  el.setAttribute('data-participant', participant ? participant.identity : 'remote');
+  track.attach(el);
+  remoteMedia.appendChild(el);
+  appendLog('lifecycle-log', 'Attached ' + track.kind + ' from ' + (participant ? participant.identity : 'remote'));
+}
+
+function detachRemoteTrack(track) {
+  const el = track ? document.getElementById(remoteTrackId(track)) : null;
+  if (el) el.remove();
+  if (!document.querySelector('#remote-media audio')) {
+    setBadgeText('speaker-state', 'No remote audio', 'outline');
+  }
+}
+
+function removeParticipantMedia(participant) {
+  const remoteMedia = document.getElementById('remote-media');
+  if (!remoteMedia || !participant) return;
+  Array.from(remoteMedia.querySelectorAll('[data-participant]')).forEach(el => {
+    if (el.getAttribute('data-participant') === participant.identity) el.remove();
+  });
+  if (!document.querySelector('#remote-media audio')) {
+    setBadgeText('speaker-state', 'No remote audio', 'outline');
+  }
+}
+
+function wireExistingRemoteTracks() {
+  if (!room || !room.remoteParticipants) return;
+  room.remoteParticipants.forEach(participant => {
+    const publications = participant.trackPublications || participant.tracks || new Map();
+    publications.forEach(pub => {
+      if (pub && pub.track && pub.isSubscribed !== false) attachRemoteTrack(pub.track, participant);
+    });
+  });
+}
+
+async function publishMicrophone() {
+  if (!room) throw new Error('Join a live session before enabling microphone');
+  if (localAudioTrack) return;
+  const lk = livekitClient();
+  const deviceId = selectValue('mic-select');
+  const options = deviceId ? {deviceId: deviceId} : {};
+  localAudioTrack = await lk.createLocalAudioTrack(options);
+  await room.localParticipant.publishTrack(localAudioTrack);
+  document.getElementById('btn-mic').innerHTML = '<i class="fas fa-microphone"></i> Mic On';
+  setBadgeText('mic-state', 'Mic published', 'success');
+  appendLog('lifecycle-log', 'Microphone published from ' + (deviceId || 'default'));
+}
+
+function stopMicrophone() {
+  if (localAudioTrack) {
+    try { room && room.localParticipant && room.localParticipant.unpublishTrack(localAudioTrack); } catch (e) {}
+    try { localAudioTrack.stop(); } catch (e) {}
+    try { localAudioTrack.detach().forEach(el => el.remove()); } catch (e) {}
+  }
+  localAudioTrack = null;
+  document.getElementById('btn-mic').innerHTML = '<i class="fas fa-microphone-slash"></i> Mic Off';
+  setBadgeText('mic-state', 'Mic off', 'outline');
+}
+
+async function changeMicrophone(deviceId) {
+  if (!room || !localAudioTrack) return;
+  await room.switchActiveDevice('audioinput', deviceId || 'default');
+  appendLog('lifecycle-log', 'Microphone switched to ' + (deviceId || 'default'));
+}
+
+async function changeCamera(deviceId) {
+  if (!room || !localVideoTrack) return;
+  setVisualState('Switching camera', 'info');
+  await room.switchActiveDevice('videoinput', deviceId || 'default');
+  appendLog('lifecycle-log', 'Camera switched to ' + (deviceId || 'default'));
+  await publishCurrentVisualObservation();
+}
+
 async function joinLiveSession() {
   if (configError) throw new Error(configError);
   const spaceId = document.getElementById('space_id').value;
@@ -123,6 +357,7 @@ async function joinLiveSession() {
     Marvain.showToast('warning', 'Space required', 'Select a space first');
     return;
   }
+  await enumerateDevices({requireAudio: true});
   const resp = await fetch(tokenUrl, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -147,6 +382,20 @@ async function joinLiveSession() {
   room.on(lk.RoomEvent.ParticipantConnected, function(participant) {
     appendLog('lifecycle-log', 'Participant joined ' + participant.identity);
   });
+  room.on(lk.RoomEvent.ParticipantDisconnected, function(participant) {
+    appendLog('lifecycle-log', 'Participant left ' + participant.identity);
+    removeParticipantMedia(participant);
+  });
+  room.on(lk.RoomEvent.TrackSubscribed, function(track, pub, participant) {
+    attachRemoteTrack(track, participant);
+  });
+  room.on(lk.RoomEvent.TrackUnsubscribed, function(track) {
+    detachRemoteTrack(track);
+  });
+  room.on(lk.RoomEvent.ActiveSpeakersChanged, function(speakers) {
+    const hasRemoteSpeaker = speakers.some(participant => participant !== room.localParticipant);
+    if (hasRemoteSpeaker) setBadgeText('speaker-state', 'Agent speaking', 'success');
+  });
 	  room.on(lk.RoomEvent.DataReceived, function(payload, participant) {
 	    let text = '';
 	    try {
@@ -164,12 +413,12 @@ async function joinLiveSession() {
   });
   await room.connect(data.url, data.token);
   appendLog('lifecycle-log', 'Joined LiveKit room ' + data.room);
-  const audioTrack = await lk.createLocalAudioTrack();
-  await room.localParticipant.publishTrack(audioTrack);
-  appendLog('lifecycle-log', 'Microphone published');
+  wireExistingRemoteTracks();
+  await publishMicrophone();
 
 	  document.getElementById('btn-send-chat').disabled = false;
 	  document.getElementById('btn-leave').disabled = false;
+  document.getElementById('btn-mic').disabled = false;
 	  document.getElementById('btn-camera').disabled = false;
 	  startEventPolling();
 	}
@@ -181,19 +430,57 @@ function leaveLiveSession() {
   if (room) room.disconnect();
   room = null;
   activeSession = null;
+  stopMicrophone();
+  const remoteMedia = document.getElementById('remote-media');
+  if (remoteMedia) remoteMedia.innerHTML = '<em class="text-muted">Remote audio tracks will attach here.</em>';
 	  document.getElementById('btn-send-chat').disabled = true;
 	  document.getElementById('btn-leave').disabled = true;
+  document.getElementById('btn-mic').disabled = true;
 	  document.getElementById('btn-camera').disabled = true;
 	  stopCamera();
-	  appendLog('lifecycle-log', 'Left live session');
+  appendLog('lifecycle-log', 'Left live session');
 	}
+
+function cameraVideoHasFrame(video) {
+  return !!(video && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth && video.videoHeight);
+}
+
+function waitForCameraFrame(video, timeoutMs) {
+  const deadlineMs = Number(timeoutMs || 8000);
+  if (cameraVideoHasFrame(video)) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    let rafId = null;
+    let done = false;
+    const startedAt = Date.now();
+    const cleanup = () => {
+      done = true;
+      ['loadedmetadata', 'loadeddata', 'canplay', 'playing'].forEach(name => video.removeEventListener(name, check));
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+    };
+    const check = () => {
+      if (done) return;
+      if (cameraVideoHasFrame(video)) {
+        cleanup();
+        resolve();
+        return;
+      }
+      if (Date.now() - startedAt >= deadlineMs) {
+        cleanup();
+        reject(new Error('Camera is enabled, but the browser did not produce a current frame for the agent'));
+        return;
+      }
+      rafId = window.requestAnimationFrame(check);
+    };
+    ['loadedmetadata', 'loadeddata', 'canplay', 'playing'].forEach(name => video.addEventListener(name, check));
+    check();
+  });
+}
 
 async function captureCameraBlob() {
   const preview = document.getElementById('local-camera-preview');
   const video = preview ? preview.querySelector('video') : null;
-  if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
-    throw new Error('Camera is enabled, but no current frame is available for the agent');
-  }
+  if (!video) throw new Error('Camera is enabled, but no camera preview is available for the agent');
+  await waitForCameraFrame(video);
   const canvas = document.createElement('canvas');
   canvas.width = Math.min(video.videoWidth, 1280);
   canvas.height = Math.round(video.videoHeight * (canvas.width / video.videoWidth));
@@ -269,15 +556,22 @@ async function enableCamera() {
   if (!room) throw new Error('Join a live session before enabling camera');
   const lk = livekitClient();
   setVisualState('Checking camera', 'info');
-  localVideoTrack = await lk.createLocalVideoTrack();
+  const deviceId = selectValue('cam-select');
+  const options = deviceId ? {deviceId: deviceId} : {};
+  localVideoTrack = await lk.createLocalVideoTrack(options);
   await room.localParticipant.publishTrack(localVideoTrack);
   const preview = document.getElementById('local-camera-preview');
   preview.innerHTML = '';
   const video = localVideoTrack.attach();
   video.autoplay = true;
+  video.muted = true;
   video.playsInline = true;
   preview.appendChild(video);
+  setVisualState('Waiting for camera frame', 'info');
+  try { await video.play(); } catch (e) {}
+  await waitForCameraFrame(video);
   try {
+    await enumerateDevices({requireAudio: false});
     await publishCurrentVisualObservation();
     document.getElementById('btn-camera').innerHTML = '<i class="fas fa-video-slash"></i> Disable Camera';
   } catch (error) {
@@ -367,6 +661,12 @@ async function sendChat() {
 
 document.getElementById('btn-join').addEventListener('click', () => joinLiveSession().catch(e => { appendError(e.message); Marvain.showToast('error', 'Live Session', e.message); }));
 document.getElementById('btn-leave').addEventListener('click', leaveLiveSession);
+document.getElementById('btn-mic').addEventListener('click', () => {
+  (localAudioTrack ? Promise.resolve(stopMicrophone()) : publishMicrophone()).catch(e => {
+    appendError(e.message);
+    Marvain.showToast('error', 'Microphone unavailable', e.message);
+  });
+});
 document.getElementById('btn-send-chat').addEventListener('click', () => sendChat().catch(e => { appendError(e.message); Marvain.showToast('error', 'Live Session', e.message); }));
 document.getElementById('chat-input').addEventListener('keypress', e => { if (e.key === 'Enter') sendChat().catch(err => { appendError(err.message); Marvain.showToast('error', 'Live Session', err.message); }); });
 document.getElementById('btn-camera').addEventListener('click', () => {
@@ -374,6 +674,32 @@ document.getElementById('btn-camera').addEventListener('click', () => {
   (active ? Promise.resolve(stopCamera()) : enableCamera()).catch(e => {
     appendError(e.message);
     Marvain.showToast('error', 'Camera unavailable', e.message);
+  });
+});
+document.getElementById('btn-refresh-devices').addEventListener('click', () => {
+  enumerateDevices({requireAudio: false}).then(() => {
+    Marvain.showToast('info', 'Devices', 'Device list refreshed');
+  }).catch(e => {
+    appendError(e.message);
+    Marvain.showToast('error', 'Device Error', e.message);
+  });
+});
+document.getElementById('mic-select').addEventListener('change', e => {
+  changeMicrophone(e.target.value).catch(error => {
+    appendError(error.message);
+    Marvain.showToast('error', 'Microphone Error', error.message);
+  });
+});
+document.getElementById('speaker-select').addEventListener('change', e => {
+  changeSpeaker(e.target.value).catch(error => {
+    appendError(error.message);
+    Marvain.showToast('error', 'Speaker Error', error.message);
+  });
+});
+document.getElementById('cam-select').addEventListener('change', e => {
+  changeCamera(e.target.value).catch(error => {
+    appendError(error.message);
+    Marvain.showToast('error', 'Camera Error', error.message);
   });
 });
 
@@ -391,6 +717,10 @@ Marvain.wsOn('message', function(msg) {
   if (type.includes('memory') || type.includes('recognition') || type.includes('action') || type.includes('presence')) {
     appendLog('lifecycle-log', type);
   }
+});
+
+enumerateDevices({requireAudio: false}).catch(e => {
+  document.getElementById('device-hint').textContent = 'Device enumeration unavailable: ' + e.message;
 });
 </script>
 {% endblock %}

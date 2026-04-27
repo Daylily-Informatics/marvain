@@ -93,10 +93,7 @@ def resolve_env(
 
     aws_profile = profile_override or env_cfg.get("aws_profile") or os.getenv("AWS_PROFILE") or ""
     if not aws_profile or aws_profile == "default":
-        raise ConfigError(
-            "AWS profile is required and may not be 'default'. "
-            "Set envs.<env>.aws_profile, or pass --profile, or set AWS_PROFILE."
-        )
+        raise ConfigError("AWS profile is required and may not be 'default'. Pass --profile or set AWS_PROFILE.")
 
     aws_region = (
         region_override or env_cfg.get("aws_region") or os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or ""
@@ -127,14 +124,13 @@ def sanitize_name_for_stack(name: str) -> str:
     return s.strip("-") or "user"
 
 
-def render_config_yaml(*, env: str, aws_profile: str, aws_region: str, stack_name: str) -> str:
+def render_config_yaml(*, env: str, aws_region: str, stack_name: str) -> str:
     # Keep formatting simple so the stdlib parser can read it even without PyYAML.
     return (
         "version: 1\n"
         f"default_env: {env}\n\n"
         "envs:\n"
         f"  {env}:\n"
-        f'    aws_profile: "{aws_profile}"\n'
         f'    aws_region: "{aws_region}"\n'
         f'    stack_name: "{stack_name}"\n'
         "    sam:\n"

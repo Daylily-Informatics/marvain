@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import secrets
+import socket
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -354,16 +355,47 @@ def _tapdb_config_error_response(exc: Exception) -> JSONResponse:
 
 
 def _tapdb_runtime_error_response(_exc: Exception) -> JSONResponse:
+    detail = _tapdb_runtime_error_detail()
     return JSONResponse(
         status_code=503,
         content={
-            "detail": (
-                "TapDB runtime is not available. Check TAPDB_CONFIG_PATH or MARVAIN_TAPDB_CONFIG_PATH "
-                "and TAPDB_ENV or MARVAIN_TAPDB_ENV."
-            ),
+            "detail": detail,
             "code": "tapdb_runtime_unavailable",
         },
     )
+
+
+def _tapdb_runtime_error_detail() -> str:
+    generic = (
+        "TapDB runtime is not available. Check TAPDB_CONFIG_PATH or MARVAIN_TAPDB_CONFIG_PATH "
+        "and TAPDB_ENV or MARVAIN_TAPDB_ENV."
+    )
+    try:
+        from daylily_tapdb.cli.db_config import get_db_config_for_env
+
+        runtime = _resolve_tapdb_runtime_config()
+        cfg = get_db_config_for_env(runtime.env_name, config_path=runtime.config_path)
+    except Exception:
+        return generic
+
+    engine_type = str(cfg.get("engine_type") or "").strip().lower()
+    if engine_type != "aurora":
+        return generic
+
+    host = str(cfg.get("host") or "").strip()
+    port = str(cfg.get("port") or "").strip() or "5432"
+    if not host:
+        return generic
+    try:
+        socket.getaddrinfo(host, int(port))
+    except Exception:
+        return (
+            f"TapDB Aurora host is not resolvable from this machine: {host}:{port}. "
+            "The mounted TapDB admin service needs direct database network access; run the GUI from a network "
+            "that can resolve and reach the dev Aurora endpoint, or configure a supported TapDB web runtime "
+            "connection."
+        )
+    return generic
 
 
 async def _dispatch_asgi_app(asgi_app: Any, request: Request) -> Response:
@@ -397,6 +429,35 @@ async def _dispatch_asgi_app(asgi_app: Any, request: Request) -> Response:
     )
 
 
+async def _capture_asgi_response(asgi_app: Any, scope: dict[str, Any], receive: Any) -> Response:
+    status_code = 500
+    headers: list[tuple[bytes, bytes]] = []
+    chunks: list[bytes] = []
+
+    async def send(message: dict[str, Any]) -> None:
+        nonlocal status_code, headers
+        if message["type"] == "http.response.start":
+            status_code = int(message["status"])
+            headers = list(message.get("headers") or [])
+        elif message["type"] == "http.response.body":
+            chunks.append(message.get("body") or b"")
+
+    await asgi_app(scope, receive, send)
+    return Response(
+        content=b"".join(chunks),
+        status_code=status_code,
+        headers={k.decode("latin-1"): v.decode("latin-1") for k, v in headers},
+    )
+
+
+def _tapdb_child_returned_internal_error(response: Response) -> bool:
+    content_type = str(response.headers.get("content-type") or "").lower()
+    if response.status_code < 500 or "text/plain" not in content_type:
+        return False
+    body = getattr(response, "body", b"")
+    return body.strip() == b"Internal Server Error"
+
+
 class MarvainTapdbMount:
     """Lazy TapDB UI mount guarded by the Marvain browser session."""
 
@@ -412,7 +473,13 @@ class MarvainTapdbMount:
 
         try:
             tapdb_app = _get_tapdb_web_asgi_app()
-            await tapdb_app(_tapdb_child_scope(scope, user), receive, send)
+            tapdb_response = await _capture_asgi_response(tapdb_app, _tapdb_child_scope(scope, user), receive)
+            if _tapdb_child_returned_internal_error(tapdb_response):
+                await _tapdb_runtime_error_response(RuntimeError("embedded TapDB app returned 500"))(
+                    scope, receive, send
+                )
+                return
+            await tapdb_response(scope, receive, send)
         except MarvainTapdbConfigError as exc:
             await _tapdb_config_error_response(exc)(scope, receive, send)
         except (RuntimeError, ValueError) as exc:

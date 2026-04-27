@@ -206,6 +206,7 @@
     wsReconnectDelay: 1000,
     wsAuthenticated: false,
     wsAuthFailed: false,
+    wsConnectInFlight: false,
 
     /**
      * Connect to WebSocket server
@@ -217,12 +218,18 @@
         console.log('[Marvain] WebSocket already connected');
         return;
       }
+      if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
+        console.log('[Marvain] WebSocket connection already in progress');
+        return;
+      }
 
       console.log('[Marvain] Connecting to WebSocket...');
+      this.wsConnectInFlight = true;
       this.ws = new WebSocket(url);
 
       this.ws.onopen = () => {
         console.log('[Marvain] WebSocket connected, sending hello...');
+        this.wsConnectInFlight = false;
         this.wsReconnectAttempts = 0;
         // Send hello message with access token
         // Note: We emit 'connected' only after receiving a successful hello response
@@ -272,6 +279,8 @@
         console.log('[Marvain] WebSocket closed:', event.code);
         this._wsEmit('disconnected', event);
         this.ws = null;
+        this.wsAuthenticated = false;
+        this.wsConnectInFlight = false;
         // Attempt reconnect
         if (this.wsAuthFailed) {
           // Auth failures need a fresh token; caller should fetch a new one and reconnect.

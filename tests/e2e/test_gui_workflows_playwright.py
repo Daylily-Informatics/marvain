@@ -591,6 +591,11 @@ def test_core_gui_browser_workflows_are_interactive(browser_page) -> None:
     _assert_page(page, "/live-session", "Live Session", "Kitchen")
     page.locator("#space_id").select_option(SPACE_ID)
     assert page.locator("#space_id").input_value() == SPACE_ID
+    assert page.locator("#btn-mic").is_visible()
+    assert page.locator("#mic-select").is_visible()
+    assert page.locator("#speaker-select").is_visible()
+    assert page.locator("#cam-select").is_visible()
+    assert page.locator("#remote-media").is_visible()
 
 
 def test_tapdb_dag_query_api_is_available_to_browser(browser_page) -> None:
