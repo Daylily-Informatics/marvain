@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,6 +43,9 @@ ROUND5_TAPDB_INTERNAL_TOKENS = (
     "generic_instance_lineage",
     "tapdb_schema.sql",
 )
+ROUND6_MIN_API_ROUTE_COVERAGE = 100
+ROUND6_MIN_GUI_ROUTE_COVERAGE = 100
+ROUND6_MIN_PLAYWRIGHT_WORKFLOW_COVERAGE = 75
 
 
 @dataclass(frozen=True)
@@ -502,6 +507,17 @@ def _has(root: Path, rel_path: str, token: str) -> bool:
     return token in path.read_text(encoding="utf-8")
 
 
+def _load_peer_script(file_name: str, module_name: str):
+    path = Path(__file__).with_name(file_name)
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load {file_name}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def score_objective(
     objective: DesignObjective, root: Path = ROOT
 ) -> tuple[int, tuple[EvidenceToken, ...], tuple[EvidenceToken, ...]]:
@@ -539,6 +555,8 @@ def architecture_purity_issues(root: Path = ROOT) -> list[str]:
             if token in text:
                 issues.append(f"{rel}: contains obsolete token {token!r}")
     issues.extend(round5_hard_gate_issues(root))
+    issues.extend(round6_coverage_gate_issues(root))
+    issues.extend(capability_matrix_stale_issues(root))
     return issues
 
 
@@ -570,6 +588,7 @@ def round5_hard_gate_issues(root: Path = ROOT) -> list[str]:
         issues.append("marvain_cli/smoke.py: v1-dev still contains local/non-mutating contract behavior")
     if "--include-two-device-proof" not in smoke:
         issues.append("marvain_cli/smoke.py: missing deployed two-device proof option")
+    issues.extend(deployed_smoke_placeholder_issues(root))
 
     app = (root / "functions" / "hub_api" / "app.py").read_text(encoding="utf-8", errors="ignore")
     for token in ('@app.get("/lineage"', '@app.get("/api/lineage/', 'name="gui_lineage"'):
@@ -595,6 +614,79 @@ def round5_hard_gate_issues(root: Path = ROOT) -> list[str]:
         issues.append("apps/agent_worker/worker.py: missing worker visual observation acknowledgement")
 
     return issues
+
+
+def _function_source(text: str, function_name: str) -> str:
+    marker = f"def {function_name}("
+    start = text.find(marker)
+    if start < 0:
+        return ""
+    next_function = text.find("\ndef ", start + len(marker))
+    if next_function < 0:
+        return text[start:]
+    return text[start:next_function]
+
+
+def deployed_smoke_placeholder_issues(root: Path = ROOT) -> list[str]:
+    smoke_path = root / "marvain_cli" / "smoke.py"
+    if not smoke_path.exists():
+        return ["marvain_cli/smoke.py: missing real deployed smoke runner"]
+
+    smoke = smoke_path.read_text(encoding="utf-8", errors="ignore")
+    body = _function_source(smoke, "run_deployed_smoke")
+    if not body:
+        return ["marvain_cli/smoke.py: missing real deployed smoke runner"]
+
+    issues: list[str] = []
+    placeholder_tokens = {
+        "run_local_smoke(": "delegates deployed smoke to local smoke",
+        '"mutates_runtime": False': "declares non-mutating deployed smoke evidence",
+        "'mutates_runtime': False": "declares non-mutating deployed smoke evidence",
+        '"mode": "v1-dev-contract"': "returns the old local contract mode",
+        "'mode': 'v1-dev-contract'": "returns the old local contract mode",
+        "NotImplementedError": "leaves deployed smoke unimplemented",
+    }
+    for token, reason in placeholder_tokens.items():
+        if token in body:
+            issues.append(f"marvain_cli/smoke.py: run_deployed_smoke {reason}")
+    if '"mutates_runtime": True' not in body and "'mutates_runtime': True" not in body:
+        issues.append("marvain_cli/smoke.py: run_deployed_smoke does not declare mutating deployed evidence")
+    if "_http_json(" not in body:
+        issues.append("marvain_cli/smoke.py: run_deployed_smoke does not exercise deployed HTTP endpoints")
+    return issues
+
+
+def round6_coverage_gate_issues(root: Path = ROOT) -> list[str]:
+    route_coverage = _load_peer_script("generate_route_coverage.py", "generate_route_coverage_for_status")
+    coverage = route_coverage.build_coverage(root)
+    issues: list[str] = []
+    if coverage.api.percent < ROUND6_MIN_API_ROUTE_COVERAGE:
+        issues.append(
+            "scripts/generate_route_coverage.py: "
+            f"API route coverage {coverage.api.percent}% is below {ROUND6_MIN_API_ROUTE_COVERAGE}%"
+        )
+    if coverage.gui.percent < ROUND6_MIN_GUI_ROUTE_COVERAGE:
+        issues.append(
+            "scripts/generate_route_coverage.py: "
+            f"GUI route coverage {coverage.gui.percent}% is below {ROUND6_MIN_GUI_ROUTE_COVERAGE}%"
+        )
+    if coverage.playwright.percent < ROUND6_MIN_PLAYWRIGHT_WORKFLOW_COVERAGE:
+        issues.append(
+            "scripts/generate_route_coverage.py: "
+            f"Playwright workflow coverage {coverage.playwright.percent}% "
+            f"is below {ROUND6_MIN_PLAYWRIGHT_WORKFLOW_COVERAGE}%"
+        )
+    return issues
+
+
+def capability_matrix_stale_issues(root: Path = ROOT) -> list[str]:
+    matrix = _load_peer_script("generate_capability_matrix.py", "generate_capability_matrix_for_status")
+    out_file = root / "docs" / "CAPABILITY_MATRIX.generated.md"
+    existing = out_file.read_text(encoding="utf-8") if out_file.exists() else ""
+    expected = matrix.build_doc(root)
+    if existing != expected:
+        return ["docs/CAPABILITY_MATRIX.generated.md: capability matrix is out of date"]
+    return []
 
 
 def build_status(root: Path = ROOT) -> dict[str, object]:
@@ -663,7 +755,9 @@ def build_doc(root: Path = ROOT, *, min_score: int = 90) -> str:
         lines.append("Status: **FAIL**.")
         lines.extend(f"- {issue}" for issue in architecture_issues)
     else:
-        lines.append("Status: **PASS**. No obsolete architecture tokens or copied TapDB schema paths were found in active scan roots.")
+        lines.append(
+            "Status: **PASS**. No obsolete architecture tokens or copied TapDB schema paths were found in active scan roots."
+        )
     lines.extend(
         [
             "",

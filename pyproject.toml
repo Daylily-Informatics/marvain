@@ -11,9 +11,9 @@ requires-python = ">=3.11"
 dependencies = [
   "amazon-transcribe",
   "boto3",
-  "cli-core-yo==2.1.0",
-  "daylily-auth-cognito==2.1.1",
-  "daylily-tapdb[admin]==6.0.5",
+  "cli-core-yo==2.1.1",
+  "daylily-auth-cognito==2.1.4",
+  "daylily-tapdb[admin]==6.0.7",
   "fastapi",
   "httpx",
   "insightface",

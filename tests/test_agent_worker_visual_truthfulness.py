@@ -74,6 +74,9 @@ def test_worker_does_not_promote_artifact_only_visual_message_to_observation() -
 
     assert "visual.artifact_reference" in worker_text
     assert "artifact reference only; no visual observation text" in worker_text
+    assert '"type": "visual_observation_ack"' in worker_text
+    assert '"ok": False' in worker_text
+    assert '"error": "camera_enabled_but_visual_analysis_unavailable"' in worker_text
     assert "A visual observation artifact was captured, but no description was available." not in worker_text
 
 

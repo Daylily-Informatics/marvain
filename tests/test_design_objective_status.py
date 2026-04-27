@@ -45,6 +45,21 @@ def test_minimum_score_gate_passes_at_90() -> None:
     assert status["score"] >= 90
 
 
+def test_deployed_smoke_placeholder_cannot_satisfy_completion(tmp_path) -> None:
+    generator = _load_generator()
+    smoke_dir = tmp_path / "marvain_cli"
+    smoke_dir.mkdir()
+    (smoke_dir / "smoke.py").write_text(
+        "def run_deployed_smoke(*, stack=None, include_two_device_proof=False):\n    return run_local_smoke()\n",
+        encoding="utf-8",
+    )
+
+    issues = generator.deployed_smoke_placeholder_issues(tmp_path)
+
+    assert any("delegates deployed smoke to local smoke" in issue for issue in issues)
+    assert any("does not declare mutating deployed evidence" in issue for issue in issues)
+
+
 def test_check_command_supports_min_score_gate() -> None:
     result = subprocess.run(
         [

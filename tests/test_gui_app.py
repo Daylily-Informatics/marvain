@@ -1851,6 +1851,81 @@ class TestTapdbNativeGraphIntegration(unittest.TestCase):
             captured, {"config_path": "/tmp/tapdb-config.yaml", "env_name": "test", "service_name": "marvain"}
         )
 
+    def test_obs_services_advertises_kahlo_and_graph_endpoints(self) -> None:
+        r = self.client.get("/obs_services")
+
+        self.assertEqual(r.status_code, 200)
+        payload = r.json()
+        self.assertEqual(payload["contract_version"], "v3")
+        self.assertEqual(payload["service"], "marvain")
+        endpoint_paths = {item["path"] for item in payload["endpoints"]}
+        for path in {
+            "/obs_services",
+            "/api_health",
+            "/endpoint_health",
+            "/db_health",
+            "/auth_health",
+            "/my_health",
+            "/api/dag/data",
+            "/api/dag/object/{euid}",
+            "/tapdb/graph",
+        }:
+            self.assertIn(path, endpoint_paths)
+        graph_paths = {item["path"] for item in payload["graph_endpoints"]}
+        self.assertEqual(graph_paths, {"/api/dag/data", "/api/dag/object/{euid}", "/tapdb/graph"})
+        self.assertNotIn("/lineage", r.text)
+        self.assertNotIn("client-123", r.text)
+        self.assertNotIn("pool-123", r.text)
+        self.assertNotIn("arn:aws:secretsmanager", r.text)
+
+    def test_kahlo_health_endpoints_return_safe_payloads(self) -> None:
+        for path in ("/api_health", "/endpoint_health?limit=200", "/db_health", "/auth_health"):
+            with self.subTest(path=path):
+                r = self.client.get(path)
+
+                self.assertEqual(r.status_code, 200)
+                payload = r.json()
+                self.assertEqual(payload["contract_version"], "v3")
+                self.assertEqual(payload["service"], "marvain")
+                self.assertIn(payload["status"], {"ok", "degraded"})
+                self.assertNotIn("client-123", r.text)
+                self.assertNotIn("pool-123", r.text)
+                self.assertNotIn("arn:aws:secretsmanager", r.text)
+                self.assertNotIn("user@example.com", r.text)
+
+        endpoint_payload = self.client.get("/endpoint_health?limit=200").json()
+        route_templates = {item["route_template"] for item in endpoint_payload["items"]}
+        self.assertIn("/api/dag/data", route_templates)
+        self.assertIn("/api/dag/object/{euid}", route_templates)
+        self.assertIn("/tapdb/graph", route_templates)
+        self.assertNotIn("/lineage", route_templates)
+
+    def test_my_health_requires_auth_and_omits_identity_values(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+        unauthenticated = self.client.get("/my_health")
+        self.assertEqual(unauthenticated.status_code, 401)
+
+        self.mod._gui_get_user = mock.Mock(return_value=self._auth_user())
+        r = self.client.get("/my_health")
+
+        self.assertEqual(r.status_code, 200)
+        payload = r.json()
+        self.assertEqual(payload["contract_version"], "v3")
+        self.assertEqual(payload["service"], "marvain")
+        self.assertEqual(
+            payload["principal"],
+            {
+                "kind": "browser_session",
+                "authenticated": True,
+                "subject_present": True,
+                "user_id_present": True,
+                "email_present": True,
+            },
+        )
+        self.assertNotIn("user@example.com", r.text)
+        self.assertNotIn("sub-1", r.text)
+        self.assertNotIn('"u1"', r.text)
+
 
 class TestEventsGui(unittest.TestCase):
     """Tests for the events viewer GUI routes."""
@@ -2562,14 +2637,23 @@ class TestLiveSessionGui(unittest.TestCase):
         self.assertIn("switchActiveDevice('audioinput'", r.text)
         self.assertIn("switchActiveDevice('videoinput'", r.text)
         self.assertIn("setSinkId", r.text)
+        self.assertIn("Speaker selection is not supported in this browser", r.text)
+        self.assertIn("Default output only", r.text)
         self.assertIn("createElement('audio')", r.text)
         self.assertIn("TrackSubscribed", r.text)
+        self.assertIn("Join a live session before enabling microphone", r.text)
+        self.assertIn("Join a live session before enabling camera", r.text)
         self.assertIn("camera_enabled_but_visual_analysis_unavailable", r.text)
         self.assertIn("waitForCameraFrame", r.text)
+        self.assertIn("waitForVisualAck", r.text)
         self.assertIn("requestAnimationFrame", r.text)
         self.assertIn("video.muted = true", r.text)
         self.assertIn("await video.play()", r.text)
         self.assertIn("browser did not produce a current frame", r.text)
+        self.assertIn("Camera is enabled, but no camera preview is available for the agent", r.text)
+        self.assertIn("Camera is enabled, but the agent did not acknowledge visual access", r.text)
+        self.assertIn("Agent vision failed", r.text)
+        self.assertIn("if (!payload.ok)", r.text)
 
 
 class TestWebSocketContext(unittest.TestCase):

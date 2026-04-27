@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import secrets
 import uuid
 from dataclasses import asdict
@@ -3103,6 +3104,10 @@ class RecallOut(BaseModel):
     memories: list[RecallMemoryOut]
 
 
+def _recall_terms(value: str) -> set[str]:
+    return {term.lower() for term in re.findall(r"[A-Za-z0-9_]+", value or "")}
+
+
 @api_app.post("/v1/recall", response_model=RecallOut)
 def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_device)) -> RecallOut:
     """Semantic memory search using pgvector embeddings.
@@ -3156,61 +3161,90 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
             params["tiers"] = [normalize_memory_kind(item) for item in body.tiers]
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        tier_clause = "AND tier = ANY(:tiers)"
+        tier_clause = "AND memories.tier = ANY(:tiers)"
 
     space_clause = ""
     if body.space_id:
-        space_clause = "AND (space_id = :space_id::uuid OR space_id IS NULL)"
+        space_clause = "AND (memories.space_id = :space_id::uuid OR memories.space_id IS NULL)"
         params["space_id"] = body.space_id
 
     person_clause = ""
     if body.person_id:
-        person_clause = "AND (subject_person_id = :person_id::uuid OR participants @> :person_ref::jsonb)"
+        person_clause = (
+            "AND (memories.subject_person_id = :person_id::uuid OR memories.participants @> :person_ref::jsonb)"
+        )
         params["person_id"] = body.person_id
         params["person_ref"] = json.dumps([f"person:{body.person_id}"])
 
     # Query with pgvector cosine distance
     rows = _get_db().query(
         f"""
-        SELECT memory_id::TEXT as memory_id,
-               tier,
-               content,
-               created_at::TEXT as created_at,
-               provenance::TEXT as provenance_json,
-               source_event_id::TEXT as source_event_id,
-               session_id::TEXT as session_id,
-               space_id::TEXT as space_id,
-               subject_person_id::TEXT as subject_person_id,
-               tapdb_euid,
-               recall_explanation::TEXT as recall_explanation_json,
-               (embedding <=> CAST(:q AS vector))::DOUBLE PRECISION as distance
+        SELECT memories.memory_id::TEXT as memory_id,
+               memories.tier,
+               memories.content,
+               memories.created_at::TEXT as created_at,
+               memories.provenance::TEXT as provenance_json,
+               memories.source_event_id::TEXT as source_event_id,
+               memories.session_id::TEXT as session_id,
+               memories.space_id::TEXT as space_id,
+               memories.subject_person_id::TEXT as subject_person_id,
+               memories.tapdb_euid,
+               memories.recall_explanation::TEXT as recall_explanation_json,
+               source_event.type as source_event_type,
+               source_event.payload::TEXT as source_event_payload_json,
+               source_event.device_id::TEXT as source_event_device_id,
+               source_event.space_id::TEXT as source_event_space_id,
+               source_event.session_id::TEXT as source_event_session_id,
+               source_event.person_id::TEXT as source_event_person_id,
+               (memories.embedding <=> CAST(:q AS vector))::DOUBLE PRECISION as distance
         FROM memories
-        WHERE agent_id = :agent_id::uuid
-          AND embedding IS NOT NULL
-          AND lifecycle_state = 'committed'
-          AND tombstoned_at IS NULL
+        LEFT JOIN events source_event ON source_event.event_id = memories.source_event_id
+        WHERE memories.agent_id = :agent_id::uuid
+          AND memories.embedding IS NOT NULL
+          AND memories.lifecycle_state = 'committed'
+          AND memories.tombstoned_at IS NULL
           {tier_clause}
           {space_clause}
           {person_clause}
-        ORDER BY embedding <=> CAST(:q AS vector)
+        ORDER BY memories.embedding <=> CAST(:q AS vector)
         LIMIT :limit
         """,
         params,
     )
 
-    query_terms = {term.lower().strip(".,!?") for term in body.query.split() if term.strip()}
+    query_terms = _recall_terms(body.query)
     memories = []
     for rank, r in enumerate(rows, start=1):
         distance = float(r.get("distance", 0.0))
         content = str(r.get("content") or "")
-        content_terms = {term.lower().strip(".,!?") for term in content.split() if term.strip()}
+        content_terms = _recall_terms(content)
         keyword_match = sorted(query_terms & content_terms)
         provenance = _parse_json_obj(r.get("provenance_json") or "{}")
+        source_payload = _parse_json_obj(r.get("source_event_payload_json") or "{}")
+        source_excerpt = content[:240]
+        device_id = provenance.get("device_id") or r.get("source_event_device_id")
+        space_id = r.get("space_id") or r.get("source_event_space_id")
+        session_id = r.get("session_id") or r.get("source_event_session_id")
+        person_id = r.get("subject_person_id") or r.get("source_event_person_id")
+        source_evidence = {
+            "event_id": r.get("source_event_id"),
+            "event_type": r.get("source_event_type"),
+            "event_payload": source_payload,
+            "excerpt": source_excerpt,
+            "device_id": device_id,
+            "space_id": space_id,
+            "session_id": session_id,
+            "person_id": person_id,
+        }
         consent_filters = {
+            "applied": True,
             "agent_id": target_agent_id,
             "space_id": body.space_id,
             "person_id": body.person_id,
+            "tiers": params.get("tiers"),
             "privacy_mode_checked": True,
+            "committed_only": True,
+            "tombstoned_excluded": True,
         }
         memories.append(
             RecallMemoryOut(
@@ -3227,12 +3261,13 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
                         "method": "pgvector_cosine",
                         "keyword_match": keyword_match,
                     },
-                    "source_excerpt": content[:240],
+                    "source_evidence": source_evidence,
+                    "source_excerpt": source_excerpt,
                     "source_event_id": r.get("source_event_id"),
-                    "device_id": provenance.get("device_id"),
-                    "space_id": r.get("space_id"),
-                    "session_id": r.get("session_id"),
-                    "person_id": r.get("subject_person_id"),
+                    "device_id": device_id,
+                    "space_id": space_id,
+                    "session_id": session_id,
+                    "person_id": person_id,
                     "consent_filters": consent_filters,
                     "tapdb_euid": r.get("tapdb_euid"),
                     "stored": _parse_json_obj(r.get("recall_explanation_json") or "{}"),

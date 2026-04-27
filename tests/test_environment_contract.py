@@ -38,9 +38,9 @@ def test_pyproject_owns_python_dependencies_and_console_script() -> None:
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     dependencies = set(pyproject["project"]["dependencies"])
-    assert "cli-core-yo==2.1.0" in dependencies
-    assert "daylily-auth-cognito==2.1.1" in dependencies
-    assert "daylily-tapdb[admin]==6.0.5" in dependencies
+    assert "cli-core-yo==2.1.1" in dependencies
+    assert "daylily-auth-cognito==2.1.4" in dependencies
+    assert "daylily-tapdb[admin]==6.0.7" in dependencies
     assert pyproject["project"]["scripts"]["marvain"] == "marvain_cli.__main__:main"
     assert pyproject["tool"]["marvain"]["conda_file"] == "environment.yaml"
 

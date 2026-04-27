@@ -601,7 +601,14 @@ class FakeMediaRecorder {
 }
 Object.defineProperty(window, 'MediaRecorder', {value: FakeMediaRecorder, configurable: true});
 Object.defineProperty(navigator, 'mediaDevices', {
-  value: { getUserMedia: async () => new MediaStream() },
+  value: {
+    getUserMedia: async () => new MediaStream(),
+    enumerateDevices: async () => [
+      {kind: 'audioinput', deviceId: 'test-mic', label: 'Test Microphone'},
+      {kind: 'audiooutput', deviceId: 'test-speaker', label: 'Test Speaker'},
+      {kind: 'videoinput', deviceId: 'test-camera', label: 'Test Camera'}
+    ]
+  },
   configurable: true
 });
 HTMLCanvasElement.prototype.getContext = function() {
@@ -618,6 +625,7 @@ Object.defineProperty(HTMLMediaElement.prototype, 'videoHeight', {get() { return
 def test_gui_creates_agent_space_and_conversation_stores_all_memory_tiers(browser_page, workflow_state) -> None:
     sync_api = pytest.importorskip("playwright.sync_api")
     page = browser_page
+    page.add_init_script(MEDIA_CAPTURE_STUB)
     page.route(
         "**/livekit-client.umd.min.js",
         lambda route: route.fulfill(status=200, content_type="text/javascript", body=LIVEKIT_BROWSER_STUB),

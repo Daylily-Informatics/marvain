@@ -46,3 +46,13 @@ def test_capability_matrix_generated_doc_is_current() -> None:
     actual = (REPO_ROOT / "docs" / "CAPABILITY_MATRIX.generated.md").read_text(encoding="utf-8")
 
     assert actual == expected
+
+
+def test_capability_matrix_check_fails_when_generated_doc_is_stale(tmp_path, monkeypatch) -> None:
+    generator = _load_generator()
+    stale_doc = tmp_path / "CAPABILITY_MATRIX.generated.md"
+    stale_doc.write_text("stale\n", encoding="utf-8")
+    monkeypatch.setattr(generator, "OUT_FILE", stale_doc)
+    monkeypatch.setattr(sys, "argv", ["generate_capability_matrix.py", "--check"])
+
+    assert generator.main() == 1

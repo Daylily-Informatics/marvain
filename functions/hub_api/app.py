@@ -19,6 +19,8 @@ import secrets
 import socket
 import uuid
 from dataclasses import dataclass
+from datetime import datetime as dt_datetime
+from datetime import timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -506,6 +508,265 @@ async def _api_tapdb_dag_proxy(request: Request) -> Response:
 
 app.add_api_route("/api/dag", _api_tapdb_dag_proxy, methods=["GET", "POST"], name="api_tapdb_dag_root")
 app.add_api_route("/api/dag/{path:path}", _api_tapdb_dag_proxy, methods=["GET", "POST"], name="api_tapdb_dag")
+
+
+_KAHLO_CONTRACT_VERSION = "v3"
+
+
+def _observed_at() -> str:
+    return dt_datetime.now(timezone.utc).isoformat()
+
+
+def _projection(status: str = "ready", *, detail: str | None = None) -> dict[str, Any]:
+    observed_at = _observed_at()
+    return {
+        "state": status,
+        "stale": False,
+        "observed_at": observed_at,
+        "last_synced_at": observed_at,
+        "detail": detail,
+    }
+
+
+def _observability_principal(request: Request) -> dict[str, Any]:
+    user = _gui_get_user(request)
+    if user:
+        return {
+            "kind": "browser_session",
+            "authenticated": True,
+            "subject_present": bool(str(user.cognito_sub or "").strip()),
+            "user_id_present": bool(str(user.user_id or "").strip()),
+            "email_present": bool(str(user.email or "").strip()),
+        }
+
+    raise HTTPException(status_code=401, detail="Not authenticated")
+
+
+def _observability_base(request: Request, *, status: str = "ok") -> dict[str, Any]:
+    return {
+        "contract_version": _KAHLO_CONTRACT_VERSION,
+        "service": "marvain",
+        "environment": str(_cfg.stage or "unknown"),
+        "instance_id": f"marvain-{_cfg.stage or 'local'}",
+        "observed_at": _observed_at(),
+        "status": status,
+        "request_id": str(getattr(request.state, "request_id", "") or ""),
+        "correlation_id": str(getattr(request.state, "correlation_id", "") or ""),
+        "build": {"version": "unknown", "sha": os.getenv("GIT_SHA", "")},
+    }
+
+
+def _observability_endpoints() -> list[dict[str, str]]:
+    return [
+        {"path": "/obs_services", "auth": "none", "kind": "discovery"},
+        {"path": "/api_health", "auth": "none", "kind": "api_rollup"},
+        {"path": "/endpoint_health", "auth": "none", "kind": "endpoint_rollup"},
+        {"path": "/db_health", "auth": "none", "kind": "database"},
+        {"path": "/auth_health", "auth": "none", "kind": "auth"},
+        {"path": "/my_health", "auth": "authenticated_self", "kind": "self"},
+        {"path": "/api/dag/data", "auth": "browser_session", "kind": "graph_data"},
+        {"path": "/api/dag/object/{euid}", "auth": "browser_session", "kind": "graph_object"},
+        {"path": "/tapdb/graph", "auth": "browser_session", "kind": "graph_ui"},
+    ]
+
+
+def _endpoint_rollup_item(*, route_template: str, method: str, family: str, kind: str, auth: str) -> dict[str, Any]:
+    return {
+        "method": method,
+        "route_template": route_template,
+        "status": "ok",
+        "kind": kind,
+        "auth": auth,
+        "family": family,
+        "request_count": 0,
+        "status_class_counts": {},
+        "p50_ms": None,
+        "p95_ms": None,
+        "p99_ms": None,
+        "fingerprint_count": 0,
+        "observed_at": None,
+    }
+
+
+def _route_items() -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for route in app.routes:
+        path = str(getattr(route, "path", "") or "")
+        if not path or path.startswith("/static"):
+            continue
+        methods = sorted(str(m) for m in getattr(route, "methods", []) if str(m) not in {"HEAD", "OPTIONS"})
+        if not methods:
+            continue
+        family = "v1_api" if path.startswith("/v1") else "gui_api" if path.startswith("/api") else "gui"
+        for method in methods:
+            items.append(
+                _endpoint_rollup_item(route_template=path, method=method, family=family, kind="route", auth="mixed")
+            )
+
+    observed_templates = {str(item["route_template"]) for item in items}
+    for endpoint in _observability_endpoints():
+        if endpoint["path"] in observed_templates:
+            continue
+        family = "tapdb_graph" if endpoint["kind"].startswith("graph_") else "observability"
+        items.append(
+            _endpoint_rollup_item(
+                route_template=endpoint["path"],
+                method="GET",
+                family=family,
+                kind=endpoint["kind"],
+                auth=endpoint["auth"],
+            )
+        )
+
+    return sorted(items, key=lambda item: (item["route_template"], item["method"]))
+
+
+@app.get("/obs_services", name="kahlo_obs_services")
+def kahlo_obs_services(request: Request) -> JSONResponse:
+    payload = _observability_base(request)
+    payload["projection"] = _projection()
+    payload["endpoints"] = _observability_endpoints()
+    payload["extensions"] = [
+        "marvain.tapdb_graph",
+        "marvain.live_session",
+        "marvain.memory_recall",
+        "marvain.recognition",
+    ]
+    payload["dependencies"] = {
+        "configured_services": [
+            {"service": "cognito", "configured": bool(_cfg.cognito_user_pool_id and _cfg.cognito_user_pool_client_id)},
+            {"service": "livekit", "configured": bool(_cfg.livekit_url and _cfg.livekit_secret_arn)},
+            {
+                "service": "tapdb",
+                "configured": bool(os.getenv("MARVAIN_TAPDB_CONFIG_PATH") or os.getenv("TAPDB_CONFIG_PATH")),
+            },
+        ],
+        "observed_services": [],
+    }
+    payload["graph_endpoints"] = [
+        {
+            "path": "/api/dag/data",
+            "auth": "browser_session",
+            "kind": "graph_data",
+            "start_param": "start_euid",
+            "depth_param": "depth",
+            "format": "dag:v1",
+        },
+        {
+            "path": "/api/dag/object/{euid}",
+            "auth": "browser_session",
+            "kind": "graph_object",
+            "euid_param": "euid",
+            "format": "tapdb-object:v1",
+        },
+        {
+            "path": "/tapdb/graph",
+            "auth": "browser_session",
+            "kind": "graph_ui",
+            "start_param": "start_euid",
+            "format": "html",
+        },
+    ]
+    return JSONResponse(payload)
+
+
+@app.get("/api_health", name="kahlo_api_health")
+def kahlo_api_health(request: Request) -> JSONResponse:
+    items = _route_items()
+    families: list[dict[str, Any]] = []
+    for family in ("gui", "gui_api", "observability", "tapdb_graph", "v1_api"):
+        count = sum(1 for item in items if item["family"] == family)
+        families.append({"family": family, "request_count": 0, "error_count": 0, "route_count": count, "status": "ok"})
+    payload = _observability_base(request)
+    payload["projection"] = _projection()
+    payload["families"] = families
+    return JSONResponse(payload)
+
+
+@app.get("/endpoint_health", name="kahlo_endpoint_health")
+def kahlo_endpoint_health(request: Request, offset: int = 0, limit: int = 25) -> JSONResponse:
+    items = _route_items()
+    offset = max(0, int(offset))
+    limit = min(200, max(1, int(limit)))
+    payload = _observability_base(request)
+    payload["projection"] = _projection()
+    for item in items:
+        item["observed_at"] = payload["observed_at"]
+    payload["page"] = {"total": len(items), "offset": offset, "limit": limit}
+    payload["items"] = items[offset : offset + limit]
+    return JSONResponse(payload)
+
+
+@app.get("/db_health", name="kahlo_db_health")
+def kahlo_db_health(request: Request) -> JSONResponse:
+    db_configured = bool(_cfg.db_resource_arn and _cfg.db_secret_arn and _cfg.db_name)
+    status = "ok" if db_configured else "degraded"
+    payload = _observability_base(request, status=status)
+    payload["projection"] = _projection("ready", detail="static configuration summary")
+    payload["database"] = {
+        "status": status,
+        "latest": None,
+        "recent": [],
+        "schema_drift": {
+            "status": "not_run",
+            "checked_at": None,
+            "environment": str(os.getenv("MARVAIN_TAPDB_ENV") or os.getenv("TAPDB_ENV") or _cfg.stage or ""),
+            "tool_version": "",
+            "summary": "Schema drift check has not been run.",
+            "report": {},
+        },
+        "observed_at": payload["observed_at"],
+        "last_synced_at": None,
+        "config": {
+            "rds_data_api_configured": bool(_cfg.db_resource_arn),
+            "database_name_configured": bool(_cfg.db_name),
+            "secret_configured": bool(_cfg.db_secret_arn),
+            "tapdb_config_path_configured": bool(
+                os.getenv("MARVAIN_TAPDB_CONFIG_PATH") or os.getenv("TAPDB_CONFIG_PATH")
+            ),
+            "tapdb_env_configured": bool(os.getenv("MARVAIN_TAPDB_ENV") or os.getenv("TAPDB_ENV") or _cfg.stage),
+        },
+    }
+    return JSONResponse(payload)
+
+
+@app.get("/auth_health", name="kahlo_auth_health")
+def kahlo_auth_health(request: Request) -> JSONResponse:
+    status = (
+        "ok" if (_cfg.cognito_user_pool_id and _cfg.cognito_user_pool_client_id and _cfg.cognito_domain) else "degraded"
+    )
+    payload = _observability_base(request, status=status)
+    payload["projection"] = _projection()
+    payload["auth"] = {
+        "status": status,
+        "mode": "daylily-auth-cognito",
+        "cognito_configured": bool(
+            _cfg.cognito_user_pool_id and _cfg.cognito_user_pool_client_id and _cfg.cognito_domain
+        ),
+        "cognito_domain": "configured" if _cfg.cognito_domain else "",
+        "user_pool_id": "configured" if _cfg.cognito_user_pool_id else "",
+        "app_client_id_present": bool(_cfg.cognito_user_pool_client_id),
+        "client_secret_present": bool(_cfg.cognito_user_pool_client_secret),
+        "recent": [],
+        "status_counts": {},
+        "sessions": {
+            "supported": True,
+            "active_session_count": None,
+            "recent_user_count": None,
+            "observed_at": payload["observed_at"],
+        },
+        "observed_at": payload["observed_at"],
+        "last_synced_at": None,
+    }
+    return JSONResponse(payload)
+
+
+@app.get("/my_health", name="kahlo_my_health")
+def kahlo_my_health(request: Request) -> JSONResponse:
+    principal = _observability_principal(request)
+    payload = _observability_base(request)
+    payload["principal"] = principal
+    return JSONResponse(payload)
 
 
 @app.middleware("http")

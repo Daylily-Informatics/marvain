@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import importlib.util
+import json
 import os
 import sys
 import unittest
@@ -369,6 +370,94 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         self.assertEqual(r.status_code, 403)
         self.assertIn("requires space_id", r.text)
 
+    def test_recall_memories_returns_ranked_source_evidence_for_every_memory_kind(self) -> None:
+        from agent_hub.memory_taxonomy import MEMORY_KIND_VALUES
+
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(
+                device_id="device-1", agent_id="agent-1", scopes=["memories:read"]
+            )
+        )
+        self.mod._cfg = dataclasses.replace(
+            self.mod._cfg,
+            openai_secret_arn="arn:aws:secretsmanager:us-east-1:123:secret:oai",
+            audit_bucket=None,
+        )
+        self.mod.call_embeddings = mock.Mock(return_value=[0.25, 0.5, 0.75])
+        rows = []
+        for index, kind in enumerate(MEMORY_KIND_VALUES, start=1):
+            content = f"Round 6 {kind} memory recalls kitchen proof evidence"
+            rows.append(
+                {
+                    "memory_id": f"memory-{index}",
+                    "tier": kind,
+                    "content": content,
+                    "created_at": "2026-04-27T10:00:00Z",
+                    "provenance_json": json.dumps({"source": "device", "device_id": "device-1"}),
+                    "source_event_id": f"event-{index}",
+                    "session_id": "session-1",
+                    "space_id": "space-1",
+                    "subject_person_id": "person-1",
+                    "tapdb_euid": f"tapdb-{kind}",
+                    "recall_explanation_json": json.dumps({"commit_policy": "device_memory_create_v1"}),
+                    "source_event_type": "memory.evidence",
+                    "source_event_payload_json": json.dumps(
+                        {"content_preview": content, "kind": kind, "device_id": "device-1"}
+                    ),
+                    "source_event_device_id": "device-1",
+                    "source_event_space_id": "space-1",
+                    "source_event_session_id": "session-1",
+                    "source_event_person_id": "person-1",
+                    "distance": float(index) / 100.0,
+                }
+            )
+
+        fake_db = mock.Mock()
+        fake_db.query = mock.Mock(return_value=rows)
+        self.mod._db = fake_db
+
+        r = self.client.post(
+            "/v1/recall",
+            headers={"Authorization": "Bearer devtok"},
+            json={
+                "agent_id": "agent-1",
+                "space_id": "space-1",
+                "person_id": "person-1",
+                "query": "round 6 kitchen proof",
+                "k": len(MEMORY_KIND_VALUES),
+                "tiers": list(MEMORY_KIND_VALUES),
+            },
+        )
+
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual({row["tier"] for row in body["memories"]}, set(MEMORY_KIND_VALUES))
+        for rank, memory in enumerate(body["memories"], start=1):
+            explanation = memory["explanation"]
+            ranking = explanation["ranking"]
+            evidence = explanation["source_evidence"]
+            self.assertEqual(ranking["rank"], rank)
+            self.assertEqual(ranking["embedding_distance"], memory["distance"])
+            self.assertTrue(set(ranking["keyword_match"]) & {"round", "6", "kitchen", "proof"})
+            self.assertEqual(explanation["source_excerpt"], memory["content"][:240])
+            self.assertEqual(evidence["event_id"], explanation["source_event_id"])
+            self.assertEqual(evidence["event_type"], "memory.evidence")
+            self.assertEqual(evidence["event_payload"]["device_id"], "device-1")
+            self.assertEqual(explanation["device_id"], "device-1")
+            self.assertEqual(explanation["space_id"], "space-1")
+            self.assertEqual(explanation["session_id"], "session-1")
+            self.assertEqual(explanation["person_id"], "person-1")
+            self.assertIs(explanation["consent_filters"]["applied"], True)
+            self.assertEqual(explanation["consent_filters"]["space_id"], "space-1")
+            self.assertEqual(explanation["consent_filters"]["person_id"], "person-1")
+            self.assertEqual(explanation["consent_filters"]["tiers"], list(MEMORY_KIND_VALUES))
+            self.assertIs(explanation["consent_filters"]["committed_only"], True)
+            self.assertIs(explanation["consent_filters"]["tombstoned_excluded"], True)
+        sql, params = fake_db.query.call_args.args
+        self.assertIn("LEFT JOIN events", sql)
+        self.assertIn("memories.tier = ANY(:tiers)", sql)
+        self.assertEqual(params["tiers"], list(MEMORY_KIND_VALUES))
+
     def test_create_memory_generates_embedding_when_openai_configured(self) -> None:
         self.mod.authenticate_device = mock.Mock(
             return_value=self.mod.AuthenticatedDevice(device_id="d1", agent_id="a1", scopes=["memories:write"])
@@ -400,6 +489,37 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         memory_insert_sql = fake_db.execute.call_args_list[-1].args[0]
         self.assertIn("NULLIF(CAST(:scene_context AS text), '')", memory_insert_sql)
         self.assertTrue(r.json().get("source_event_id"))
+
+    def test_create_memory_accepts_every_canonical_memory_kind(self) -> None:
+        from agent_hub.memory_taxonomy import MEMORY_KIND_VALUES
+
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(device_id="d1", agent_id="a1", scopes=["memories:write"])
+        )
+        self.mod._cfg = dataclasses.replace(self.mod._cfg, openai_secret_arn=None, audit_bucket=None)
+
+        fake_db = mock.Mock()
+        fake_db.query = mock.Mock(return_value=[{"agent_id": "a1"}])
+        fake_db.begin = mock.Mock(return_value="tx-1")
+        fake_db.execute = mock.Mock()
+        fake_db.commit = mock.Mock()
+        self.mod._db = fake_db
+
+        for kind in MEMORY_KIND_VALUES:
+            r = self.client.post(
+                "/v1/memories",
+                headers={"Authorization": "Bearer devtok"},
+                json={"space_id": "space-1", "tier": kind, "content": f"{kind} memory proof"},
+            )
+            self.assertEqual(r.status_code, 200, kind)
+            self.assertEqual(r.json()["tier"], kind)
+
+        executed_sql = "\n".join(call.args[0] for call in fake_db.execute.call_args_list)
+        self.assertIn("INSERT INTO events", executed_sql)
+        self.assertIn("memory.evidence", executed_sql)
+        self.assertIn("INSERT INTO memory_candidates", executed_sql)
+        self.assertIn("INSERT INTO memories", executed_sql)
+        self.assertEqual(fake_db.commit.call_count, len(MEMORY_KIND_VALUES))
 
     def test_create_memory_preserves_worker_source_event_provenance(self) -> None:
         self.mod.authenticate_device = mock.Mock(

@@ -1,6 +1,6 @@
 fastapi
 mangum
 itsdangerous
-daylily-auth-cognito==2.1.1
+daylily-auth-cognito==2.1.4
 httpx
 livekit-api>=1.1.0

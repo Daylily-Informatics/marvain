@@ -24,6 +24,16 @@ class SmokeError(RuntimeError):
     """Raised when a smoke runtime cannot complete a required step."""
 
 
+class SmokeBlockersError(SmokeError):
+    """Raised when deployed smoke reaches known blockers after collecting proof."""
+
+    def __init__(self, *, blockers: list[str], report: dict[str, Any]) -> None:
+        self.blockers = blockers
+        self.report = report
+        joined = "\n".join(f"- {item}" for item in blockers)
+        super().__init__(f"Deployed smoke blocked by missing required evidence:\n{joined}")
+
+
 DEPLOYED_SMOKE_REQUIRED_OUTPUTS = (
     "HubRestApiBase",
     "HubWebSocketUrl",
@@ -38,6 +48,12 @@ DEPLOYED_SMOKE_REQUIRED_ENV = (
     "MARVAIN_SMOKE_COGNITO_USERNAME",
     "MARVAIN_SMOKE_COGNITO_PASSWORD",
 )
+DEPLOYED_SMOKE_REQUIRED_RUNTIME_EVIDENCE = {
+    "worker_join": "LiveKit room join evidence from the deployed worker",
+    "speech_transcript": "speech transcript event created through the deployed LiveKit worker",
+    "recognition": "recognition observation or hypothesis created by the deployed recognition worker",
+    "observability": "deployed observability evidence for this smoke run",
+}
 
 
 @dataclass(frozen=True)
@@ -99,6 +115,9 @@ GUI_SMOKE_PAGES: tuple[GuiSmokePage, ...] = (
     GuiSmokePage("memories", "/memories", "Memories"),
     GuiSmokePage("recognition", "/recognition", "Recognition"),
     GuiSmokePage("actions", "/actions", "Actions"),
+    GuiSmokePage("actions-guide", "/actions/guide", "Actions Guide"),
+    GuiSmokePage("tools", "/tools", "Tool Catalog"),
+    GuiSmokePage("personas", "/personas", "Personas"),
     GuiSmokePage("tapdb-graph", "/tapdb/graph", "Graph"),
     GuiSmokePage("tapdb-query", "/tapdb/query?kind=instance&limit=50", "Query"),
     GuiSmokePage("audit", "/audit", "Audit"),
@@ -191,15 +210,26 @@ class LocalInMemorySmokeRuntime:
 
     def recall_memory(self, *, memory_id: str, query: str) -> dict[str, Any]:
         memory = self._require_memory(memory_id)
+        event = self._require_event(str(memory["source_event_id"]))
         query_terms = {term.lower() for term in query.split() if term.strip()}
         content_terms = {term.lower().strip(".,") for term in str(memory["content"]).split() if term.strip()}
         matched_terms = sorted(query_terms & content_terms)
+        source_excerpt = str(memory["content"])[:240]
         return {
             "matched": bool(matched_terms),
             "memory_id": memory_id,
             "content": memory["content"],
             "source_event_id": memory["source_event_id"],
-            "source_excerpt": str(memory["content"])[:240],
+            "source_evidence": {
+                "event_id": memory["source_event_id"],
+                "event_type": event["type"],
+                "excerpt": source_excerpt,
+                "device_id": memory["device_id"],
+                "space_id": memory["space_id"],
+                "session_id": memory["session_id"],
+                "person_id": memory["person_id"],
+            },
+            "source_excerpt": source_excerpt,
             "device_id": memory["device_id"],
             "space_id": memory["space_id"],
             "session_id": memory["session_id"],
@@ -213,7 +243,13 @@ class LocalInMemorySmokeRuntime:
                 "score": 1.0 if matched_terms else 0.0,
             },
             "matched_terms": matched_terms,
-            "consent_filters": {"applied": True, "person_id": memory["person_id"]},
+            "consent_filters": {
+                "applied": True,
+                "agent_id": memory["agent_id"],
+                "space_id": memory["space_id"],
+                "person_id": memory["person_id"],
+                "committed_only": True,
+            },
         }
 
     def record_recognition(self, session_id: str, scenario: LocalSmokeScenario) -> str:
@@ -532,6 +568,7 @@ def _assert_recall_proof(recall: dict[str, Any]) -> dict[str, Any]:
         raise SmokeError("Recall row is missing explanation")
     ranking = explanation.get("ranking")
     required_explanation = (
+        "source_evidence",
         "source_excerpt",
         "source_event_id",
         "device_id",
@@ -541,6 +578,13 @@ def _assert_recall_proof(recall: dict[str, Any]) -> dict[str, Any]:
         "consent_filters",
     )
     missing = [key for key in required_explanation if key not in explanation]
+    source_evidence = explanation.get("source_evidence")
+    if not isinstance(source_evidence, dict):
+        missing.append("source_evidence")
+    else:
+        for key in ("event_id", "excerpt", "device_id", "space_id", "session_id", "person_id"):
+            if key not in source_evidence:
+                missing.append(f"source_evidence.{key}")
     if not isinstance(ranking, dict):
         missing.append("ranking")
     else:
@@ -550,6 +594,38 @@ def _assert_recall_proof(recall: dict[str, Any]) -> dict[str, Any]:
     if missing:
         raise SmokeError("Recall explanation missing proof fields: " + ", ".join(missing))
     return first
+
+
+def _blocked_runtime_evidence(*, blocker: str, required: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": "blocked",
+        "blocker": blocker,
+        "required_evidence": required,
+    }
+
+
+def _runtime_evidence_blockers(proofs: dict[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    for key, required in DEPLOYED_SMOKE_REQUIRED_RUNTIME_EVIDENCE.items():
+        if key not in proofs:
+            blockers.append(f"{key}: missing proof field; required evidence: {required}")
+            continue
+        evidence = proofs[key]
+        if isinstance(evidence, str):
+            blockers.append(f"{key}: placeholder string is not accepted; required evidence: {required}")
+            continue
+        if not isinstance(evidence, dict):
+            blockers.append(f"{key}: malformed proof field {type(evidence).__name__}; required evidence: {required}")
+            continue
+        if evidence.get("ok") is True:
+            continue
+        detail = str(evidence.get("blocker") or "").strip()
+        if detail:
+            blockers.append(f"{key}: {detail}")
+        else:
+            blockers.append(f"{key}: proof did not report ok=true; required evidence: {required}")
+    return blockers
 
 
 def _run_two_device_rest_proof(
@@ -624,7 +700,7 @@ def run_deployed_smoke(*, stack: str | None = None, include_two_device_proof: bo
     outputs = _stack_outputs(ctx)
     _require_outputs(outputs)
 
-    run_id = datetime.now(timezone.utc).strftime("round5-%Y%m%dT%H%M%SZ")
+    run_id = datetime.now(timezone.utc).strftime("round6-%Y%m%dT%H%M%SZ")
     rest_base = outputs["HubRestApiBase"].rstrip("/")
     admin_key = _admin_key(outputs=outputs, region=ctx.env.aws_region, profile=ctx.env.aws_profile)
     access_token = _cognito_access_token(
@@ -639,7 +715,7 @@ def run_deployed_smoke(*, stack: str | None = None, include_two_device_proof: bo
     bootstrap = _http_json(
         method="POST",
         url=_rest_url(rest_base, "/v1/admin/bootstrap"),
-        payload={"agent_name": f"Round 5 Smoke {run_id}", "default_space_name": f"round5-space-{run_id}"},
+        payload={"agent_name": f"Round 6 Smoke {run_id}", "default_space_name": f"round6-space-{run_id}"},
         admin_key=admin_key,
     )
     agent_id = str(bootstrap.get("agent_id") or "")
@@ -655,7 +731,7 @@ def run_deployed_smoke(*, stack: str | None = None, include_two_device_proof: bo
             "space_id": space_id,
             "type": "transcript_chunk",
             "payload": {
-                "text": f"Round 5 deployed smoke remembers taxonomy, recall, recognition, TapDB graph, and topology. {run_id}",
+                "text": f"Round 6 deployed smoke remembers taxonomy, recall, recognition, TapDB graph, and topology. {run_id}",
                 "speaker": "smoke",
             },
         },
@@ -674,8 +750,8 @@ def run_deployed_smoke(*, stack: str | None = None, include_two_device_proof: bo
                 "space_id": space_id,
                 "source_event_id": source_event_id,
                 "tier": kind,
-                "content": f"Round 5 deployed smoke {kind} memory proof for {run_id}.",
-                "metadata": {"run_id": run_id, "proof": "round5"},
+                "content": f"Round 6 deployed smoke {kind} memory proof for {run_id}.",
+                "metadata": {"run_id": run_id, "proof": "round6"},
                 "modality": "text",
             },
             bearer_token=device_token,
@@ -691,7 +767,7 @@ def run_deployed_smoke(*, stack: str | None = None, include_two_device_proof: bo
         payload={
             "agent_id": agent_id,
             "space_id": space_id,
-            "query": f"Round 5 deployed smoke taxonomy recall {run_id}",
+            "query": f"Round 6 deployed smoke taxonomy recall {run_id}",
             "k": 5,
             "tiers": list(MEMORY_KIND_VALUES),
         },
@@ -718,28 +794,48 @@ def run_deployed_smoke(*, stack: str | None = None, include_two_device_proof: bo
         if include_two_device_proof
         else None
     )
-    return {
+    proofs: dict[str, Any] = {
+        "cognito_login": True,
+        "worker_join": _blocked_runtime_evidence(
+            blocker="No deployed LiveKit worker room-join evidence is collected by this CLI slice.",
+            required=DEPLOYED_SMOKE_REQUIRED_RUNTIME_EVIDENCE["worker_join"],
+        ),
+        "livekit_url_present": bool(outputs.get("LiveKitUrl")),
+        "chat_transcript_event_id": source_event_id,
+        "speech_transcript": _blocked_runtime_evidence(
+            blocker="No deployed speech transcript event from LiveKit audio is collected by this CLI slice.",
+            required=DEPLOYED_SMOKE_REQUIRED_RUNTIME_EVIDENCE["speech_transcript"],
+        ),
+        "memory_ids_by_kind": memory_ids,
+        "recall_memory_id": recalled.get("memory_id"),
+        "recall_explanation": recalled.get("explanation"),
+        "recognition": _blocked_runtime_evidence(
+            blocker="No deployed recognition worker observation or hypothesis is collected by this CLI slice.",
+            required=DEPLOYED_SMOKE_REQUIRED_RUNTIME_EVIDENCE["recognition"],
+        ),
+        "tapdb_graph_probe": graph_probe,
+        "observability": _blocked_runtime_evidence(
+            blocker="No deployed observability metric, log, alarm, or dashboard evidence is collected for this smoke run.",
+            required=DEPLOYED_SMOKE_REQUIRED_RUNTIME_EVIDENCE["observability"],
+        ),
+        "two_device": two_device,
+        "hub_websocket_url_present": bool(outputs.get("HubWebSocketUrl")),
+    }
+    report: dict[str, Any] = {
         "mode": "v1-dev-deployed",
         "dev_stack": ctx.env.stack_name,
         "mutates_runtime": True,
         "run_id": run_id,
         "health": health,
-        "proofs": {
-            "cognito_login": True,
-            "worker_join": "requires LiveKit room evidence from deployed worker logs",
-            "livekit_url_present": bool(outputs.get("LiveKitUrl")),
-            "chat_transcript_event_id": source_event_id,
-            "speech_transcript": "requires browser audio device; not simulated by CLI smoke",
-            "memory_ids_by_kind": memory_ids,
-            "recall_memory_id": recalled.get("memory_id"),
-            "recall_explanation": recalled.get("explanation"),
-            "recognition": "requires deployed biometric fixture or configured recognizer readiness endpoint",
-            "tapdb_graph_probe": graph_probe,
-            "observability": "health endpoint passed; GUI observability is covered by Playwright smoke",
-            "two_device": two_device,
-            "hub_websocket_url_present": bool(outputs.get("HubWebSocketUrl")),
-        },
+        "proofs": proofs,
     }
+    blockers = _runtime_evidence_blockers(proofs)
+    if blockers:
+        report["ok"] = False
+        report["blockers"] = blockers
+        raise SmokeBlockersError(blockers=blockers, report=report)
+    report["ok"] = True
+    return report
 
 
 def _slug(value: str) -> str:
