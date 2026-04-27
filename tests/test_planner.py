@@ -8,7 +8,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "functions" / "planner"))
 
+from agent_hub.memory_taxonomy import MEMORY_KIND_VALUES
 from validation import sanitize_planner_output, validate_planner_output
+
+
+def _empty_plan() -> dict[str, list[object]]:
+    return {**{kind: [] for kind in MEMORY_KIND_VALUES}, "actions": []}
 
 
 class TestValidatePlannerOutput:
@@ -26,6 +31,11 @@ class TestValidatePlannerOutput:
         output = {
             "episodic": [{"content": "User mentioned they like coffee", "participants": ["user-123"]}],
             "semantic": [{"content": "User prefers dark roast coffee", "participants": []}],
+            "preference": [{"content": "User likes quiet concise updates", "participants": ["user-123"]}],
+            "relationship": [{"content": "User works with the Marvain agent", "participants": ["user-123"]}],
+            "location": [{"content": "The smoke test space is a dev room", "participants": []}],
+            "device": [{"content": "The dev satellite can receive status commands", "participants": []}],
+            "policy": [{"content": "Do not store biometric data without consent", "participants": []}],
             "actions": [
                 {
                     "kind": "send_message",
@@ -67,7 +77,7 @@ class TestSanitizePlannerOutput:
         """Empty output should return defaults."""
         output = {}
         result = sanitize_planner_output(output)
-        assert result == {"episodic": [], "semantic": [], "actions": []}
+        assert result == _empty_plan()
 
     def test_sanitize_strips_whitespace(self):
         """Content should be stripped of whitespace."""
@@ -122,4 +132,13 @@ class TestSanitizePlannerOutput:
         """None values should be handled gracefully."""
         output = {"episodic": None, "semantic": None, "actions": None}
         result = sanitize_planner_output(output)
-        assert result == {"episodic": [], "semantic": [], "actions": []}
+        assert result == _empty_plan()
+
+    def test_sanitize_full_memory_taxonomy(self):
+        """All canonical memory kinds should sanitize through the same path."""
+        output = {kind: [{"content": f" {kind} memory ", "participants": [kind]}] for kind in MEMORY_KIND_VALUES}
+        result = sanitize_planner_output(output)
+
+        assert set(result) == {*MEMORY_KIND_VALUES, "actions"}
+        for kind in MEMORY_KIND_VALUES:
+            assert result[kind] == [{"content": f"{kind} memory", "participants": [kind]}]

@@ -1,0 +1,396 @@
+{% extends "base.html" %}
+
+{% block title %}Live Session - Marvain{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title"><i class="fas fa-video"></i> Live Session</h1>
+    <p class="text-muted">Operate the core V1 loop: room, participants, transcript, memory, recognition, actions, and worker state.</p>
+  </div>
+  <a class="btn btn-outline" href="{{ url_for('gui_sessions') }}"><i class="fas fa-comments"></i> Sessions</a>
+</div>
+
+<div class="grid grid-3 mb-lg">
+  <div class="card">
+    <h3 class="card-title">Start Session</h3>
+    {% if config_error %}
+    <div class="alert alert-error mb-md">{{ config_error }}</div>
+    {% endif %}
+    <label for="space_id">Space</label>
+    <select id="space_id">
+      <option value="">Select a space</option>
+      {% for space in spaces %}
+      <option value="{{ space.space_id }}" data-agent-id="{{ space.agent_id }}" {% if selected_space == space.space_id|string %}selected{% endif %}>
+        {{ space.agent_name }} / {{ space.name }} ({{ space.livekit_room_mode }})
+      </option>
+      {% endfor %}
+    </select>
+    <div class="mt-md">
+      <button class="btn btn-primary" id="btn-join">Join</button>
+      <button class="btn btn-outline" id="btn-leave" disabled>Leave</button>
+    </div>
+  </div>
+  <div class="card">
+    <h3 class="card-title">Worker</h3>
+    <p><span class="badge badge-info">{{ worker.status }}</span></p>
+    <p class="text-muted">PID {{ worker.pid or "—" }}</p>
+    <a class="btn btn-sm btn-outline" href="{{ url_for('gui_observability') }}">Runtime health</a>
+  </div>
+	  <div class="card">
+	    <h3 class="card-title">Session Identity</h3>
+	    <div id="session-info" class="text-muted">No active session.</div>
+	  </div>
+	</div>
+
+<div class="card mb-lg">
+  <div class="card-header">
+    <h3 class="card-title"><i class="fas fa-camera"></i> Live Media</h3>
+    <span id="visual-state" class="badge badge-outline">Camera off</span>
+  </div>
+  <div class="grid grid-2">
+    <div>
+      <button class="btn btn-outline" id="btn-camera" disabled><i class="fas fa-video"></i> Enable Camera</button>
+      <p class="text-muted mt-sm">Camera access is not treated as agent vision until the worker acknowledges a current visual observation.</p>
+    </div>
+    <div id="local-camera-preview" class="lk-video-container" style="min-height: 180px;">
+      <em class="text-muted">No camera preview.</em>
+    </div>
+  </div>
+</div>
+
+<div class="grid grid-2">
+  <div class="card">
+    <div class="card-header"><h3 class="card-title">Transcript & Chat</h3></div>
+    <div id="transcript-log" class="event-log"><em class="text-muted">Transcript and chat events will appear here.</em></div>
+    <div class="input-group mt-md">
+      <input id="chat-input" placeholder="Type to the agent" />
+      <button class="btn btn-primary" id="btn-send-chat" disabled>Send</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header"><h3 class="card-title">Lifecycle Events</h3></div>
+    <div id="lifecycle-log" class="event-log">
+      <div>Awaiting room join.</div>
+      <div>Memory, recognition, and action events stream through the global WebSocket.</div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+<script>
+const tokenUrl = {{ token_url|tojson }};
+const configError = {{ config_error|tojson }};
+let room = null;
+let activeSession = null;
+let eventsTimer = null;
+let seenEvents = new Set();
+let localVideoTrack = null;
+let pendingVisualAck = null;
+let latestVisualObservation = null;
+const CAMERA_VISUAL_ACCESS_ERROR = 'camera_enabled_but_visual_analysis_unavailable';
+
+function appendLog(id, message, kind) {
+  const el = document.getElementById(id);
+  const row = document.createElement('div');
+  if (kind) row.className = 'event-row event-row-' + kind;
+  row.textContent = new Date().toLocaleTimeString() + ' - ' + message;
+  if (el.querySelector('em')) el.innerHTML = '';
+  el.appendChild(row);
+  el.scrollTop = el.scrollHeight;
+}
+
+function appendError(message) {
+  appendLog('lifecycle-log', message, 'error');
+}
+
+function setVisualState(text, kind) {
+  const el = document.getElementById('visual-state');
+  el.textContent = text;
+  el.className = 'badge badge-' + (kind || 'outline');
+}
+
+function livekitClient() {
+  const lk = window.LivekitClient || window.livekit || window.LiveKit;
+  if (!lk || !lk.Room) throw new Error('LiveKit client library did not load');
+  return lk;
+}
+
+async function joinLiveSession() {
+  if (configError) throw new Error(configError);
+  const spaceId = document.getElementById('space_id').value;
+  if (!spaceId) {
+    Marvain.showToast('warning', 'Space required', 'Select a space first');
+    return;
+  }
+  const resp = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({space_id: spaceId})
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to mint LiveKit token');
+  }
+  const data = await resp.json();
+  document.getElementById('session-info').innerHTML =
+    '<div><strong>Session</strong> <code>' + (data.session_id || '—') + '</code></div>' +
+    '<div><strong>Room</strong> <code>' + data.room + '</code></div>';
+  activeSession = data.session_id || null;
+  appendLog('lifecycle-log', 'Minted LiveKit token for room ' + data.room);
+
+  const lk = livekitClient();
+  room = new lk.Room({adaptiveStream: true, dynacast: true});
+  room.on(lk.RoomEvent.Disconnected, function(reason) {
+    appendLog('lifecycle-log', 'LiveKit disconnected' + (reason ? ': ' + reason : ''));
+  });
+  room.on(lk.RoomEvent.ParticipantConnected, function(participant) {
+    appendLog('lifecycle-log', 'Participant joined ' + participant.identity);
+  });
+	  room.on(lk.RoomEvent.DataReceived, function(payload, participant) {
+	    let text = '';
+	    try {
+	      text = new TextDecoder().decode(payload);
+	      const parsed = JSON.parse(text);
+	      if (parsed.type === 'visual_observation_ack') {
+	        handleVisualObservationAck(parsed);
+	        return;
+	      }
+	      text = parsed.text || parsed.message || text;
+	    } catch (e) {
+	      text = String(payload || '');
+    }
+    appendLog('transcript-log', (participant ? participant.identity : 'room') + ': ' + text);
+  });
+  await room.connect(data.url, data.token);
+  appendLog('lifecycle-log', 'Joined LiveKit room ' + data.room);
+  const audioTrack = await lk.createLocalAudioTrack();
+  await room.localParticipant.publishTrack(audioTrack);
+  appendLog('lifecycle-log', 'Microphone published');
+
+	  document.getElementById('btn-send-chat').disabled = false;
+	  document.getElementById('btn-leave').disabled = false;
+	  document.getElementById('btn-camera').disabled = false;
+	  startEventPolling();
+	}
+
+function leaveLiveSession() {
+  if (eventsTimer) window.clearInterval(eventsTimer);
+  eventsTimer = null;
+  seenEvents = new Set();
+  if (room) room.disconnect();
+  room = null;
+  activeSession = null;
+	  document.getElementById('btn-send-chat').disabled = true;
+	  document.getElementById('btn-leave').disabled = true;
+	  document.getElementById('btn-camera').disabled = true;
+	  stopCamera();
+	  appendLog('lifecycle-log', 'Left live session');
+	}
+
+async function captureCameraBlob() {
+  const preview = document.getElementById('local-camera-preview');
+  const video = preview ? preview.querySelector('video') : null;
+  if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+    throw new Error('Camera is enabled, but no current frame is available for the agent');
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.min(video.videoWidth, 1280);
+  canvas.height = Math.round(video.videoHeight * (canvas.width / video.videoWidth));
+  canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+  return await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.82));
+}
+
+async function uploadVisualFrame(blob) {
+  const spaceSelect = document.getElementById('space_id');
+  const selected = spaceSelect.options[spaceSelect.selectedIndex];
+  const agentId = selected ? (selected.getAttribute('data-agent-id') || '') : '';
+  if (!agentId) throw new Error('Selected space does not expose an agent id for visual artifact storage');
+  const form = new FormData();
+  form.append('purpose', 'visual');
+  form.append('agent_id', agentId);
+  form.append('file', blob, 'live-session-frame.jpg');
+  const resp = await fetch('/api/artifacts/upload', {method: 'POST', body: form});
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.detail || 'Visual frame upload failed');
+  }
+  return await resp.json();
+}
+
+function waitForVisualAck(requestId) {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      pendingVisualAck = null;
+      reject(new Error('Camera is enabled, but the agent did not acknowledge visual access'));
+    }, 9000);
+    pendingVisualAck = {requestId, resolve, reject, timer};
+  });
+}
+
+function handleVisualObservationAck(payload) {
+  if (!pendingVisualAck) return;
+  if (payload.visual_request_id && payload.visual_request_id !== pendingVisualAck.requestId) return;
+  window.clearTimeout(pendingVisualAck.timer);
+  const pending = pendingVisualAck;
+  pendingVisualAck = null;
+  if (!payload.ok) {
+      pending.reject(new Error(payload.error || CAMERA_VISUAL_ACCESS_ERROR));
+    return;
+  }
+  latestVisualObservation = payload;
+  setVisualState('Agent vision ready', 'success');
+  appendLog('lifecycle-log', 'Worker acknowledged current visual observation');
+  pending.resolve(payload);
+}
+
+async function publishCurrentVisualObservation() {
+  if (!room || !activeSession || !localVideoTrack) {
+    throw new Error('Join a session and enable camera first');
+  }
+  const blob = await captureCameraBlob();
+  if (!blob) throw new Error('Camera produced an empty frame');
+  const upload = await uploadVisualFrame(blob);
+  const requestId = 'visual-' + Date.now();
+  const message = {
+    type: 'visual_observation',
+    visual_request_id: requestId,
+    session_id: activeSession,
+    artifact_uri: upload.uri || '',
+    captured_at: new Date().toISOString()
+  };
+  const ack = waitForVisualAck(requestId);
+  await room.localParticipant.publishData(new TextEncoder().encode(JSON.stringify(message)), {reliable: true});
+  appendLog('lifecycle-log', 'Published current camera frame for worker analysis');
+  return await ack;
+}
+
+async function enableCamera() {
+  if (!room) throw new Error('Join a live session before enabling camera');
+  const lk = livekitClient();
+  setVisualState('Checking camera', 'info');
+  localVideoTrack = await lk.createLocalVideoTrack();
+  await room.localParticipant.publishTrack(localVideoTrack);
+  const preview = document.getElementById('local-camera-preview');
+  preview.innerHTML = '';
+  const video = localVideoTrack.attach();
+  video.autoplay = true;
+  video.playsInline = true;
+  preview.appendChild(video);
+  try {
+    await publishCurrentVisualObservation();
+    document.getElementById('btn-camera').innerHTML = '<i class="fas fa-video-slash"></i> Disable Camera';
+  } catch (error) {
+    stopCamera();
+    setVisualState('Agent vision failed', 'danger');
+    throw error;
+  }
+}
+
+function stopCamera() {
+  if (pendingVisualAck) {
+    window.clearTimeout(pendingVisualAck.timer);
+    pendingVisualAck = null;
+  }
+  if (localVideoTrack) {
+    try { room && room.localParticipant && room.localParticipant.unpublishTrack(localVideoTrack); } catch (e) {}
+    try { localVideoTrack.stop(); } catch (e) {}
+    try { localVideoTrack.detach().forEach(el => el.remove()); } catch (e) {}
+  }
+  localVideoTrack = null;
+  latestVisualObservation = null;
+  const preview = document.getElementById('local-camera-preview');
+  if (preview) preview.innerHTML = '<em class="text-muted">No camera preview.</em>';
+  document.getElementById('btn-camera').innerHTML = '<i class="fas fa-video"></i> Enable Camera';
+  setVisualState('Camera off', 'outline');
+}
+
+function eventText(event) {
+  const payload = event.payload || {};
+  if (event.type === 'chat.message') return 'chat: ' + (payload.text || '');
+  if (event.type === 'transcript_chunk') return 'transcript: ' + (payload.text || payload.transcript || '');
+  if (String(event.type || '').includes('error')) return event.type + ': ' + (payload.message || payload.error || '');
+  return event.type;
+}
+
+function renderSessionEvent(event) {
+  if (!event || !event.event_id || seenEvents.has(event.event_id)) return;
+  seenEvents.add(event.event_id);
+  const target = String(event.type || '').includes('chat') || String(event.type || '').includes('transcript')
+    ? 'transcript-log'
+    : 'lifecycle-log';
+  const kind = String(event.type || '').includes('error') ? 'error' : 'info';
+  appendLog(target, eventText(event), kind);
+}
+
+async function refreshEvents() {
+  if (!activeSession) return;
+  const resp = await fetch('/api/live-session/' + encodeURIComponent(activeSession) + '/events');
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.detail || 'Failed to fetch session events');
+  }
+  const data = await resp.json();
+  (data.events || []).forEach(renderSessionEvent);
+}
+
+function startEventPolling() {
+  refreshEvents().catch(e => appendError(e.message));
+  if (eventsTimer) window.clearInterval(eventsTimer);
+  eventsTimer = window.setInterval(function() {
+    refreshEvents().catch(e => appendError(e.message));
+  }, 2500);
+}
+
+async function sendChat() {
+  if (!activeSession) throw new Error('Join a live session before sending chat');
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  const resp = await fetch('/api/live-session/' + encodeURIComponent(activeSession) + '/chat', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({text: text})
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.detail || 'Live session chat failed');
+  }
+  const data = await resp.json();
+  renderSessionEvent(data.event);
+  if (room && room.localParticipant && room.localParticipant.publishData) {
+    const encoded = new TextEncoder().encode(JSON.stringify({type: 'chat', text: text, session_id: activeSession}));
+    await room.localParticipant.publishData(encoded, {reliable: true, topic: 'marvain.chat'});
+  }
+}
+
+document.getElementById('btn-join').addEventListener('click', () => joinLiveSession().catch(e => { appendError(e.message); Marvain.showToast('error', 'Live Session', e.message); }));
+document.getElementById('btn-leave').addEventListener('click', leaveLiveSession);
+document.getElementById('btn-send-chat').addEventListener('click', () => sendChat().catch(e => { appendError(e.message); Marvain.showToast('error', 'Live Session', e.message); }));
+document.getElementById('chat-input').addEventListener('keypress', e => { if (e.key === 'Enter') sendChat().catch(err => { appendError(err.message); Marvain.showToast('error', 'Live Session', err.message); }); });
+document.getElementById('btn-camera').addEventListener('click', () => {
+  const active = !!localVideoTrack;
+  (active ? Promise.resolve(stopCamera()) : enableCamera()).catch(e => {
+    appendError(e.message);
+    Marvain.showToast('error', 'Camera unavailable', e.message);
+  });
+});
+
+Marvain.wsOn('message', function(msg) {
+  if (!msg || !msg.type) return;
+  const type = String(msg.type);
+  const payload = msg.payload || {};
+  const event = payload.event || {};
+  if (event.session_id && activeSession && event.session_id !== activeSession) return;
+  if (event.event_id) {
+    renderSessionEvent(event);
+    return;
+  }
+  if (type.includes('transcript') || type.includes('chat')) appendLog('transcript-log', type);
+  if (type.includes('memory') || type.includes('recognition') || type.includes('action') || type.includes('presence')) {
+    appendLog('lifecycle-log', type);
+  }
+});
+</script>
+{% endblock %}

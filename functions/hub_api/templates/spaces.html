@@ -80,7 +80,7 @@
         </div>
       </div>
       <div class="space-actions">
-        <a href="/livekit-test?space={{ space.space_id }}" class="btn btn-sm btn-primary">
+        <a href="/live-session?space_id={{ space.space_id }}" class="btn btn-sm btn-primary">
           <i class="fas fa-video"></i> Join
         </a>
         <button class="btn btn-sm btn-outline" onclick="editSpace('{{ space.space_id }}', '{{ space.name | replace("'", "\\'") }}')">

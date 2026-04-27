@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import jsonschema
+from agent_hub.memory_taxonomy import MEMORY_KIND_VALUES
 
 logger = logging.getLogger(__name__)
 
@@ -56,39 +57,22 @@ def sanitize_planner_output(output: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Sanitized output with guaranteed structure.
     """
-    sanitized = {
-        "episodic": [],
-        "semantic": [],
-        "actions": [],
-    }
+    sanitized = {kind: [] for kind in MEMORY_KIND_VALUES}
+    sanitized["actions"] = []
 
-    # Process episodic memories
-    for item in output.get("episodic") or []:
-        if not isinstance(item, dict):
-            continue
-        content = str(item.get("content") or "").strip()
-        if not content:
-            continue
-        sanitized["episodic"].append(
-            {
-                "content": content[:4096],  # Enforce max length
-                "participants": [str(p) for p in (item.get("participants") or [])],
-            }
-        )
-
-    # Process semantic memories
-    for item in output.get("semantic") or []:
-        if not isinstance(item, dict):
-            continue
-        content = str(item.get("content") or "").strip()
-        if not content:
-            continue
-        sanitized["semantic"].append(
-            {
-                "content": content[:4096],
-                "participants": [str(p) for p in (item.get("participants") or [])],
-            }
-        )
+    for kind in MEMORY_KIND_VALUES:
+        for item in output.get(kind) or []:
+            if not isinstance(item, dict):
+                continue
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            sanitized[kind].append(
+                {
+                    "content": content[:4096],  # Enforce max length
+                    "participants": [str(p) for p in (item.get("participants") or [])],
+                }
+            )
 
     # Process actions
     for item in output.get("actions") or []:

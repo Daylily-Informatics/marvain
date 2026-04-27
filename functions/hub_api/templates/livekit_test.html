@@ -34,7 +34,7 @@
       <select id="space_id" class="form-control">
         <option value="">-- Select a space --</option>
         {% for space in spaces %}
-        <option value="{{ space.space_id }}" {% if space.space_id == selected_space %}selected{% endif %}>
+        <option value="{{ space.space_id }}" {% if space.space_id == selected_space %}selected{% endif %} data-agent-id="{{ space.agent_id }}">
           {{ space.name }} ({{ space.agent_name }}) - {{ space.space_id[:8] }}... [{{ space.livekit_room_mode|default('ephemeral') }}]
         </option>
         {% endfor %}
@@ -313,6 +313,7 @@ python worker.py dev
   var roomNameEl = document.getElementById('lk-room-name');
   var mediaHint = document.getElementById('lk-media-hint');
   var myIdentity = '';
+  var latestVisualObservation = null;
 
   // Device selection elements
   var micSelectEl = document.getElementById('mic-select');
@@ -425,14 +426,14 @@ python worker.py dev
       sidElement.textContent = '—';
     }
 
-    // Detect room type: ephemeral ({space_id}:{session_id}) vs legacy (space_id only)
+    // Detect room type: session-scoped ({space_id}:{session_id}) vs fixed space room.
     var roomName = room.name || '';
     var isEphemeral = roomName.includes(':');
     var roomTypeElement = document.getElementById('debug-room-type');
     if (isEphemeral) {
       roomTypeElement.innerHTML = '<span style="color: var(--color-success);">Ephemeral Session</span>';
     } else if (roomName) {
-      roomTypeElement.innerHTML = '<span style="color: var(--color-warning);">Legacy (fixed name)</span>';
+      roomTypeElement.innerHTML = '<span style="color: var(--color-warning);">Fixed Space Room</span>';
     } else {
       roomTypeElement.textContent = '—';
     }
@@ -986,6 +987,66 @@ python worker.py dev
     }
   }
 
+  function selectedAgentId() {
+    var option = selectEl.options[selectEl.selectedIndex];
+    return option ? (option.getAttribute('data-agent-id') || '') : '';
+  }
+
+  async function captureLocalCameraBlob() {
+    var video = localVideoEl ? localVideoEl.querySelector('video') : null;
+    if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+      return null;
+    }
+    var canvas = document.createElement('canvas');
+    canvas.width = Math.min(video.videoWidth, 1280);
+    canvas.height = Math.round(video.videoHeight * (canvas.width / video.videoWidth));
+    var ctx2d = canvas.getContext('2d');
+    ctx2d.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return await new Promise(function(resolve) {
+      canvas.toBlob(resolve, 'image/jpeg', 0.82);
+    });
+  }
+
+  async function publishCurrentVisualObservation() {
+    if (!room || room.state !== 'connected' || !room.localParticipant.isCameraEnabled) {
+      latestVisualObservation = null;
+      return;
+    }
+    var agentId = selectedAgentId();
+    var artifactUri = '';
+    var capturedAt = new Date().toISOString();
+    try {
+      var blob = await captureLocalCameraBlob();
+      if (blob && agentId) {
+        var form = new FormData();
+        form.append('agent_id', agentId);
+        form.append('purpose', 'visual');
+        form.append('file', blob, 'camera-frame.jpg');
+        var uploadResp = await fetch('/api/artifacts/upload', { method: 'POST', body: form });
+        if (uploadResp.ok) {
+          var upload = await uploadResp.json();
+          artifactUri = upload.uri || '';
+        } else {
+          log('Visual artifact upload failed: HTTP ' + uploadResp.status);
+        }
+      }
+      latestVisualObservation = {
+        type: 'visual_observation',
+        captured_at: capturedAt,
+        artifact_uri: artifactUri,
+        description: '',
+        client_note: artifactUri
+          ? 'Current camera frame artifact uploaded. The worker must analyze it before making visual claims.'
+          : 'The local camera is enabled, but no visual artifact was uploaded.'
+      };
+      var data = new TextEncoder().encode(JSON.stringify(latestVisualObservation));
+      room.localParticipant.publishData(data, { reliable: true });
+      log('Published visual observation state' + (artifactUri ? ' with artifact' : ' without artifact'));
+    } catch (e) {
+      log('Visual observation error: ' + e.message);
+    }
+  }
+
   async function join() {
     var spaceId = (selectEl.value || '').trim();
     if (!spaceId) {
@@ -1156,9 +1217,11 @@ python worker.py dev
           camPub.track.attach(vid);
           localVideoEl.innerHTML = '';
           localVideoEl.appendChild(vid);
+          setTimeout(publishCurrentVisualObservation, 500);
         }
       } else {
         localVideoEl.innerHTML = '<span class="text-muted">Camera off</span>';
+        latestVisualObservation = null;
       }
     } catch(e) {
       log('Camera error: ' + e.message);

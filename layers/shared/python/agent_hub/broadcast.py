@@ -298,7 +298,7 @@ def broadcast_target(
             or ``connection:<connection_id>``.
         agent_id: Agent context for authorization checks.
         payload: Payload body to deliver.
-        space_id: Optional default space_id fallback.
+        space_id: Optional default space_id for direct delivery.
     """
     target_kind, _, target_id = str(target_key or "").partition(":")
     target_id = target_id.strip()

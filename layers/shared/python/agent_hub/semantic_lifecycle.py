@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from agent_hub.memory_taxonomy import normalize_memory_kind
 from agent_hub.semantic_tapdb import TEMPLATE_CODES, SemanticObject, TapdbSemanticStore
 
 
@@ -101,6 +102,7 @@ class MarvainSemanticLifecycle:
         if not source_event_id:
             raise LifecycleError("memory requires source event evidence")
         content_n = _require_text(content, "content")
+        tier_n = normalize_memory_kind(tier)
         candidate_id = str(uuid.uuid4())
         memory_id = str(uuid.uuid4())
         candidate = self.store.create_object(
@@ -112,7 +114,7 @@ class MarvainSemanticLifecycle:
                 "agent_id": _require_text(agent_id, "agent_id"),
                 "source_event_id": source_event_id,
                 "content": content_n,
-                "tier": tier,
+                "tier": tier_n,
                 "participants": participants or [],
                 "subject_person_id": subject_person_id or "",
                 "confidence": float(confidence),
@@ -132,7 +134,7 @@ class MarvainSemanticLifecycle:
                 "memory_candidate_id": candidate_id,
                 "agent_id": agent_id,
                 "content": content_n,
-                "tier": tier,
+                "tier": tier_n,
                 "participants": participants or [],
                 "subject_person_id": subject_person_id or "",
             },
@@ -156,6 +158,7 @@ class MarvainSemanticLifecycle:
             )
         recall_projection = {
             "memory_id": memory_id,
+            "tier": tier_n,
             "tapdb_euid": committed.semantic_id,
             "source_event_id": source_event_id,
             "explanation": f"Memory was committed from source event {source_event_id}.",

@@ -36,59 +36,110 @@
       <span>Marvain</span>
     </a>
     
-    <nav class="header-nav">
-      <a href="{{ url_for('gui_home') }}" class="{% if active_page == 'home' %}active{% endif %}">
-        <i class="fas fa-home"></i> Home
+    <nav class="header-nav" aria-label="Primary navigation">
+      <a href="{{ url_for('gui_home') }}" class="nav-link {% if active_page in ('home', 'dashboard') %}active{% endif %}">
+        <i class="fas fa-gauge-high"></i> Dashboard
       </a>
-      <a href="{{ url_for('gui_agents') }}" class="{% if active_page == 'agents' %}active{% endif %}">
-        <i class="fas fa-robot"></i> Agents
+      <a href="{{ url_for('gui_live_session') }}" class="nav-link {% if active_page in ('livekit', 'live_session') %}active{% endif %}">
+        <i class="fas fa-video"></i> Live Session
       </a>
-      <a href="{{ url_for('gui_spaces') }}" class="{% if active_page == 'spaces' %}active{% endif %}">
-        <i class="fas fa-door-open"></i> Spaces
-      </a>
-      <a href="{{ url_for('gui_devices') }}" class="{% if active_page == 'devices' %}active{% endif %}">
-        <i class="fas fa-microchip"></i> Devices
-      </a>
-      <a href="{{ url_for('gui_actions') }}" class="{% if active_page == 'actions' %}active{% endif %}">
-        <i class="fas fa-tasks"></i> Actions
-      </a>
-      <a href="{{ url_for('gui_events') }}" class="{% if active_page == 'events' %}active{% endif %}">
-        <i class="fas fa-stream"></i> Events
-      </a>
-      <a href="{{ url_for('gui_memories') }}" class="{% if active_page == 'memories' %}active{% endif %}">
-        <i class="fas fa-brain"></i> Memories
-      </a>
-      <a href="{{ url_for('gui_people') }}" class="{% if active_page == 'people' %}active{% endif %}">
-        <i class="fas fa-users"></i> People
-      </a>
+
       <div class="nav-dropdown">
-        <button class="nav-dropdown-toggle {% if active_page in ('tools', 'audit', 'livekit_test', 'artifacts') %}active{% endif %}">
-          <i class="fas fa-ellipsis-h"></i> More
+        <button type="button" class="nav-dropdown-toggle {% if active_page in ('agents', 'people', 'personas') %}active{% endif %}" aria-haspopup="true">
+          <i class="fas fa-users-gear"></i> Identity
         </button>
         <div class="nav-dropdown-menu">
-          <a href="{{ url_for('gui_tools') }}" class="{% if active_page == 'tools' %}active{% endif %}">
-            <i class="fas fa-puzzle-piece"></i> Tools
+          <a href="{{ url_for('gui_agents') }}" class="{% if active_page == 'agents' %}active{% endif %}">
+            <i class="fas fa-robot"></i> Agents
+          </a>
+          <a href="{{ url_for('gui_people') }}" class="{% if active_page == 'people' %}active{% endif %}">
+            <i class="fas fa-users"></i> People
+          </a>
+          <a href="{{ url_for('gui_personas') }}" class="{% if active_page == 'personas' %}active{% endif %}">
+            <i class="fas fa-masks-theater"></i> Personas
+          </a>
+        </div>
+      </div>
+
+      <div class="nav-dropdown">
+        <button type="button" class="nav-dropdown-toggle {% if active_page in ('locations', 'spaces', 'devices', 'sessions') %}active{% endif %}" aria-haspopup="true">
+          <i class="fas fa-location-dot"></i> Presence
+        </button>
+        <div class="nav-dropdown-menu">
+          <a href="{{ url_for('gui_locations') }}" class="{% if active_page == 'locations' %}active{% endif %}">
+            <i class="fas fa-map-location-dot"></i> Locations
+          </a>
+          <a href="{{ url_for('gui_spaces') }}" class="{% if active_page == 'spaces' %}active{% endif %}">
+            <i class="fas fa-door-open"></i> Spaces
+          </a>
+          <a href="{{ url_for('gui_devices') }}" class="{% if active_page == 'devices' %}active{% endif %}">
+            <i class="fas fa-microchip"></i> Devices
+          </a>
+          <a href="{{ url_for('gui_sessions') }}" class="{% if active_page == 'sessions' %}active{% endif %}">
+            <i class="fas fa-layer-group"></i> Sessions
+          </a>
+        </div>
+      </div>
+
+      <div class="nav-dropdown">
+        <button type="button" class="nav-dropdown-toggle {% if active_page in ('memories', 'recognition', 'tapdb_lineage', 'lineage') %}active{% endif %}" aria-haspopup="true">
+          <i class="fas fa-brain"></i> Memory
+        </button>
+        <div class="nav-dropdown-menu">
+          <a href="{{ url_for('gui_memories') }}" class="{% if active_page == 'memories' %}active{% endif %}">
+            <i class="fas fa-brain"></i> Memories
+          </a>
+          <a href="{{ url_for('gui_recognition') }}" class="{% if active_page == 'recognition' %}active{% endif %}">
+            <i class="fas fa-fingerprint"></i> Recognition
+          </a>
+          <a href="/tapdb/graph" class="{% if active_page in ('tapdb_lineage', 'lineage', 'tapdb_graph') %}active{% endif %}">
+            <i class="fas fa-diagram-project"></i> TapDB Graph
+          </a>
+        </div>
+      </div>
+
+      <div class="nav-dropdown">
+        <button type="button" class="nav-dropdown-toggle {% if active_page in ('actions', 'audit', 'observability', 'events', 'tools', 'capability_matrix', 'capabilities', 'artifacts') %}active{% endif %}" aria-haspopup="true">
+          <i class="fas fa-screwdriver-wrench"></i> Operations
+        </button>
+        <div class="nav-dropdown-menu">
+          <a href="{{ url_for('gui_actions') }}" class="{% if active_page == 'actions' %}active{% endif %}">
+            <i class="fas fa-tasks"></i> Actions
           </a>
           <a href="{{ url_for('gui_audit') }}" class="{% if active_page == 'audit' %}active{% endif %}">
-            <i class="fas fa-shield-alt"></i> Audit Log
+            <i class="fas fa-shield-alt"></i> Audit
           </a>
-          <a href="{{ url_for('gui_livekit_test') }}" class="{% if active_page == 'livekit_test' %}active{% endif %}">
-            <i class="fas fa-video"></i> LiveKit Test
+          <a href="{{ url_for('gui_observability') }}" class="{% if active_page in ('events', 'observability') %}active{% endif %}">
+            <i class="fas fa-chart-line"></i> Observability
+          </a>
+          <a href="{{ url_for('gui_capabilities') }}" class="{% if active_page in ('tools', 'capability_matrix', 'capabilities') %}active{% endif %}">
+            <i class="fas fa-table-cells-large"></i> Capability Matrix
           </a>
           <a href="{{ url_for('gui_artifacts') }}" class="{% if active_page == 'artifacts' %}active{% endif %}">
             <i class="fas fa-archive"></i> Artifacts
           </a>
         </div>
       </div>
+
+      <a href="{{ url_for('profile') }}" class="nav-link {% if active_page in ('profile', 'settings') %}active{% endif %}">
+        <i class="fas fa-user-gear"></i> Settings/Profile
+      </a>
     </nav>
     
     <div class="header-actions">
       {% if user %}
-        <!-- WebSocket connection indicator -->
-        <div id="ws-indicator" class="ws-indicator disconnected" title="Connection status">
+        <!-- Browser real-time update indicator -->
+        {% if ws_url %}
+        <div id="ws-indicator" class="ws-indicator connecting" title="Connecting to browser real-time updates">
           <span class="ws-dot"></span>
-          <span id="ws-status-text" class="ws-status-text">Offline</span>
+          <span id="ws-status-text" class="ws-status-text">Realtime connecting</span>
         </div>
+        {% else %}
+        <div id="ws-indicator" class="ws-indicator unavailable" title="Browser real-time updates are not configured">
+          <span class="ws-dot"></span>
+          <span id="ws-status-text" class="ws-status-text">Realtime unavailable</span>
+        </div>
+        {% endif %}
         <span class="text-muted text-sm">{{ user.email }}</span>
         <a href="{{ url_for('profile') }}" class="btn btn-outline btn-sm">
           <i class="fas fa-user"></i> Profile
@@ -128,11 +179,21 @@
   <!-- WebSocket initialization for authenticated users -->
   <script>
     (function() {
-      const wsUrl = '{{ ws_url }}';
-      const wsAuthTokenPath = '{{ url_for("api_ws_auth_token") }}';
+      const wsUrl = {{ ws_url | tojson }};
+      const wsAuthTokenPath = {{ url_for("api_ws_auth_token") | string | tojson }};
 
       if (wsUrl) {
         const wsAgentSubscriptions = new Set();
+        function setRealtimeStatus(className, text, title) {
+          const indicator = document.getElementById('ws-indicator');
+          const statusText = document.getElementById('ws-status-text');
+          if (indicator) {
+            indicator.className = 'ws-indicator ' + className;
+            indicator.title = title;
+          }
+          if (statusText) statusText.textContent = text;
+        }
+
         function subscribeAgentTopics(agentId) {
           if (!agentId) return;
           ['events', 'presence', 'actions', 'memories'].forEach(topic => {
@@ -145,27 +206,16 @@
 
         // Update presence indicator on connection state changes
         Marvain.wsOn('connected', function() {
-          const indicator = document.getElementById('ws-indicator');
-          const statusText = document.getElementById('ws-status-text');
-          if (indicator) {
-            indicator.className = 'ws-indicator connected';
-            indicator.title = 'Connected to real-time updates';
-          }
-          if (statusText) statusText.textContent = 'Live';
+          setRealtimeStatus('connected', 'Realtime live', 'Connected to browser real-time updates');
         });
 
         Marvain.wsOn('disconnected', function() {
-          const indicator = document.getElementById('ws-indicator');
-          const statusText = document.getElementById('ws-status-text');
-          if (indicator) {
-            indicator.className = 'ws-indicator disconnected';
-            indicator.title = 'Disconnected - reconnecting...';
-          }
-          if (statusText) statusText.textContent = 'Offline';
+          setRealtimeStatus('disconnected', 'Realtime offline', 'Browser real-time updates disconnected - reconnecting');
         });
 
         // If the WS token is expired/invalid, re-fetch a fresh token (server will refresh via refresh_token cookie).
         Marvain.wsOn('auth_failed', function() {
+          setRealtimeStatus('connecting', 'Realtime reconnecting', 'Refreshing browser real-time authentication');
           setTimeout(connectWebSocket, 750);
         });
 
@@ -180,6 +230,7 @@
         });
 
         async function connectWebSocket() {
+          setRealtimeStatus('connecting', 'Realtime connecting', 'Connecting to browser real-time updates');
           try {
             const resp = await fetch(wsAuthTokenPath, {
               credentials: 'same-origin',
@@ -187,24 +238,32 @@
             });
             if (!resp.ok) {
               console.warn('[Marvain] Failed to fetch WS auth token:', resp.status);
+              setRealtimeStatus('disconnected', 'Realtime auth failed', 'Could not fetch browser real-time auth token');
               return;
             }
             const data = await resp.json();
             const accessToken = String(data.access_token || '');
             if (!accessToken) {
               console.warn('[Marvain] Missing WS auth token');
+              setRealtimeStatus('disconnected', 'Realtime auth failed', 'Browser real-time auth token response was empty');
               return;
             }
             Marvain.wsConnect(wsUrl, accessToken);
           } catch (err) {
             console.error('[Marvain] Failed to initialize WebSocket:', err);
+            setRealtimeStatus('disconnected', 'Realtime offline', 'Browser real-time updates failed to initialize');
           }
         }
 
-        // Connect after DOM ready
-        document.addEventListener('DOMContentLoaded', function() {
+        function connectWhenReady() {
           connectWebSocket();
-        });
+        }
+
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', connectWhenReady, { once: true });
+        } else {
+          connectWhenReady();
+        }
       }
     })();
   </script>

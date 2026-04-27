@@ -63,6 +63,52 @@ def _get_daylily_jwks_cache(cfg: HubConfig):
     return _daylily_jwks_cache
 
 
+def _runtime_jwt_modules():
+    """Return JWT helpers through the daylily-auth-cognito runtime boundary."""
+    from daylily_auth_cognito.runtime import verifier
+
+    if verifier.jwt is None or verifier.JWTError is None:
+        raise ImportError(
+            "python-jose is required for JWT verification. Install with: pip install 'python-jose[cryptography]'"
+        )
+    return verifier.jwt, verifier.JWTError
+
+
+def _verify_id_token_with_jwks(cfg: HubConfig, id_token: str) -> dict[str, Any]:
+    """Verify a Cognito ID token without delegating audience validation.
+
+    Cognito ID tokens carry the app client ID in ``aud`` and may include
+    ``at_hash``.  ``python-jose`` raises before returning claims when those are
+    present without an audience/access-token context, so Marvain verifies
+    signature, issuer, and expiration here, then checks the app client and token
+    relationship explicitly in ``validate_id_token`` / ``get_user_info_from_tokens``.
+    """
+    jwt, jwt_error = _runtime_jwt_modules()
+
+    header = jwt.get_unverified_header(id_token)
+    kid = header.get("kid")
+    if not kid:
+        raise jwt_error("JWT header missing 'kid' claim")
+
+    cache = _get_daylily_jwks_cache(cfg)
+    key = cache.get_key(kid)
+    issuer = f"https://cognito-idp.{cfg.cognito_region}.amazonaws.com/{cfg.cognito_user_pool_id}"
+
+    return jwt.decode(
+        id_token,
+        key=key,
+        algorithms=["RS256"],
+        options={
+            "verify_signature": True,
+            "verify_exp": True,
+            "verify_iss": True,
+            "verify_aud": False,
+            "verify_at_hash": False,
+        },
+        issuer=issuer,
+    )
+
+
 def _domain(cfg: HubConfig) -> str:
     return str(cfg.cognito_domain or "").strip()
 
@@ -196,16 +242,7 @@ async def validate_id_token(cfg: HubConfig, id_token: str) -> dict[str, Any]:
         return []
 
     try:
-        from daylily_auth_cognito.runtime.jwks import verify_token_with_jwks
-
-        cache = _get_daylily_jwks_cache(cfg)
-        claims = await asyncio.to_thread(
-            verify_token_with_jwks,
-            id_token,
-            str(cfg.cognito_region),
-            str(cfg.cognito_user_pool_id),
-            cache,
-        )
+        claims = await asyncio.to_thread(_verify_id_token_with_jwks, cfg, id_token)
         audiences = _extract_audiences(claims.get("aud")) + _extract_audiences(claims.get("client_id"))
         if expected_client_id not in audiences:
             raise CognitoAuthError(

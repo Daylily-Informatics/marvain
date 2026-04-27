@@ -207,7 +207,7 @@ class TestAgentDelegation(unittest.TestCase):
                 {
                     "memory_id": "m1",
                     "space_id": "s1",
-                    "tier": "short",
+                    "tier": "episodic",
                     "content": "Test memory",
                     "participants": "[]",
                     "created_at": "2026-01-01T00:00:00Z",

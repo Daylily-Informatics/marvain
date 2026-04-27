@@ -13,7 +13,7 @@ dependencies = [
   "boto3",
   "cli-core-yo==2.1.0",
   "daylily-auth-cognito==2.1.1",
-  "daylily-tapdb==6.0.5",
+  "daylily-tapdb[admin]==6.0.5",
   "fastapi",
   "httpx",
   "insightface",
@@ -40,7 +40,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "playwright",
   "pytest",
+  "pytest-playwright",
   "ruff",
 ]
 
@@ -48,7 +50,8 @@ dev = [
 marvain = "marvain_cli.__main__:main"
 
 [tool.setuptools.packages.find]
-include = ["marvain_cli*"]
+where = [".", "layers/shared/python"]
+include = ["marvain_cli*", "agent_hub*"]
 
 [tool.setuptools_scm]
 version_scheme = "guess-next-dev"

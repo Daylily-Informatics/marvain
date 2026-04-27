@@ -88,7 +88,7 @@ V1 tests must prove behavior, not only route existence. Current Marvain tests co
 
 - OpenAI embedding outage: event persists, candidate records embedding failure, no corrupt vector row.
 - Planner LLM outage: event remains processable/retriable.
-- TapDB write failure during pilot: operational event continues, retry/dead-letter created.
+- TapDB write failure: operational event continues, retry/dead-letter created.
 - SQS duplicate delivery: idempotent action/memory processing.
 - WebSocket disconnect during command: action times out cleanly.
 - S3 artifact missing: recognition observation records artifact_missing, no hypothesis.

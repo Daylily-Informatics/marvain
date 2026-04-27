@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -13,6 +14,8 @@ from marvain_cli.ops import (
     GUI_LOG_FILENAME,
     GUI_PID_FILENAME,
     Ctx,
+    _cluster_identifier_from_arn,
+    _ensure_tapdb_runtime_config,
     _get_gui_log_file,
     _get_gui_pid_file,
     _get_user_pool_id,
@@ -46,9 +49,11 @@ class TestOps(unittest.TestCase):
 
     def test_bootstrap_casts_uuid_params_for_rds_data_api(self) -> None:
         captured_sql: list[str] = []
+        captured_params: list[list[dict]] = []
 
         def fake_rds_execute(*_args, **kwargs):
             captured_sql.append(str(kwargs.get("sql")))
+            captured_params.append(kwargs.get("parameters") or [])
             idx = len(captured_sql)
             if idx == 1:
                 v = "11111111-1111-1111-1111-111111111111"
@@ -84,16 +89,25 @@ class TestOps(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertTrue(any("INSERT INTO spaces" in s and "CAST(:a AS uuid)" in s for s in captured_sql))
-        self.assertTrue(any("INSERT INTO devices" in s and "CAST(:a AS uuid)" in s for s in captured_sql))
+        self.assertTrue(
+            any(
+                "INSERT INTO devices" in s and "CAST(:a AS uuid)" in s and "CAST(:c AS jsonb)" in s
+                for s in captured_sql
+            )
+        )
+        flattened_params = [p for params in captured_params for p in params]
+        self.assertIn({"name": "c", "value": {"stringValue": '{"kind": "worker"}'}}, flattened_params)
         # Bootstrap now auto-creates agent_membership for the first user
         self.assertTrue(any("SELECT user_id FROM users" in s for s in captured_sql))
         self.assertTrue(any("INSERT INTO agent_memberships" in s for s in captured_sql))
 
     def test_examples_create_creates_agent_space_device_and_seeds_memories(self) -> None:
         captured_sql: list[str] = []
+        captured_params: list[list[dict]] = []
 
         def fake_rds_execute(*_args, **kwargs):
             captured_sql.append(str(kwargs.get("sql")))
+            captured_params.append(kwargs.get("parameters") or [])
             idx = len(captured_sql)
             if idx == 1:
                 v = "aa111111-1111-1111-1111-111111111111"
@@ -133,7 +147,14 @@ class TestOps(unittest.TestCase):
         # Verify agent, space, device creation SQL
         self.assertTrue(any("INSERT INTO agents" in s for s in captured_sql))
         self.assertTrue(any("INSERT INTO spaces" in s and "CAST(:a AS uuid)" in s for s in captured_sql))
-        self.assertTrue(any("INSERT INTO devices" in s and "CAST(:a AS uuid)" in s for s in captured_sql))
+        self.assertTrue(
+            any(
+                "INSERT INTO devices" in s and "CAST(:a AS uuid)" in s and "CAST(:c AS jsonb)" in s
+                for s in captured_sql
+            )
+        )
+        flattened_params = [p for params in captured_params for p in params]
+        self.assertIn({"name": "c", "value": {"stringValue": '{"kind": "worker"}'}}, flattened_params)
         # Verify membership creation
         self.assertTrue(any("SELECT user_id FROM users" in s for s in captured_sql))
         self.assertTrue(any("INSERT INTO agent_memberships" in s for s in captured_sql))
@@ -333,6 +354,38 @@ class TestGuiLifecycle(unittest.TestCase):
         log_file = _get_gui_log_file()
         self.assertEqual(log_file.name, GUI_LOG_FILENAME)
         self.assertTrue(log_file.parent.exists())
+
+    def test_cluster_identifier_from_arn_extracts_cluster_name(self) -> None:
+        ident = _cluster_identifier_from_arn("arn:aws:rds:us-east-1:123456789012:cluster:marvain-dev")
+        self.assertEqual(ident, "marvain-dev")
+
+    def test_ensure_tapdb_runtime_config_writes_config_from_stack_resources(self) -> None:
+        ctx = self._make_ctx()
+        resources = ctx.cfg["envs"]["dev"]["resources"]
+        with (
+            tempfile.TemporaryDirectory() as td,
+            mock.patch.dict(
+                "os.environ",
+                {"XDG_CONFIG_HOME": td, "MARVAIN_TAPDB_CONFIG_PATH": "", "TAPDB_CONFIG_PATH": ""},
+                clear=False,
+            ),
+            mock.patch(
+                "marvain_cli.ops.run_json",
+                return_value={"DBClusters": [{"Endpoint": "db.example.com", "Port": 5432}]},
+            ) as run_json_mock,
+        ):
+            path = _ensure_tapdb_runtime_config(ctx, resources=resources)
+
+            self.assertIsNotNone(path)
+            assert path is not None
+            self.assertTrue(path.exists())
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("engine_type: aurora", text)
+            self.assertIn("host: db.example.com", text)
+            self.assertIn("secret_arn:", text)
+            self.assertIn("domain_code: MVN", text)
+            run_json_mock.assert_called_once()
 
     def test_write_and_read_pid_file(self) -> None:
         """Test PID file write/read/remove cycle."""

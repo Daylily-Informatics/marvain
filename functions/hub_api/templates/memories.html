@@ -12,7 +12,7 @@
   </div>
   <div>
     <button class="btn btn-primary" onclick="Marvain.showModal('create-memory-modal')">
-      <i class="fas fa-plus"></i> New Memory
+      <i class="fas fa-plus"></i> New Candidate
     </button>
   </div>
 </div>
@@ -32,9 +32,9 @@
     <label for="tier-filter">Tier</label>
     <select id="tier-filter" onchange="filterMemories()">
       <option value="">All Tiers</option>
-      <option value="episodic">Episodic</option>
-      <option value="semantic">Semantic</option>
-      <option value="procedural">Procedural</option>
+      {% for kind in memory_kinds %}
+      <option value="{{ kind.value }}">{{ kind.label }}</option>
+      {% endfor %}
     </select>
   </div>
   <div class="filter-group">
@@ -85,17 +85,29 @@
     <span class="stat-label">Total</span>
     <span class="stat-value">{{ memories|length }}</span>
   </div>
+  {% for kind in memory_kinds %}
   <div class="stat-item">
-    <span class="stat-label">Episodic</span>
-    <span class="stat-value tier-episodic">{{ tier_counts.episodic or 0 }}</span>
+    <span class="stat-label">{{ kind.label }}</span>
+    <span class="stat-value tier-{{ kind.value }}">{{ tier_counts.get(kind.value, 0) }}</span>
   </div>
-  <div class="stat-item">
-    <span class="stat-label">Semantic</span>
-    <span class="stat-value tier-semantic">{{ tier_counts.semantic or 0 }}</span>
+  {% endfor %}
+</div>
+
+<!-- Memory Candidates -->
+<div class="card mb-lg">
+  <div class="card-header">
+    <div>
+      <h3><i class="fas fa-clipboard-check"></i> Memory Candidates</h3>
+      <p class="text-muted">Evidence-backed candidates awaiting review</p>
+    </div>
+    <button class="btn btn-sm btn-outline" onclick="loadMemoryCandidates()">
+      <i class="fas fa-sync"></i>
+    </button>
   </div>
-  <div class="stat-item">
-    <span class="stat-label">Procedural</span>
-    <span class="stat-value tier-procedural">{{ tier_counts.procedural or 0 }}</span>
+  <div class="card-body">
+    <div id="memory-candidates-list" class="memory-candidates-list">
+      <div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> Loading...</div>
+    </div>
   </div>
 </div>
 
@@ -206,11 +218,24 @@
   </div>
 </div>
 
-<!-- Create Memory Modal -->
+<!-- Memory Candidate Details Modal -->
+<div class="modal-overlay" id="candidate-detail-modal" style="display: none;">
+  <div class="modal" style="max-width: 700px;">
+    <div class="modal-header">
+      <h3><i class="fas fa-clipboard-check"></i> Memory Candidate</h3>
+      <button type="button" class="modal-close" onclick="Marvain.hideModal('candidate-detail-modal')">&times;</button>
+    </div>
+    <div class="modal-body" id="candidate-detail-content">
+      <div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> Loading...</div>
+    </div>
+  </div>
+</div>
+
+<!-- Create Memory Candidate Modal -->
 <div class="modal-overlay" id="create-memory-modal" style="display: none;">
   <div class="modal" style="max-width: 600px;">
     <div class="modal-header">
-      <h3><i class="fas fa-plus-circle"></i> Create Memory</h3>
+      <h3><i class="fas fa-plus-circle"></i> Create Memory Candidate</h3>
       <button type="button" class="modal-close" onclick="Marvain.hideModal('create-memory-modal')">&times;</button>
     </div>
     <div class="modal-body">
@@ -231,9 +256,9 @@
           <div class="form-group" style="flex: 1;">
             <label for="cm-tier">Tier</label>
             <select id="cm-tier">
-              <option value="semantic">Semantic</option>
-              <option value="episodic">Episodic</option>
-              <option value="procedural">Procedural</option>
+              {% for kind in memory_kinds %}
+              <option value="{{ kind.value }}" {% if kind.value == 'semantic' %}selected{% endif %}>{{ kind.label }}</option>
+              {% endfor %}
             </select>
           </div>
           <div class="form-group" style="flex: 1;">
@@ -249,9 +274,8 @@
         </div>
         <div class="form-row" style="display: flex; gap: var(--space-md);">
           <div class="form-group" style="flex: 1;">
-            <label for="cm-space">Space</label>
-            <select id="cm-space">
-              <option value="">None</option>
+            <label for="cm-space">Evidence Space *</label>
+            <select id="cm-space" required>
               {% for space in spaces %}
               <option value="{{ space.space_id }}">{{ space.name }}</option>
               {% endfor %}
@@ -281,7 +305,7 @@
         </div>
         <div class="form-actions" style="display: flex; justify-content: flex-end; gap: var(--space-sm); margin-top: var(--space-md);">
           <button type="button" class="btn btn-outline" onclick="Marvain.hideModal('create-memory-modal')">Cancel</button>
-          <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Create</button>
+          <button type="submit" class="btn btn-primary"><i class="fas fa-save"></i> Create Candidate</button>
         </div>
       </form>
     </div>
@@ -291,6 +315,12 @@
 
 {% block extra_js %}
 <script>
+const MEMORY_KIND_OPTIONS = {{ memory_kinds|tojson }};
+
+function memoryKindOptions() {
+  return MEMORY_KIND_OPTIONS;
+}
+
 function filterMemories() {
   const agent = document.getElementById('agent-filter').value;
   const tier = document.getElementById('tier-filter').value;
@@ -317,6 +347,288 @@ function filterByTag(tag) {
   filterMemories();
 }
 
+function hasDetailValue(value) {
+  return value !== undefined && value !== null && String(value).trim() !== '';
+}
+
+function asObject(value) {
+  if (!value) return {};
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function firstDetailValue(...values) {
+  for (const value of values) {
+    if (hasDetailValue(value)) return String(value);
+  }
+  return '';
+}
+
+function escapeHtml(value) {
+  const replacements = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'};
+  return String(value ?? '').replace(/[&<>"']/g, ch => replacements[ch]);
+}
+
+function detailRow(label, value, options = {}) {
+  let renderedValue = '<span class="text-muted">Not recorded</span>';
+  if (hasDetailValue(value)) {
+    if (options.html) {
+      renderedValue = value;
+    } else if (options.badge) {
+      renderedValue = `<span class="badge badge-${options.badge}">${escapeHtml(value)}</span>`;
+    } else if (options.code) {
+      renderedValue = `<code class="detail-value">${escapeHtml(value)}</code>`;
+    } else {
+      renderedValue = `<span class="detail-value">${escapeHtml(value)}</span>`;
+    }
+  }
+
+  return `
+    <div class="detail-row">
+      <span class="detail-label">${escapeHtml(label)}</span>
+      ${renderedValue}
+    </div>`;
+}
+
+function jsonSection(title, icon, value) {
+  const obj = asObject(value);
+  if (Object.keys(obj).length === 0) return '';
+  return `
+    <div class="detail-section">
+      <h4><i class="fas ${icon}"></i> ${escapeHtml(title)}</h4>
+      <pre class="json-display">${escapeHtml(JSON.stringify(obj, null, 2))}</pre>
+    </div>`;
+}
+
+function buildLineageLinks(sourceEventId, sourceActionId, tapdbEuid, explicitLineageUrl) {
+  const links = [];
+  if (hasDetailValue(sourceEventId)) {
+    links.push(`<a href="/api/events/${encodeURIComponent(sourceEventId)}" target="_blank" rel="noopener">Source event</a>`);
+  }
+  if (hasDetailValue(sourceActionId)) {
+    links.push(`<a href="/api/actions/${encodeURIComponent(sourceActionId)}" target="_blank" rel="noopener">Source action</a>`);
+  }
+  if (hasDetailValue(tapdbEuid)) {
+    links.push(`<a href="/tapdb/graph?start_euid=${encodeURIComponent(tapdbEuid)}" target="_blank" rel="noopener">TapDB graph</a>`);
+  }
+  if (hasDetailValue(explicitLineageUrl) && String(explicitLineageUrl).startsWith('/')) {
+    links.push(`<a href="${escapeHtml(explicitLineageUrl)}" target="_blank" rel="noopener">Lineage</a>`);
+  }
+  return links.join(' ');
+}
+
+function candidateSummary(candidate) {
+  const sourceEvent = candidate.source_event_id
+    ? `<a href="/api/events/${encodeURIComponent(candidate.source_event_id)}" target="_blank" rel="noopener">Source Event</a>`
+    : '<span class="text-muted">No source evidence</span>';
+  return `
+    <div class="memory-card card" style="margin-bottom: var(--space-sm);">
+      <div class="card-body">
+        <div class="memory-header">
+          <div class="memory-meta">
+            <span class="tier-badge tier-${escapeHtml(candidate.tier || 'semantic')}">${escapeHtml(candidate.tier || 'semantic')}</span>
+            <span class="badge badge-outline">${escapeHtml(candidate.lifecycle_state || 'candidate')}</span>
+            <span class="text-muted">${escapeHtml(candidate.agent_name || candidate.agent_id || '')}</span>
+            ${candidate.space_name ? `<span class="text-muted">• ${escapeHtml(candidate.space_name)}</span>` : ''}
+          </div>
+          <div class="memory-time">${escapeHtml(candidate.created_at || '')}</div>
+        </div>
+        <div class="memory-content">${escapeHtml(candidate.content || '')}</div>
+        <div class="memory-footer">
+          <div class="memory-provenance">${sourceEvent}</div>
+          <div class="memory-actions">
+            <button class="btn btn-sm btn-outline" onclick="viewCandidate('${escapeHtml(candidate.memory_candidate_id)}')">
+              <i class="fas fa-eye"></i>
+            </button>
+            <button class="btn btn-sm btn-outline" onclick="commitCandidate('${escapeHtml(candidate.memory_candidate_id)}')">
+              <i class="fas fa-check"></i>
+            </button>
+            <button class="btn btn-sm btn-outline btn-danger" onclick="rejectCandidate('${escapeHtml(candidate.memory_candidate_id)}')">
+              <i class="fas fa-times"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function readMemoryFetchResponse(response, defaultMessage) {
+  const text = await response.text();
+  let payload = null;
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch (error) {
+      payload = text;
+    }
+  }
+
+  if (!response.ok) {
+    let message = defaultMessage;
+    if (payload && typeof payload === 'object') {
+      message = payload.detail || payload.message || payload.error || defaultMessage;
+    } else if (typeof payload === 'string' && payload.trim()) {
+      message = payload.trim();
+    }
+    throw new Error(message);
+  }
+  return payload || {};
+}
+
+async function loadMemoryCandidates() {
+  const list = document.getElementById('memory-candidates-list');
+  if (!list) return;
+  list.innerHTML = '<div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
+  try {
+    const response = await fetch('/api/memory-candidates?state=candidate');
+    const data = await readMemoryFetchResponse(response, 'Failed to load memory candidates');
+    const candidates = data.candidates || [];
+    list.innerHTML = candidates.length
+      ? candidates.map(candidateSummary).join('')
+      : '<div class="empty-state"><i class="fas fa-clipboard-check fa-2x"></i><h3>No Candidates</h3><p>No memory candidates are waiting for review.</p></div>';
+  } catch (error) {
+    list.innerHTML = `<div class="error-message"><i class="fas fa-exclamation-triangle"></i> ${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function viewCandidate(candidateId) {
+  const content = document.getElementById('candidate-detail-content');
+  content.innerHTML = '<div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
+  Marvain.showModal('candidate-detail-modal');
+  try {
+    const response = await fetch(`/api/memory-candidates/${candidateId}`);
+    const candidate = await readMemoryFetchResponse(response, 'Failed to load memory candidate');
+    const participantsText = (candidate.participants || []).join(', ');
+    content.innerHTML = `
+      <div class="detail-section">
+        <h4><i class="fas fa-info-circle"></i> Candidate</h4>
+        <div class="detail-grid">
+          ${detailRow('Candidate ID', candidate.memory_candidate_id, {code: true})}
+          ${detailRow('Lifecycle State', candidate.lifecycle_state, {badge: 'outline'})}
+          ${detailRow('Tier', candidate.tier, {badge: candidate.tier === 'semantic' ? 'success' : 'info'})}
+          ${detailRow('Confidence', `${Math.round((candidate.confidence || 0) * 100)}%`)}
+          ${detailRow('Agent', candidate.agent_name || candidate.agent_id)}
+          ${detailRow('Space', candidate.space_name || candidate.space_id)}
+          ${detailRow('Subject', candidate.subject_person_name || candidate.subject_person_id)}
+          ${detailRow('Source Event', candidate.source_event_id, {code: true})}
+          ${detailRow('Source Action', candidate.source_action_id, {code: true})}
+          ${detailRow('Session', candidate.session_id, {code: true})}
+        </div>
+      </div>
+      <div class="detail-section">
+        <h4><i class="fas fa-edit"></i> Edit Candidate</h4>
+        <form onsubmit="return saveCandidateEdit(event, '${escapeHtml(candidate.memory_candidate_id)}')">
+          <div class="form-group">
+            <label for="candidate-edit-content">Content</label>
+            <textarea id="candidate-edit-content" rows="4" required>${escapeHtml(candidate.content || '')}</textarea>
+          </div>
+          <div class="form-row" style="display: flex; gap: var(--space-md);">
+            <div class="form-group" style="flex: 1;">
+              <label for="candidate-edit-tier">Tier</label>
+              <select id="candidate-edit-tier">
+                ${memoryKindOptions().map(item => `<option value="${item.value}" ${candidate.tier === item.value ? 'selected' : ''}>${item.label}</option>`).join('')}
+              </select>
+            </div>
+            <div class="form-group" style="flex: 1;">
+              <label for="candidate-edit-confidence">Confidence</label>
+              <input id="candidate-edit-confidence" type="number" min="0" max="1" step="0.01" value="${escapeHtml(candidate.confidence ?? 1)}">
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="candidate-edit-participants">Participants</label>
+            <input id="candidate-edit-participants" value="${escapeHtml(participantsText)}">
+          </div>
+          <div class="form-actions" style="display:flex; justify-content:flex-end; gap:var(--space-sm);">
+            <button type="submit" class="btn btn-outline"><i class="fas fa-save"></i> Save</button>
+            <button type="button" class="btn btn-primary" onclick="commitCandidate('${escapeHtml(candidate.memory_candidate_id)}')"><i class="fas fa-check"></i> Commit</button>
+            <button type="button" class="btn btn-danger" onclick="rejectCandidate('${escapeHtml(candidate.memory_candidate_id)}')"><i class="fas fa-times"></i> Reject</button>
+          </div>
+        </form>
+      </div>
+      <div class="detail-section">
+        <h4><i class="fas fa-file-alt"></i> Content</h4>
+        <pre class="json-display">${escapeHtml(candidate.content || 'No content')}</pre>
+      </div>`;
+  } catch (error) {
+    content.innerHTML = `<div class="error-message"><i class="fas fa-exclamation-triangle"></i> ${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function saveCandidateEdit(event, candidateId) {
+  event.preventDefault();
+  const participantsRaw = document.getElementById('candidate-edit-participants').value.trim();
+  const body = {
+    content: document.getElementById('candidate-edit-content').value.trim(),
+    tier: document.getElementById('candidate-edit-tier').value,
+    confidence: parseFloat(document.getElementById('candidate-edit-confidence').value),
+    participants: participantsRaw ? participantsRaw.split(',').map(p => p.trim()).filter(Boolean) : [],
+  };
+  try {
+    Marvain.showLoading('Saving candidate...');
+    const response = await fetch(`/api/memory-candidates/${candidateId}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    await readMemoryFetchResponse(response, 'Failed to save candidate');
+    Marvain.hideLoading();
+    Marvain.showToast('success', 'Success', 'Candidate saved');
+    await viewCandidate(candidateId);
+    await loadMemoryCandidates();
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+  return false;
+}
+
+async function commitCandidate(candidateId) {
+  try {
+    Marvain.showLoading('Committing candidate...');
+    const response = await fetch(`/api/memory-candidates/${candidateId}/commit`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({}),
+    });
+    await readMemoryFetchResponse(response, 'Failed to commit candidate');
+    Marvain.hideLoading();
+    Marvain.hideModal('candidate-detail-modal');
+    Marvain.showToast('success', 'Success', 'Candidate committed');
+    setTimeout(() => location.reload(), 1000);
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+}
+
+async function rejectCandidate(candidateId) {
+  const reason = prompt('Reject reason');
+  if (reason === null) return;
+  try {
+    Marvain.showLoading('Rejecting candidate...');
+    const response = await fetch(`/api/memory-candidates/${candidateId}/reject`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({reason}),
+    });
+    await readMemoryFetchResponse(response, 'Failed to reject candidate');
+    Marvain.hideLoading();
+    Marvain.hideModal('candidate-detail-modal');
+    Marvain.showToast('success', 'Success', 'Candidate rejected');
+    await loadMemoryCandidates();
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+}
+
 async function viewMemory(memoryId) {
   const content = document.getElementById('memory-detail-content');
   content.innerHTML = '<div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
@@ -324,11 +636,7 @@ async function viewMemory(memoryId) {
 
   try {
     const response = await fetch(`/api/memories/${memoryId}`);
-    if (!response.ok) {
-      const err = await response.json();
-      throw new Error(err.detail || 'Failed to load memory');
-    }
-    const memory = await response.json();
+    const memory = await readMemoryFetchResponse(response, 'Failed to load memory');
 
     const tierBadge = {
       'episodic': 'info',
@@ -337,94 +645,151 @@ async function viewMemory(memoryId) {
     }[memory.tier] || 'secondary';
 
     const participants = memory.participants || [];
-    const provenance = memory.provenance || {};
-    const retention = memory.retention || {};
+    const provenance = asObject(memory.provenance);
+    const retention = asObject(memory.retention);
+    const recallExplanation = asObject(memory.recall_explanation);
+    const tombstone = asObject(memory.tombstone);
 
     const modalityIcons = {text:'fa-file-alt', image:'fa-image', audio:'fa-microphone', video:'fa-video', sensor:'fa-satellite-dish'};
     const modalityIcon = modalityIcons[memory.modality] || 'fa-file-alt';
     const tags = memory.tags || [];
     const confidence = memory.confidence != null ? memory.confidence : 1.0;
+    const memoryCandidateId = firstDetailValue(
+      memory.memory_candidate_id,
+      recallExplanation.memory_candidate_id,
+      provenance.memory_candidate_id
+    );
+    const sourceEventId = firstDetailValue(
+      memory.source_event_id,
+      recallExplanation.source_event_id,
+      provenance.source_event_id,
+      provenance.event_id
+    );
+    const sourceActionId = firstDetailValue(
+      memory.source_action_id,
+      recallExplanation.source_action_id,
+      provenance.source_action_id,
+      provenance.action_id
+    );
+    const sessionId = firstDetailValue(memory.session_id, recallExplanation.session_id, provenance.session_id);
+    const locationLabel = firstDetailValue(
+      memory.location_name,
+      memory.location_id,
+      recallExplanation.location_name,
+      recallExplanation.location_id,
+      provenance.location_name,
+      provenance.location_id
+    );
+    const lifecycleState = firstDetailValue(
+      memory.lifecycle_state,
+      recallExplanation.lifecycle_state,
+      provenance.lifecycle_state
+    );
+    const tombstonedAt = firstDetailValue(memory.tombstoned_at, tombstone.created_at, recallExplanation.tombstoned_at);
+    const tombstoneReason = firstDetailValue(memory.tombstone_reason, tombstone.reason, recallExplanation.tombstone_reason);
+    const tombstoneValue = lifecycleState === 'tombstoned' || hasDetailValue(tombstonedAt)
+      ? firstDetailValue(
+          [tombstonedAt ? `At ${tombstonedAt}` : 'Tombstoned', tombstoneReason ? `Reason: ${tombstoneReason}` : ''].filter(Boolean).join(' - '),
+          'Tombstoned'
+        )
+      : 'No tombstone recorded';
+    const lineageLinks = buildLineageLinks(
+      sourceEventId,
+      sourceActionId,
+      firstDetailValue(memory.tapdb_euid, recallExplanation.tapdb_euid, provenance.tapdb_euid),
+      firstDetailValue(memory.lineage_url, memory.tapdb_lineage_url, recallExplanation.lineage_url, provenance.lineage_url)
+    );
 
     content.innerHTML = `
       <div class="detail-section">
         <h4><i class="fas fa-info-circle"></i> Basic Info</h4>
         <div class="detail-grid">
-          <div class="detail-row">
-            <span class="detail-label">Memory ID</span>
-            <code class="detail-value">${memory.memory_id}</code>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Tier</span>
-            <span class="badge badge-${tierBadge}">${memory.tier}</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Modality</span>
-            <span class="detail-value"><i class="fas ${modalityIcon}"></i> ${memory.modality || 'text'}</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Confidence</span>
-            <span class="detail-value">${Math.round(confidence * 100)}%</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Agent</span>
-            <span class="detail-value">${memory.agent_name || memory.agent_id}</span>
-          </div>
-          ${memory.space_name ? `
-          <div class="detail-row">
-            <span class="detail-label">Space</span>
-            <span class="detail-value">${memory.space_name}</span>
-          </div>` : ''}
-          ${memory.subject_person_name ? `
-          <div class="detail-row">
-            <span class="detail-label">Subject</span>
-            <span class="detail-value"><i class="fas fa-user"></i> ${memory.subject_person_name}</span>
-          </div>` : ''}
-          <div class="detail-row">
-            <span class="detail-label">Created</span>
-            <span class="detail-value">${memory.created_at || 'N/A'}</span>
-          </div>
+          ${detailRow('Memory ID', memory.memory_id, {code: true})}
+          ${detailRow('Tier', memory.tier, {badge: tierBadge})}
+          ${detailRow('Modality', `<span class="detail-value"><i class="fas ${modalityIcon}"></i> ${escapeHtml(memory.modality || 'text')}</span>`, {html: true})}
+          ${detailRow('Confidence', `${Math.round(confidence * 100)}%`)}
+          ${detailRow('Agent', memory.agent_name || memory.agent_id)}
+          ${detailRow('Space', memory.space_name)}
+          ${detailRow('Subject', memory.subject_person_name ? `<span class="detail-value"><i class="fas fa-user"></i> ${escapeHtml(memory.subject_person_name)}</span>` : '', {html: true})}
+          ${detailRow('Created', memory.created_at)}
+        </div>
+      </div>
+
+      <div class="detail-section">
+        <h4><i class="fas fa-project-diagram"></i> Lifecycle And Recall</h4>
+        <div class="detail-grid">
+          ${detailRow('Memory Candidate ID', memoryCandidateId, {code: true})}
+          ${detailRow('Source Event', sourceEventId, {code: true})}
+          ${detailRow('Source Action', sourceActionId, {code: true})}
+          ${detailRow('Session', sessionId, {code: true})}
+          ${detailRow('Location', locationLabel)}
+          ${detailRow('Lifecycle State', lifecycleState, {badge: lifecycleState === 'tombstoned' ? 'danger' : 'outline'})}
+          ${detailRow('Tombstone', tombstoneValue, {badge: lifecycleState === 'tombstoned' ? 'danger' : 'outline'})}
+          ${detailRow('Lineage', lineageLinks, {html: true})}
         </div>
       </div>
 
       ${tags.length > 0 ? `
       <div class="detail-section">
         <h4><i class="fas fa-tags"></i> Tags</h4>
-        <div>${tags.map(t => '<span class="badge badge-info" style="margin-right:4px">' + t + '</span>').join('')}</div>
+        <div>${tags.map(t => '<span class="badge badge-info" style="margin-right:4px">' + escapeHtml(t) + '</span>').join('')}</div>
       </div>` : ''}
 
       ${memory.scene_context ? `
       <div class="detail-section">
         <h4><i class="fas fa-map-marker-alt"></i> Scene Context</h4>
-        <p>${memory.scene_context}</p>
+        <p>${escapeHtml(memory.scene_context)}</p>
       </div>` : ''}
 
       <div class="detail-section">
         <h4><i class="fas fa-file-alt"></i> Content</h4>
-        <pre class="json-display">${memory.content || 'No content'}</pre>
+        <pre class="json-display">${escapeHtml(memory.content || 'No content')}</pre>
       </div>
 
       ${participants.length > 0 ? `
       <div class="detail-section">
         <h4><i class="fas fa-users"></i> Participants</h4>
         <div class="participant-list">
-          ${participants.map(p => '<span class="badge badge-outline">' + p + '</span>').join(' ')}
+          ${participants.map(p => '<span class="badge badge-outline">' + escapeHtml(p) + '</span>').join(' ')}
         </div>
       </div>` : ''}
 
-      ${Object.keys(provenance).length > 0 ? `
-      <div class="detail-section">
-        <h4><i class="fas fa-history"></i> Provenance</h4>
-        <pre class="json-display">${JSON.stringify(provenance, null, 2)}</pre>
-      </div>` : ''}
-
-      ${Object.keys(retention).length > 0 ? `
-      <div class="detail-section">
-        <h4><i class="fas fa-clock"></i> Retention</h4>
-        <pre class="json-display">${JSON.stringify(retention, null, 2)}</pre>
-      </div>` : ''}
+      ${jsonSection('Recall Explanation', 'fa-lightbulb', recallExplanation)}
+      ${jsonSection('Provenance', 'fa-history', provenance)}
+      ${jsonSection('Tombstone Record', 'fa-archive', tombstone)}
+      ${jsonSection('Retention', 'fa-clock', retention)}
+      <div class="form-actions" style="display:flex; justify-content:flex-end; gap:var(--space-sm);">
+        <button type="button" class="btn btn-outline" onclick="supersedeMemory('${escapeHtml(memory.memory_id)}')">
+          <i class="fas fa-code-branch"></i> Supersede
+        </button>
+        <button type="button" class="btn btn-outline btn-danger" onclick="deleteMemory('${escapeHtml(memory.memory_id)}')">
+          <i class="fas fa-archive"></i> Tombstone
+        </button>
+      </div>
     `;
   } catch (error) {
     content.innerHTML = `<div class="error-message"><i class="fas fa-exclamation-triangle"></i> ${error.message}</div>`;
+  }
+}
+
+async function supersedeMemory(memoryId) {
+  const supersededByMemoryId = prompt('Superseding memory ID (optional)') || null;
+  const reason = prompt('Supersede reason') || null;
+  try {
+    Marvain.showLoading('Superseding memory...');
+    const response = await fetch(`/api/memories/${memoryId}/supersede`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({superseded_by_memory_id: supersededByMemoryId, reason}),
+    });
+    await readMemoryFetchResponse(response, 'Failed to supersede memory');
+    Marvain.hideLoading();
+    Marvain.hideModal('memory-detail-modal');
+    Marvain.showToast('success', 'Success', 'Memory superseded');
+    setTimeout(() => location.reload(), 1000);
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
   }
 }
 
@@ -438,11 +803,7 @@ async function deleteMemory(memoryId) {
     const response = await fetch(`/api/memories/${memoryId}`, {
       method: 'DELETE'
     });
-    
-    if (!response.ok) {
-      const err = await response.json();
-      throw new Error(err.detail || 'Failed to delete memory');
-    }
+    await readMemoryFetchResponse(response, 'Failed to delete memory');
     
     Marvain.hideLoading();
     Marvain.showToast('success', 'Success', 'Memory deleted');
@@ -467,7 +828,7 @@ async function createMemory(event) {
     content: content,
     tier: document.getElementById('cm-tier').value,
     modality: document.getElementById('cm-modality').value,
-    space_id: document.getElementById('cm-space').value || null,
+    space_id: document.getElementById('cm-space').value,
     subject_person_id: document.getElementById('cm-person').value || null,
     tags: tags,
     scene_context: document.getElementById('cm-scene').value.trim() || null,
@@ -475,26 +836,25 @@ async function createMemory(event) {
   };
 
   try {
-    Marvain.showLoading('Creating memory...');
+    Marvain.showLoading('Creating memory candidate...');
     const response = await fetch('/api/memories', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body),
     });
-    if (!response.ok) {
-      const err = await response.json();
-      throw new Error(err.detail || 'Failed to create memory');
-    }
+    await readMemoryFetchResponse(response, 'Failed to create memory candidate');
     Marvain.hideLoading();
     Marvain.hideModal('create-memory-modal');
-    Marvain.showToast('success', 'Success', 'Memory created');
-    setTimeout(() => location.reload(), 1000);
+    Marvain.showToast('success', 'Success', 'Memory candidate created');
+    document.getElementById('create-memory-form').reset();
+    await loadMemoryCandidates();
   } catch (error) {
     Marvain.hideLoading();
     Marvain.showToast('error', 'Error', error.message);
   }
   return false;
 }
+
+document.addEventListener('DOMContentLoaded', loadMemoryCandidates);
 </script>
 {% endblock %}
-

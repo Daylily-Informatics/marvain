@@ -289,6 +289,94 @@ def _redact_secret(s: str, *, keep: int = 6) -> str:
     return s[:keep] + "..."
 
 
+def _cluster_identifier_from_arn(cluster_arn: str) -> str:
+    marker = ":cluster:"
+    if marker not in cluster_arn:
+        raise ConfigError("DbClusterArn is not an RDS cluster ARN")
+    identifier = cluster_arn.split(marker, 1)[1].strip()
+    if not identifier:
+        raise ConfigError("DbClusterArn does not include a cluster identifier")
+    return identifier
+
+
+def _ensure_tapdb_runtime_config(ctx: Ctx, *, resources: dict[str, Any]) -> Path | None:
+    """Create the local TapDB runtime config used by the mounted TapDB web app."""
+    existing = os.environ.get("MARVAIN_TAPDB_CONFIG_PATH") or os.environ.get("TAPDB_CONFIG_PATH")
+    if existing:
+        return Path(existing).expanduser().resolve()
+
+    cluster_arn = str(resources.get("DbClusterArn") or "").strip()
+    secret_arn = str(resources.get("DbSecretArn") or "").strip()
+    database = str(resources.get("DbName") or "").strip()
+    if not cluster_arn or not secret_arn or not database:
+        raise ConfigError(
+            "TapDB runtime config requires DbClusterArn, DbSecretArn, and DbName in config resources. "
+            "Run: marvain monitor outputs --write-config"
+        )
+
+    cluster_id = _cluster_identifier_from_arn(cluster_arn)
+    data = run_json(
+        [
+            "aws",
+            "rds",
+            "describe-db-clusters",
+            *aws_cli_args(ctx.env),
+            "--db-cluster-identifier",
+            cluster_id,
+            "--output",
+            "json",
+        ],
+        env=cmd_env(ctx.env),
+        dry_run=False,
+    )
+    clusters = data.get("DBClusters") if isinstance(data, dict) else None
+    cluster = clusters[0] if isinstance(clusters, list) and clusters else {}
+    endpoint = str(cluster.get("Endpoint") or "").strip()
+    port = str(cluster.get("Port") or "").strip()
+    if not endpoint or not port:
+        raise ConfigError(f"Unable to resolve Aurora endpoint/port for cluster '{cluster_id}'")
+
+    repo_root = Path(__file__).parent.parent.resolve()
+    config_path = (
+        Path(os.getenv("XDG_CONFIG_HOME") or (Path.home() / ".config")).expanduser()
+        / "tapdb"
+        / "marvain"
+        / ctx.env.stack_name
+        / "tapdb-config.yaml"
+    )
+    cfg = {
+        "meta": {
+            "config_version": 3,
+            "client_id": "marvain",
+            "database_name": ctx.env.stack_name,
+            "owner_repo_name": "marvain",
+            "domain_code": "MVN",
+            "domain_registry_path": str(repo_root / "tapdb_templates" / "domain_code_registry.json"),
+            "prefix_ownership_registry_path": str(repo_root / "tapdb_templates" / "prefix_ownership_registry.json"),
+        },
+        "environments": {
+            ctx.env.env: {
+                "engine_type": "aurora",
+                "host": endpoint,
+                "port": port,
+                "ui_port": "8914",
+                "user": "agenthub",
+                "password": "",
+                "database": database,
+                "secret_arn": secret_arn,
+                "region": ctx.env.aws_region,
+                "iam_auth": "false",
+                "ssl": "true",
+                "domain_code": "MVN",
+            }
+        },
+    }
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    save_config_dict(config_path, cfg)
+    config_path.chmod(0o600)
+    return config_path.resolve()
+
+
 def resolve_access_token(access_token: str | None) -> str:
     tok = (access_token or os.getenv("MARVAIN_ACCESS_TOKEN") or "").strip()
     if not tok:
@@ -1353,9 +1441,8 @@ def gui_start(
             if mkcert_result:
                 cert_path, key_path = mkcert_result
             else:
-                # mkcert not available, fall back to HTTP
-                _eprint("Continuing with HTTP (use --no-https to suppress this warning)")
-                https = False
+                _eprint("ERROR: mkcert is required for HTTPS. Use --no-https to start an HTTP server explicitly.")
+                return 1
 
     # Check if port is already in use
     if _is_port_in_use(port, host):
@@ -1446,6 +1533,19 @@ def gui_start(
     env["AWS_PROFILE"] = ctx.env.aws_profile
     env["AWS_REGION"] = ctx.env.aws_region
     env["AWS_DEFAULT_REGION"] = ctx.env.aws_region
+
+    try:
+        tapdb_config_path = _ensure_tapdb_runtime_config(ctx, resources=resources)
+    except ConfigError as exc:
+        _eprint(f"ERROR: {exc}")
+        return 2
+    if tapdb_config_path:
+        env["MARVAIN_TAPDB_CONFIG_PATH"] = str(tapdb_config_path)
+        env["TAPDB_CONFIG_PATH"] = str(tapdb_config_path)
+        env["TAPDB_ENV"] = ctx.env.env
+        env["MERIDIAN_DOMAIN_CODE"] = "MVN"
+        env["TAPDB_OWNER_REPO"] = "marvain"
+        _eprint(f"TapDB config: {tapdb_config_path}")
 
     # Local development settings
     env["ENVIRONMENT"] = "local"
@@ -2272,6 +2372,7 @@ def bootstrap(
     bootstrap_scopes = json.dumps(
         ["events:read", "events:write", "memories:read", "memories:write", "artifacts:write", "presence:write"]
     )
+    bootstrap_capabilities = json.dumps({"kind": "worker"})
 
     dev_res = _rds_execute(
         ctx,
@@ -2280,8 +2381,8 @@ def bootstrap(
         db_name=db_name,
         # RDS Data API binds :a as text; cast to uuid for Postgres.
         sql=(
-            "INSERT INTO devices (agent_id, name, token_hash, scopes)"
-            " VALUES (CAST(:a AS uuid), :n, :h, CAST(:s AS jsonb))"
+            "INSERT INTO devices (agent_id, name, token_hash, scopes, capabilities)"
+            " VALUES (CAST(:a AS uuid), :n, :h, CAST(:s AS jsonb), CAST(:c AS jsonb))"
             " RETURNING device_id"
         ),
         parameters=[
@@ -2289,6 +2390,7 @@ def bootstrap(
             {"name": "n", "value": {"stringValue": d_name}},
             {"name": "h", "value": {"stringValue": token_hash}},
             {"name": "s", "value": {"stringValue": bootstrap_scopes}},
+            {"name": "c", "value": {"stringValue": bootstrap_capabilities}},
         ],
         dry_run=dry_run,
     )
@@ -2508,6 +2610,7 @@ def examples_create(
     scopes = json.dumps(
         ["events:read", "events:write", "memories:read", "memories:write", "artifacts:write", "presence:write"]
     )
+    capabilities = json.dumps({"kind": "worker"})
     _eprint(f"Creating device '{d_name}'...")
     dev_res = _rds_execute(
         ctx,
@@ -2515,8 +2618,8 @@ def examples_create(
         secret_arn=secret_arn,
         db_name=db_name,
         sql=(
-            "INSERT INTO devices (agent_id, name, token_hash, scopes)"
-            " VALUES (CAST(:a AS uuid), :n, :h, CAST(:s AS jsonb))"
+            "INSERT INTO devices (agent_id, name, token_hash, scopes, capabilities)"
+            " VALUES (CAST(:a AS uuid), :n, :h, CAST(:s AS jsonb), CAST(:c AS jsonb))"
             " RETURNING device_id"
         ),
         parameters=[
@@ -2524,6 +2627,7 @@ def examples_create(
             {"name": "n", "value": {"stringValue": d_name}},
             {"name": "h", "value": {"stringValue": token_hash}},
             {"name": "s", "value": {"stringValue": scopes}},
+            {"name": "c", "value": {"stringValue": capabilities}},
         ],
         dry_run=dry_run,
     )

@@ -150,7 +150,7 @@ Core entities required for V1:
 ## 13. Operational requirements
 
 - Local and cloud setup should remain CLI-driven (`marvain_cli/*`, `config/marvain-example.yaml`).
-- Tests must include unit, contract, integration, end-to-end, simulation, golden memory, golden recognition, TapDB lineage, dual-write consistency, failure injection, and migration/backfill tests.
+- Tests must include unit, contract, integration, end-to-end, simulation, golden memory, golden recognition, TapDB lineage/projection consistency, failure injection, and deployed smoke tests.
 - Observability must expose health, queue lag, memory write/recall rates, recognition outcomes, device heartbeat age, command latency, audit append status, and TapDB/projection consistency.
 
 ## 14. Acceptance criteria
@@ -166,10 +166,10 @@ V1 is acceptable only when:
 
 ## 15. Refactor implications
 
-- Introduce service seams before rewriting: Memory Service, Recognition Service, Device/Topology Service, Action Lifecycle Service, TapDB Adapter.
-- Pilot TapDB dual-write on memory provenance and recognition observations before migrating canonical truth.
+- Keep Memory Service, Recognition Service, Device/Topology Service, Action Lifecycle Service, and the TapDB Adapter as current production boundaries.
+- Use TapDB as canonical semantic object graph/provenance/lifecycle state for the V1 semantic domains, with typed SQL tables retained only as rebuildable projections or specialized operational stores.
 - Keep existing SQS/DynamoDB/S3/LiveKit operational stores.
-- Add session identity and explicit lineage references before replacing existing tables.
+- Remove obsolete compatibility, stale planning, and duplicate semantic storage paths rather than preserving them.
 
 ## 16. Open questions
 

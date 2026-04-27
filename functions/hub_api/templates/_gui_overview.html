@@ -1,0 +1,139 @@
+{% set gui_surfaces = [
+  {
+    "title": "Dashboard",
+    "href": url_for('gui_home'),
+    "icon": "fa-gauge-high",
+    "meta": (agents_count | default(0) | string) ~ " agents",
+    "active": active_page in ('home', 'dashboard')
+  },
+  {
+    "title": "Live Session",
+    "href": url_for('gui_live_session'),
+    "icon": "fa-video",
+    "meta": (spaces_count | default(0) | string) ~ " spaces",
+    "active": active_page in ('livekit', 'live_session')
+  },
+  {
+    "title": "Agents",
+    "href": url_for('gui_agents'),
+    "icon": "fa-robot",
+    "meta": (agents_count | default(0) | string) ~ " registered",
+    "active": active_page == 'agents'
+  },
+  {
+    "title": "People",
+    "href": url_for('gui_people'),
+    "icon": "fa-users",
+    "meta": "Identity and consent",
+    "active": active_page == 'people'
+  },
+  {
+    "title": "Personas",
+    "href": url_for('gui_personas'),
+    "icon": "fa-masks-theater",
+    "meta": "Prompt profiles",
+    "active": active_page == 'personas'
+  },
+  {
+    "title": "Locations",
+    "href": url_for('gui_locations'),
+    "icon": "fa-map-location-dot",
+    "meta": "Sites and zones",
+    "active": active_page == 'locations'
+  },
+  {
+    "title": "Spaces",
+    "href": url_for('gui_spaces'),
+    "icon": "fa-door-open",
+    "meta": (spaces_count | default(0) | string) ~ " configured",
+    "active": active_page == 'spaces'
+  },
+  {
+    "title": "Devices",
+    "href": url_for('gui_devices'),
+    "icon": "fa-microchip",
+    "meta": (devices_count | default(0) | string) ~ " provisioned",
+    "active": active_page == 'devices'
+  },
+  {
+    "title": "Sessions",
+    "href": url_for('gui_sessions'),
+    "icon": "fa-layer-group",
+    "meta": "Room history",
+    "active": active_page == 'sessions'
+  },
+  {
+    "title": "Memories",
+    "href": url_for('gui_memories'),
+    "icon": "fa-brain",
+    "meta": "Provenance records",
+    "active": active_page == 'memories'
+  },
+  {
+    "title": "Recognition",
+    "href": url_for('gui_recognition'),
+    "icon": "fa-fingerprint",
+    "meta": "Observations",
+    "active": active_page == 'recognition'
+  },
+  {
+    "title": "Actions",
+    "href": url_for('gui_actions'),
+    "icon": "fa-tasks",
+    "meta": (pending_actions | default(0) | string) ~ " pending",
+    "active": active_page == 'actions'
+  },
+  {
+    "title": "TapDB Lineage",
+    "href": "/tapdb/graph",
+    "icon": "fa-diagram-project",
+    "meta": "Canonical graph",
+    "active": active_page == 'tapdb_lineage'
+  },
+  {
+    "title": "Audit",
+    "href": url_for('gui_audit'),
+    "icon": "fa-shield-alt",
+    "meta": "Integrity checks",
+    "active": active_page == 'audit'
+  },
+  {
+    "title": "Observability",
+    "href": url_for('gui_observability'),
+    "icon": "fa-chart-line",
+    "meta": "Event stream",
+    "active": active_page in ('events', 'observability')
+  },
+  {
+    "title": "Capability Matrix",
+    "href": url_for('gui_capabilities'),
+    "icon": "fa-table-cells-large",
+    "meta": "Tool catalog",
+    "active": active_page in ('tools', 'capability_matrix', 'capabilities')
+  },
+  {
+    "title": "Settings/Profile",
+    "href": url_for('profile'),
+    "icon": "fa-user-gear",
+    "meta": stage | default("Account"),
+    "active": active_page in ('profile', 'settings')
+  }
+] %}
+
+<section class="gui-overview mb-md" aria-labelledby="gui-overview-title">
+  <div class="gui-overview-header">
+    <h2 id="gui-overview-title">Product Surface</h2>
+    <span class="badge badge-info">V1</span>
+  </div>
+  <div class="gui-surface-grid">
+    {% for surface in gui_surfaces %}
+    <a href="{{ surface.href }}" class="surface-card {% if surface.active %}active{% endif %}">
+      <span class="surface-icon"><i class="fas {{ surface.icon }}"></i></span>
+      <span class="surface-copy">
+        <span class="surface-title">{{ surface.title }}</span>
+        <span class="surface-meta">{{ surface.meta }}</span>
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+</section>

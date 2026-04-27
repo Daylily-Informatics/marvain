@@ -13,6 +13,7 @@ from agent_hub.audit import append_audit_entry
 from agent_hub.broadcast import broadcast_event
 from agent_hub.config import load_config
 from agent_hub.integrations import get_integration_message, parse_integration_queue_message
+from agent_hub.memory_taxonomy import MEMORY_KIND_LABELS, MEMORY_KIND_VALUES
 from agent_hub.openai_http import call_embeddings, call_responses, extract_output_text
 from agent_hub.policy import is_agent_disabled, is_privacy_mode
 from agent_hub.rate_limit import RateLimitError
@@ -344,7 +345,7 @@ def _insert_memory(
 ) -> str:
     source_event_id = str(provenance.get("source_event_id") or "").strip()
     if not source_event_id:
-        raise ValueError("semantic memory requires source_event_id evidence")
+        raise ValueError("committed memory requires source_event_id evidence")
 
     candidate_id = str(uuid.uuid4())
     memory_id = str(uuid.uuid4())
@@ -528,18 +529,19 @@ def handler(event: dict, context: Any) -> dict[str, Any]:
 You are the deliberative planner for a persistent personal AI agent hub.
 
 Goals:
-- Update long-term memory (episodic + semantic) conservatively.
+- Update long-term memory conservatively across the canonical Marvain memory taxonomy.
 - Propose actions ONLY when they are clearly helpful.
 - Never store sensitive biometric data unless explicitly instructed.
 
 Output STRICT JSON with keys:
-- episodic: array of {content, participants}
-- semantic: array of {content, participants}
+- memory keys: episodic, semantic, procedural, preference, relationship, location, device, policy.
+- each memory key value: array of {content, participants}
 - actions: array of {kind, payload, required_scopes, auto_approve}
 
 Rules:
 - Keep memory minimal, high-signal.
-- If uncertain, do not write semantic facts; write an episodic note instead.
+- If uncertain, do not write stable facts; write an episodic note instead.
+- Use policy for consent, privacy, governance, and audit-supporting notes.
 - When event.integration is present, it is bounded metadata for an inbound external message.
 """.strip()
 
@@ -586,33 +588,24 @@ Rules:
         # Sanitize and normalize the output
         plan = sanitize_planner_output(plan)
 
-        episodic = plan.get("episodic") or []
-        semantic = plan.get("semantic") or []
         actions = plan.get("actions") or []
 
         created_memory_ids: list[str] = []
-        for item in episodic:
-            # Already sanitized, so we can use directly
-            mid = _insert_memory(
-                agent_id=agent_id,
-                space_id=ev["space_id"],
-                tier="episodic",
-                content=item["content"],
-                participants=item["participants"],
-                provenance={"source_event_id": ev["event_id"]},
-            )
-            created_memory_ids.append(mid)
-
-        for item in semantic:
-            mid = _insert_memory(
-                agent_id=agent_id,
-                space_id=None,
-                tier="semantic",
-                content=item["content"],
-                participants=item["participants"],
-                provenance={"source_event_id": ev["event_id"]},
-            )
-            created_memory_ids.append(mid)
+        for kind in MEMORY_KIND_VALUES:
+            for item in plan.get(kind) or []:
+                mid = _insert_memory(
+                    agent_id=agent_id,
+                    space_id=None if kind == "semantic" else ev["space_id"],
+                    tier=kind,
+                    content=item["content"],
+                    participants=item["participants"],
+                    provenance={
+                        "source_event_id": ev["event_id"],
+                        "memory_kind": kind,
+                        "memory_kind_label": MEMORY_KIND_LABELS[kind],
+                    },
+                )
+                created_memory_ids.append(mid)
 
         created_action_ids: list[str] = []
         for action_index, a in enumerate(actions):

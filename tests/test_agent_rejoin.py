@@ -326,5 +326,41 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
             asyncio.run(_run_two())
 
 
+class TestAgentWorkerMemoryCalls(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.worker = _load_agent_worker_module()
+
+    def test_hub_create_memory_posts_existing_source_event_and_session(self) -> None:
+        worker = self.worker
+        response = mock.Mock()
+        response.ok = True
+        response.json.return_value = {"memory_id": "memory-1"}
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"HUB_API_BASE": "https://hub.example.test", "HUB_DEVICE_TOKEN": "device-token"},
+                clear=False,
+            ),
+            mock.patch.object(worker.requests, "post", return_value=response) as post,
+        ):
+            worker.hub_create_memory(
+                space_id="space-1",
+                content="Remember the pantry light is flickering.",
+                tier="episodic",
+                metadata={"source": "livekit_agent_worker", "role": "user"},
+                source_event_id="event-1",
+                session_id="session-1",
+            )
+
+        post.assert_called_once()
+        _, kwargs = post.call_args
+        self.assertEqual(kwargs["json"]["space_id"], "space-1")
+        self.assertEqual(kwargs["json"]["source_event_id"], "event-1")
+        self.assertEqual(kwargs["json"]["session_id"], "session-1")
+        self.assertEqual(kwargs["json"]["metadata"]["source"], "livekit_agent_worker")
+
+
 if __name__ == "__main__":
     unittest.main()

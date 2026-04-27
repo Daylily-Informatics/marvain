@@ -13,11 +13,9 @@ still using the deployed Hub stack for persistence and realtime updates.
 
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import logging
-import math
 import os
 import signal
 import time
@@ -41,11 +39,6 @@ MAX_MESSAGES = int(os.getenv("RECOGNITION_MAX_MESSAGES", "5"))
 VISIBILITY_TIMEOUT = int(os.getenv("RECOGNITION_VISIBILITY_TIMEOUT", "60"))
 
 DELETE_ARTIFACTS = str(os.getenv("RECOGNITION_DELETE_ARTIFACTS", "true")).strip().lower() in ("true", "1", "yes")
-ALLOW_DUMMY_EMBEDDINGS = str(os.getenv("RECOGNITION_ALLOW_DUMMY_EMBEDDINGS", "")).strip().lower() in (
-    "true",
-    "1",
-    "yes",
-)
 
 
 def _require_env() -> None:
@@ -60,27 +53,6 @@ def _require_env() -> None:
         missing.append("ARTIFACT_BUCKET")
     if missing:
         raise SystemExit(f"Missing required env vars: {', '.join(missing)}")
-
-
-def _dummy_embedding(data: bytes, dim: int) -> list[float]:
-    """Deterministic embedding for explicit local tests only."""
-    seed = hashlib.sha256(data).digest()
-    out: list[float] = []
-    counter = 0
-    while len(out) < dim:
-        h = hashlib.sha256(seed + counter.to_bytes(4, "big")).digest()
-        for i in range(0, len(h), 4):
-            if len(out) >= dim:
-                break
-            chunk = h[i : i + 4]
-            if len(chunk) < 4:
-                continue
-            v = int.from_bytes(chunk, "big", signed=False)
-            out.append((v / 2**32) * 2.0 - 1.0)  # [-1, 1)
-        counter += 1
-    # Normalize to unit length so cosine distance behaves sensibly.
-    norm = math.sqrt(sum(x * x for x in out)) or 1.0
-    return [x / norm for x in out]
 
 
 def _try_voice_embedding(audio_bytes: bytes) -> tuple[list[float], str] | None:
@@ -134,22 +106,15 @@ def _try_face_embedding(image_bytes: bytes) -> tuple[list[float], str] | None:
 def _embedding_or_raise(*, modality: str, data: bytes) -> tuple[list[float], str]:
     if modality == "voice":
         emb_and_model = _try_voice_embedding(data)
-        dummy_dim = 256
-        dummy_model = "dummy-voice"
     elif modality == "face":
         emb_and_model = _try_face_embedding(data)
-        dummy_dim = 512
-        dummy_model = "dummy-face"
     else:
         raise RuntimeError(f"unsupported modality: {modality}")
     if emb_and_model is not None:
         return emb_and_model
-    if ALLOW_DUMMY_EMBEDDINGS:
-        logger.warning("Using explicit dummy %s recognition embedding", modality)
-        return _dummy_embedding(data, dummy_dim), dummy_model
     raise RuntimeError(
         f"recognizer_unavailable:{modality}. Install the production recognizer dependency "
-        "or set RECOGNITION_ALLOW_DUMMY_EMBEDDINGS=true for local tests only."
+        "before starting the recognition worker."
     )
 
 
@@ -300,7 +265,6 @@ def main() -> int:
     logger.info("Queue: %s", RECOGNITION_QUEUE_URL)
     logger.info("Hub: %s", HUB_API_BASE)
     logger.info("Delete artifacts: %s", DELETE_ARTIFACTS)
-    logger.info("Dummy embeddings enabled: %s", ALLOW_DUMMY_EMBEDDINGS)
 
     while _running:
         try:

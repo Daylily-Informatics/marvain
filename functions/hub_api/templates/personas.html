@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+
+{% block title %}Personas - Marvain{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 class="page-title"><i class="fas fa-masks-theater"></i> Personas</h1>
+    <p class="text-muted">Agent prompt profiles used by sessions, LiveKit workers, memories, actions, and provenance hydration.</p>
+  </div>
+</div>
+
+{% if error %}
+<div class="alert alert-warning">Persona records are not fully available: {{ error }}</div>
+{% endif %}
+
+<div class="grid grid-2 mb-lg">
+  <div class="card">
+    <div class="card-header"><h3 class="card-title">Create Persona</h3></div>
+    <form id="persona-form">
+      <div class="form-group">
+        <label for="persona-agent">Agent</label>
+        <select id="persona-agent" name="agent_id" required>
+          <option value="">Select an agent</option>
+          {% for agent in agents %}
+          <option value="{{ agent.agent_id }}">{{ agent.name }} ({{ agent.role }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="persona-name">Name</label>
+        <input id="persona-name" name="name" required placeholder="Default home operator">
+      </div>
+      <div class="form-group">
+        <label for="persona-instructions">Instructions</label>
+        <textarea id="persona-instructions" name="instructions" rows="8" required placeholder="Describe how this agent should behave in sessions."></textarea>
+      </div>
+      <label class="checkbox-label">
+        <input type="checkbox" id="persona-default" name="is_default">
+        <span>Make default for new sessions</span>
+      </label>
+      <div class="form-actions mt-md">
+        <button class="btn btn-primary" type="submit"><i class="fas fa-plus"></i> Create Persona</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><h3 class="card-title">Session Hydration Contract</h3></div>
+    <div class="detail-grid">
+      <div><span class="detail-label">Default source</span><span class="detail-value">personas.is_default</span></div>
+      <div><span class="detail-label">Session link</span><span class="detail-value">sessions.persona_id</span></div>
+      <div><span class="detail-label">Worker endpoint</span><span class="detail-value"><code>/v1/agents/{agent_id}/personas/default</code></span></div>
+      <div><span class="detail-label">Lineage</span><span class="detail-value">TapDB persona object when synchronized</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="grid grid-3">
+  {% for persona in personas %}
+  <div class="card">
+    <div class="card-header">
+      <h3 class="card-title">{{ persona.name }}</h3>
+      {% if persona.is_default %}
+      <span class="badge badge-success">Default</span>
+      {% else %}
+      <span class="badge badge-outline">{{ persona.lifecycle_state }}</span>
+      {% endif %}
+    </div>
+    <div class="card-body">
+      <p class="text-muted">{{ persona.agent_name }}</p>
+      <pre class="json-display persona-instructions">{{ persona.instructions }}</pre>
+      <div class="detail-grid mt-md">
+        <div><span class="detail-label">Sessions</span><span class="detail-value">{{ persona.session_count or 0 }}</span></div>
+        <div><span class="detail-label">Updated</span><span class="detail-value">{{ persona.updated_at or "—" }}</span></div>
+      </div>
+      <div class="form-actions mt-md">
+        {% if not persona.is_default %}
+        <button class="btn btn-sm btn-outline" onclick="makeDefaultPersona('{{ persona.persona_id }}')">Make Default</button>
+        {% endif %}
+        {% if persona.tapdb_euid %}
+        <a class="btn btn-sm btn-outline" href="/tapdb/graph?start_euid={{ persona.tapdb_euid }}">TapDB Graph</a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% else %}
+  <div class="card">
+    <h3>No Personas Yet</h3>
+    <p class="text-muted">Bootstrap creates a default persona for each greenfield agent. Create one here when an agent needs a different operating style.</p>
+  </div>
+  {% endfor %}
+</div>
+
+<script>
+document.getElementById('persona-form').addEventListener('submit', async function(event) {
+  event.preventDefault();
+  const payload = {
+    agent_id: document.getElementById('persona-agent').value,
+    name: document.getElementById('persona-name').value,
+    instructions: document.getElementById('persona-instructions').value,
+    is_default: document.getElementById('persona-default').checked
+  };
+  const resp = await fetch('{{ url_for("api_create_persona") }}', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    Marvain.showToast('error', 'Persona', err.detail || 'Create failed');
+    return;
+  }
+  window.location.reload();
+});
+
+async function makeDefaultPersona(personaId) {
+  const resp = await fetch('/api/personas/' + encodeURIComponent(personaId) + '/make-default', {method: 'POST'});
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    Marvain.showToast('error', 'Persona', err.detail || 'Update failed');
+    return;
+  }
+  window.location.reload();
+}
+</script>
+{% endblock %}

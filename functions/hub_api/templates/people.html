@@ -9,6 +9,9 @@
     <p class="text-muted">Manage people and their consent grants</p>
   </div>
   <div class="page-actions">
+    <a href="/recognition" class="btn btn-outline">
+      <i class="fas fa-fingerprint"></i> Recognition
+    </a>
     <button type="button" class="btn btn-primary" onclick="Marvain.showModal('create-person-modal')">
       <i class="fas fa-plus"></i> Add Person
     </button>
@@ -738,19 +741,24 @@ async function uploadVoiceEnrollment() {
   const filename = `voice_enroll_${personId}_${Date.now()}.webm`;
   try {
     Marvain.showLoading('Uploading voice clip...');
-    const presignResp = await fetch('/api/artifacts/presign', {
+    const form = new FormData();
+    form.append('agent_id', agentId);
+    form.append('purpose', 'recognition');
+    form.append('file', _voiceBlob, filename);
+    const uploadResp = await fetch('/api/artifacts/upload', {method: 'POST', body: form});
+    if (!uploadResp.ok) {
+      const err = await uploadResp.json().catch(() => ({}));
+      throw new Error(err.detail || 'Failed to upload voice sample');
+    }
+    const upload = await uploadResp.json();
+    const enrollResp = await fetch(`/api/people/${encodeURIComponent(personId)}/enroll/voice`, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({agent_id: agentId, filename: filename, content_type: contentType, purpose: 'recognition'})
-    });
-    if (!presignResp.ok) throw new Error('Failed to presign upload');
-    const presign = await presignResp.json();
-    const putResp = await fetch(presign.upload_url, {method:'PUT', headers:{'Content-Type': contentType}, body:_voiceBlob});
-    if (!putResp.ok) throw new Error('Failed to upload to S3');
-    const enrollResp = await fetch(`/api/people/${personId}/enroll/voice`, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({artifact_key: presign.key, artifact_bucket: presign.bucket, content_type: contentType})
+      body: JSON.stringify({
+        artifact_key: upload.key,
+        artifact_bucket: upload.bucket,
+        content_type: contentType
+      })
     });
     if (!enrollResp.ok) {
       const err = await enrollResp.json();
@@ -803,19 +811,24 @@ async function uploadFaceEnrollment() {
   const filename = `face_enroll_${personId}_${Date.now()}.jpg`;
   try {
     Marvain.showLoading('Uploading snapshot...');
-    const presignResp = await fetch('/api/artifacts/presign', {
+    const form = new FormData();
+    form.append('agent_id', agentId);
+    form.append('purpose', 'recognition');
+    form.append('file', _faceBlob, filename);
+    const uploadResp = await fetch('/api/artifacts/upload', {method: 'POST', body: form});
+    if (!uploadResp.ok) {
+      const err = await uploadResp.json().catch(() => ({}));
+      throw new Error(err.detail || 'Failed to upload face sample');
+    }
+    const upload = await uploadResp.json();
+    const enrollResp = await fetch(`/api/people/${encodeURIComponent(personId)}/enroll/face`, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({agent_id: agentId, filename: filename, content_type: contentType, purpose: 'recognition'})
-    });
-    if (!presignResp.ok) throw new Error('Failed to presign upload');
-    const presign = await presignResp.json();
-    const putResp = await fetch(presign.upload_url, {method:'PUT', headers:{'Content-Type': contentType}, body:_faceBlob});
-    if (!putResp.ok) throw new Error('Failed to upload to S3');
-    const enrollResp = await fetch(`/api/people/${personId}/enroll/face`, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({artifact_key: presign.key, artifact_bucket: presign.bucket, content_type: contentType})
+      body: JSON.stringify({
+        artifact_key: upload.key,
+        artifact_bucket: upload.bucket,
+        content_type: contentType
+      })
     });
     if (!enrollResp.ok) {
       const err = await enrollResp.json();

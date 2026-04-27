@@ -16,7 +16,7 @@ Marvain remains an AWS-backed hub-and-satellite system. The Hub owns identity, p
 - Deleted memory must leave tombstone/projection invalidation.
 - Tool action must have proposal/approval/execution/result lifecycle.
 - TapDB cannot replace specialized vector, queue, media, artifact, or WebSocket stores.
-- Any TapDB canonical role requires dual-write consistency tests before migration.
+- TapDB-owned semantic state must be accessed through the Marvain TapDB boundary or the mounted TapDB web/DAG APIs.
 
 ## 3. Files and subsystems likely to be touched, with repo-grounded paths
 
@@ -34,32 +34,27 @@ Marvain remains an AWS-backed hub-and-satellite system. The Hub owns identity, p
 - Infrastructure: `template.yaml`, `config/marvain-example.yaml`.
 - Tests: `tests/test_*`, especially action, planner, websockets, devices, remote satellite, LiveKit, route smoke.
 
-## 4. Files and subsystems to avoid touching initially
+## 4. Specialized systems retained outside TapDB
 
 - Do not replace `RdsData` or all SQL access in the first implementation round.
 - Do not replace LiveKit token/media code in `layers/shared/python/agent_hub/livekit_tokens.py` or `apps/agent_worker/worker.py` beyond context/session interfaces.
 - Do not replace SQS queues in `template.yaml`.
 - Do not replace DynamoDB WebSocket tables in `template.yaml`.
 - Do not change external integration providers unless required by audit/provenance interfaces.
-- Do not perform a big-bang migration of `memories`, `events`, `actions`, `devices`, or biometrics.
+- Do not replace typed projections unless TapDB provides the required hot-path query behavior.
 
-## 5. Recommended migration seams
+## 5. Current semantic implementation boundaries
 
-- Add explicit session objects/IDs to events and agent worker metadata.
-- Add memory candidate/commit/tombstone APIs and projections while retaining existing memory rows during pilot.
-- Add recognition observation/hypothesis/presence tables/projections before changing recognizer behavior.
-- Add device WebSocket authentication with device token before relying on remote command routing.
-- Add TapDB adapter with idempotent source-ID-to-EUID mapping.
-- Add dual-write consistency checker.
+- Events and agent worker metadata carry explicit session object IDs.
+- Memory candidate/commit/tombstone APIs and projections require source evidence.
+- Recognition observation/hypothesis/presence projections require active consent and source artifacts.
+- Device WebSocket authentication uses device tokens for remote command routing.
+- The TapDB adapter maintains idempotent source-ID-to-EUID mapping.
+- Projection consistency checks compare typed projections against TapDB semantic state.
 
-## 6. Recommended pilot scope
+## 6. Required TapDB semantic scope
 
-Pilot TapDB on two flows only:
-
-1. Memory provenance: transcript event -> memory candidate -> committed memory -> recall projection -> provenance query.
-2. Recognition provenance: artifact event -> recognition observation -> identity hypothesis -> presence assertion.
-
-Do not pilot TapDB on all devices/actions/integrations simultaneously.
+TapDB semantic lineage covers memory, recognition, presence, action, device, location, space, session, person, account, agent, persona, and artifact-reference flows.
 
 ## 7. Required test gates
 
@@ -68,7 +63,7 @@ Do not pilot TapDB on all devices/actions/integrations simultaneously.
 - New recognition observation/hypothesis/unknown tests pass.
 - Device WebSocket auth and command routing tests pass.
 - TapDB template seed and lineage golden tests pass.
-- Dual-write consistency tests pass.
+- TapDB/projection consistency tests pass.
 - Failure-injection tests pass for TapDB outage, model outage, duplicate SQS, and device disconnect.
 
 ## 8. Required documentation updates

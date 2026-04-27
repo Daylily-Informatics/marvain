@@ -74,7 +74,7 @@ TapDB should be integrated behind a Marvain-owned adapter/service boundary. The 
 
 Current Marvain Lambda code uses Aurora Serverless RDS Data API through `RdsData` (`layers/shared/python/agent_hub/rds_data.py`). TapDB uses SQLAlchemy/psycopg direct connections (`daylily_tapdb/connection.py`) and optional Aurora direct SSL/IAM connection (`daylily_tapdb/aurora/connection.py`). Therefore direct in-Lambda TapDB use would require new VPC/RDS Proxy/direct-connection configuration or a Data API adapter that TapDB does not currently implement.
 
-Chosen recommendation: start with a Marvain TapDB adapter/service boundary, not deep inline replacement. A module-first pilot is acceptable only for local/dev or VPC workers with direct DB connectivity. Production Lambda integration should either add a small internal TapDB writer service or a deliberate direct-connection/RDS Proxy architecture.
+Chosen recommendation: use a Marvain TapDB adapter/service boundary as the production semantic boundary. Runtime code must use the adapter or the mounted TapDB web/DAG APIs; direct TapDB table access outside that boundary is forbidden. Production Lambda integration should either use the internal TapDB writer service or a deliberate direct-connection/RDS Proxy architecture.
 
 ## 8. Marvain TapDB template pack specification
 
@@ -136,13 +136,13 @@ Each template should define `json_addl_schema`, lifecycle state enum, external M
 - `action_status_projection` for low-latency UI/tool runner state.
 - `session_recent_context_projection` for prompt hydration.
 
-## 11. Dual-write and backfill strategy constraints
+## 11. Semantic projection and failure constraints
 
-- All dual-write objects must carry stable Marvain source IDs and TapDB EUIDs.
-- Dual-write must be idempotent.
-- TapDB failures must not block critical realtime ingestion during pilot; they must create observable retry/dead-letter state.
-- Backfill must not fabricate consent or memory approval state; unknown historical gaps should be marked as legacy/unknown.
+- All semantic objects carry stable Marvain source IDs and TapDB EUIDs.
+- TapDB writes are idempotent at the Marvain source-object level.
+- TapDB failures create observable retry/dead-letter state and must not fabricate memory, consent, recognition, or action lifecycle state.
 - Projection rebuilds must be repeatable from canonical TapDB plus immutable artifacts/events where possible.
+- Marvain must not package or fork TapDB-owned schema; schema initialization uses the installed `daylily-tapdb[admin]==6.0.5` package assets/APIs.
 
 ## 12. Performance and operational risks
 
@@ -150,7 +150,7 @@ Each template should define `json_addl_schema`, lifecycle state enum, external M
 - Lineage graph queries may be too slow for prompt hot-path hydration without projections.
 - Generic JSON payloads can hide invariants unless Marvain services validate states.
 - Template/EUID prefix configuration must be solved for Marvain domain/app scoping before production use.
-- Dual-write drift can create conflicting truth unless consistency tests are mandatory.
+- Projection drift can create conflicting UI state unless consistency tests are mandatory.
 
 ## 13. Security, consent, privacy, and audit implications
 
@@ -161,12 +161,12 @@ TapDB can record consent grants, policy decisions, and lineage, but enforcement 
 - Create event -> candidate memory -> committed memory -> recall projection -> provenance query returns event/device/space/session/person.
 - Recognition artifact -> observation -> identity hypothesis -> consent edge -> presence assertion.
 - Action proposal -> approval -> SQS dispatch -> execution -> result; TapDB graph links all steps.
-- Dual-write failure creates retry/dead-letter without losing operational event.
+- TapDB write failure creates retry/dead-letter without losing operational event.
 - Deleting/tombstoning memory invalidates recall projection and preserves provenance.
 
 ## 15. Open questions
 
 - Same Aurora cluster or separate TapDB database/service?
 - What Marvain domain code and prefix registry entries will be used?
-- Which entities become canonical in TapDB in the first pilot?
+- Which future non-V1 semantic entities should be added to the TapDB template pack?
 - Should TapDB outbox dispatch to SQS or only record dispatch intent while Marvain continues to enqueue SQS directly?

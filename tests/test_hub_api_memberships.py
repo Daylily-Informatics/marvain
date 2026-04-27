@@ -397,7 +397,74 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         self.assertIn("embedding", params)
         self.assertIsInstance(params["embedding"], str)
         self.assertTrue(params["embedding"].startswith("[0.125000,-0.500000,0.250000"))
+        memory_insert_sql = fake_db.execute.call_args_list[-1].args[0]
+        self.assertIn("NULLIF(CAST(:scene_context AS text), '')", memory_insert_sql)
         self.assertTrue(r.json().get("source_event_id"))
+
+    def test_create_memory_preserves_worker_source_event_provenance(self) -> None:
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(
+                device_id="d1",
+                agent_id="a1",
+                scopes=["memories:write"],
+                capabilities={"kind": "worker"},
+            )
+        )
+        self.mod._cfg = dataclasses.replace(self.mod._cfg, openai_secret_arn=None, audit_bucket=None)
+
+        fake_db = mock.Mock()
+        fake_db.query = mock.Mock(return_value=[{"agent_id": "a2"}])
+        fake_db.execute = mock.Mock()
+        self.mod._db = fake_db
+
+        r = self.client.post(
+            "/v1/memories",
+            headers={"Authorization": "Bearer devtok"},
+            json={
+                "space_id": "space-1",
+                "source_event_id": "event-1",
+                "session_id": "session-1",
+                "tier": "episodic",
+                "content": "live transcript memory",
+                "metadata": {"source": "livekit_agent_worker", "role": "user"},
+            },
+        )
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["source_event_id"], "event-1")
+        executed_sql = "\n".join(call.args[0] for call in fake_db.execute.call_args_list)
+        self.assertNotIn("INSERT INTO events", executed_sql)
+        self.assertIn("INSERT INTO memory_candidates", executed_sql)
+        self.assertIn("INSERT INTO memories", executed_sql)
+        candidate_params = fake_db.execute.call_args_list[0].args[1]
+        memory_params = fake_db.execute.call_args_list[1].args[1]
+        self.assertEqual(candidate_params["source_event_id"], "event-1")
+        self.assertEqual(memory_params["source_event_id"], "event-1")
+        self.assertEqual(memory_params["session_id"], "session-1")
+
+    def test_create_memory_database_failure_returns_json_error(self) -> None:
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(device_id="d1", agent_id="a1", scopes=["memories:write"])
+        )
+        self.mod._cfg = dataclasses.replace(self.mod._cfg, openai_secret_arn=None, audit_bucket=None)
+
+        fake_db = mock.Mock()
+        fake_db.query = mock.Mock(return_value=[{"agent_id": "a1"}])
+        fake_db.begin = mock.Mock(return_value="tx-1")
+        fake_db.execute = mock.Mock(side_effect=RuntimeError("rds failed"))
+        fake_db.rollback = mock.Mock()
+        self.mod._db = fake_db
+
+        r = self.client.post(
+            "/v1/memories",
+            headers={"Authorization": "Bearer devtok"},
+            json={"space_id": "space-1", "source_event_id": "event-1", "tier": "episodic", "content": "hello"},
+        )
+
+        self.assertEqual(r.status_code, 500)
+        self.assertEqual(r.headers["content-type"].split(";")[0], "application/json")
+        self.assertEqual(r.json()["detail"], "Failed to create memory")
+        fake_db.rollback.assert_called_once_with("tx-1")
 
     def test_create_memory_allows_admin_device_across_agents(self) -> None:
         self.mod.authenticate_device = mock.Mock(
@@ -461,6 +528,66 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         body = r.json()
         self.assertEqual(len(body["events"]), 1)
         self.assertEqual(body["events"][0]["event_id"], "e1")
+
+    def test_default_persona_allows_worker_device_across_agents(self) -> None:
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(
+                device_id="d1",
+                agent_id="11111111-1111-1111-1111-111111111111",
+                scopes=["events:read"],
+                capabilities={"kind": "worker"},
+            )
+        )
+        self.mod.is_agent_disabled = mock.Mock(return_value=False)
+
+        fake_db = mock.Mock()
+        fake_db.query = mock.Mock(
+            side_effect=[
+                [{"ok": 1}],
+                [
+                    {
+                        "persona_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        "agent_id": "22222222-2222-2222-2222-222222222222",
+                        "name": "Forge",
+                        "instructions": "Be useful.",
+                    }
+                ],
+            ]
+        )
+        fake_db.execute = mock.Mock()
+        self.mod._db = fake_db
+
+        r = self.client.get(
+            "/v1/agents/22222222-2222-2222-2222-222222222222/personas/default"
+            "?space_id=33333333-3333-3333-3333-333333333333"
+            "&session_id=44444444-4444-4444-4444-444444444444",
+            headers={"Authorization": "Bearer devtok"},
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["persona_id"], "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        fake_db.execute.assert_called_once()
+
+    def test_default_persona_denies_non_worker_device_across_agents(self) -> None:
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(
+                device_id="d1",
+                agent_id="11111111-1111-1111-1111-111111111111",
+                scopes=["events:read"],
+                capabilities={},
+            )
+        )
+        self.mod.is_agent_disabled = mock.Mock(return_value=False)
+        fake_db = mock.Mock()
+        fake_db.query = mock.Mock()
+        self.mod._db = fake_db
+
+        r = self.client.get(
+            "/v1/agents/22222222-2222-2222-2222-222222222222/personas/default"
+            "?space_id=33333333-3333-3333-3333-333333333333",
+            headers={"Authorization": "Bearer devtok"},
+        )
+        self.assertEqual(r.status_code, 403)
+        fake_db.query.assert_not_called()
 
     def test_create_agent_success(self) -> None:
         """Test POST /v1/agents creates an agent and makes user the owner."""

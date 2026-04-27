@@ -144,12 +144,12 @@ class TestGuiApp(unittest.TestCase):
     def test_home_redirects_to_login_without_cookie(self) -> None:
         r = self.client.get("/", follow_redirects=False)
         self.assertEqual(r.status_code, 302)
-        self.assertEqual(r.headers.get("location"), "/login?next=%2F")
+        self.assertEqual(r.headers.get("location"), "/login")
 
     def test_livekit_test_redirects_to_login_without_cookie(self) -> None:
         r = self.client.get("/livekit-test", follow_redirects=False)
         self.assertEqual(r.status_code, 302)
-        self.assertEqual(r.headers.get("location"), "/login?next=%2Flivekit-test")
+        self.assertEqual(r.headers.get("location"), "/login")
 
     def test_logged_out_page_is_not_cacheable(self) -> None:
         r = self.client.get("/logged-out")
@@ -230,7 +230,7 @@ class TestGuiApp(unittest.TestCase):
     def test_home_redirects_to_login_when_unauthenticated(self) -> None:
         r = self.client.get("/", follow_redirects=False)
         self.assertEqual(r.status_code, 302)
-        self.assertEqual(r.headers.get("location"), "/login?next=%2F")
+        self.assertEqual(r.headers.get("location"), "/login")
 
     def test_livekit_test_renders_when_authenticated(self) -> None:
         self.mod._gui_get_user = mock.Mock(
@@ -314,11 +314,13 @@ class TestAgentsGui(unittest.TestCase):
         cls._orig_gui_get_user = cls.mod._gui_get_user
         cls._orig_list_agents_for_user = cls.mod.list_agents_for_user
         cls._orig_get_db = cls.mod._get_db
+        cls._orig_check_agent_permission = cls.mod.check_agent_permission
 
     def setUp(self) -> None:
         self.mod._gui_get_user = self._orig_gui_get_user
         self.mod.list_agents_for_user = self._orig_list_agents_for_user
         self.mod._get_db = self._orig_get_db
+        self.mod.check_agent_permission = self._orig_check_agent_permission
         self.client = self.__class__._TestClient(self.mod.app, raise_server_exceptions=False)
 
     def test_agents_redirects_to_login_when_unauthenticated(self) -> None:
@@ -499,7 +501,13 @@ class TestAgentsGui(unittest.TestCase):
             # Verify transaction was used
             mock_db.begin.assert_called_once()
             mock_db.commit.assert_called_once_with("tx-123")
-            self.assertEqual(mock_db.execute.call_count, 2)  # Create agent + create membership
+            self.assertEqual(mock_db.execute.call_count, 3)  # Create agent + membership + default persona
+            persona_call = mock_db.execute.call_args_list[2]
+            persona_sql = persona_call.args[0]
+            persona_params = persona_call.args[1]
+            self.assertIn("INSERT INTO personas", persona_sql)
+            self.assertEqual(persona_params["name"], self.mod.DEFAULT_AGENT_PERSONA_NAME)
+            self.assertEqual(persona_call.kwargs["transaction_id"], "tx-123")
         finally:
             self.mod._cfg = orig_cfg
 
@@ -785,12 +793,14 @@ class TestPeopleGui(unittest.TestCase):
         cls._orig_list_agents_for_user = cls.mod.list_agents_for_user
         cls._orig_get_db = cls.mod._get_db
         cls._orig_check_agent_permission = cls.mod.check_agent_permission
+        cls._orig_enqueue_recognition_event = cls.mod._enqueue_recognition_event
 
     def setUp(self) -> None:
         self.mod._gui_get_user = self._orig_gui_get_user
         self.mod.list_agents_for_user = self._orig_list_agents_for_user
         self.mod._get_db = self._orig_get_db
         self.mod.check_agent_permission = self._orig_check_agent_permission
+        self.mod._enqueue_recognition_event = self._orig_enqueue_recognition_event
         self.client = self.__class__._TestClient(self.mod.app, raise_server_exceptions=False)
 
     def test_people_redirects_to_login_when_unauthenticated(self) -> None:
@@ -814,6 +824,22 @@ class TestPeopleGui(unittest.TestCase):
 
         self.assertEqual(r.status_code, 200)
         self.assertIn("People", r.text)
+
+    def test_people_voice_browser_upload_uses_people_enrollment_endpoint(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[])
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+        self.mod.list_agents_for_user = mock.Mock(return_value=[])
+
+        r = self.client.get("/people")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("/api/people/${encodeURIComponent(personId)}/enroll/voice", r.text)
+        self.assertIn("/api/people/${encodeURIComponent(personId)}/enroll/face", r.text)
+        self.assertNotIn("fetch('/api/recognition/enrollments'", r.text)
 
     def test_create_person_requires_authentication(self) -> None:
         self.mod._gui_get_user = mock.Mock(return_value=None)
@@ -874,6 +900,342 @@ class TestPeopleGui(unittest.TestCase):
         self.assertEqual(data["message"], "Consent updated")
         self.assertEqual(data["person_id"], "person-1")
 
+    def test_browser_voice_enrollment_requires_active_voice_consent(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(
+            side_effect=[
+                [{"person_id": "person-1", "agent_id": "agent-1"}],
+                [],
+            ]
+        )
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+        self.mod._enqueue_recognition_event = mock.Mock(return_value=False)
+
+        r = self.client.post(
+            "/api/people/person-1/enroll/voice",
+            json={"artifact_bucket": "bucket", "artifact_key": "recognition/sample.webm", "content_type": "audio/webm"},
+        )
+
+        self.assertEqual(r.status_code, 403)
+        self.assertIn("Missing active consent for voice", r.json()["detail"])
+        mock_db.execute.assert_not_called()
+
+    def test_browser_voice_enrollment_records_event_after_upload_and_consent(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(
+            side_effect=[
+                [{"person_id": "person-1", "agent_id": "agent-1"}],
+                [{"consent_id": "consent-1", "consent_type": "voice"}],
+                [{"space_id": "space-1"}],
+            ]
+        )
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+        self.mod._enqueue_recognition_event = mock.Mock(return_value=False)
+
+        r = self.client.post(
+            "/api/people/person-1/enroll/voice",
+            json={"artifact_bucket": "bucket", "artifact_key": "recognition/sample.webm", "content_type": "audio/webm"},
+        )
+
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["space_id"], "space-1")
+        self.assertIn("event_id", data)
+        executed_sql = "\n".join(str(call.args[0]) for call in mock_db.execute.call_args_list)
+        self.assertIn("INSERT INTO events", executed_sql)
+        event_params = mock_db.execute.call_args_list[0].args[1]
+        self.assertEqual(event_params["person_id"], "person-1")
+        self.assertEqual(event_params["type"], "voice.sample")
+
+
+class TestRecognitionGui(unittest.TestCase):
+    """Tests for the recognition/presence GUI route contract."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_hub_api_app_module()
+        from fastapi.testclient import TestClient
+
+        cls._TestClient = TestClient
+        cls._orig_gui_get_user = cls.mod._gui_get_user
+        cls._orig_list_agents_for_user = cls.mod.list_agents_for_user
+        cls._orig_get_db = cls.mod._get_db
+
+    def setUp(self) -> None:
+        self.mod._gui_get_user = self._orig_gui_get_user
+        self.mod.list_agents_for_user = self._orig_list_agents_for_user
+        self.mod._get_db = self._orig_get_db
+        self.client = self.__class__._TestClient(self.mod.app, raise_server_exceptions=False)
+
+    def test_recognition_redirects_to_login_when_unauthenticated(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.get("/recognition", follow_redirects=False)
+
+        self.assertIn(r.status_code, [302, 307])
+        self.assertIn("/login", r.headers.get("location", ""))
+        self.assertNotIn("next=", r.headers.get("location", ""))
+
+    def test_recognition_renders_route_context_when_authenticated(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        self.mod.list_agents_for_user = mock.Mock(
+            return_value=[types.SimpleNamespace(agent_id="agent-1", name="Agent One", role="owner")]
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(
+            side_effect=[
+                [
+                    {
+                        "observation_id": "obs-1",
+                        "agent_id": "agent-1",
+                        "agent_name": "Agent One",
+                        "space_name": "Kitchen",
+                        "device_name": "Wall Display",
+                        "artifact_id": "artifact-1",
+                        "modality": "face",
+                        "lifecycle_state": "embedded",
+                        "model_name": "face-v1",
+                        "created_at": "2026-04-26T10:00:00Z",
+                    }
+                ],
+                [
+                    {
+                        "hypothesis_id": "hyp-1",
+                        "observation_id": "obs-1",
+                        "agent_id": "agent-1",
+                        "candidate_person_id": "person-1",
+                        "person_name": "Major",
+                        "score": 0.98,
+                        "decision": "accepted",
+                        "consent_id": "consent-1",
+                        "created_at": "2026-04-26T10:00:03Z",
+                    }
+                ],
+                [],
+                [],
+                [
+                    {
+                        "presence_assertion_id": "pa-1",
+                        "agent_id": "agent-1",
+                        "person_id": "person-1",
+                        "person_name": "Major",
+                        "space_id": "space-1",
+                        "space_name": "Kitchen",
+                        "status": "present",
+                        "source": "recognition",
+                        "asserted_at": "2026-04-26T10:00:04Z",
+                    }
+                ],
+                [],
+                [],
+                [],
+            ]
+        )
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.get("/recognition")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Recognition", r.text)
+        self.assertIn("obs-1", r.text)
+        self.assertIn("hyp-1", r.text)
+        self.assertIn("pa-1", r.text)
+        self.assertIn("Consent Grant Context Pending", r.text)
+        self.assertIn("Artifact Reference Context Pending", r.text)
+
+    def test_create_recognition_enrollment_requires_active_consent(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        self.mod.check_agent_permission = mock.Mock(return_value=True)
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(
+            side_effect=[
+                [{"person_id": "person-1", "agent_id": "agent-1"}],
+                [],
+            ]
+        )
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post(
+            "/api/recognition/enrollments",
+            json={
+                "person_id": "person-1",
+                "modality": "voice",
+                "artifact_bucket": "bucket",
+                "artifact_key": "recognition/sample.webm",
+                "content_type": "audio/webm",
+            },
+        )
+
+        self.assertEqual(r.status_code, 403)
+        self.assertIn("Missing active consent", r.json()["detail"])
+        mock_db.execute.assert_not_called()
+
+    def test_create_recognition_enrollment_records_observation_after_consent(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        self.mod.check_agent_permission = mock.Mock(return_value=True)
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(
+            side_effect=[
+                [{"person_id": "person-1", "agent_id": "agent-1"}],
+                [{"consent_id": "consent-1", "consent_type": "voice"}],
+            ]
+        )
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post(
+            "/api/recognition/enrollments",
+            json={
+                "person_id": "person-1",
+                "modality": "voice",
+                "artifact_bucket": "bucket",
+                "artifact_key": "recognition/sample.webm",
+                "content_type": "audio/webm",
+            },
+        )
+
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["person_id"], "person-1")
+        self.assertEqual(data["consent_id"], "consent-1")
+        executed_sql = "\n".join(str(call.args[0]) for call in mock_db.execute.call_args_list)
+        self.assertIn("INSERT INTO artifact_references", executed_sql)
+        self.assertIn("INSERT INTO recognition_observations", executed_sql)
+        self.assertIn("INSERT INTO recognition_hypotheses", executed_sql)
+        self.assertNotIn("INSERT INTO people", executed_sql)
+
+    def test_accept_hypothesis_requires_active_candidate_consent(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        self.mod.check_agent_permission = mock.Mock(return_value=True)
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(
+            side_effect=[
+                [
+                    {
+                        "hypothesis_id": "hyp-1",
+                        "observation_id": "obs-1",
+                        "person_id": "person-1",
+                        "confidence": 0.97,
+                        "agent_id": "agent-1",
+                        "space_id": "space-1",
+                        "location_id": "loc-1",
+                        "modality": "face",
+                    }
+                ],
+                [],
+            ]
+        )
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post("/api/recognition/hypotheses/hyp-1/accept", json={})
+
+        self.assertEqual(r.status_code, 403)
+        self.assertIn("Missing active consent", r.json()["detail"])
+        mock_db.execute.assert_not_called()
+
+    def test_accept_hypothesis_creates_presence_assertion(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        self.mod.check_agent_permission = mock.Mock(return_value=True)
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(
+            side_effect=[
+                [
+                    {
+                        "hypothesis_id": "hyp-1",
+                        "observation_id": "obs-1",
+                        "person_id": "person-1",
+                        "confidence": 0.97,
+                        "agent_id": "agent-1",
+                        "space_id": "space-1",
+                        "location_id": "loc-1",
+                        "modality": "face",
+                    }
+                ],
+                [{"consent_id": "consent-face-1", "consent_type": "face"}],
+            ]
+        )
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post("/api/recognition/hypotheses/hyp-1/accept", json={"reason": "operator confirmed"})
+
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["decision"], "accepted")
+        self.assertEqual(data["consent_id"], "consent-face-1")
+        executed_sql = "\n".join(str(call.args[0]) for call in mock_db.execute.call_args_list)
+        self.assertIn("UPDATE recognition_hypotheses", executed_sql)
+        self.assertIn("UPDATE recognition_observations", executed_sql)
+        self.assertIn("INSERT INTO presence_assertions", executed_sql)
+
+    def test_observation_no_match_does_not_create_people(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        self.mod.check_agent_permission = mock.Mock(return_value=True)
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[{"observation_id": "obs-1", "agent_id": "agent-1"}])
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post("/api/recognition/observations/obs-1/no-match", json={"reason": "unknown visitor"})
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["decision"], "no_match")
+        executed_sql = "\n".join(str(call.args[0]) for call in mock_db.execute.call_args_list)
+        self.assertIn("SET lifecycle_state = 'no_match'", executed_sql)
+        self.assertIn("candidate_person_id", executed_sql)
+        self.assertNotIn("INSERT INTO people", executed_sql)
+
+    def test_revoke_biometric_projection_updates_matching_projection(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        self.mod.check_agent_permission = mock.Mock(return_value=True)
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(
+            return_value=[
+                {
+                    "modality": "voice",
+                    "projection_id": "voiceprint-1",
+                    "agent_id": "agent-1",
+                    "person_id": "person-1",
+                }
+            ]
+        )
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post("/api/recognition/biometrics/voiceprint-1/revoke", json={"reason": "consent revoked"})
+
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["revoked"])
+        executed_sql = "\n".join(str(call.args[0]) for call in mock_db.execute.call_args_list)
+        self.assertIn("UPDATE voiceprints", executed_sql)
+        self.assertIn("revoked_at = now()", executed_sql)
+
 
 class TestMemoriesGui(unittest.TestCase):
     """Tests for the memories browser GUI routes."""
@@ -919,6 +1281,325 @@ class TestMemoriesGui(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn("Memories", r.text)
 
+    def test_gui_create_memory_records_evidence_candidate_not_direct_memory(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[{"ok": 1}])
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post(
+            "/api/memories",
+            json={
+                "agent_id": "agent-1",
+                "space_id": "space-1",
+                "tier": "semantic",
+                "content": "User prefers evidence-backed memory review.",
+                "confidence": 0.9,
+            },
+        )
+
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertTrue(data["memory_candidate_id"])
+        self.assertTrue(data["source_event_id"])
+        executed_sql = "\n".join(call.args[0] for call in mock_db.execute.call_args_list)
+        self.assertIn("INSERT INTO events", executed_sql)
+        self.assertIn("memory.evidence", executed_sql)
+        self.assertIn("INSERT INTO memory_candidates", executed_sql)
+        self.assertNotIn("INSERT INTO memories", executed_sql)
+
+    def test_list_memory_candidates_returns_visible_candidates(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(
+            return_value=[
+                {
+                    "memory_candidate_id": "candidate-1",
+                    "agent_id": "agent-1",
+                    "agent_name": "Agent One",
+                    "source_event_id": "event-1",
+                    "source_action_id": None,
+                    "space_id": "space-1",
+                    "space_name": "Kitchen",
+                    "session_id": "session-1",
+                    "subject_person_id": None,
+                    "subject_person_name": None,
+                    "tier": "semantic",
+                    "content": "Candidate content",
+                    "participants": '["person:1"]',
+                    "model": None,
+                    "confidence": 0.8,
+                    "lifecycle_state": "candidate",
+                    "tapdb_euid": None,
+                    "created_at": "2026-04-26T10:00:00+00:00",
+                    "reviewed_at": None,
+                }
+            ]
+        )
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.get("/api/memory-candidates")
+
+        self.assertEqual(r.status_code, 200)
+        candidate = r.json()["candidates"][0]
+        self.assertEqual(candidate["memory_candidate_id"], "candidate-1")
+        self.assertEqual(candidate["participants"], ["person:1"])
+        query_sql, query_params = mock_db.query.call_args.args
+        self.assertNotIn(":agent_id IS NULL", query_sql)
+        self.assertNotIn("agent_id", query_params)
+
+    def test_list_memory_candidates_returns_json_error_when_database_fails(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(side_effect=RuntimeError("database unavailable"))
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.get("/api/memory-candidates")
+
+        self.assertEqual(r.status_code, 500)
+        self.assertEqual(r.headers["content-type"].split(";")[0], "application/json")
+        self.assertEqual(r.json()["detail"], "Failed to list memory candidates")
+
+    def test_commit_memory_candidate_requires_source_evidence_for_semantic_memory(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(
+            return_value=[
+                {
+                    "memory_candidate_id": "candidate-1",
+                    "agent_id": "agent-1",
+                    "source_event_id": None,
+                    "source_action_id": None,
+                    "space_id": "space-1",
+                    "session_id": None,
+                    "subject_person_id": None,
+                    "tier": "semantic",
+                    "content": "No evidence",
+                    "participants": "[]",
+                    "confidence": 1.0,
+                    "lifecycle_state": "candidate",
+                }
+            ]
+        )
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post("/api/memory-candidates/candidate-1/commit", json={})
+
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("source evidence", r.text)
+        mock_db.execute.assert_not_called()
+
+    def test_commit_memory_candidate_inserts_memory_projection_and_marks_committed(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(
+            return_value=[
+                {
+                    "memory_candidate_id": "candidate-1",
+                    "agent_id": "agent-1",
+                    "source_event_id": "event-1",
+                    "source_action_id": "action-1",
+                    "space_id": "space-1",
+                    "session_id": "session-1",
+                    "subject_person_id": "person-1",
+                    "tier": "semantic",
+                    "content": "Evidence-backed memory",
+                    "participants": '["person:1"]',
+                    "confidence": 0.77,
+                    "lifecycle_state": "candidate",
+                }
+            ]
+        )
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post("/api/memory-candidates/candidate-1/commit", json={"tags": ["gui"]})
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["status"], "committed")
+        insert_sql, insert_params = mock_db.execute.call_args_list[0].args
+        update_sql = mock_db.execute.call_args_list[1].args[0]
+        self.assertIn("INSERT INTO memories", insert_sql)
+        self.assertEqual(insert_params["source_event_id"], "event-1")
+        self.assertEqual(insert_params["candidate_id"], "candidate-1")
+        self.assertIn("lifecycle_state = 'committed'", update_sql)
+
+    def test_patch_and_reject_memory_candidate_routes(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        row = {
+            "memory_candidate_id": "candidate-1",
+            "agent_id": "agent-1",
+            "source_event_id": "event-1",
+            "space_id": "space-1",
+            "tier": "semantic",
+            "content": "Draft",
+            "participants": "[]",
+            "confidence": 0.5,
+            "lifecycle_state": "candidate",
+        }
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[row])
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        patch = self.client.patch(
+            "/api/memory-candidates/candidate-1",
+            json={"content": "Edited", "confidence": 0.7, "participants": ["person:1"]},
+        )
+        reject = self.client.post("/api/memory-candidates/candidate-1/reject", json={"reason": "duplicate"})
+
+        self.assertEqual(patch.status_code, 200)
+        self.assertTrue(patch.json()["updated"])
+        self.assertEqual(reject.status_code, 200)
+        self.assertEqual(reject.json()["status"], "rejected")
+
+    def test_supersede_memory_marks_projection_superseded(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(
+            return_value=[{"memory_id": "memory-1", "agent_id": "agent-1", "lifecycle_state": "committed"}]
+        )
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post(
+            "/api/memories/memory-1/supersede",
+            json={"superseded_by_memory_id": "memory-2", "reason": "newer evidence"},
+        )
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["status"], "superseded")
+        sql, params = mock_db.execute.call_args.args
+        self.assertIn("lifecycle_state = 'superseded'", sql)
+        self.assertEqual(params["superseded_by_memory_id"], "memory-2")
+
+    def test_get_memory_exposes_lifecycle_provenance_and_recall_fields(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(
+            return_value=[
+                {
+                    "memory_id": "memory-1",
+                    "agent_id": "agent-1",
+                    "agent_name": "Agent One",
+                    "space_id": "space-1",
+                    "space_name": "Kitchen",
+                    "memory_candidate_id": "candidate-1",
+                    "source_event_id": "event-1",
+                    "source_action_id": "action-1",
+                    "session_id": "session-1",
+                    "location_id": "location-1",
+                    "location_name": "Home",
+                    "lifecycle_state": "tombstoned",
+                    "tapdb_euid": "mvn-memory-1",
+                    "tombstoned_at": "2026-04-26T10:00:00+00:00",
+                    "tier": "semantic",
+                    "content": "User prefers brief memory detail views.",
+                    "participants": '["person:user-1"]',
+                    "provenance": '{"source":"planner","source_event_id":"event-1","source_action_id":"action-1"}',
+                    "retention": "{}",
+                    "recall_explanation": (
+                        '{"explanation":"Matched by source event and semantic distance.",'
+                        '"memory_candidate_id":"candidate-1","source_event_id":"event-1","session_id":"session-1"}'
+                    ),
+                    "memory_tombstone_id": "tombstone-1",
+                    "tombstone_reason": "gui_delete",
+                    "tombstone_actor_type": "user",
+                    "tombstone_actor_id": "u1",
+                    "tombstone_tapdb_euid": "mvn-tombstone-1",
+                    "tombstone_created_at": "2026-04-26T10:00:00+00:00",
+                    "created_at": "2026-04-26T09:00:00+00:00",
+                    "subject_person_id": "person-1",
+                    "subject_person_name": "Major",
+                    "tags": ["gui"],
+                    "scene_context": "Kitchen",
+                    "modality": "text",
+                    "confidence": 0.91,
+                    "related_memory_ids": [],
+                }
+            ]
+        )
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.get("/api/memories/memory-1")
+
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["memory_candidate_id"], "candidate-1")
+        self.assertEqual(data["source_event_id"], "event-1")
+        self.assertEqual(data["source_action_id"], "action-1")
+        self.assertEqual(data["session_id"], "session-1")
+        self.assertEqual(data["location_id"], "location-1")
+        self.assertEqual(data["location_name"], "Home")
+        self.assertEqual(data["lifecycle_state"], "tombstoned")
+        self.assertEqual(data["tombstoned_at"], "2026-04-26T10:00:00+00:00")
+        self.assertEqual(data["recall_explanation"]["memory_candidate_id"], "candidate-1")
+        self.assertEqual(data["recall_explanation"]["source_event_id"], "event-1")
+        self.assertEqual(data["tombstone"]["memory_tombstone_id"], "tombstone-1")
+        self.assertEqual(data["tombstone"]["reason"], "gui_delete")
+
+    def test_memories_template_surfaces_provenance_and_lineage_details(self) -> None:
+        template = (Path(__file__).resolve().parents[1] / "functions/hub_api/templates/memories.html").read_text(
+            encoding="utf-8"
+        )
+
+        for label in (
+            "Memory Candidate ID",
+            "Source Event",
+            "Source Action",
+            "Session",
+            "Location",
+            "Lifecycle State",
+            "Tombstone",
+            "Recall Explanation",
+            "Lineage",
+        ):
+            self.assertIn(label, template)
+
+        for field in (
+            "memory_candidate_id",
+            "source_event_id",
+            "source_action_id",
+            "session_id",
+            "location_id",
+            "lifecycle_state",
+            "tombstoned_at",
+            "recall_explanation",
+            "tapdb_euid",
+        ):
+            self.assertIn(field, template)
+
+        self.assertIn("/api/events/", template)
+        self.assertIn("/api/actions/", template)
+        self.assertIn("/tapdb/graph?start_euid=", template)
+
+    def test_memories_template_uses_json_or_text_fetch_errors(self) -> None:
+        template = (Path(__file__).resolve().parents[1] / "functions/hub_api/templates/memories.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("async function readMemoryFetchResponse", template)
+        self.assertIn("JSON.parse(text)", template)
+        self.assertNotIn("await response.json()", template)
+
     def test_delete_memory_requires_authentication(self) -> None:
         self.mod._gui_get_user = mock.Mock(return_value=None)
 
@@ -953,6 +1634,204 @@ class TestMemoriesGui(unittest.TestCase):
         data = r.json()
         self.assertEqual(data["message"], "Memory deleted")
         self.assertEqual(data["memory_id"], "memory-1")
+
+
+class TestTapdbNativeGraphIntegration(unittest.TestCase):
+    """Tests for the embedded native TapDB graph and DAG surfaces."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_hub_api_app_module()
+        from fastapi.testclient import TestClient
+
+        cls._TestClient = TestClient
+        cls._orig_gui_get_user = cls.mod._gui_get_user
+        cls._orig_resolve_tapdb_runtime_config = cls.mod._resolve_tapdb_runtime_config
+        cls._orig_create_tapdb_web_app = cls.mod.create_tapdb_web_app
+        cls._orig_create_tapdb_dag_router = cls.mod.create_tapdb_dag_router
+
+    def setUp(self) -> None:
+        self.client = self.__class__._TestClient(self.mod.app, raise_server_exceptions=False)
+        self.mod._gui_get_user = self.__class__._orig_gui_get_user
+        self.mod._resolve_tapdb_runtime_config = self.__class__._orig_resolve_tapdb_runtime_config
+        self.mod.create_tapdb_web_app = self.__class__._orig_create_tapdb_web_app
+        self.mod.create_tapdb_dag_router = self.__class__._orig_create_tapdb_dag_router
+        self.mod._tapdb_web_asgi_app = None
+        self.mod._tapdb_dag_asgi_app = None
+
+    def tearDown(self) -> None:
+        self.mod._gui_get_user = self.__class__._orig_gui_get_user
+        self.mod._resolve_tapdb_runtime_config = self.__class__._orig_resolve_tapdb_runtime_config
+        self.mod.create_tapdb_web_app = self.__class__._orig_create_tapdb_web_app
+        self.mod.create_tapdb_dag_router = self.__class__._orig_create_tapdb_dag_router
+        self.mod._tapdb_web_asgi_app = None
+        self.mod._tapdb_dag_asgi_app = None
+
+    def _auth_user(self):
+        return self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+
+    def test_tapdb_graph_mount_redirects_unauthenticated_users(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.get("/tapdb/graph?start_euid=MVN1", follow_redirects=False)
+
+        self.assertIn(r.status_code, [302, 307])
+        self.assertIn("/login", r.headers.get("location", ""))
+        self.assertNotIn("/tapdb/login", r.headers.get("location", ""))
+        self.assertNotIn("next=", r.headers.get("location", ""))
+
+    def test_tapdb_graph_mount_uses_host_session_bridge_when_authenticated(self) -> None:
+        captured: dict[str, object] = {}
+
+        async def fake_tapdb_app(scope, receive, send):
+            captured["scoped_user"] = scope.get("marvain_authenticated_user")
+            captured["tapdb_host_user"] = scope.get("tapdb_host_user")
+            response = self.mod.PlainTextResponse("tapdb graph ok")
+            await response(scope, receive, send)
+
+        def fake_create_tapdb_web_app(*, config_path, env_name, host_bridge):
+            captured["config_path"] = config_path
+            captured["env_name"] = env_name
+            captured["host_bridge"] = host_bridge
+            return fake_tapdb_app
+
+        self.mod._gui_get_user = mock.Mock(return_value=self._auth_user())
+        self.mod._resolve_tapdb_runtime_config = mock.Mock(
+            return_value=self.mod.TapdbRuntimeConfig(config_path="/tmp/tapdb-config.yaml", env_name="test")
+        )
+        self.mod.create_tapdb_web_app = fake_create_tapdb_web_app
+
+        r = self.client.get("/tapdb/graph?start_euid=MVN1")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.text, "tapdb graph ok")
+        self.assertEqual(captured["config_path"], "/tmp/tapdb-config.yaml")
+        self.assertEqual(captured["env_name"], "test")
+        self.assertEqual(captured["host_bridge"].auth_mode, "host_session")
+        self.assertEqual(captured["scoped_user"].email, "user@example.com")
+        self.assertEqual(captured["tapdb_host_user"]["email"], "user@example.com")
+
+    def test_tapdb_graph_mount_returns_clear_config_error_when_missing(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=self._auth_user())
+        self.mod._resolve_tapdb_runtime_config = mock.Mock(
+            side_effect=self.mod.MarvainTapdbConfigError("TapDB runtime is not configured. Set TAPDB_CONFIG_PATH.")
+        )
+
+        r = self.client.get("/tapdb/graph?start_euid=MVN1")
+
+        self.assertEqual(r.status_code, 503)
+        self.assertEqual(r.json()["code"], "tapdb_runtime_not_configured")
+        self.assertIn("TAPDB_CONFIG_PATH", r.json()["detail"])
+
+    def test_tapdb_query_mount_returns_200_when_authenticated(self) -> None:
+        captured: dict[str, object] = {}
+
+        async def fake_tapdb_app(scope, receive, send):
+            captured["path"] = scope.get("path")
+            captured["query_string"] = scope.get("query_string")
+            captured["tapdb_host_user"] = scope.get("tapdb_host_user")
+            response = self.mod.HTMLResponse("<html><body>Complex Query</body></html>")
+            await response(scope, receive, send)
+
+        def fake_create_tapdb_web_app(*, config_path, env_name, host_bridge):
+            captured["host_bridge"] = host_bridge
+            return fake_tapdb_app
+
+        self.mod._gui_get_user = mock.Mock(return_value=self._auth_user())
+        self.mod._resolve_tapdb_runtime_config = mock.Mock(
+            return_value=self.mod.TapdbRuntimeConfig(config_path="/tmp/tapdb-config.yaml", env_name="test")
+        )
+        self.mod.create_tapdb_web_app = fake_create_tapdb_web_app
+
+        r = self.client.get("/tapdb/query?kind=instance&category=&type=&subtype=&name_like=&euid_like=&limit=50")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Complex Query", r.text)
+        self.assertEqual(captured["path"], "/query")
+        self.assertIn(b"kind=instance", captured["query_string"])
+        self.assertEqual(captured["host_bridge"].auth_mode, "host_session")
+        self.assertEqual(captured["tapdb_host_user"]["email"], "user@example.com")
+
+    def test_tapdb_query_mount_returns_clear_config_error_when_missing(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=self._auth_user())
+        self.mod._resolve_tapdb_runtime_config = mock.Mock(
+            side_effect=self.mod.MarvainTapdbConfigError("TapDB runtime is not configured. Set TAPDB_CONFIG_PATH.")
+        )
+
+        r = self.client.get("/tapdb/query?kind=instance&category=&type=&subtype=&name_like=&euid_like=&limit=50")
+
+        self.assertEqual(r.status_code, 503)
+        self.assertEqual(r.headers.get("content-type"), "application/json")
+        self.assertEqual(r.json()["code"], "tapdb_runtime_not_configured")
+        self.assertIn("TAPDB_CONFIG_PATH", r.json()["detail"])
+
+    def test_tapdb_query_mount_converts_child_runtime_exception_to_503_json(self) -> None:
+        async def fake_tapdb_app(scope, receive, send):
+            raise ConnectionError("database unavailable")
+
+        self.mod._gui_get_user = mock.Mock(return_value=self._auth_user())
+        self.mod._resolve_tapdb_runtime_config = mock.Mock(
+            return_value=self.mod.TapdbRuntimeConfig(config_path="/tmp/tapdb-config.yaml", env_name="test")
+        )
+        self.mod.create_tapdb_web_app = mock.Mock(return_value=fake_tapdb_app)
+
+        r = self.client.get("/tapdb/query?kind=instance&category=&type=&subtype=&name_like=&euid_like=&limit=50")
+
+        self.assertEqual(r.status_code, 503)
+        self.assertEqual(r.headers.get("content-type"), "application/json")
+        self.assertEqual(r.json()["code"], "tapdb_runtime_unavailable")
+        self.assertNotIn("database unavailable", r.json()["detail"])
+
+    def test_api_dag_routes_require_marvain_session_auth(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=None)
+
+        r = self.client.get("/api/dag/data?start_euid=MVN1")
+
+        self.assertEqual(r.status_code, 401)
+        self.assertEqual(r.json()["detail"], "Not authenticated")
+
+    def test_api_dag_routes_return_clear_config_error_when_missing(self) -> None:
+        self.mod._gui_get_user = mock.Mock(return_value=self._auth_user())
+        self.mod._resolve_tapdb_runtime_config = mock.Mock(
+            side_effect=self.mod.MarvainTapdbConfigError("TapDB runtime is not configured. Set TAPDB_CONFIG_PATH.")
+        )
+
+        r = self.client.get("/api/dag/data?start_euid=MVN1")
+
+        self.assertEqual(r.status_code, 503)
+        self.assertEqual(r.json()["code"], "tapdb_runtime_not_configured")
+        self.assertIn("TAPDB_CONFIG_PATH", r.json()["detail"])
+
+    def test_api_dag_routes_are_registered_from_tapdb_router(self) -> None:
+        from fastapi import APIRouter
+
+        captured: dict[str, str] = {}
+
+        def fake_create_tapdb_dag_router(*, config_path, env_name, service_name=None):
+            captured["config_path"] = config_path
+            captured["env_name"] = env_name
+            captured["service_name"] = service_name
+            router = APIRouter()
+
+            @router.get("/api/dag/data")
+            async def fake_dag_data(start_euid: str):
+                return {"ok": True, "start_euid": start_euid}
+
+            return router
+
+        self.mod._gui_get_user = mock.Mock(return_value=self._auth_user())
+        self.mod._resolve_tapdb_runtime_config = mock.Mock(
+            return_value=self.mod.TapdbRuntimeConfig(config_path="/tmp/tapdb-config.yaml", env_name="test")
+        )
+        self.mod.create_tapdb_dag_router = fake_create_tapdb_dag_router
+
+        r = self.client.get("/api/dag/data?start_euid=MVN1")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), {"ok": True, "start_euid": "MVN1"})
+        self.assertEqual(
+            captured, {"config_path": "/tmp/tapdb-config.yaml", "env_name": "test", "service_name": "marvain"}
+        )
 
 
 class TestEventsGui(unittest.TestCase):
@@ -1324,6 +2203,95 @@ class TestArtifactsGui(unittest.TestCase):
         self.assertIn("upload_url", data)
         self.assertIn("key", data)
 
+    def test_upload_artifact_recognition_uses_recognition_prefix_and_returns_uri(self):
+        self.mod._gui_get_user = mock.Mock(return_value=mock.Mock(user_id="user-1", email="test@example.com"))
+        self.mod.check_agent_permission = mock.Mock(return_value=True)
+        self.mod._get_db = mock.Mock(return_value=mock.Mock())
+
+        mock_s3 = mock.Mock()
+        self.mod._get_s3 = mock.Mock(return_value=mock_s3)
+        self.mod._cfg = mock.Mock(artifact_bucket="test-bucket", stage="dev")
+
+        r = self.client.post(
+            "/api/artifacts/upload",
+            data={"agent_id": "agent-1", "purpose": "recognition"},
+            files={"file": ("voice.webm", b"sample", "audio/webm")},
+        )
+
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["bucket"], "test-bucket")
+        self.assertEqual(data["purpose"], "recognition")
+        self.assertTrue(data["key"].startswith("recognition/agent_id=agent-1/"))
+        self.assertEqual(data["uri"], f"s3://test-bucket/{data['key']}")
+        mock_s3.put_object.assert_called_once()
+        self.assertEqual(mock_s3.put_object.call_args.kwargs["ContentType"], "audio/webm")
+
+
+class TestLocationsGui(unittest.TestCase):
+    """Tests for greenfield location topology GUI routes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = _load_hub_api_app_module()
+        from fastapi.testclient import TestClient
+
+        cls._TestClient = TestClient
+        cls._orig_gui_get_user = cls.mod._gui_get_user
+        cls._orig_get_db = cls.mod._get_db
+        cls._orig_list_agents_for_user = cls.mod.list_agents_for_user
+        cls._orig_cfg = cls.mod._cfg
+
+    def setUp(self):
+        self.client = self.__class__._TestClient(self.mod.app, raise_server_exceptions=False)
+        self.mod._gui_get_user = self._orig_gui_get_user
+        self.mod._get_db = self._orig_get_db
+        self.mod.list_agents_for_user = self._orig_list_agents_for_user
+        self.mod._cfg = self._orig_cfg
+
+    def tearDown(self):
+        self.mod._gui_get_user = self._orig_gui_get_user
+        self.mod._get_db = self._orig_get_db
+        self.mod.list_agents_for_user = self._orig_list_agents_for_user
+        self.mod._cfg = self._orig_cfg
+
+    def test_locations_query_matches_greenfield_schema(self):
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        self.mod.list_agents_for_user = mock.Mock(
+            return_value=[mock.Mock(agent_id="agent-1", name="Agent One", role="owner")]
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(
+            return_value=[
+                {
+                    "location_id": "location-1",
+                    "agent_id": "agent-1",
+                    "agent_name": "Agent One",
+                    "name": "Lab",
+                    "description": None,
+                    "address": "Bench 1",
+                    "metadata": "{}",
+                    "tapdb_euid": "MVN-location-1",
+                    "space_count": 1,
+                    "device_count": 2,
+                }
+            ]
+        )
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.get("/locations")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Lab", r.text)
+        self.assertIn("Bench 1", r.text)
+        query_sql = mock_db.query.call_args.args[0]
+        self.assertIn("l.address_label AS address", query_sql)
+        self.assertIn("l.tapdb_euid", query_sql)
+        self.assertNotIn("l.description", query_sql)
+        self.assertNotIn("l.address,", query_sql)
+
 
 class TestAuditGui(unittest.TestCase):
     """Tests for audit GUI routes."""
@@ -1541,6 +2509,8 @@ class TestWebSocketContext(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         # Should NOT contain WebSocket initialization
         self.assertNotIn("wsConnect", r.text)
+        self.assertIn("Realtime unavailable", r.text)
+        self.assertIn("Browser real-time updates are not configured", r.text)
 
     def test_ws_context_included_when_ws_url_configured(self):
         """WebSocket context should be present when WS_API_URL is configured."""
@@ -1558,6 +2528,8 @@ class TestWebSocketContext(unittest.TestCase):
         # Should contain WebSocket initialization
         self.assertIn("wsConnect", r.text)
         self.assertIn("wss://test-ws.example.com", r.text)
+        self.assertIn("Realtime connecting", r.text)
+        self.assertIn("Connected to browser real-time updates", r.text)
         # Access token must not be rendered into HTML.
         self.assertNotIn("test-token", r.text)
 
@@ -1599,6 +2571,23 @@ class TestWebSocketContext(unittest.TestCase):
         # Should contain WebSocket indicator
         self.assertIn("ws-indicator", r.text)
         self.assertIn("ws-status-text", r.text)
+        self.assertIn("Realtime connecting", r.text)
+
+    def test_ws_indicator_script_connects_when_dom_already_loaded(self):
+        """WebSocket startup should not depend on catching DOMContentLoaded."""
+        self.mod._gui_get_user = mock.Mock(return_value=mock.Mock(user_id="user-1", email="test@example.com"))
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[])
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+        self.mod.list_agents_for_user = mock.Mock(return_value=[])
+        self.mod.list_spaces_for_user = mock.Mock(return_value=[])
+        self.mod._cfg = mock.Mock(stage="dev", ws_api_url="wss://test-ws.example.com")
+
+        r = self.client.get("/", cookies={"marvain_access_token": "test-token"})
+
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("document.readyState === 'loading'", r.text)
+        self.assertIn("connectWhenReady()", r.text)
 
 
 class TestProfileGui(unittest.TestCase):
@@ -1793,3 +2782,20 @@ class TestLiveKitTokenExpiration(unittest.TestCase):
         # Should have token URL for fetching tokens (data-token-url attribute)
         self.assertIn("data-token-url", r.text)
         self.assertIn("/livekit/token", r.text)
+
+    def test_livekit_test_visual_observation_requires_worker_analysis(self) -> None:
+        """Camera frames should not become visual claims until the worker analyzes them."""
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        self.mod._get_db = mock.Mock(return_value=mock.Mock())
+        self.mod.list_spaces_for_user = mock.Mock(return_value=[])
+        self.mod._cfg = mock.Mock(stage="dev", ws_api_url=None)
+
+        r = self.client.get("/livekit-test", cookies={"marvain_access_token": "test-token"})
+
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("type: 'visual_observation'", r.text)
+        self.assertIn("description: ''", r.text)
+        self.assertIn("The worker must analyze it before making visual claims", r.text)
+        self.assertNotIn("Its contents have not been analyzed by a vision model", r.text)
