@@ -13,6 +13,8 @@ import threading
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Iterable, TextIO
 
@@ -2256,6 +2258,755 @@ def _rds_execute(
     if parameters:
         cmd.extend(["--parameters", json.dumps(parameters)])
     return run_json(cmd, env=cmd_env(ctx.env), dry_run=dry_run)
+
+
+def _rds_field_to_python(field: dict[str, Any]) -> Any:
+    if field.get("isNull"):
+        return None
+    for key in ("stringValue", "longValue", "doubleValue", "booleanValue", "blobValue"):
+        if key in field:
+            return field[key]
+    if "arrayValue" in field:
+        value = field["arrayValue"]
+        if not isinstance(value, dict):
+            return value
+        for key in ("stringValues", "longValues", "doubleValues", "booleanValues"):
+            if key in value:
+                return value[key]
+    return None
+
+
+def _rds_rows(result: Any) -> list[dict[str, Any]]:
+    if not isinstance(result, dict):
+        return []
+    metadata = result.get("columnMetadata") or []
+    names = [str(item.get("name") or "") for item in metadata if isinstance(item, dict)]
+    rows: list[dict[str, Any]] = []
+    for record in result.get("records") or []:
+        if not isinstance(record, list):
+            continue
+        row: dict[str, Any] = {}
+        for idx, field in enumerate(record):
+            if idx >= len(names) or not names[idx] or not isinstance(field, dict):
+                continue
+            row[names[idx]] = _rds_field_to_python(field)
+        rows.append(_decode_json_aliases(row))
+    return rows
+
+
+def _decode_json_aliases(row: dict[str, Any]) -> dict[str, Any]:
+    decoded: dict[str, Any] = {}
+    for key, value in row.items():
+        if not key.endswith("_json"):
+            decoded[key] = value
+            continue
+        out_key = key.removesuffix("_json")
+        if value in (None, ""):
+            decoded[out_key] = None
+            continue
+        try:
+            decoded[out_key] = json.loads(str(value))
+        except json.JSONDecodeError as exc:
+            raise ConfigError(f"Invalid JSON in export field {key}") from exc
+    return decoded
+
+
+def _query_agent_export_rows(
+    ctx: Ctx,
+    *,
+    resource_arn: str,
+    secret_arn: str,
+    db_name: str,
+    agent_id: str,
+    sql: str,
+) -> list[dict[str, Any]]:
+    result = _rds_execute(
+        ctx,
+        resource_arn=resource_arn,
+        secret_arn=secret_arn,
+        db_name=db_name,
+        sql=sql,
+        parameters=[{"name": "agent_id", "value": {"stringValue": agent_id}}],
+        dry_run=False,
+    )
+    return _rds_rows(result)
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+
+
+def _stack_secret_references(stack_outputs: dict[str, str]) -> dict[str, str]:
+    refs: dict[str, str] = {}
+    for key, value in sorted(stack_outputs.items()):
+        if "secretarn" in key.lower() and value:
+            refs[key] = value
+    return refs
+
+
+def agent_export(ctx: Ctx, *, agent_id: str, dry_run: bool) -> dict[str, Any]:
+    """Export agent-defining records without plaintext secrets or token material."""
+    if dry_run:
+        raise ConfigError("agent export is read-only and does not support --dry-run")
+
+    stack_outputs = aws_stack_outputs(ctx, dry_run=False)
+    try:
+        resource_arn = stack_outputs["DbClusterArn"]
+        secret_arn = stack_outputs["DbSecretArn"]
+        db_name = stack_outputs["DbName"]
+    except KeyError as exc:
+        raise ConfigError(f"Missing required stack output: {exc}. Did you deploy the stack?") from exc
+
+    agent_rows = _query_agent_export_rows(
+        ctx,
+        resource_arn=resource_arn,
+        secret_arn=secret_arn,
+        db_name=db_name,
+        agent_id=agent_id,
+        sql="""
+        SELECT agent_id::TEXT AS agent_id,
+               name,
+               disabled,
+               lifecycle_state,
+               stasis_at::TEXT AS stasis_at,
+               soft_deleted_at::TEXT AS soft_deleted_at,
+               lifecycle_reason,
+               maturity_state,
+               maturity_evidence::TEXT AS maturity_evidence_json,
+               created_at::TEXT AS created_at
+        FROM agents
+        WHERE agent_id = :agent_id::uuid
+        """,
+    )
+    if not agent_rows:
+        raise ConfigError(f"Agent not found: {agent_id}")
+
+    records: dict[str, Any] = {
+        "agent": agent_rows[0],
+        "personas": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT persona_id::TEXT AS persona_id,
+                   agent_id::TEXT AS agent_id,
+                   name,
+                   instructions,
+                   is_default,
+                   lifecycle_state,
+                   tapdb_euid,
+                   created_at::TEXT AS created_at,
+                   updated_at::TEXT AS updated_at,
+                   disabled_at::TEXT AS disabled_at
+            FROM personas
+            WHERE agent_id = :agent_id::uuid
+            ORDER BY is_default DESC, created_at ASC, persona_id ASC
+            """,
+        ),
+        "constitutions": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT constitution_id::TEXT AS constitution_id,
+                   agent_id::TEXT AS agent_id,
+                   active_revision_id::TEXT AS active_revision_id,
+                   created_at::TEXT AS created_at
+            FROM agent_constitutions
+            WHERE agent_id = :agent_id::uuid
+            ORDER BY created_at ASC, constitution_id ASC
+            """,
+        ),
+        "constitution_revisions": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT revision_id::TEXT AS revision_id,
+                   constitution_id::TEXT AS constitution_id,
+                   agent_id::TEXT AS agent_id,
+                   founder_section,
+                   user_section,
+                   agent_section,
+                   change_source,
+                   change_reason,
+                   provenance::TEXT AS provenance_json,
+                   created_by_user_id::TEXT AS created_by_user_id,
+                   created_by_agent_id::TEXT AS created_by_agent_id,
+                   created_at::TEXT AS created_at
+            FROM agent_constitution_revisions
+            WHERE agent_id = :agent_id::uuid
+            ORDER BY created_at ASC, revision_id ASC
+            """,
+        ),
+        "lifecycle_requests": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT request_id::TEXT AS request_id,
+                   agent_id::TEXT AS agent_id,
+                   requested_by_type,
+                   requested_by_id,
+                   request_type,
+                   rationale,
+                   status,
+                   reviewer_user_id::TEXT AS reviewer_user_id,
+                   reviewer_agent_id::TEXT AS reviewer_agent_id,
+                   reviewer_findings::TEXT AS reviewer_findings_json,
+                   created_at::TEXT AS created_at,
+                   reviewed_at::TEXT AS reviewed_at
+            FROM agent_lifecycle_requests
+            WHERE agent_id = :agent_id::uuid
+            ORDER BY created_at ASC, request_id ASC
+            """,
+        ),
+        "locations": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT location_id::TEXT AS location_id,
+                   agent_id::TEXT AS agent_id,
+                   name,
+                   address_label,
+                   metadata::TEXT AS metadata_json,
+                   tapdb_euid,
+                   created_at::TEXT AS created_at,
+                   disabled_at::TEXT AS disabled_at
+            FROM locations
+            WHERE agent_id = :agent_id::uuid
+            ORDER BY created_at ASC, location_id ASC
+            """,
+        ),
+        "spaces": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT space_id::TEXT AS space_id,
+                   agent_id::TEXT AS agent_id,
+                   name,
+                   privacy_mode,
+                   location_id::TEXT AS location_id,
+                   room_label,
+                   livekit_room_mode,
+                   tapdb_euid,
+                   lifecycle_state,
+                   disabled_at::TEXT AS disabled_at,
+                   lifecycle_reason,
+                   created_at::TEXT AS created_at
+            FROM spaces
+            WHERE agent_id = :agent_id::uuid
+            ORDER BY created_at ASC, space_id ASC
+            """,
+        ),
+        "devices": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT device_id::TEXT AS device_id,
+                   agent_id::TEXT AS agent_id,
+                   name,
+                   capabilities::TEXT AS capabilities_json,
+                   scopes::TEXT AS scopes_json,
+                   metadata::TEXT AS metadata_json,
+                   location_label,
+                   location_coords::TEXT AS location_coords_json,
+                   provisioned_at::TEXT AS provisioned_at,
+                   provisioned_by,
+                   location_id::TEXT AS location_id,
+                   current_space_id::TEXT AS current_space_id,
+                   tapdb_euid,
+                   lifecycle_state,
+                   lifecycle_reason,
+                   revoked_at::TEXT AS revoked_at,
+                   created_at::TEXT AS created_at
+            FROM devices
+            WHERE agent_id = :agent_id::uuid
+            ORDER BY created_at ASC, device_id ASC
+            """,
+        ),
+        "memberships": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT m.agent_id::TEXT AS agent_id,
+                   m.user_id::TEXT AS user_id,
+                   u.cognito_sub,
+                   u.email,
+                   m.role,
+                   m.relationship_label,
+                   m.created_at::TEXT AS created_at,
+                   m.revoked_at::TEXT AS revoked_at
+            FROM agent_memberships m
+            LEFT JOIN users u ON u.user_id = m.user_id
+            WHERE m.agent_id = :agent_id::uuid
+            ORDER BY m.created_at ASC, m.user_id ASC
+            """,
+        ),
+        "integration_accounts": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT integration_account_id::TEXT AS integration_account_id,
+                   agent_id::TEXT AS agent_id,
+                   provider,
+                   display_name,
+                   external_account_id,
+                   default_space_id::TEXT AS default_space_id,
+                   credentials_secret_arn,
+                   scopes::TEXT AS scopes_json,
+                   config::TEXT AS config_json,
+                   status,
+                   created_at::TEXT AS created_at,
+                   updated_at::TEXT AS updated_at
+            FROM integration_accounts
+            WHERE agent_id = :agent_id::uuid
+            ORDER BY created_at ASC, integration_account_id ASC
+            """,
+        ),
+        "agent_tokens": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT token_id::TEXT AS token_id,
+                   issuer_agent_id::TEXT AS issuer_agent_id,
+                   target_agent_id::TEXT AS target_agent_id,
+                   name,
+                   scopes::TEXT AS scopes_json,
+                   allowed_spaces::TEXT AS allowed_spaces_json,
+                   expires_at::TEXT AS expires_at,
+                   revoked_at::TEXT AS revoked_at,
+                   last_used_at::TEXT AS last_used_at,
+                   created_at::TEXT AS created_at,
+                   created_by_user_id::TEXT AS created_by_user_id
+            FROM agent_tokens
+            WHERE issuer_agent_id = :agent_id::uuid
+            ORDER BY created_at ASC, token_id ASC
+            """,
+        ),
+        "people": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT person_id::TEXT AS person_id,
+                   agent_id::TEXT AS agent_id,
+                   display_name,
+                   aliases::TEXT AS aliases_json,
+                   lifecycle_state,
+                   disabled_at::TEXT AS disabled_at,
+                   lifecycle_reason,
+                   created_at::TEXT AS created_at
+            FROM people
+            WHERE agent_id = :agent_id::uuid
+            ORDER BY created_at ASC, person_id ASC
+            """,
+        ),
+        "sessions": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT session_id::TEXT AS session_id,
+                   agent_id::TEXT AS agent_id,
+                   location_id::TEXT AS location_id,
+                   space_id::TEXT AS space_id,
+                   persona_id::TEXT AS persona_id,
+                   livekit_room,
+                   status,
+                   started_at::TEXT AS started_at,
+                   ended_at::TEXT AS ended_at,
+                   metadata::TEXT AS metadata_json,
+                   tapdb_euid
+            FROM sessions
+            WHERE agent_id = :agent_id::uuid
+            ORDER BY started_at ASC, session_id ASC
+            """,
+        ),
+        "events": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT event_id::TEXT AS event_id,
+                   agent_id::TEXT AS agent_id,
+                   space_id::TEXT AS space_id,
+                   device_id::TEXT AS device_id,
+                   person_id::TEXT AS person_id,
+                   session_id::TEXT AS session_id,
+                   location_id::TEXT AS location_id,
+                   artifact_id::TEXT AS artifact_id,
+                   type,
+                   payload::TEXT AS payload_json,
+                   lifecycle_state,
+                   lifecycle_reason,
+                   tapdb_euid,
+                   created_at::TEXT AS created_at
+            FROM events
+            WHERE agent_id = :agent_id::uuid
+            ORDER BY created_at ASC, event_id ASC
+            """,
+        ),
+        "memory_candidates": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT memory_candidate_id::TEXT AS memory_candidate_id,
+                   agent_id::TEXT AS agent_id,
+                   source_event_id::TEXT AS source_event_id,
+                   source_action_id::TEXT AS source_action_id,
+                   space_id::TEXT AS space_id,
+                   session_id::TEXT AS session_id,
+                   subject_person_id::TEXT AS subject_person_id,
+                   tier,
+                   content,
+                   participants::TEXT AS participants_json,
+                   model,
+                   confidence,
+                   lifecycle_state,
+                   provenance_class,
+                   interacting_agent_id::TEXT AS interacting_agent_id,
+                   tapdb_euid,
+                   created_at::TEXT AS created_at,
+                   reviewed_at::TEXT AS reviewed_at
+            FROM memory_candidates
+            WHERE agent_id = :agent_id::uuid
+            ORDER BY created_at ASC, memory_candidate_id ASC
+            """,
+        ),
+        "memories": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT memory_id::TEXT AS memory_id,
+                   agent_id::TEXT AS agent_id,
+                   space_id::TEXT AS space_id,
+                   tier,
+                   content,
+                   participants::TEXT AS participants_json,
+                   provenance::TEXT AS provenance_json,
+                   retention::TEXT AS retention_json,
+                   subject_person_id::TEXT AS subject_person_id,
+                   to_json(tags)::TEXT AS tags_json,
+                   scene_context,
+                   modality,
+                   confidence,
+                   to_json(related_memory_ids)::TEXT AS related_memory_ids_json,
+                   memory_candidate_id::TEXT AS memory_candidate_id,
+                   source_event_id::TEXT AS source_event_id,
+                   source_action_id::TEXT AS source_action_id,
+                   session_id::TEXT AS session_id,
+                   location_id::TEXT AS location_id,
+                   lifecycle_state,
+                   tombstoned_at::TEXT AS tombstoned_at,
+                   recall_explanation::TEXT AS recall_explanation_json,
+                   provenance_class,
+                   interacting_agent_id::TEXT AS interacting_agent_id,
+                   tapdb_euid,
+                   created_at::TEXT AS created_at
+            FROM memories
+            WHERE agent_id = :agent_id::uuid
+            ORDER BY created_at ASC, memory_id ASC
+            """,
+        ),
+        "memory_annotations": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT memory_annotation_id::TEXT AS memory_annotation_id,
+                   memory_id::TEXT AS memory_id,
+                   agent_id::TEXT AS agent_id,
+                   user_id::TEXT AS user_id,
+                   annotation_type,
+                   comment,
+                   proposed_tier,
+                   weight_delta,
+                   metadata::TEXT AS metadata_json,
+                   created_at::TEXT AS created_at
+            FROM memory_annotations
+            WHERE agent_id = :agent_id::uuid
+            ORDER BY created_at ASC, memory_annotation_id ASC
+            """,
+        ),
+        "memory_opinions": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT memory_opinion_id::TEXT AS memory_opinion_id,
+                   memory_id::TEXT AS memory_id,
+                   agent_id::TEXT AS agent_id,
+                   opinion_agent_id::TEXT AS opinion_agent_id,
+                   user_id::TEXT AS user_id,
+                   stance,
+                   rationale,
+                   confidence,
+                   evidence::TEXT AS evidence_json,
+                   superseded_by_opinion_id::TEXT AS superseded_by_opinion_id,
+                   created_at::TEXT AS created_at,
+                   superseded_at::TEXT AS superseded_at
+            FROM memory_opinions
+            WHERE agent_id = :agent_id::uuid
+            ORDER BY created_at ASC, memory_opinion_id ASC
+            """,
+        ),
+        "actions": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT action_id::TEXT AS action_id,
+                   agent_id::TEXT AS agent_id,
+                   space_id::TEXT AS space_id,
+                   session_id::TEXT AS session_id,
+                   location_id::TEXT AS location_id,
+                   target_device_id::TEXT AS target_device_id,
+                   correlation_id::TEXT AS correlation_id,
+                   kind,
+                   payload::TEXT AS payload_json,
+                   required_scopes::TEXT AS required_scopes_json,
+                   status,
+                   approval_source,
+                   approval_policy_id::TEXT AS approval_policy_id,
+                   approved_by::TEXT AS approved_by,
+                   approved_at::TEXT AS approved_at,
+                   result::TEXT AS result_json,
+                   error,
+                   completed_at::TEXT AS completed_at,
+                   awaiting_result_until::TEXT AS awaiting_result_until,
+                   device_acknowledged_at::TEXT AS device_acknowledged_at,
+                   device_response_at::TEXT AS device_response_at,
+                   execution_metadata::TEXT AS execution_metadata_json,
+                   request_idempotency_key,
+                   request_actor_type,
+                   request_actor_id,
+                   request_origin,
+                   lifecycle_state,
+                   lifecycle_reason,
+                   tapdb_euid,
+                   created_at::TEXT AS created_at,
+                   updated_at::TEXT AS updated_at,
+                   executed_at::TEXT AS executed_at
+            FROM actions
+            WHERE agent_id = :agent_id::uuid
+            ORDER BY created_at ASC, action_id ASC
+            """,
+        ),
+        "artifact_references": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT artifact_id::TEXT AS artifact_id,
+                   agent_id::TEXT AS agent_id,
+                   space_id::TEXT AS space_id,
+                   device_id::TEXT AS device_id,
+                   session_id::TEXT AS session_id,
+                   bucket,
+                   object_key,
+                   uri,
+                   media_type,
+                   sha256,
+                   lifecycle_state,
+                   tapdb_euid,
+                   created_at::TEXT AS created_at,
+                   expires_at::TEXT AS expires_at
+            FROM artifact_references
+            WHERE agent_id = :agent_id::uuid
+            ORDER BY created_at ASC, artifact_id ASC
+            """,
+        ),
+        "recognition_observations": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT recognition_observation_id::TEXT AS recognition_observation_id,
+                   agent_id::TEXT AS agent_id,
+                   space_id::TEXT AS space_id,
+                   location_id::TEXT AS location_id,
+                   session_id::TEXT AS session_id,
+                   device_id::TEXT AS device_id,
+                   artifact_id::TEXT AS artifact_id,
+                   source_event_id::TEXT AS source_event_id,
+                   modality,
+                   lifecycle_state,
+                   model,
+                   tapdb_euid,
+                   created_at::TEXT AS created_at
+            FROM recognition_observations
+            WHERE agent_id = :agent_id::uuid
+            ORDER BY created_at ASC, recognition_observation_id ASC
+            """,
+        ),
+        "recognition_hypotheses": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT h.identity_hypothesis_id::TEXT AS identity_hypothesis_id,
+                   h.recognition_observation_id::TEXT AS recognition_observation_id,
+                   o.agent_id::TEXT AS agent_id,
+                   h.candidate_person_id::TEXT AS candidate_person_id,
+                   h.consent_id::TEXT AS consent_id,
+                   h.confidence,
+                   h.decision,
+                   h.reason,
+                   h.tapdb_euid,
+                   h.created_at::TEXT AS created_at,
+                   h.decided_at::TEXT AS decided_at
+            FROM recognition_hypotheses h
+            JOIN recognition_observations o ON o.recognition_observation_id = h.recognition_observation_id
+            WHERE o.agent_id = :agent_id::uuid
+            ORDER BY h.created_at ASC, h.identity_hypothesis_id ASC
+            """,
+        ),
+        "presence_assertions": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT presence_assertion_id::TEXT AS presence_assertion_id,
+                   agent_id::TEXT AS agent_id,
+                   space_id::TEXT AS space_id,
+                   location_id::TEXT AS location_id,
+                   person_id::TEXT AS person_id,
+                   identity_hypothesis_id::TEXT AS identity_hypothesis_id,
+                   confidence,
+                   status,
+                   tapdb_euid,
+                   asserted_at::TEXT AS asserted_at,
+                   retracted_at::TEXT AS retracted_at
+            FROM presence_assertions
+            WHERE agent_id = :agent_id::uuid
+            ORDER BY asserted_at ASC, presence_assertion_id ASC
+            """,
+        ),
+        "audit_state": _query_agent_export_rows(
+            ctx,
+            resource_arn=resource_arn,
+            secret_arn=secret_arn,
+            db_name=db_name,
+            agent_id=agent_id,
+            sql="""
+            SELECT agent_id::TEXT AS agent_id,
+                   last_hash,
+                   updated_at::TEXT AS updated_at
+            FROM audit_state
+            WHERE agent_id = :agent_id::uuid
+            """,
+        ),
+    }
+
+    integration_secret_refs = [
+        {
+            "integration_account_id": account.get("integration_account_id"),
+            "provider": account.get("provider"),
+            "credentials_secret_arn": account.get("credentials_secret_arn"),
+        }
+        for account in records["integration_accounts"]
+        if account.get("credentials_secret_arn")
+    ]
+
+    export_body: dict[str, Any] = {
+        "schema": "marvain.agent_export.v1",
+        "exported_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "agent_id": agent_id,
+        "source": {
+            "env": ctx.env.env,
+            "stack_name": ctx.env.stack_name,
+            "aws_region": ctx.env.aws_region,
+            "config_path": str(ctx.config_path),
+        },
+        "contract": {
+            "includes": sorted(records.keys()),
+            "excludes": [
+                "plaintext_secret_values",
+                "device_token_values",
+                "device_token_hashes",
+                "oauth_token_payloads",
+                "embedding_vectors",
+            ],
+            "secret_policy": "secret references only; no plaintext secrets, device tokens, token hashes, or secret payloads",
+            "tapdb_subgraph_manifest": {
+                "semantic_euids": sorted(
+                    {
+                        str(row["tapdb_euid"])
+                        for table_rows in records.values()
+                        if isinstance(table_rows, list)
+                        for row in table_rows
+                        if isinstance(row, dict) and row.get("tapdb_euid")
+                    }
+                    | (
+                        {str(records["agent"]["tapdb_euid"])}
+                        if isinstance(records.get("agent"), dict) and records["agent"].get("tapdb_euid")
+                        else set()
+                    )
+                ),
+                "dag_endpoint": "/api/dag/data?start_euid={tapdb_euid}&depth=8",
+            },
+        },
+        "records": records,
+        "secret_references": {
+            "stack_outputs": _stack_secret_references(stack_outputs),
+            "integration_accounts": integration_secret_refs,
+        },
+    }
+    export_body["checksum"] = sha256(_canonical_json_bytes(export_body)).hexdigest()
+    return export_body
 
 
 def _first_cell_as_string(result: Any) -> str:

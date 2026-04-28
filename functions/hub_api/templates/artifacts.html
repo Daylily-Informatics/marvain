@@ -44,6 +44,52 @@
   </div>
 </div>
 
+<!-- Backup Export Controls -->
+<div class="card mb-lg lifecycle-visibility-card">
+  <div class="card-header">
+    <div>
+      <h3><i class="fas fa-database"></i> Backup Export</h3>
+      <p class="text-muted">Prepare agent restore packages with TapDB graph export, artifact manifests, checksums, and secret exclusion checks.</p>
+    </div>
+    <span class="badge badge-success">Active API</span>
+  </div>
+  <div class="card-body">
+    <div class="disabled-control-grid">
+      <label class="disabled-control">
+        <span>Agent</span>
+        <select id="backup-agent">
+          <option value="">Select owner agent...</option>
+          {% for agent in agents %}
+          <option value="{{ agent.agent_id }}" {% if agent.role != 'owner' %}disabled{% endif %}>{{ agent.name }} ({{ agent.role }})</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="checkbox-label disabled-control-inline">
+        <input id="backup-include-artifacts" type="checkbox" checked>
+        <span>Include artifact manifest</span>
+      </label>
+      <label class="checkbox-label disabled-control-inline">
+        <input id="backup-include-tapdb" type="checkbox" checked>
+        <span>Include TapDB subgraph</span>
+      </label>
+      <label class="checkbox-label disabled-control-inline">
+        <input type="checkbox" checked disabled>
+        <span>Validate checksum and secret exclusion</span>
+      </label>
+    </div>
+    <div class="form-actions mt-md">
+      <button type="button" class="btn btn-primary" onclick="createAgentBackup()">
+        <i class="fas fa-file-export"></i> Export Backup
+      </button>
+      <button type="button" class="btn btn-outline" onclick="loadAgentBackups()">
+        <i class="fas fa-list-check"></i> View Manifests
+      </button>
+    </div>
+    <div id="backup-result" class="mt-md"></div>
+    <div id="backup-manifests" class="annotation-list mt-md"></div>
+  </div>
+</div>
+
 <!-- Artifacts List -->
 <div class="artifacts-list" id="artifacts-list">
   {% if artifacts %}
@@ -145,6 +191,79 @@ function copyArtifactUrl(url) {
   Marvain.showToast('success', 'Copied', 'Download URL copied to clipboard');
 }
 
+async function createAgentBackup() {
+  const agentId = document.getElementById('backup-agent').value;
+  const result = document.getElementById('backup-result');
+  if (!agentId) {
+    Marvain.showToast('error', 'Backup', 'Select an owner agent first');
+    return;
+  }
+  try {
+    Marvain.showLoading('Creating backup manifest...');
+    const response = await fetch('/api/agents/' + encodeURIComponent(agentId) + '/backup', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        include_artifact_manifest: document.getElementById('backup-include-artifacts').checked,
+        include_tapdb_subgraph: document.getElementById('backup-include-tapdb').checked
+      })
+    });
+    const payload = await response.json().catch(() => ({}));
+    Marvain.hideLoading();
+    if (!response.ok) {
+      throw new Error(payload.detail || 'Backup export failed');
+    }
+    result.innerHTML = `
+      <div class="api-needed">
+        <div class="api-needed-title"><i class="fas fa-check-circle"></i> Backup manifest created</div>
+        <div class="detail-grid">
+          <div><span class="detail-label">Backup ID</span><code>${Marvain.escapeHtml(payload.backup_id || '')}</code></div>
+          <div><span class="detail-label">Checksum</span><code>${Marvain.escapeHtml(payload.checksum || '')}</code></div>
+          <div><span class="detail-label">Download</span><a href="/api/backups/${encodeURIComponent(payload.backup_id || '')}/download">Manifest JSON</a></div>
+        </div>
+      </div>`;
+    await loadAgentBackups();
+    Marvain.showToast('success', 'Backup', 'Backup manifest created');
+  } catch (err) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Backup', err.message);
+  }
+}
+
+async function loadAgentBackups() {
+  const agentId = document.getElementById('backup-agent').value;
+  const target = document.getElementById('backup-manifests');
+  if (!agentId) {
+    Marvain.showToast('error', 'Backup', 'Select an owner agent first');
+    return;
+  }
+  target.innerHTML = '<p class="text-muted">Loading backup manifests...</p>';
+  try {
+    const response = await fetch('/api/agents/' + encodeURIComponent(agentId) + '/backups');
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || 'Failed to load backup manifests');
+    }
+    const backups = payload.backups || [];
+    target.innerHTML = backups.length
+      ? backups.map((backup) => `
+          <div class="annotation-row">
+            <div class="annotation-row-header">
+              <span class="badge badge-outline">${Marvain.escapeHtml(backup.backup_state || 'recorded')}</span>
+              <span class="text-muted">${Marvain.escapeHtml(backup.created_at || '')}</span>
+            </div>
+            <div class="detail-grid">
+              <div><span class="detail-label">Backup ID</span><code>${Marvain.escapeHtml(backup.backup_id || '')}</code></div>
+              <div><span class="detail-label">Checksum</span><code>${Marvain.escapeHtml(backup.checksum || '')}</code></div>
+              <div><span class="detail-label">Download</span><a href="/api/backups/${encodeURIComponent(backup.backup_id || '')}/download">Manifest JSON</a></div>
+            </div>
+          </div>`).join('')
+      : '<p class="text-muted">No backup manifests recorded for this agent.</p>';
+  } catch (err) {
+    target.innerHTML = '<p class="error-text">' + Marvain.escapeHtml(err.message) + '</p>';
+  }
+}
+
 document.getElementById('upload-form').addEventListener('submit', async function(e) {
   e.preventDefault();
 
@@ -204,4 +323,3 @@ document.getElementById('upload-form').addEventListener('submit', async function
 });
 </script>
 {% endblock %}
-

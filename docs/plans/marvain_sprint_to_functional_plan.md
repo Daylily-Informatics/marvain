@@ -11,7 +11,7 @@ All test commands will be run from the repo root after `. ./marvain_activate`, w
 ## Public Interfaces And Decisions
 
 - CLI: replace the current `marvain_cli` entry path with the `cli-core-yo` v2 style used by `./bloom`: one immutable `CliSpec`, `create_app(spec)`, `run(spec, args)`, command registry policies, and no argparse fallback.
-- Dependencies: add `cli-core-yo==2.0.0` and `daylily-auth-cognito==2.0.1` where Marvain packages/runtime need them; remove direct reliance on the old `daylily-cognito` package where replaced.
+- Dependencies: pin `cli-core-yo==2.1.1`, `daylily-auth-cognito==2.1.5`, and `daylily-tapdb[admin]==6.0.8` where Marvain packages/runtime need them; remove direct reliance on the old `daylily-cognito` package where replaced.
 - Cognito: all Marvain Cognito login/token/admin flows touched in Phase 1 must use `daylily-auth-cognito`; if the library lacks a needed Cognito capability, the phase stops and reports that as a blocker rather than adding direct boto3 fallback.
 - Integrations V1: use stack-level provider secrets, not `integration_accounts`.
   - `SLACK_SECRET_ARN`: `{"signing_secret":"...","bot_token":"..."}`

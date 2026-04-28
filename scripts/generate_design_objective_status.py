@@ -33,19 +33,37 @@ ROUND5_MEMORY_KINDS = (
     "policy",
 )
 ROUND5_TAPDB_INTERNAL_TOKENS = (
-    "daylily_tapdb.models",
     "daylily_tapdb.aurora",
-    "from sqlalchemy",
-    "import sqlalchemy",
     "engine.begin",
     "exec_driver_sql",
-    "generic_instance",
-    "generic_instance_lineage",
+    "session.execute(",
+    "text(",
     "tapdb_schema.sql",
 )
 ROUND6_MIN_API_ROUTE_COVERAGE = 100
 ROUND6_MIN_GUI_ROUTE_COVERAGE = 100
 ROUND6_MIN_PLAYWRIGHT_WORKFLOW_COVERAGE = 75
+ROUND7_MEMORY_PROVENANCE_CLASSES = (
+    "external_interaction",
+    "self_reflection",
+    "cross_agent_interaction",
+    "system_observation",
+)
+ROUND7_BACKUP_SECTIONS = (
+    "actions",
+    "artifact_references",
+    "audit_state",
+    "events",
+    "memory_annotations",
+    "memory_candidates",
+    "memory_opinions",
+    "memories",
+    "people",
+    "presence_assertions",
+    "recognition_hypotheses",
+    "recognition_observations",
+    "sessions",
+)
 
 
 @dataclass(frozen=True)
@@ -126,6 +144,12 @@ OBJECTIVES: tuple[DesignObjective, ...] = (
                 "test_marvain_template_codes_cover_required_semantic_objects",
             ),
             EvidenceToken("test", "Boundary static test", "tests/test_tapdb_boundary_static.py", "daylily_tapdb"),
+            EvidenceToken(
+                "docs",
+                "TapDB boundary pattern report",
+                "docs/reports/MARVAIN_TAPDB_BOUNDARY_PATTERN.md",
+                "does not introduce a new `daylily_tapdb.semantic.SemanticTapDBClient`",
+            ),
             EvidenceToken("deployed", "Stack declares TapDB writer", "template.yaml", "TapdbWriterFunction"),
         ),
         known_limitations=(
@@ -555,6 +579,7 @@ def architecture_purity_issues(root: Path = ROOT) -> list[str]:
             if token in text:
                 issues.append(f"{rel}: contains obsolete token {token!r}")
     issues.extend(round5_hard_gate_issues(root))
+    issues.extend(round7_hard_gate_issues(root))
     issues.extend(round6_coverage_gate_issues(root))
     issues.extend(capability_matrix_stale_issues(root))
     return issues
@@ -575,7 +600,7 @@ def round5_hard_gate_issues(root: Path = ROOT) -> list[str]:
         "functions/hub_api/api_app.py": "normalize_memory_kind",
         "layers/shared/python/agent_hub/tools/create_memory.py": "MEMORY_KIND_VALUES",
         "marvain_cli/smoke.py": "MEMORY_KIND_VALUES",
-        "apps/agent_worker/worker.py": "classify_memory_kinds",
+        "apps/agent_worker/worker.py": "classify_memory_event",
     }
     for rel, token in required_taxonomy_users.items():
         if token not in (root / rel).read_text(encoding="utf-8", errors="ignore"):
@@ -602,7 +627,22 @@ def round5_hard_gate_issues(root: Path = ROOT) -> list[str]:
     )
     for token in ROUND5_TAPDB_INTERNAL_TOKENS:
         if token in semantic_tapdb:
-            issues.append(f"semantic_tapdb.py: low-level TapDB internal token remains {token!r}")
+            issues.append(f"semantic_tapdb.py: raw TapDB workaround token remains {token!r}")
+    for token in ("SemanticTapDBClient", "daylily_tapdb.semantic"):
+        if token in semantic_tapdb:
+            issues.append(f"semantic_tapdb.py: invented TapDB semantic facade token remains {token!r}")
+    for token in ("TAPDBConnection", "TemplateManager", "InstanceFactory", "find_object_by_euid", "build_graph_payload"):
+        if token not in semantic_tapdb:
+            issues.append(f"semantic_tapdb.py: missing approved TapDB/Bloom boundary token {token!r}")
+    if "InMemoryTapdbSemanticStore" in semantic_tapdb:
+        issues.append("semantic_tapdb.py: production module still contains an in-memory TapDB store")
+    report = root / "docs" / "reports" / "MARVAIN_TAPDB_BOUNDARY_PATTERN.md"
+    if not report.exists():
+        issues.append("docs/reports/MARVAIN_TAPDB_BOUNDARY_PATTERN.md: missing approved TapDB boundary report")
+    elif "does not introduce a new `daylily_tapdb.semantic.SemanticTapDBClient`" not in report.read_text(
+        encoding="utf-8", errors="ignore"
+    ):
+        issues.append("docs/reports/MARVAIN_TAPDB_BOUNDARY_PATTERN.md: missing corrected no-facade TapDB decision")
 
     live_session = (root / "functions" / "hub_api" / "templates" / "live_session.html").read_text(
         encoding="utf-8", errors="ignore"
@@ -676,6 +716,100 @@ def round6_coverage_gate_issues(root: Path = ROOT) -> list[str]:
             f"Playwright workflow coverage {coverage.playwright.percent}% "
             f"is below {ROUND6_MIN_PLAYWRIGHT_WORKFLOW_COVERAGE}%"
         )
+    return issues
+
+
+def round7_hard_gate_issues(root: Path = ROOT) -> list[str]:
+    issues: list[str] = []
+
+    taxonomy = (root / "layers" / "shared" / "python" / "agent_hub" / "memory_taxonomy.py").read_text(
+        encoding="utf-8", errors="ignore"
+    )
+    for provenance_class in ROUND7_MEMORY_PROVENANCE_CLASSES:
+        if f'"{provenance_class}"' not in taxonomy:
+            issues.append(f"memory taxonomy is missing provenance class {provenance_class!r}")
+
+    app = (root / "functions" / "hub_api" / "app.py").read_text(encoding="utf-8", errors="ignore")
+    required_app_tokens = {
+        "GET memory annotations": '@app.get("/api/memories/{memory_id}/annotations"',
+        "POST memory annotations": '@app.post("/api/memories/{memory_id}/annotations"',
+        "candidate edit rejection": "Agent-owned memory candidates cannot be edited directly",
+        "agent maturity endpoint": '@app.get("/api/agents/{agent_id}/maturity"',
+        "agent lifecycle request list": '@app.get("/api/agents/{agent_id}/lifecycle-requests"',
+        "constitution revision endpoint": '@app.post("/api/agents/{agent_id}/constitution/revisions"',
+        "agent backup endpoint": '@app.post("/api/agents/{agent_id}/backup"',
+        "backup download endpoint": '@app.get("/api/backups/{backup_id}/download"',
+    }
+    for label, token in required_app_tokens.items():
+        if token not in app:
+            issues.append(f"functions/hub_api/app.py: missing Round 7 {label}")
+
+    delete_agent_source = _function_source(app, "api_delete_agent")
+    if "DELETE FROM agents" in delete_agent_source or "DROP " in delete_agent_source:
+        issues.append("functions/hub_api/app.py: agent lifecycle endpoint still hard-deletes agents")
+    if "soft_deleted" not in delete_agent_source or "stasis" not in delete_agent_source:
+        issues.append("functions/hub_api/app.py: agent lifecycle endpoint does not enforce soft-delete/stasis states")
+
+    candidate_patch_source = _function_source(app, "api_update_memory_candidate")
+    if "UPDATE memory_candidates" in candidate_patch_source:
+        issues.append("functions/hub_api/app.py: users can still directly mutate agent-owned memory candidates")
+
+    worker = (root / "apps" / "agent_worker" / "worker.py").read_text(encoding="utf-8", errors="ignore")
+    if "_fetch_contextual_recall_memories" not in worker or "space_id=None" not in worker:
+        issues.append("apps/agent_worker/worker.py: recall hydration still appears scoped to the current space")
+    if "CURRENT_SPACE_MEMORY_WEIGHT" not in worker:
+        issues.append("apps/agent_worker/worker.py: recall hydration does not weight current-space context")
+
+    export_ops = (root / "marvain_cli" / "ops.py").read_text(encoding="utf-8", errors="ignore")
+    for section in ROUND7_BACKUP_SECTIONS:
+        if f'"{section}"' not in export_ops:
+            issues.append(f"marvain_cli/ops.py: agent export is missing backup section {section!r}")
+    for excluded_section in ("memories", "events", "actions", "recognition_records"):
+        if f'"{excluded_section}",' in export_ops and "plaintext_secret_values" not in export_ops:
+            issues.append(f"marvain_cli/ops.py: export appears to exclude required section {excluded_section!r}")
+
+    round7_sql_path = root / "sql" / "030_agent_memory_lifecycle_round7.sql"
+    if not round7_sql_path.exists():
+        issues.append("sql/030_agent_memory_lifecycle_round7.sql: missing Round 7 lifecycle schema")
+    else:
+        round7_sql = round7_sql_path.read_text(encoding="utf-8", errors="ignore")
+        for table in (
+            "memory_annotations",
+            "memory_opinions",
+            "agent_constitutions",
+            "agent_constitution_revisions",
+            "agent_lifecycle_requests",
+            "agent_maturity_evidence",
+            "agent_backup_manifests",
+        ):
+            if table not in round7_sql:
+                issues.append(f"sql/030_agent_memory_lifecycle_round7.sql: missing table {table!r}")
+        if "DELETE FROM" in round7_sql or "ON DELETE CASCADE" in round7_sql:
+            issues.append("sql/030_agent_memory_lifecycle_round7.sql: contains hard-delete or cascade-delete behavior")
+
+    for sql_path in sorted((root / "sql").glob("*.sql")):
+        sql_text = sql_path.read_text(encoding="utf-8", errors="ignore").upper()
+        if " ON DELETE CASCADE" in sql_text:
+            issues.append(f"{sql_path.relative_to(root)}: contains cascade-delete behavior")
+        if "DELETE FROM " in sql_text:
+            issues.append(f"{sql_path.relative_to(root)}: contains hard-delete behavior")
+
+    required_tests = {
+        "tests/test_greenfield_schema.py": "test_round7_schema_models_core_object_deletes_as_lifecycle_not_hard_delete",
+        "tests/test_gui_app.py": "test_memory_annotation_creates_non_mutating_user_opinion",
+        "tests/test_gui_app.py#lifecycle": "test_agent_lifecycle_request_api_creates_agent_review_record",
+        "tests/test_gui_app.py#constitution": "test_agent_constitution_revision_api_appends_versioned_sections",
+        "tests/test_gui_app.py#backup": "test_agent_backup_api_records_full_restore_manifest",
+        "tests/test_agent_worker_memory_hydration.py": "test_contextual_recall_uses_current_space_as_query_context_not_filter",
+        "tests/test_agent_export_cli.py": "test_agent_export_includes_defining_records_and_secret_references_only",
+        "tests/test_memory_taxonomy.py": "test_memory_provenance_taxonomy_covers_required_classes",
+    }
+    for rel, token in required_tests.items():
+        path_rel = rel.split("#", 1)[0]
+        text = (root / path_rel).read_text(encoding="utf-8", errors="ignore") if (root / path_rel).exists() else ""
+        if token not in text:
+            issues.append(f"{path_rel}: missing Round 7 test token {token!r}")
+
     return issues
 
 

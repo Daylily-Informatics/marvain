@@ -26,6 +26,7 @@ from marvain_cli.config import ConfigError, find_config_path, render_config_yaml
 from marvain_cli.ops import (
     GUI_DEFAULT_HOST,
     GUI_DEFAULT_PORT,
+    agent_export,
     agent_logs,
     agent_rebuild,
     agent_restart,
@@ -352,6 +353,34 @@ def agent_logs_cmd(
 ) -> None:
     """Show agent worker logs."""
     _exit(agent_logs(_load(), dry_run=_dry_run(), follow=follow, lines=lines))
+
+
+def agent_export_cmd(
+    agent_id: str = Option(..., "--agent-id", help="Agent ID to export"),
+    output_path: str | None = Option(None, "--output", "-o", help="Write export JSON to this path"),
+) -> None:
+    """Export agent-defining backup records."""
+    data = agent_export(_load(), agent_id=agent_id, dry_run=_dry_run())
+    if output_path is None:
+        _json(data)
+        return
+
+    path = Path(output_path).expanduser().resolve()
+    if path.exists():
+        raise ClickException(f"Output path already exists: {path}")
+    path.write_text(json.dumps(data, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    if get_context().json_mode:
+        output.emit_json(
+            {
+                "agent_id": data.get("agent_id"),
+                "checksum": data.get("checksum"),
+                "output_path": str(path),
+                "schema": data.get("schema"),
+            }
+        )
+        return
+    output.print_text(f"Wrote agent export: {path}")
+    output.print_text(f"Checksum: {data.get('checksum')}")
 
 
 def init_db_cmd(sql_file: str | None = Option(None, "--sql-file")) -> None:
@@ -778,6 +807,8 @@ def register(registry: CommandRegistry, spec: CliSpec) -> None:
             ),
             ("status", agent_status_cmd, required_policy(mutates_state=True, supports_dry_run=True)),
             ("logs", agent_logs_cmd, required_policy(mutates_state=True, supports_dry_run=True, long_running=True)),
+            ("export", agent_export_cmd, required_policy(supports_json=True, prereq_tags={MARVAIN_AWS_TAG})),
+            ("backup", agent_export_cmd, required_policy(supports_json=True, prereq_tags={MARVAIN_AWS_TAG})),
         ],
     )
     register_group_commands(

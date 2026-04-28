@@ -56,6 +56,121 @@
   </div>
 </div>
 
+<div class="grid grid-2 mb-lg">
+  <div class="card lifecycle-visibility-card">
+    <div class="card-header">
+      <div>
+        <h3 class="card-title"><i class="fas fa-scroll"></i> Constitution History</h3>
+        <p class="text-muted">Persona selection should be shown beside founder, user, and agent-authored constitution revisions.</p>
+      </div>
+      <span class="badge badge-success">Active API</span>
+    </div>
+    <div class="card-body">
+      <div class="form-group">
+        <label for="constitution-agent">Agent</label>
+        <select id="constitution-agent" onchange="loadPersonaConstitution()">
+          <option value="">Select an agent</option>
+          {% for agent in agents %}
+          <option value="{{ agent.agent_id }}">{{ agent.name }} ({{ agent.role }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div id="persona-constitution-status" class="text-muted mb-md">Select an agent to load constitution history.</div>
+      <div class="constitution-section-grid">
+        <div class="constitution-section">
+          <span class="detail-label">Founder Section</span>
+          <p class="text-muted" id="persona-constitution-founder">No active revision loaded.</p>
+        </div>
+        <div class="constitution-section">
+          <span class="detail-label">User Section</span>
+          <p class="text-muted" id="persona-constitution-user">No active revision loaded.</p>
+        </div>
+        <div class="constitution-section">
+          <span class="detail-label">Agent Section</span>
+          <p class="text-muted" id="persona-constitution-agent">No active revision loaded.</p>
+        </div>
+      </div>
+      <details class="mt-md">
+        <summary class="detail-label">Revision History</summary>
+        <div id="persona-constitution-revisions" class="annotation-list mt-md">
+          <p class="text-muted">No revisions loaded.</p>
+        </div>
+      </details>
+      <form class="mt-md" onsubmit="return savePersonaConstitutionRevision(event)">
+        <div class="form-group">
+          <label for="persona-constitution-source">Change Source</label>
+          <select id="persona-constitution-source">
+            <option value="user">User</option>
+            <option value="founder">Founder</option>
+            <option value="agent">Agent</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="persona-constitution-founder-input">Founder Section</label>
+          <textarea id="persona-constitution-founder-input" rows="3"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="persona-constitution-user-input">User Section</label>
+          <textarea id="persona-constitution-user-input" rows="3"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="persona-constitution-agent-input">Agent Section</label>
+          <textarea id="persona-constitution-agent-input" rows="3"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="persona-constitution-reason">Change Reason</label>
+          <input type="text" id="persona-constitution-reason">
+        </div>
+        <div class="form-actions mt-md">
+          <button type="submit" class="btn btn-primary"><i class="fas fa-plus"></i> Save Revision</button>
+          <button type="button" class="btn btn-outline" onclick="loadPersonaConstitution()"><i class="fas fa-redo"></i> Refresh</button>
+        </div>
+      </form>
+      <div class="api-needed mt-md">
+        <div class="api-needed-title"><i class="fas fa-plug-circle-bolt"></i> Active constitution endpoints</div>
+        <div class="api-needed-list">
+          <code>GET /api/agents/{agent_id}/constitution</code>
+          <code>POST /api/agents/{agent_id}/constitution/revisions</code>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card lifecycle-visibility-card">
+    <div class="card-header">
+      <div>
+        <h3 class="card-title"><i class="fas fa-sliders"></i> Persona Settings Coverage</h3>
+        <p class="text-muted">The current GUI can create personas and set defaults; edit, disable, and revision history controls need API support.</p>
+      </div>
+      <span class="badge badge-warning">Partial API</span>
+    </div>
+    <div class="card-body">
+      <div class="gui-status-grid">
+        <div class="gui-status-item">
+          <span class="detail-label">Active now</span>
+          <span class="detail-value">Create persona, make default, session hydration contract</span>
+        </div>
+        <div class="gui-status-item">
+          <span class="detail-label">Disabled until API exists</span>
+          <span class="detail-value">Persona edit, disable, and per-revision constitution diff</span>
+        </div>
+      </div>
+      <div class="form-actions mt-md">
+        <button type="button" class="btn btn-outline" disabled><i class="fas fa-edit"></i> Edit Selected Persona</button>
+        <button type="button" class="btn btn-outline" disabled><i class="fas fa-ban"></i> Disable Persona</button>
+      </div>
+      <div class="api-needed mt-md">
+        <div class="api-needed-title"><i class="fas fa-plug-circle-xmark"></i> API needed for persona settings</div>
+        <div class="api-needed-list">
+          <code>PATCH /api/personas/{persona_id}</code>
+          <code>POST /api/personas/{persona_id}/disable</code>
+          <code>GET /api/personas/{persona_id}/revisions</code>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="grid grid-3">
   {% for persona in personas %}
   <div class="card">
@@ -93,6 +208,98 @@
 </div>
 
 <script>
+async function readPersonaJson(response, defaultMessage) {
+  const text = await response.text();
+  let payload = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = {detail: text};
+    }
+  }
+  if (!response.ok) {
+    throw new Error(payload.detail || payload.message || defaultMessage);
+  }
+  return payload;
+}
+
+function selectedConstitutionAgentId() {
+  return document.getElementById('constitution-agent').value;
+}
+
+function renderPersonaConstitutionRevision(revision) {
+  return `
+    <div class="annotation-row">
+      <div class="annotation-row-header">
+        <span class="badge badge-outline">${Marvain.escapeHtml(revision.change_source || 'revision')}</span>
+        <span class="text-muted">${Marvain.escapeHtml(revision.created_at || '')}</span>
+      </div>
+      ${revision.change_reason ? `<p>${Marvain.escapeHtml(revision.change_reason)}</p>` : ''}
+      <div class="detail-grid">
+        <div><span class="detail-label">Revision ID</span><code>${Marvain.escapeHtml(revision.revision_id || '')}</code></div>
+      </div>
+    </div>`;
+}
+
+async function loadPersonaConstitution() {
+  const agentId = selectedConstitutionAgentId();
+  const status = document.getElementById('persona-constitution-status');
+  if (!agentId) {
+    status.textContent = 'Select an agent to load constitution history.';
+    return;
+  }
+  try {
+    status.textContent = 'Loading constitution history...';
+    const response = await fetch('/api/agents/' + encodeURIComponent(agentId) + '/constitution');
+    const data = await readPersonaJson(response, 'Failed to load constitution');
+    const revisions = data.revisions || [];
+    const active = revisions[0] || {};
+    document.getElementById('persona-constitution-founder').textContent = active.founder_section || 'No founder section recorded.';
+    document.getElementById('persona-constitution-user').textContent = active.user_section || 'No user section recorded.';
+    document.getElementById('persona-constitution-agent').textContent = active.agent_section || 'No agent section recorded.';
+    document.getElementById('persona-constitution-revisions').innerHTML = revisions.length
+      ? revisions.map(renderPersonaConstitutionRevision).join('')
+      : '<p class="text-muted">No constitution revisions recorded.</p>';
+    status.textContent = data.constitution_id ? 'Active revision: ' + (data.active_revision_id || 'none') : 'No constitution record yet.';
+  } catch (error) {
+    status.textContent = 'Constitution API error: ' + error.message;
+  }
+}
+
+async function savePersonaConstitutionRevision(event) {
+  event.preventDefault();
+  const agentId = selectedConstitutionAgentId();
+  if (!agentId) {
+    Marvain.showToast('error', 'Constitution', 'Select an agent first');
+    return false;
+  }
+  const body = {
+    change_source: document.getElementById('persona-constitution-source').value,
+    founder_section: document.getElementById('persona-constitution-founder-input').value,
+    user_section: document.getElementById('persona-constitution-user-input').value,
+    agent_section: document.getElementById('persona-constitution-agent-input').value,
+    change_reason: document.getElementById('persona-constitution-reason').value || null
+  };
+  try {
+    Marvain.showLoading('Saving constitution revision...');
+    const response = await fetch('/api/agents/' + encodeURIComponent(agentId) + '/constitution/revisions', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    await readPersonaJson(response, 'Failed to save constitution revision');
+    Marvain.hideLoading();
+    Marvain.showToast('success', 'Constitution', 'Revision saved');
+    event.target.reset();
+    await loadPersonaConstitution();
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Constitution', error.message);
+  }
+  return false;
+}
+
 document.getElementById('persona-form').addEventListener('submit', async function(event) {
   event.preventDefault();
   const payload = {

@@ -3,7 +3,7 @@
 
 CREATE TABLE IF NOT EXISTS integration_accounts (
   integration_account_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
   provider text NOT NULL,
   display_name text NOT NULL,
   external_account_id text,

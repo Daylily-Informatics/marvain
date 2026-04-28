@@ -9,6 +9,9 @@ ALLOWED_TAPDB_BOUNDARY_FILES = {
     "layers/shared/python/agent_hub/semantic_tapdb.py",
     "functions/tapdb_writer/handler.py",
 }
+ALLOWED_TEST_FAKE_FILES = {
+    "tests/fakes/semantic_tapdb.py",
+}
 
 
 def test_daylily_tapdb_imports_are_confined_to_boundary() -> None:
@@ -25,7 +28,7 @@ def test_daylily_tapdb_imports_are_confined_to_boundary() -> None:
     assert offenders == []
 
 
-def test_raw_tapdb_owned_table_access_is_confined_to_boundary() -> None:
+def test_raw_tapdb_owned_table_name_usage_is_confined_to_boundary() -> None:
     tapdb_tables = (
         "generic_template",
         "generic_instance",
@@ -51,21 +54,50 @@ def test_marvain_does_not_package_a_copied_tapdb_schema() -> None:
     assert not (REPO_ROOT / "layers" / "shared" / "tapdb_schema").exists()
 
 
-def test_semantic_tapdb_uses_public_tapdb_api_surface() -> None:
+def test_semantic_tapdb_uses_bloom_style_tapdb_boundary_not_raw_sql() -> None:
     text = (REPO_ROOT / "layers" / "shared" / "python" / "agent_hub" / "semantic_tapdb.py").read_text(encoding="utf-8")
     forbidden = (
-        "daylily_tapdb.models",
         "daylily_tapdb.aurora",
-        "from sqlalchemy",
-        "import sqlalchemy",
         "engine.begin",
         "exec_driver_sql",
-        "generic_instance",
-        "generic_instance_lineage",
+        "session.execute(",
+        "text(",
         "tapdb_schema.sql",
+        "SemanticTapDBClient",
+        "daylily_tapdb.semantic",
     )
     offenders = [token for token in forbidden if token in text]
     assert offenders == []
+
+
+def test_semantic_tapdb_uses_existing_tapdb_bloom_patterns() -> None:
+    text = (REPO_ROOT / "layers" / "shared" / "python" / "agent_hub" / "semantic_tapdb.py").read_text(encoding="utf-8")
+    required = (
+        "TAPDBConnection",
+        "TemplateManager",
+        "InstanceFactory",
+        "find_object_by_euid",
+        "build_graph_payload",
+        "query_objects",
+    )
+    missing = [token for token in required if token not in text]
+    assert missing == []
+
+
+def test_production_semantic_tapdb_has_no_in_memory_store() -> None:
+    text = (REPO_ROOT / "layers" / "shared" / "python" / "agent_hub" / "semantic_tapdb.py").read_text(encoding="utf-8")
+    assert "InMemoryTapdbSemanticStore" not in text
+    for rel in ALLOWED_TEST_FAKE_FILES:
+        assert (REPO_ROOT / rel).exists()
+
+
+def test_tapdb_boundary_pattern_report_records_correct_target() -> None:
+    report = (REPO_ROOT / "docs" / "reports" / "MARVAIN_TAPDB_BOUNDARY_PATTERN.md").read_text(encoding="utf-8")
+    assert "does not introduce a new `daylily_tapdb.semantic.SemanticTapDBClient`" in report
+    assert "`TAPDBConnection`" in report
+    assert "`InstanceFactory`" in report
+    assert "`TemplateManager`" in report
+    assert "Production TapDB construction must require real TapDB configuration" in report
 
 
 def test_custom_lineage_routes_are_removed() -> None:

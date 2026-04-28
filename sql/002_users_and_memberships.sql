@@ -9,8 +9,8 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS agent_memberships (
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
-  user_id uuid NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
+  user_id uuid NOT NULL REFERENCES users(user_id) ON DELETE RESTRICT,
   role text NOT NULL,
   relationship_label text,
   created_at timestamptz NOT NULL DEFAULT now(),

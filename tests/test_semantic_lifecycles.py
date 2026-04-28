@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 from agent_hub.semantic_lifecycle import LifecycleError, MarvainSemanticLifecycle
-from agent_hub.semantic_tapdb import InMemoryTapdbSemanticStore
+from fakes.semantic_tapdb import InMemoryTapdbSemanticStore
 
 
 def test_memory_lifecycle_records_evidence_candidate_commit_recall_and_tombstone() -> None:

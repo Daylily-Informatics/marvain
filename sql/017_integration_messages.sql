@@ -3,7 +3,7 @@
 
 CREATE TABLE IF NOT EXISTS integration_messages (
   integration_message_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
   space_id uuid REFERENCES spaces(space_id) ON DELETE SET NULL,
   event_id uuid REFERENCES events(event_id) ON DELETE SET NULL,
   provider text NOT NULL,

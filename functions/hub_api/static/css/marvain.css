@@ -2096,6 +2096,129 @@ pre {
   gap: 0.75rem;
 }
 
+/* ==================== Lifecycle / API Pending Panels ==================== */
+.lifecycle-visibility-card .card-header {
+  align-items: flex-start;
+  gap: var(--spacing-md);
+}
+
+.gui-status-grid {
+  display: grid;
+  gap: var(--spacing-md);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.gui-status-item {
+  padding: var(--spacing-md);
+  background: var(--color-gray-800);
+  border: 1px solid var(--color-gray-600);
+  border-radius: var(--radius-md);
+}
+
+.gui-status-item .detail-label,
+.constitution-section .detail-label,
+.disabled-control > span {
+  display: block;
+  margin-bottom: var(--spacing-xs);
+}
+
+.api-needed {
+  padding: var(--spacing-md);
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  border-radius: var(--radius-md);
+}
+
+.api-needed-title {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-sm);
+  color: var(--color-warning);
+  font-weight: 600;
+}
+
+.api-needed-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--spacing-sm);
+}
+
+.disabled-control-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--spacing-md);
+}
+
+.disabled-control-wide {
+  grid-column: 1 / -1;
+}
+
+.disabled-control select,
+.disabled-control input,
+.disabled-control textarea,
+.disabled-control-inline input,
+.lifecycle-visibility-card button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.disabled-control textarea {
+  resize: vertical;
+}
+
+.disabled-control-inline {
+  align-items: center;
+  min-height: 44px;
+  padding: var(--spacing-sm) 0;
+}
+
+.constitution-section-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--spacing-md);
+}
+
+.constitution-section {
+  padding: var(--spacing-md);
+  background: var(--color-gray-800);
+  border: 1px solid var(--color-gray-600);
+  border-radius: var(--radius-md);
+  min-height: 110px;
+}
+
+.annotation-list {
+  display: grid;
+  gap: var(--spacing-sm);
+}
+
+.annotation-row {
+  padding: var(--spacing-md);
+  background: var(--color-gray-800);
+  border: 1px solid var(--color-gray-600);
+  border-radius: var(--radius-md);
+}
+
+.annotation-row-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-sm);
+}
+
+@media (max-width: 900px) {
+  .gui-status-grid,
+  .disabled-control-grid,
+  .constitution-section-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .disabled-control-wide {
+    grid-column: auto;
+  }
+}
+
 /* ==================== JSON / Code Display ==================== */
 .json-display {
   background: var(--color-gray-900);

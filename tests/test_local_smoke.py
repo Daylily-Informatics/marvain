@@ -4,7 +4,6 @@ import json
 from types import SimpleNamespace
 from uuid import UUID
 
-import pytest
 from agent_hub.memory_taxonomy import MEMORY_KIND_VALUES
 from cli_core_yo.conformance import assert_exit_code, invoke
 
@@ -263,7 +262,7 @@ def test_deployed_smoke_rejects_placeholder_runtime_evidence() -> None:
     ]
 
 
-def test_deployed_smoke_reports_runtime_blockers_after_rest_proofs(monkeypatch) -> None:
+def test_deployed_smoke_collects_required_runtime_evidence_after_rest_proofs(monkeypatch) -> None:
     from marvain_cli import smoke as smoke_mod
 
     ctx = SimpleNamespace(
@@ -320,6 +319,9 @@ def test_deployed_smoke_reports_runtime_blockers_after_rest_proofs(monkeypatch) 
         if path == "/v1/events":
             assert bearer_token is not None
             return {"event_id": f"event-{len([call for call in calls if call[1] == '/v1/events'])}"}
+        if path.startswith("/v1/spaces/space-1/events"):
+            assert bearer_token == "device-token-1"
+            return {"events": [{"event_id": "event-1"}, {"event_id": "event-2"}, {"event_id": "event-3"}]}
         if path == "/v1/memories":
             assert bearer_token == "device-token-1"
             assert payload is not None
@@ -356,30 +358,28 @@ def test_deployed_smoke_reports_runtime_blockers_after_rest_proofs(monkeypatch) 
         if path.startswith("/api/dag/data?"):
             assert bearer_token == "access-token"
             return {"nodes": [{"id": "MVN-MEMORY-1"}], "edges": []}
+        if path == "/api_health":
+            return {"status": "ok", "service": "marvain"}
+        if path.startswith("/endpoint_health?"):
+            return {"status": "ok", "endpoints": []}
         raise AssertionError(f"unexpected HTTP call: {method} {path}")
 
     monkeypatch.setattr(smoke_mod, "_http_json", fake_http_json)
 
-    with pytest.raises(smoke_mod.SmokeBlockersError) as exc_info:
-        smoke_mod.run_deployed_smoke(stack="marvain-greenfield-tapdb-dev", include_two_device_proof=True)
+    report = smoke_mod.run_deployed_smoke(stack="marvain-greenfield-tapdb-dev", include_two_device_proof=True)
 
-    err = exc_info.value
-    assert {item.split(":", 1)[0] for item in err.blockers} == {
-        "worker_join",
-        "speech_transcript",
-        "recognition",
-        "observability",
-    }
-    assert err.report["ok"] is False
-    assert err.report["mode"] == "v1-dev-deployed"
-    assert str(err.report["run_id"]).startswith("round6-")
-    assert err.report["proofs"]["chat_transcript_event_id"] == "event-1"
-    assert err.report["proofs"]["memory_ids_by_kind"] == {kind: f"memory-{kind}" for kind in MEMORY_KIND_VALUES}
-    assert err.report["proofs"]["tapdb_graph_probe"] == {"nodes": [{"id": "MVN-MEMORY-1"}], "edges": []}
-    assert err.report["proofs"]["two_device"]["routing_transport"] == "deployed-rest-device-token"
+    assert report["ok"] is True
+    assert report["mode"] == "v1-dev-deployed"
+    assert str(report["run_id"]).startswith("round6-")
+    assert report["proofs"]["chat_transcript_event_id"] == "event-1"
+    assert report["proofs"]["speech_transcript"]["event_id"] == "event-2"
+    assert report["proofs"]["recognition"]["event_id"] == "event-3"
+    assert report["proofs"]["memory_ids_by_kind"] == {kind: f"memory-{kind}" for kind in MEMORY_KIND_VALUES}
+    assert report["proofs"]["tapdb_graph_probe"] == {"nodes": [{"id": "MVN-MEMORY-1"}], "edges": []}
+    assert report["proofs"]["two_device"]["routing_transport"] == "deployed-rest-device-token"
     for key in smoke_mod.DEPLOYED_SMOKE_REQUIRED_RUNTIME_EVIDENCE:
-        assert isinstance(err.report["proofs"][key], dict)
-        assert err.report["proofs"][key]["ok"] is False
+        assert isinstance(report["proofs"][key], dict)
+        assert report["proofs"][key]["ok"] is True
     assert [call[1] for call in calls].count("/v1/admin/devices/register") == 2
 
 

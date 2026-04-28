@@ -72,7 +72,7 @@ from agent_hub.memberships import (
     revoke_membership,
     update_membership,
 )
-from agent_hub.memory_taxonomy import normalize_memory_kind
+from agent_hub.memory_taxonomy import normalize_memory_kind, normalize_memory_provenance_class
 from agent_hub.metrics import emit_count, emit_ms
 from agent_hub.openai_http import call_embeddings
 from agent_hub.personas import DEFAULT_AGENT_PERSONA_INSTRUCTIONS, DEFAULT_AGENT_PERSONA_NAME
@@ -1737,18 +1737,23 @@ def v1_link_person_account(
     if not urows:
         raise HTTPException(status_code=404, detail="User not found")
 
-    tx = _get_db().begin()
-    try:
-        # Enforce uniqueness by deleting any prior mappings for this user or person.
-        _get_db().execute(
-            """
-            DELETE FROM person_accounts
-            WHERE agent_id = :agent_id::uuid
-              AND (user_id = :user_id::uuid OR person_id = :person_id::uuid)
-            """,
-            {"agent_id": agent_id, "user_id": link_user_id, "person_id": person_id},
-            transaction_id=tx,
-        )
+    existing_links = _get_db().query(
+        """
+        SELECT user_id::TEXT AS user_id, person_id::TEXT AS person_id
+        FROM person_accounts
+        WHERE agent_id = :agent_id::uuid
+          AND (user_id = :user_id::uuid OR person_id = :person_id::uuid)
+        """,
+        {"agent_id": agent_id, "user_id": link_user_id, "person_id": person_id},
+    )
+    for row in existing_links:
+        if str(row["user_id"]) != str(link_user_id) or str(row["person_id"]) != str(person_id):
+            raise HTTPException(
+                status_code=409,
+                detail="Person/account link already exists for this agent. Reassignment requires a lifecycle request.",
+            )
+
+    if not existing_links:
         _get_db().execute(
             """
             INSERT INTO person_accounts(person_account_id, agent_id, user_id, person_id)
@@ -1760,12 +1765,7 @@ def v1_link_person_account(
                 "user_id": link_user_id,
                 "person_id": person_id,
             },
-            transaction_id=tx,
         )
-        _get_db().commit(tx)
-    except Exception:
-        _get_db().rollback(tx)
-        raise
 
     return {"ok": True, "agent_id": agent_id, "person_id": person_id, "user_id": link_user_id}
 
@@ -2291,7 +2291,9 @@ def delete_agent_integration_account(
     _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
     rows = _get_db().query(
         """
-        DELETE FROM integration_accounts
+        UPDATE integration_accounts
+        SET status = 'revoked',
+            updated_at = now()
         WHERE integration_account_id = :integration_account_id::uuid
           AND agent_id = :agent_id::uuid
         RETURNING integration_account_id::TEXT as integration_account_id
@@ -2305,7 +2307,7 @@ def delete_agent_integration_account(
             _get_db(),
             bucket=_cfg.audit_bucket,
             agent_id=agent_id,
-            entry_type="integration_account_deleted",
+            entry_type="integration_account_revoked",
             entry={"integration_account_id": integration_account_id},
         )
     return {"ok": True}
@@ -2860,6 +2862,8 @@ class MemoryCreateIn(BaseModel):
     )
     session_id: str | None = None
     tier: str = Field(default="episodic", description="Memory kind from the Marvain memory taxonomy")
+    provenance_class: str = Field(default="external_interaction", description="How this memory was initiated")
+    interacting_agent_id: str | None = Field(default=None, description="Other agent involved in this memory")
     content: str = Field(..., min_length=1, max_length=10000)
     metadata: dict[str, Any] = Field(
         default_factory=dict, description="Arbitrary metadata (input_modality, room_name, etc.)"
@@ -2883,6 +2887,10 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
         memory_tier = normalize_memory_kind(body.tier)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        provenance_class = normalize_memory_provenance_class(body.provenance_class)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     target_agent_id = str(device.agent_id)
     target_agent_id = _resolve_space_agent_for_device(
@@ -2900,8 +2908,13 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
     provenance = {
         "source": "device",
         "device_id": device.device_id,
+        "provenance_class": provenance_class,
+        "interacting_agent_id": body.interacting_agent_id,
         **body.metadata,
     }
+    classification = body.metadata.get("memory_classification") if isinstance(body.metadata, dict) else None
+    if not isinstance(classification, dict):
+        classification = {}
     embedding: str | None = None
     if _cfg.openai_secret_arn:
         try:
@@ -2953,7 +2966,8 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
         db.execute(
             """
             INSERT INTO memory_candidates(memory_candidate_id, agent_id, source_event_id, space_id, session_id,
-                                          subject_person_id, tier, content, participants, confidence, lifecycle_state)
+                                          subject_person_id, tier, content, participants, confidence, lifecycle_state,
+                                          provenance_class, interacting_agent_id, classification)
             VALUES(
                 :memory_candidate_id::uuid,
                 :agent_id::uuid,
@@ -2965,7 +2979,10 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
                 CAST(:content AS text),
                 :participants::jsonb,
                 CAST(:confidence AS real),
-                'committed'
+                'committed',
+                :provenance_class,
+                NULLIF(CAST(:interacting_agent_id AS text), '')::uuid,
+                :classification::jsonb
             )
             """,
             {
@@ -2979,6 +2996,9 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
                 "content": body.content,
                 "participants": json.dumps(body.participants),
                 "confidence": body.confidence,
+                "provenance_class": provenance_class,
+                "interacting_agent_id": body.interacting_agent_id,
+                "classification": json.dumps(classification),
             },
             transaction_id=tx,
         )
@@ -2986,7 +3006,8 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
             """
             INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants, provenance, embedding,
                                   subject_person_id, tags, scene_context, modality, confidence, related_memory_ids,
-                                  memory_candidate_id, source_event_id, session_id, lifecycle_state, recall_explanation)
+                                  memory_candidate_id, source_event_id, session_id, lifecycle_state, recall_explanation,
+                                  provenance_class, interacting_agent_id)
             VALUES (
                 :memory_id::uuid,
                 :agent_id::uuid,
@@ -3006,7 +3027,9 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
                 :source_event_id::uuid,
                 NULLIF(CAST(:session_id AS text), '')::uuid,
                 'committed',
-                :recall_explanation::jsonb
+                :recall_explanation::jsonb,
+                :provenance_class,
+                NULLIF(CAST(:interacting_agent_id AS text), '')::uuid
             )
             """,
             {
@@ -3036,8 +3059,12 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
                         "source_event_id": source_event_id,
                         "memory_candidate_id": memory_candidate_id,
                         "commit_policy": "device_memory_create_v1",
+                        "provenance_class": provenance_class,
+                        "interacting_agent_id": body.interacting_agent_id,
                     }
                 ),
+                "provenance_class": provenance_class,
+                "interacting_agent_id": body.interacting_agent_id,
             },
             transaction_id=tx,
         )
@@ -3064,6 +3091,7 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
         "memory_candidate_id": memory_candidate_id,
         "source_event_id": source_event_id,
         "tier": memory_tier,
+        "provenance_class": provenance_class,
         "created": True,
     }
 
@@ -3188,6 +3216,8 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
                memories.session_id::TEXT as session_id,
                memories.space_id::TEXT as space_id,
                memories.subject_person_id::TEXT as subject_person_id,
+               memories.provenance_class,
+               memories.interacting_agent_id::TEXT as interacting_agent_id,
                memories.tapdb_euid,
                memories.recall_explanation::TEXT as recall_explanation_json,
                source_event.type as source_event_type,
@@ -3235,6 +3265,8 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
             "space_id": space_id,
             "session_id": session_id,
             "person_id": person_id,
+            "provenance_class": r.get("provenance_class") or provenance.get("provenance_class"),
+            "interacting_agent_id": r.get("interacting_agent_id") or provenance.get("interacting_agent_id"),
         }
         consent_filters = {
             "applied": True,
@@ -3268,6 +3300,8 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
                     "space_id": space_id,
                     "session_id": session_id,
                     "person_id": person_id,
+                    "provenance_class": r.get("provenance_class") or provenance.get("provenance_class"),
+                    "interacting_agent_id": r.get("interacting_agent_id") or provenance.get("interacting_agent_id"),
                     "consent_filters": consent_filters,
                     "tapdb_euid": r.get("tapdb_euid"),
                     "stored": _parse_json_obj(r.get("recall_explanation_json") or "{}"),

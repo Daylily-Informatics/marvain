@@ -29,6 +29,9 @@ def test_activate_stays_minimal_and_environment_owns_only_conda_dependencies() -
     assert "COMPLETE" not in activate_text
     assert "PATH=" not in activate_text
     assert "pip:" not in env_text
+    assert "python=3.12" in env_text
+    assert "awscli" not in env_text
+    assert "aws-session-manager-plugin" not in env_text
     assert "daylily-auth-cognito" not in env_text
     assert "daylily-tapdb" not in env_text
     assert "cli-core-yo" not in env_text
@@ -39,10 +42,30 @@ def test_pyproject_owns_python_dependencies_and_console_script() -> None:
 
     dependencies = set(pyproject["project"]["dependencies"])
     assert "cli-core-yo==2.1.1" in dependencies
-    assert "daylily-auth-cognito==2.1.4" in dependencies
-    assert "daylily-tapdb[admin]==6.0.7" in dependencies
+    assert "cli-core-yo==2.1.0" not in dependencies
+    assert pyproject["project"]["requires-python"] == ">=3.12"
+    assert "daylily-auth-cognito==2.1.5" in dependencies
+    assert "daylily-auth-cognito==2.1.4" not in dependencies
+    assert "daylily-tapdb[admin]==6.0.8" in dependencies
+    assert "daylily-tapdb[admin]==6.0.7" not in dependencies
+    assert pyproject["tool"]["marvain"]["python"] == "3.12"
     assert pyproject["project"]["scripts"]["marvain"] == "marvain_cli.__main__:main"
     assert pyproject["tool"]["marvain"]["conda_file"] == "environment.yaml"
+
+
+def test_lambda_requirements_use_current_runtime_pins() -> None:
+    hub_api_requirements = (REPO_ROOT / "functions" / "hub_api" / "requirements.txt").read_text(encoding="utf-8")
+    ws_message_requirements = (REPO_ROOT / "functions" / "ws_message" / "requirements.txt").read_text(encoding="utf-8")
+    tapdb_writer_requirements = (REPO_ROOT / "functions" / "tapdb_writer" / "requirements.txt").read_text(
+        encoding="utf-8"
+    )
+
+    assert "daylily-auth-cognito==2.1.5" in hub_api_requirements
+    assert "daylily-auth-cognito==2.1.4" not in hub_api_requirements
+    assert "daylily-auth-cognito==2.1.5" in ws_message_requirements
+    assert "daylily-auth-cognito==2.1.4" not in ws_message_requirements
+    assert "daylily-tapdb[admin]==6.0.8" in tapdb_writer_requirements
+    assert "daylily-tapdb[admin]==6.0.7" not in tapdb_writer_requirements
 
 
 def test_active_files_do_not_reference_obsolete_activation_or_bin_wrapper() -> None:

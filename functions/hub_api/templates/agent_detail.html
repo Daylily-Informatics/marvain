@@ -128,6 +128,127 @@
   </div>
 </div>
 
+<!-- Agent Governance Visibility -->
+<div class="grid grid-2 mb-lg">
+  <div class="card lifecycle-visibility-card">
+    <div class="card-header">
+      <div>
+        <h3 class="card-title"><i class="fas fa-hourglass-half"></i> Stasis And Deletion Requests</h3>
+        <p class="text-muted">Agent lifecycle state, maturity, stasis requests, and deletion-review requests are visible here.</p>
+      </div>
+      <span class="badge badge-success">Active API</span>
+    </div>
+    <div class="card-body">
+      <div class="detail-grid">
+        <div>
+          <span class="detail-label">Current GUI Status</span>
+          <span class="detail-value" id="agent-lifecycle-current">{{ "Disabled" if agent.disabled else "Active" }}</span>
+        </div>
+        <div>
+          <span class="detail-label">Stasis Request</span>
+          <span class="detail-value" id="agent-stasis-request-status">No request loaded</span>
+        </div>
+        <div>
+          <span class="detail-label">Deletion Request</span>
+          <span class="detail-value" id="agent-deletion-request-status">No request loaded</span>
+        </div>
+        <div>
+          <span class="detail-label">Maturity Gate</span>
+          <span class="detail-value" id="agent-maturity-status">Loading...</span>
+        </div>
+      </div>
+      <div class="form-actions mt-md">
+        <button type="button" class="btn btn-outline" onclick="submitAgentLifecycleRequest('stasis')">
+          <i class="fas fa-pause-circle"></i> Request Stasis
+        </button>
+        <button type="button" class="btn btn-outline" onclick="submitAgentLifecycleRequest('soft_delete')">
+          <i class="fas fa-file-signature"></i> Request Deletion Review
+        </button>
+        <button type="button" class="btn btn-outline" onclick="refreshAgentLifecycle()">
+          <i class="fas fa-redo"></i> Refresh
+        </button>
+      </div>
+      <div id="agent-lifecycle-requests" class="annotation-list mt-md">
+        <p class="text-muted">No lifecycle request history loaded.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card lifecycle-visibility-card">
+    <div class="card-header">
+      <div>
+        <h3 class="card-title"><i class="fas fa-scroll"></i> Constitution History</h3>
+        <p class="text-muted">Founder, user, and agent-authored constitution sections belong in the agent settings surface.</p>
+      </div>
+      <span class="badge badge-success">Active API</span>
+    </div>
+    <div class="card-body">
+      <div id="constitution-history-status" class="text-muted mb-md">Loading constitution history...</div>
+      <div class="constitution-section-grid">
+        <div class="constitution-section">
+          <span class="detail-label">Founder Section</span>
+          <p class="text-muted" id="constitution-founder-section">No active revision loaded.</p>
+        </div>
+        <div class="constitution-section">
+          <span class="detail-label">User Section</span>
+          <p class="text-muted" id="constitution-user-section">No active revision loaded.</p>
+        </div>
+        <div class="constitution-section">
+          <span class="detail-label">Agent Section</span>
+          <p class="text-muted" id="constitution-agent-section">No active revision loaded.</p>
+        </div>
+      </div>
+      <details class="mt-md">
+        <summary class="detail-label">Revision History</summary>
+        <div id="constitution-revisions" class="annotation-list mt-md">
+          <p class="text-muted">No revisions loaded.</p>
+        </div>
+      </details>
+      <form class="mt-md" onsubmit="return submitConstitutionRevision(event)">
+        <div class="form-group">
+          <label for="constitution-change-source">Change Source</label>
+          <select id="constitution-change-source">
+            <option value="user">User</option>
+            <option value="founder">Founder</option>
+            <option value="agent">Agent</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="constitution-founder-input">Founder Section</label>
+          <textarea id="constitution-founder-input" rows="3" placeholder="Founder constraints and original mission."></textarea>
+        </div>
+        <div class="form-group">
+          <label for="constitution-user-input">User Section</label>
+          <textarea id="constitution-user-input" rows="3" placeholder="User-authored operating preferences."></textarea>
+        </div>
+        <div class="form-group">
+          <label for="constitution-agent-input">Agent Section</label>
+          <textarea id="constitution-agent-input" rows="3" placeholder="Agent-authored commitments and self-governance notes."></textarea>
+        </div>
+        <div class="form-group">
+          <label for="constitution-change-reason">Change Reason</label>
+          <input type="text" id="constitution-change-reason" placeholder="Why this revision is needed">
+        </div>
+        <div class="form-actions mt-md">
+          <button type="submit" class="btn btn-primary">
+            <i class="fas fa-plus"></i> Save Revision
+          </button>
+          <button type="button" class="btn btn-outline" onclick="loadConstitutionHistory()">
+            <i class="fas fa-clock-rotate-left"></i> Refresh History
+          </button>
+        </div>
+      </form>
+      <div class="api-needed mt-md">
+        <div class="api-needed-title"><i class="fas fa-plug-circle-bolt"></i> Active constitution endpoints</div>
+        <div class="api-needed-list">
+          <code>GET /api/agents/{{ agent.agent_id }}/constitution</code>
+          <code>POST /api/agents/{{ agent.agent_id }}/constitution/revisions</code>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Agent Worker Controls -->
 <div class="card mb-lg">
   <div class="card-header d-flex justify-between align-center">
@@ -322,15 +443,13 @@
       <button type="button" class="modal-close" onclick="Marvain.hideModal('delete-agent-modal')">&times;</button>
     </div>
     <div class="modal-body">
-      <p class="mb-md">You are about to <strong>permanently delete</strong> the agent <strong>{{ agent.name }}</strong>.</p>
+      <p class="mb-md">You are about to move <strong>{{ agent.name }}</strong> through the agent lifecycle endpoint.</p>
       <div class="delete-warning-box">
-        <p class="warning-title"><i class="fas fa-exclamation-circle"></i> This will cascade-delete:</p>
+        <p class="warning-title"><i class="fas fa-exclamation-circle"></i> Current backend behavior:</p>
         <ul>
-          <li>All <strong>{{ summary.device_count }}</strong> device(s)</li>
-          <li>All <strong>{{ summary.space_count }}</strong> space(s)</li>
-          <li>All <strong>{{ summary.memory_count }}</strong> memorie(s)</li>
-          <li>All <strong>{{ summary.event_count }}</strong> event(s)</li>
-          <li>All people, actions, and audit records</li>
+          <li>Mature agents enter <strong>stasis</strong></li>
+          <li>Immature agents are marked <strong>soft_deleted</strong></li>
+          <li>Related devices, spaces, memories, events, people, actions, and audit records are not hard-deleted by this GUI call</li>
         </ul>
       </div>
       <div class="form-group">
@@ -342,7 +461,7 @@
       <button type="button" class="btn btn-outline" onclick="Marvain.hideModal('delete-agent-modal')">Cancel</button>
       <button type="button" class="btn btn-delete-disabled" id="delete-agent-submit" disabled
               onclick="executeDeleteAgent()">
-        <i class="fas fa-trash-alt"></i> Delete Permanently
+        <i class="fas fa-trash-alt"></i> Apply Lifecycle Delete
       </button>
     </div>
   </div>
@@ -357,6 +476,148 @@
 var AGENT_ID = '{{ agent.agent_id }}';
 var EXISTING_MEMBERS = [{% for m in members %}'{{ m.email or "" }}'{% if not loop.last %}, {% endif %}{% endfor %}];
 var cognitoUsers = [];
+
+async function readAgentJson(response, defaultMessage) {
+  const text = await response.text();
+  let payload = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = {detail: text};
+    }
+  }
+  if (!response.ok) {
+    throw new Error(payload.detail || payload.message || defaultMessage);
+  }
+  return payload;
+}
+
+async function refreshAgentLifecycle() {
+  try {
+    const agentResp = await fetch('/api/agents/' + AGENT_ID);
+    const agent = await readAgentJson(agentResp, 'Failed to load agent lifecycle');
+    document.getElementById('agent-lifecycle-current').textContent =
+      (agent.lifecycle_state || 'active') + (agent.disabled ? ' / disabled' : '');
+
+    const maturityResp = await fetch('/api/agents/' + AGENT_ID + '/maturity');
+    const maturity = await readAgentJson(maturityResp, 'Failed to load maturity evidence');
+    document.getElementById('agent-maturity-status').textContent =
+      (maturity.mature ? 'Mature' : 'Immature') + ' (' + (maturity.maturity_state || agent.maturity_state || 'unknown') + ')';
+
+    const requestsResp = await fetch('/api/agents/' + AGENT_ID + '/lifecycle-requests');
+    const requestsPayload = await readAgentJson(requestsResp, 'Failed to load lifecycle requests');
+    const requests = requestsPayload.requests || [];
+    const latestStasis = requests.find((item) => item.request_type === 'stasis');
+    const latestDeletion = requests.find((item) => item.request_type === 'soft_delete' || item.request_type === 'deletion');
+    document.getElementById('agent-stasis-request-status').textContent =
+      latestStasis ? (latestStasis.status + ' request ' + latestStasis.request_id) : (agent.lifecycle_state === 'stasis' ? 'Applied' : 'None');
+    document.getElementById('agent-deletion-request-status').textContent =
+      latestDeletion ? (latestDeletion.status + ' request ' + latestDeletion.request_id) : (agent.lifecycle_state === 'soft_deleted' ? 'Applied' : 'None');
+    document.getElementById('agent-lifecycle-requests').innerHTML = requests.length
+      ? requests.map((item) => `
+          <div class="annotation-row">
+            <div class="annotation-row-header">
+              <span class="badge badge-outline">${Marvain.escapeHtml(item.request_type || '')}</span>
+              <span class="text-muted">${Marvain.escapeHtml(item.status || '')}</span>
+            </div>
+            <p>${Marvain.escapeHtml(item.rationale || '')}</p>
+            <div class="detail-grid">
+              <div><span class="detail-label">Request ID</span><code>${Marvain.escapeHtml(item.request_id || '')}</code></div>
+              <div><span class="detail-label">Created</span><span>${Marvain.escapeHtml(item.created_at || '')}</span></div>
+            </div>
+          </div>`).join('')
+      : '<p class="text-muted">No lifecycle requests recorded.</p>';
+  } catch (error) {
+    Marvain.showToast('error', 'Lifecycle', error.message);
+  }
+}
+
+async function submitAgentLifecycleRequest(requestType) {
+  const rationale = prompt(requestType === 'stasis' ? 'Rationale for stasis request:' : 'Rationale for deletion review:');
+  if (!rationale) return;
+  try {
+    Marvain.showLoading('Submitting lifecycle request...');
+    const response = await fetch('/api/agents/' + AGENT_ID + '/lifecycle-requests', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({request_type: requestType, rationale: rationale, requested_by_type: 'user'})
+    });
+    const payload = await readAgentJson(response, 'Failed to submit lifecycle request');
+    Marvain.hideLoading();
+    Marvain.showToast('success', 'Lifecycle Request', 'Created ' + payload.status + ' ' + payload.request_type + ' request');
+    if (requestType === 'stasis') {
+      document.getElementById('agent-stasis-request-status').textContent = 'Pending request ' + payload.request_id;
+    } else {
+      document.getElementById('agent-deletion-request-status').textContent = 'Pending request ' + payload.request_id;
+    }
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Lifecycle', error.message);
+  }
+}
+
+function renderConstitutionRevision(revision) {
+  return `
+    <div class="annotation-row">
+      <div class="annotation-row-header">
+        <span class="badge badge-outline">${Marvain.escapeHtml(revision.change_source || 'revision')}</span>
+        <span class="text-muted">${Marvain.escapeHtml(revision.created_at || '')}</span>
+      </div>
+      ${revision.change_reason ? `<p>${Marvain.escapeHtml(revision.change_reason)}</p>` : ''}
+      <div class="detail-grid">
+        <div><span class="detail-label">Revision ID</span><code>${Marvain.escapeHtml(revision.revision_id || '')}</code></div>
+      </div>
+    </div>`;
+}
+
+async function loadConstitutionHistory() {
+  const status = document.getElementById('constitution-history-status');
+  try {
+    status.textContent = 'Loading constitution history...';
+    const response = await fetch('/api/agents/' + AGENT_ID + '/constitution');
+    const data = await readAgentJson(response, 'Failed to load constitution');
+    const revisions = data.revisions || [];
+    const active = revisions[0] || {};
+    document.getElementById('constitution-founder-section').textContent = active.founder_section || 'No founder section recorded.';
+    document.getElementById('constitution-user-section').textContent = active.user_section || 'No user section recorded.';
+    document.getElementById('constitution-agent-section').textContent = active.agent_section || 'No agent section recorded.';
+    document.getElementById('constitution-revisions').innerHTML = revisions.length
+      ? revisions.map(renderConstitutionRevision).join('')
+      : '<p class="text-muted">No constitution revisions recorded.</p>';
+    status.textContent = data.constitution_id ? 'Active revision: ' + (data.active_revision_id || 'none') : 'No constitution record yet.';
+  } catch (error) {
+    status.textContent = 'Constitution API error: ' + error.message;
+  }
+}
+
+async function submitConstitutionRevision(event) {
+  event.preventDefault();
+  const body = {
+    change_source: document.getElementById('constitution-change-source').value,
+    founder_section: document.getElementById('constitution-founder-input').value,
+    user_section: document.getElementById('constitution-user-input').value,
+    agent_section: document.getElementById('constitution-agent-input').value,
+    change_reason: document.getElementById('constitution-change-reason').value || null
+  };
+  try {
+    Marvain.showLoading('Saving constitution revision...');
+    const response = await fetch('/api/agents/' + AGENT_ID + '/constitution/revisions', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    await readAgentJson(response, 'Failed to save constitution revision');
+    Marvain.hideLoading();
+    Marvain.showToast('success', 'Constitution', 'Revision saved');
+    event.target.reset();
+    await loadConstitutionHistory();
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Constitution', error.message);
+  }
+  return false;
+}
 
 async function editAgent() {
   try {
@@ -651,14 +912,15 @@ function confirmDeleteAgent() {
 
 async function executeDeleteAgent() {
   try {
-    Marvain.showLoading('Deleting agent…');
+    Marvain.showLoading('Applying agent lifecycle change…');
     var resp = await fetch('/api/agents/' + AGENT_ID + '/delete', {method: 'POST'});
     Marvain.hideLoading();
     if (!resp.ok) {
       var err = await resp.json().catch(function() { return {detail: resp.statusText}; });
       throw new Error(err.detail || 'Failed to delete agent');
     }
-    Marvain.showToast('success', 'Agent Deleted', 'The agent and all related data have been removed.');
+    var data = await resp.json();
+    Marvain.showToast('success', 'Agent Lifecycle', 'Agent moved to ' + (data.lifecycle_state || 'updated'));
     Marvain.hideModal('delete-agent-modal');
     setTimeout(function() { window.location.href = '/agents'; }, 1500);
   } catch (e) {
@@ -669,5 +931,7 @@ async function executeDeleteAgent() {
 
 // Fetch agent worker status on page load (non-blocking)
 awRefreshStatus();
+refreshAgentLifecycle();
+loadConstitutionHistory();
 </script>
 {% endblock %}

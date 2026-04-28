@@ -6,10 +6,10 @@ CREATE TABLE IF NOT EXISTS agent_tokens (
   token_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   
   -- The agent that issued/owns this token
-  issuer_agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+  issuer_agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
   
   -- The agent that can use this token (NULL = any agent can use it)
-  target_agent_id uuid REFERENCES agents(agent_id) ON DELETE CASCADE,
+  target_agent_id uuid REFERENCES agents(agent_id) ON DELETE RESTRICT,
   
   -- Human-readable name for the token
   name text NOT NULL DEFAULT 'agent-token',

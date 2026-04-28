@@ -8,9 +8,9 @@ Title: Marvain Greenfield TapDB V1 Refactor Plan With Environment, CLI, And Auth
   - `source ./activate` from repo root.
   - root `environment.yaml` for Conda/system tools only.
   - `pyproject.toml` for Python/pip dependencies.
-  - `cli-core-yo==2.1.0`.
-  - `daylily-auth-cognito==2.1.1`.
-  - `daylily-tapdb==6.0.5`.
+  - `cli-core-yo==2.1.1`.
+  - `daylily-auth-cognito==2.1.5`.
+  - `daylily-tapdb[admin]==6.0.8`.
 - Then implement the TapDB-first greenfield refactor with no migration, no compatibility shims, and no fallback production behavior.
 - Final deliverable: feature branch with env/CLI/auth refactor, TapDB V1 implementation, full local/e2e test report, dev deployment report, known limitations, and only truly blocking manual decisions.
 
@@ -19,9 +19,9 @@ Title: Marvain Greenfield TapDB V1 Refactor Plan With Environment, CLI, And Auth
 - Marvain currently has `marvain_activate`, no root `activate`, and `config/marvain_conda.yaml`.
 - `marvain_activate` currently does more than clean env activation: PATH mutation, app config discovery, legacy config fallback references, shell completion, and user guidance.
 - Marvain currently uses `bin/marvain` with `PYTHONPATH` instead of relying cleanly on the installed console script.
-- Marvain currently pins `cli-core-yo==2.0.0` and `daylily-auth-cognito==2.0.1` in `pyproject.toml`.
+- Marvain currently pins `cli-core-yo==2.1.1`, `daylily-auth-cognito==2.1.5`, and `daylily-tapdb[admin]==6.0.8` in `pyproject.toml`.
 - Current Conda YAML still includes obsolete `daylily-cognito==0.1.24` and direct `python-jose[cryptography]`.
-- `daylily-auth-cognito` tag `2.1.1` exists and its package contract exposes `runtime`, `browser`, `admin`, `cli`, and `policy` boundaries. Service runtime must not import `daylily_auth_cognito.cli`.
+- `daylily-auth-cognito` package contract exposes `runtime`, `browser`, `admin`, `cli`, and `policy` boundaries. Service runtime must not import `daylily_auth_cognito.cli`.
 - Current Marvain auth has mixed behavior:
   - `agent_hub.auth` uses `daylily_auth_cognito.admin.client.CognitoAdminClient` but authenticates access tokens by calling Cognito `get_user`.
   - `agent_hub.cognito` still contains Marvain-local browser/JWT code with direct `jose` imports.
@@ -36,7 +36,7 @@ Title: Marvain Greenfield TapDB V1 Refactor Plan With Environment, CLI, And Auth
 - Forbidden outside the boundary: direct imports of `daylily_tapdb.models`, `daylily_tapdb.connection`, `daylily_tapdb.aurora`, SQLAlchemy sessions, psycopg connections, or raw SQL against TapDB-owned tables.
 - Add static tests enforcing that rule.
 - Use TapDB domain `MVN`, owner repo `marvain`, and a Marvain template pack stored in this repo.
-- Resolve dependency alignment intentionally: Marvain should pin `cli-core-yo==2.1.0`, `daylily-auth-cognito==2.1.1`, and `daylily-tapdb==6.0.5`.
+- Resolve dependency alignment intentionally: Marvain should pin `cli-core-yo==2.1.1`, `daylily-auth-cognito==2.1.5`, and `daylily-tapdb[admin]==6.0.8`.
 
 ## 4. Target Runtime Architecture
 
@@ -74,8 +74,7 @@ Title: Marvain Greenfield TapDB V1 Refactor Plan With Environment, CLI, And Auth
 - Delete/replace `config/marvain_conda.yaml` with root `environment.yaml`.
 - Stop relying on `bin/marvain`; use installed console script `marvain = "marvain_cli.__main__:main"`.
 - Remove active references to `. ./marvain_activate`, `source marvain_activate`, `config/marvain_conda.yaml`, and `./bin/marvain`.
-- Replace `cli-core-yo==2.0.0` with `cli-core-yo==2.1.0`.
-- Replace `daylily-auth-cognito==2.0.1` with `daylily-auth-cognito==2.1.1`.
+- Replace stale CLI/auth/TapDB pins with `cli-core-yo==2.1.1`, `daylily-auth-cognito==2.1.5`, and `daylily-tapdb[admin]==6.0.8`.
 - Remove obsolete `daylily-cognito==0.1.24`.
 - Remove direct Marvain runtime reliance on `jose` where `daylily-auth-cognito` owns JWT verification.
 - Remove imports of `daylily_auth_cognito.cli` from service/runtime code if any appear.
@@ -87,8 +86,8 @@ Title: Marvain Greenfield TapDB V1 Refactor Plan With Environment, CLI, And Auth
 ## 7. Multi-Agent Implementation Plan
 
 - Agent 1, environment foundation: owns root `activate`, root `environment.yaml`, `pyproject.toml` dependency split, removal of old activation references, activation tests, and docs updates.
-- Agent 2, CLI foundation: owns `cli-core-yo==2.1.0`, Marvain runtime/env CLI modernization, command policies, CLI tests, and CLI docs.
-- Agent 3, Cognito auth foundation: owns `daylily-auth-cognito==2.1.1`, runtime token verifier adoption, browser session adoption, admin boundary updates, auth tests, and static import guards.
+- Agent 2, CLI foundation: owns `cli-core-yo==2.1.1`, Marvain runtime/env CLI modernization, command policies, CLI tests, and CLI docs.
+- Agent 3, Cognito auth foundation: owns `daylily-auth-cognito==2.1.5`, runtime token verifier adoption, browser session adoption, admin boundary updates, auth tests, and static import guards.
 - Agent 4, TapDB boundary and templates: owns TapDB dependency, template pack, writer function, queue/DLQ, graph query contract, seed/init command, and static boundary tests.
 - Agent 5, core domain and projections: owns SQL projection changes for locations/spaces/sessions/events/auth links/TapDB write status.
 - Agent 6, memory lifecycle and recall: owns candidate/commit/tombstone services, planner/API/tool memory rewrites, recall provenance, and tests.
@@ -114,22 +113,22 @@ Phase 1, clean activation and dependency split:
 - Commands: `python -m pytest tests/test_environment_contract.py -q`; re-source `./activate`; run `marvain version`.
 - Gate: `source ./activate` creates/activates `marvain`, editable install provides `marvain`, and dependency ownership is clean.
 
-Phase 2, CLI-core-yo 2.1.0 and daylily-ec CLI pattern:
+Phase 2, CLI-core-yo 2.1.1 and daylily-ec CLI pattern:
 - Likely touched: `pyproject.toml`, `marvain_cli/cli.py`, `marvain_cli/_registry_v2.py`, `marvain_cli/commands.py`, `marvain_cli/__main__.py`, CLI docs.
 - New files: `tests/test_cli_registry_v2.py`, optional `tests/test_cli_runtime.py`.
 - Tests: command tree/policies, help rendering, global JSON, env/runtime commands, dry-run contracts, version/info metadata.
 - Commands: `python -m pytest tests/test_cli_registry_v2.py tests/test_cli_runtime.py tests/test_environment_contract.py -q`.
-- Gate: `marvain --help`, `marvain --json version`, `marvain runtime status`, `marvain env status`, and existing commands render help on `cli-core-yo==2.1.0`.
+- Gate: `marvain --help`, `marvain --json version`, `marvain runtime status`, `marvain env status`, and existing commands render help on `cli-core-yo==2.1.1`.
 
-Phase 3, daylily-auth-cognito 2.1.1:
+Phase 3, daylily-auth-cognito 2.1.5:
 - Likely touched: `pyproject.toml`, `layers/shared/python/agent_hub/auth.py`, `layers/shared/python/agent_hub/cognito.py`, `functions/hub_api/app.py`, `functions/ws_message/handler.py`, `marvain_cli/ops.py`, auth/GUI/WS tests.
 - New files: `tests/test_auth_boundary.py`, `tests/test_cognito_browser_session.py`, static import guard tests.
 - Removed: obsolete `daylily-cognito` dependency, direct Marvain JWT verification duplicated from `daylily-auth-cognito`, raw OAuth-token browser session storage, service imports from auth CLI modules.
 - Tests: access token verification with `CognitoTokenVerifier`, browser callback/session principal storage, no raw OAuth tokens in session, admin user commands through `daylily_auth_cognito.admin`, WebSocket user/session/device auth, no direct `jose` imports in Marvain runtime.
 - Commands: `python -m pytest tests/test_agent_tokens.py tests/test_gui_app.py tests/test_ws_message_handler.py tests/test_auth_boundary.py tests/test_cognito_browser_session.py -q`.
 - AWS commands: none unless an auth-config smoke is explicitly scoped to dev.
-- Gate: Marvain works with `daylily-auth-cognito==2.1.1`; service runtime uses runtime/browser/admin boundaries correctly; GUI no longer persists raw OAuth tokens.
-- Stop: `2.1.1` is unavailable to the resolver or its public API cannot support current required Cognito flows.
+- Gate: Marvain works with `daylily-auth-cognito==2.1.5`; service runtime uses runtime/browser/admin boundaries correctly; GUI no longer persists raw OAuth tokens.
+- Stop: `2.1.5` is unavailable to the resolver or its public API cannot support current required Cognito flows.
 
 Phase 4, TapDB dependency, templates, and writer boundary:
 - Likely touched: `pyproject.toml`, `template.yaml`, `marvain_cli/commands.py`, `marvain_cli/ops.py`, shared TapDB client modules.
@@ -180,7 +179,7 @@ Phase 10, full integration, dev deploy, e2e, and report:
 - Environment: `source ./activate` works, creates env from `environment.yaml`, activates `marvain`, installs editable package, exposes `marvain`, and has no app config/AWS/completion/PATH-wrapper side effects.
 - Dependency split: Conda spec contains only Conda/system tools; Python/pip packages live in `pyproject.toml`.
 - CLI: registry tree, policies, global JSON, env/runtime commands, dry-run behavior, help rendering, version/info metadata, config safety.
-- Auth: `daylily-auth-cognito==2.1.1` installed; runtime auth uses `CognitoTokenVerifier`; browser flow uses token-free session principal; admin commands use `daylily_auth_cognito.admin`; no `daylily_cognito`; no service imports from `daylily_auth_cognito.cli`.
+- Auth: `daylily-auth-cognito==2.1.5` installed; runtime auth uses `CognitoTokenVerifier`; browser flow uses token-free session principal; admin commands use `daylily_auth_cognito.admin`; no `daylily_cognito`; no service imports from `daylily_auth_cognito.cli`.
 - Unit/integration: TapDB boundary, memory lifecycle, recognition lifecycle, persona/session, device auth, action lifecycle.
 - AWS deployed smoke: bootstrap, owner claim, Cognito login/token verification, REST event ingest, WS user/session/device auth, TapDB semantic write, graph query, memory candidate/commit/recall, recognition queue smoke, action lifecycle smoke.
 
@@ -193,9 +192,9 @@ Phase 10, full integration, dev deploy, e2e, and report:
   `export AWS_DEFAULT_REGION=us-east-1`
   `source ./activate`
 - Required pinned Python packages:
-  `cli-core-yo==2.1.0`
-  `daylily-auth-cognito==2.1.1`
-  `daylily-tapdb==6.0.5`
+  `cli-core-yo==2.1.1`
+  `daylily-auth-cognito==2.1.5`
+  `daylily-tapdb[admin]==6.0.8`
 - Required TapDB env:
   `MERIDIAN_DOMAIN_CODE=MVN`
   `TAPDB_OWNER_REPO=marvain`
@@ -212,9 +211,9 @@ Phase 10, full integration, dev deploy, e2e, and report:
 
 - Activation churn: make Phase 1 small and testable; re-source `./activate` before continuing.
 - Dependency split mistakes: add environment contract tests.
-- Auth package behavior change: isolate in Phase 3; pin `2.1.1`; test runtime, browser, admin, GUI, and WS auth seams before TapDB work.
+- Auth package behavior change: isolate in Phase 3; pin `2.1.5`; test runtime, browser, admin, GUI, and WS auth seams before TapDB work.
 - Browser token removal: replace raw Cognito token cookies with normalized session principal and Marvain short-lived WS/session token where browser WebSocket auth requires a bearer.
-- CLI dependency conflict: resolve with `cli-core-yo==2.1.0` before TapDB and auth integration.
+- CLI dependency conflict: resolve with `cli-core-yo==2.1.1` before TapDB and auth integration.
 - TapDB direct PostgreSQL from Lambda: isolate to writer Lambda in VPC; keep existing Lambdas on RDS Data API.
 - Recognition dependency weight: missing real recognizer is a readiness failure for recognition worker, not a dummy fallback.
 - Existing docs conflict with greenfield design: rewrite or mark historical.
@@ -236,5 +235,5 @@ Phase 10, full integration, dev deploy, e2e, and report:
 Exact first execution prompt for the later implementation run:
 
 ```text
-You are in /Users/jmajor/projects/marvain. This is now an implementation run. Start from refreshed origin/main, create/switch to branch codex/marvain-greenfield-tapdb-v1, use the current setup for the initial baseline, and implement the approved Marvain Greenfield TapDB V1 Refactor Plan With Environment, CLI, And Auth Modernization. First replace marvain_activate/config/marvain_conda.yaml with the daylily-ephemeral-cluster-style source ./activate pattern and root environment.yaml, keeping Conda/system dependencies in environment.yaml and Python/pip dependencies in pyproject.toml. Then refactor Marvain CLI to cli-core-yo==2.1.0 using the daylily-ec patterns. Then update Marvain to daylily-auth-cognito==2.1.1, using runtime/browser/admin package boundaries and no raw OAuth-token browser sessions. Then continue through the TapDB-first V1 implementation using daylily-tapdb==6.0.5. Do not add migration, backward compatibility, shims, aliases, or fallback production behavior. Continue phase to phase automatically when gates pass. If tests fail, attempt up to 3 focused repairs. Stop only for missing AWS credentials/secrets/quota, non-dev/main/prod impact, destructive operations outside the dev stack, or impossible repo/design conflicts. Produce the final feature branch, full test report, dev deployment report if AWS allows it, and known limitations.
+You are in /Users/jmajor/projects/marvain. This is now an implementation run. Start from refreshed origin/main, create/switch to branch codex/marvain-greenfield-tapdb-v1, use the current setup for the initial baseline, and implement the approved Marvain Greenfield TapDB V1 Refactor Plan With Environment, CLI, And Auth Modernization. First replace marvain_activate/config/marvain_conda.yaml with the daylily-ephemeral-cluster-style source ./activate pattern and root environment.yaml, keeping Conda/system dependencies in environment.yaml and Python/pip dependencies in pyproject.toml. Then refactor Marvain CLI to cli-core-yo==2.1.1 using the daylily-ec patterns. Then update Marvain to daylily-auth-cognito==2.1.5, using runtime/browser/admin package boundaries and no raw OAuth-token browser sessions. Then continue through the TapDB-first V1 implementation using daylily-tapdb[admin]==6.0.8. Do not add migration, backward compatibility, shims, aliases, or fallback production behavior. Continue phase to phase automatically when gates pass. If tests fail, attempt up to 3 focused repairs. Stop only for missing AWS credentials/secrets/quota, non-dev/main/prod impact, destructive operations outside the dev stack, or impossible repo/design conflicts. Produce the final feature branch, full test report, dev deployment report if AWS allows it, and known limitations.
 ```

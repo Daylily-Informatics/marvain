@@ -142,7 +142,7 @@ Each template should define `json_addl_schema`, lifecycle state enum, external M
 - TapDB writes are idempotent at the Marvain source-object level.
 - TapDB failures create observable retry/dead-letter state and must not fabricate memory, consent, recognition, or action lifecycle state.
 - Projection rebuilds must be repeatable from canonical TapDB plus immutable artifacts/events where possible.
-- Marvain must not package or fork TapDB-owned schema; schema initialization uses the installed `daylily-tapdb[admin]==6.0.5` package assets/APIs.
+- Marvain must not package or fork TapDB-owned schema; schema initialization uses the installed `daylily-tapdb[admin]==6.0.8` package assets/APIs.
 
 ## 12. Performance and operational risks
 

@@ -1,1 +1,1 @@
-daylily-tapdb[admin]==6.0.7
+daylily-tapdb[admin]==6.0.8

@@ -3,7 +3,7 @@
 
 CREATE TABLE IF NOT EXISTS action_auto_approve_policies (
   policy_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
   name text NOT NULL,
   enabled boolean NOT NULL DEFAULT true,
   priority integer NOT NULL DEFAULT 100,
@@ -22,7 +22,7 @@ CREATE INDEX IF NOT EXISTS action_auto_approve_policies_agent_enabled_idx
 
 CREATE TABLE IF NOT EXISTS action_policy_decisions (
   decision_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  action_id uuid NOT NULL REFERENCES actions(action_id) ON DELETE CASCADE,
+  action_id uuid NOT NULL REFERENCES actions(action_id) ON DELETE RESTRICT,
   policy_id uuid REFERENCES action_auto_approve_policies(policy_id) ON DELETE SET NULL,
   decision text NOT NULL,
   reason text,

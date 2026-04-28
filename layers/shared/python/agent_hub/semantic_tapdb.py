@@ -2,16 +2,15 @@
 
 All Marvain code outside this module should treat TapDB as a semantic object
 and lineage service through this adapter or the mounted TapDB web/DAG APIs.
-The adapter delegates canonical object and graph work to supported daylily-tapdb
-interfaces and fails loudly when a required public interface is unavailable.
+This adapter intentionally uses the established TapDB/Bloom package patterns
+for template-backed instance creation, linking, ORM queries, template seeding,
+EUID lookup, and graph payloads.
 """
 
 from __future__ import annotations
 
-import copy
 import os
 import re
-import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -126,79 +125,6 @@ class TapdbSemanticStore(Protocol):
     def graph_for(self, semantic_id: str, *, max_depth: int = 3) -> dict[str, Any]: ...
 
 
-class InMemoryTapdbSemanticStore:
-    """Deterministic TapDB semantic store for local tests and mocked smoke runs."""
-
-    def __init__(self) -> None:
-        self.objects: dict[str, SemanticObject] = {}
-        self.edges: list[SemanticEdge] = []
-
-    def create_object(
-        self,
-        *,
-        template_code: str,
-        name: str,
-        properties: dict[str, Any],
-        lifecycle_state: str,
-    ) -> SemanticObject:
-        semantic_id = f"MVN-{uuid.uuid4()}"
-        payload = copy.deepcopy(properties)
-        payload["lifecycle_state"] = lifecycle_state
-        obj = SemanticObject(
-            semantic_id=semantic_id,
-            template_code=template_code,
-            name=name,
-            properties=payload,
-            lifecycle_state=lifecycle_state,
-        )
-        self.objects[semantic_id] = obj
-        return obj
-
-    def link_objects(
-        self,
-        *,
-        parent_semantic_id: str,
-        child_semantic_id: str,
-        relationship_type: str,
-    ) -> SemanticEdge:
-        if parent_semantic_id not in self.objects:
-            raise KeyError(f"unknown parent semantic object: {parent_semantic_id}")
-        if child_semantic_id not in self.objects:
-            raise KeyError(f"unknown child semantic object: {child_semantic_id}")
-        edge = SemanticEdge(
-            edge_id=f"MVN-EDGE-{uuid.uuid4()}",
-            parent_semantic_id=parent_semantic_id,
-            child_semantic_id=child_semantic_id,
-            relationship_type=relationship_type,
-        )
-        self.edges.append(edge)
-        return edge
-
-    def graph_for(self, semantic_id: str, *, max_depth: int = 3) -> dict[str, Any]:
-        if semantic_id not in self.objects:
-            raise KeyError(f"unknown semantic object: {semantic_id}")
-        seen = {semantic_id}
-        frontier = {semantic_id}
-        selected_edges: list[SemanticEdge] = []
-        for _ in range(max(0, int(max_depth))):
-            next_frontier: set[str] = set()
-            for edge in self.edges:
-                if edge.parent_semantic_id in frontier or edge.child_semantic_id in frontier:
-                    selected_edges.append(edge)
-                    if edge.parent_semantic_id not in seen:
-                        next_frontier.add(edge.parent_semantic_id)
-                    if edge.child_semantic_id not in seen:
-                        next_frontier.add(edge.child_semantic_id)
-            if not next_frontier:
-                break
-            seen.update(next_frontier)
-            frontier = next_frontier
-        return {
-            "nodes": [self.objects[item].__dict__ for item in sorted(seen)],
-            "edges": [edge.__dict__ for edge in selected_edges],
-        }
-
-
 def validate_marvain_template_pack() -> TemplateValidationResult:
     from daylily_tapdb.templates.loader import validate_template_configs
 
@@ -229,7 +155,7 @@ def _build_secret_db_url(*, secret_arn: str, host: str, port: int, database: str
 
 
 class DaylilyTapdbSemanticStore:
-    """Production TapDB adapter using public daylily-tapdb APIs."""
+    """Production TapDB repository boundary using established TapDB/Bloom patterns."""
 
     def __init__(
         self,
@@ -254,6 +180,30 @@ class DaylilyTapdbSemanticStore:
         )
         self.template_manager = TemplateManager(config_path=template_dir)
         self.factory = InstanceFactory(self.template_manager, domain_code=domain_code)
+
+    @staticmethod
+    def _template_code(obj: Any) -> str:
+        return (
+            "/".join(
+                str(getattr(obj, field_name, "") or "").strip("/")
+                for field_name in ("category", "type", "subtype", "version")
+            )
+            + "/"
+        )
+
+    @classmethod
+    def _semantic_object_from_instance(cls, instance: Any) -> SemanticObject:
+        json_addl = getattr(instance, "json_addl", None) or {}
+        properties = json_addl.get("properties") if isinstance(json_addl, dict) else {}
+        if not isinstance(properties, dict):
+            properties = {}
+        return SemanticObject(
+            semantic_id=str(getattr(instance, "euid", "")),
+            template_code=cls._template_code(instance),
+            name=str(getattr(instance, "name", "")),
+            properties=dict(properties),
+            lifecycle_state=str(getattr(instance, "bstatus", "") or properties.get("lifecycle_state") or "created"),
+        )
 
     @classmethod
     def from_environment(cls) -> "DaylilyTapdbSemanticStore":
@@ -335,7 +285,7 @@ class DaylilyTapdbSemanticStore:
             session.flush()
             return SemanticObject(
                 semantic_id=str(instance.euid),
-                template_code=template_code,
+                template_code=self._template_code(instance),
                 name=str(instance.name),
                 properties=dict((instance.json_addl or {}).get("properties") or {}),
                 lifecycle_state=str(instance.bstatus),
@@ -348,16 +298,16 @@ class DaylilyTapdbSemanticStore:
         child_semantic_id: str,
         relationship_type: str,
     ) -> SemanticEdge:
-        link_by_euid = getattr(self.factory, "link_instances_by_euid", None)
-        if link_by_euid is None:
-            raise RuntimeError("daylily-tapdb public API missing: InstanceFactory.link_instances_by_euid")
+        from daylily_tapdb.services.object_lookup import find_object_by_euid
+
         with self.connection.session_scope(commit=True) as session:
-            lineage = link_by_euid(
-                session,
-                parent_euid=parent_semantic_id,
-                child_euid=child_semantic_id,
-                relationship_type=relationship_type,
-            )
+            parent, parent_type = find_object_by_euid(session, parent_semantic_id)
+            child, child_type = find_object_by_euid(session, child_semantic_id)
+            if parent is None or parent_type != "instance":
+                raise KeyError(f"unknown TapDB parent instance: {parent_semantic_id}")
+            if child is None or child_type != "instance":
+                raise KeyError(f"unknown TapDB child instance: {child_semantic_id}")
+            lineage = self.factory.link_instances(session, parent, child, relationship_type=relationship_type)
         return SemanticEdge(
             edge_id=str(lineage.euid),
             parent_semantic_id=parent_semantic_id,
@@ -365,12 +315,71 @@ class DaylilyTapdbSemanticStore:
             relationship_type=relationship_type,
         )
 
-    def graph_for(self, semantic_id: str, *, max_depth: int = 3) -> dict[str, Any]:
-        from daylily_tapdb.lineage import get_lineage_graph
+    def get_object(self, semantic_id: str) -> SemanticObject | None:
+        """Look up a TapDB instance EUID through TapDB's reusable object lookup service."""
+
+        from daylily_tapdb.services.object_lookup import find_object_by_euid
 
         with self.connection.session_scope(commit=False) as session:
-            graph = get_lineage_graph(session, semantic_id, max_depth=max_depth)
-            return {
-                "nodes": [node.__dict__ for node in graph.nodes],
-                "edges": [edge.__dict__ for edge in graph.edges],
-            }
+            obj, record_type = find_object_by_euid(session, semantic_id)
+            if obj is None:
+                return None
+            if record_type != "instance":
+                raise TypeError(f"TapDB EUID {semantic_id!r} is a {record_type}, not an instance")
+            return self._semantic_object_from_instance(obj)
+
+    def query_objects(
+        self,
+        *,
+        template_code: str | None = None,
+        category: str | None = None,
+        type_name: str | None = None,
+        subtype: str | None = None,
+        version: str | None = None,
+        name_like: str | None = None,
+        euid_like: str | None = None,
+        limit: int = 50,
+    ) -> list[SemanticObject]:
+        """Query TapDB instances using the same SQLAlchemy ORM pattern Bloom uses."""
+
+        from daylily_tapdb.models.instance import generic_instance
+
+        filters: dict[str, str] = {}
+        if template_code:
+            parts = [part for part in str(template_code).strip("/").split("/") if part]
+            if len(parts) != 4:
+                raise ValueError("template_code must have category/type/subtype/version")
+            filters.update(dict(zip(("category", "type", "subtype", "version"), parts, strict=True)))
+        for key, value in (
+            ("category", category),
+            ("type", type_name),
+            ("subtype", subtype),
+            ("version", version),
+        ):
+            if value is not None:
+                filters[key] = str(value).strip()
+
+        max_rows = max(1, min(int(limit), 200))
+        with self.connection.session_scope(commit=False) as session:
+            query = session.query(generic_instance).filter(
+                generic_instance.is_deleted.is_(False),
+                generic_instance.domain_code == self.domain_code,
+            )
+            for field_name, value in filters.items():
+                query = query.filter(getattr(generic_instance, field_name) == value)
+            if name_like:
+                query = query.filter(generic_instance.name.ilike(f"%{name_like}%"))
+            if euid_like:
+                query = query.filter(generic_instance.euid.ilike(f"%{euid_like}%"))
+            rows = query.order_by(generic_instance.created_dt.desc()).limit(max_rows).all()
+            return [self._semantic_object_from_instance(row) for row in rows]
+
+    def graph_for(self, semantic_id: str, *, max_depth: int = 3) -> dict[str, Any]:
+        from daylily_tapdb.services.graph_payloads import build_graph_payload
+        from daylily_tapdb.services.object_lookup import find_object_by_euid
+
+        with self.connection.session_scope(commit=False) as session:
+            obj, record_type = find_object_by_euid(session, semantic_id)
+            if obj is None:
+                raise KeyError(f"unknown TapDB EUID: {semantic_id}")
+            return build_graph_payload(obj, record_type=str(record_type), service_name="marvain", depth=max_depth)

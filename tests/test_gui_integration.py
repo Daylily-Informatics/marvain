@@ -39,7 +39,7 @@ def is_server_running() -> bool:
     try:
         r = requests.get(f"{BASE_URL}/health", verify=False, timeout=5)
         return r.status_code == 200
-    except requests.exceptions.ConnectionError:
+    except requests.exceptions.RequestException:
         return False
 
 

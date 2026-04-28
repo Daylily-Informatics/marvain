@@ -48,6 +48,16 @@ source ./activate
 - Keep changes minimal and local. Avoid drive-by refactors.
 - Never invent APIs, filenames, config keys, or results. If something cannot be verified, say what was checked and what remains unknown.
 
+## TapDB Boundary And Usage
+
+- Direct use of TapDB package APIs is intended when it is centralized in Marvain's TapDB boundary. Do not invent a new semantic facade such as `SemanticTapDBClient` unless TapDB itself adds one.
+- The approved Marvain boundary is `layers/shared/python/agent_hub/semantic_tapdb.py`, plus the TapDB writer and mounted TapDB web/DAG app code paths. Keep application/runtime code outside those boundaries from importing `daylily_tapdb` directly.
+- Follow the established Bloom/TapDB patterns: use `TAPDBConnection`, `session_scope`, `TemplateManager`, `InstanceFactory`, TapDB template loader/seed helpers, TapDB ORM models, object lookup services, graph payload services, and DAG routes as appropriate.
+- Do not work around TapDB with Marvain-owned raw SQL against TapDB-owned tables, copied TapDB schema files, duplicated lineage logic, or a custom Marvain graph surface. Use `/tapdb/graph` and `/api/dag/*` for graph/lineage surfaces.
+- Production TapDB construction must hard-fail when real TapDB config is missing. In-memory TapDB stores and deterministic TapDB fakes belong only in explicit test/smoke fixtures such as `tests/fakes/`.
+- Operational PostgreSQL tables are acceptable only for Marvain-owned projections, transport state, vectors, WebSocket state, and other specialized stores described in the design docs. TapDB-owned semantic objects, lifecycle, provenance, and graph state must remain TapDB-owned.
+- Before changing TapDB integration code, compare against `~/projects/daylily/bloom/**` and `~/projects/daylily/daylily-tapdb/**` rather than guessing at a new abstraction.
+
 ## Activation And Dependency Boundaries
 
 - `activate` is for activating the Conda env and making the repo CLI available. Do not move runtime bootstrap, config creation, AWS deployment, or unrelated tool installation into activation.

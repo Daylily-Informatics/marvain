@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS agents (
 
 CREATE TABLE IF NOT EXISTS spaces (
   space_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
   name text NOT NULL,
   privacy_mode boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now()
@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS spaces (
 
 CREATE TABLE IF NOT EXISTS devices (
   device_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
   name text,
   capabilities jsonb NOT NULL DEFAULT '{}'::jsonb,
   scopes jsonb NOT NULL DEFAULT '[]'::jsonb,
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS devices (
 
 CREATE TABLE IF NOT EXISTS people (
   person_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
   display_name text NOT NULL,
   aliases jsonb NOT NULL DEFAULT '[]'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now()
@@ -38,8 +38,8 @@ CREATE TABLE IF NOT EXISTS people (
 
 CREATE TABLE IF NOT EXISTS consent_grants (
   consent_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
-  person_id uuid NOT NULL REFERENCES people(person_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
+  person_id uuid NOT NULL REFERENCES people(person_id) ON DELETE RESTRICT,
   consent_type text NOT NULL,
   scope jsonb NOT NULL DEFAULT '{}'::jsonb,
   granted_at timestamptz NOT NULL DEFAULT now(),
@@ -49,8 +49,8 @@ CREATE TABLE IF NOT EXISTS consent_grants (
 
 CREATE TABLE IF NOT EXISTS presence (
   presence_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
-  space_id uuid NOT NULL REFERENCES spaces(space_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
+  space_id uuid NOT NULL REFERENCES spaces(space_id) ON DELETE RESTRICT,
   person_id uuid REFERENCES people(person_id) ON DELETE SET NULL,
   device_id uuid REFERENCES devices(device_id) ON DELETE SET NULL,
   status text NOT NULL,
@@ -62,8 +62,8 @@ CREATE INDEX IF NOT EXISTS presence_space_idx ON presence(space_id);
 
 CREATE TABLE IF NOT EXISTS events (
   event_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
-  space_id uuid NOT NULL REFERENCES spaces(space_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
+  space_id uuid NOT NULL REFERENCES spaces(space_id) ON DELETE RESTRICT,
   device_id uuid REFERENCES devices(device_id) ON DELETE SET NULL,
   person_id uuid REFERENCES people(person_id) ON DELETE SET NULL,
   type text NOT NULL,
@@ -75,7 +75,7 @@ CREATE INDEX IF NOT EXISTS events_space_time_idx ON events(space_id, created_at 
 
 CREATE TABLE IF NOT EXISTS memories (
   memory_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
   space_id uuid REFERENCES spaces(space_id) ON DELETE SET NULL,
   tier text NOT NULL,
   content text NOT NULL,
@@ -96,7 +96,7 @@ CREATE INDEX IF NOT EXISTS memories_agent_time_idx ON memories(agent_id, created
 
 CREATE TABLE IF NOT EXISTS actions (
   action_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
   space_id uuid REFERENCES spaces(space_id) ON DELETE SET NULL,
   kind text NOT NULL,
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -110,7 +110,7 @@ CREATE TABLE IF NOT EXISTS actions (
 CREATE INDEX IF NOT EXISTS actions_agent_status_idx ON actions(agent_id, status);
 
 CREATE TABLE IF NOT EXISTS audit_state (
-  agent_id uuid PRIMARY KEY REFERENCES agents(agent_id) ON DELETE CASCADE,
+  agent_id uuid PRIMARY KEY REFERENCES agents(agent_id) ON DELETE RESTRICT,
   last_hash text NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now()
 );

@@ -18,10 +18,10 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import requests
-from agent_hub.memory_taxonomy import classify_memory_kinds
+from agent_hub.memory_classifier import MemoryClassifierUnavailable, classify_memory_event
 from agent_hub.personas import DEFAULT_AGENT_PERSONA_NAME
 from dotenv import load_dotenv
 from livekit import agents, rtc
@@ -121,6 +121,14 @@ AUTOSAVE_EPISODIC_MEMORIES = str(os.getenv("AUTOSAVE_EPISODIC_MEMORIES", "true")
     "1",
     "yes",
 )
+
+# Contextual recall is intentionally not a space filter. The current space,
+# session, and person bias prompt hydration ranking after agent-wide recall.
+CONTEXTUAL_RECALL_K = int(os.getenv("CONTEXTUAL_RECALL_K", "16"))
+CURRENT_SESSION_MEMORY_WEIGHT = 0.35
+CURRENT_SPACE_MEMORY_WEIGHT = 0.2
+CURRENT_PERSON_MEMORY_WEIGHT = 0.15
+GENERIC_MEMORY_WEIGHT = 0.05
 
 # Hub connection settings
 HUB_API_BASE = os.getenv("HUB_API_BASE", "").rstrip("/")
@@ -225,6 +233,31 @@ def hub_create_memory(
         logger.warning(f"Failed to create memory: {e}")
 
 
+def classify_memory_for_capture(
+    *,
+    text: str,
+    modality: str,
+    source_event_id: str,
+    actor_type: str,
+    source: str,
+    interacting_agent_id: str | None = None,
+) -> list:
+    """Classify auto-captured memory through the configured provider."""
+
+    try:
+        return classify_memory_event(
+            text=text,
+            modality=modality,
+            source_evidence_id=source_event_id,
+            actor_type=actor_type,
+            source=source,
+            interacting_agent_id=interacting_agent_id,
+        )
+    except MemoryClassifierUnavailable as exc:
+        logger.error("Memory auto-capture classification unavailable: %s", exc)
+        return []
+
+
 def hub_ingest_event(
     *,
     space_id: str,
@@ -308,6 +341,238 @@ def _fetch_recall_memories(
     except Exception as e:
         logger.warning(f"Failed to fetch memories: {e}")
     return []
+
+
+@dataclass(frozen=True)
+class MemorySourceContext:
+    source_event_id: str | None = None
+    device_id: str | None = None
+    space_id: str | None = None
+    session_id: str | None = None
+    person_id: str | None = None
+    situation: str | None = None
+
+
+def _dict_or_empty(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _first_nonempty(*values: object) -> str | None:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return None
+
+
+def _memory_source_context(mem: dict) -> MemorySourceContext:
+    explanation = _dict_or_empty(mem.get("explanation"))
+    source_evidence = _dict_or_empty(explanation.get("source_evidence"))
+    event_payload = _dict_or_empty(source_evidence.get("event_payload"))
+    provenance = _dict_or_empty(explanation.get("provenance"))
+    stored = _dict_or_empty(explanation.get("stored"))
+    metadata = _dict_or_empty(mem.get("metadata"))
+
+    return MemorySourceContext(
+        source_event_id=_first_nonempty(
+            explanation.get("source_event_id"),
+            source_evidence.get("event_id"),
+            mem.get("source_event_id"),
+            stored.get("source_event_id"),
+            event_payload.get("source_event_id"),
+        ),
+        device_id=_first_nonempty(
+            explanation.get("device_id"),
+            source_evidence.get("device_id"),
+            mem.get("device_id"),
+            provenance.get("device_id"),
+            stored.get("device_id"),
+            event_payload.get("device_id"),
+            metadata.get("device_id"),
+        ),
+        space_id=_first_nonempty(
+            explanation.get("space_id"),
+            source_evidence.get("space_id"),
+            mem.get("space_id"),
+            stored.get("space_id"),
+            event_payload.get("space_id"),
+            metadata.get("space_id"),
+        ),
+        session_id=_first_nonempty(
+            explanation.get("session_id"),
+            source_evidence.get("session_id"),
+            mem.get("session_id"),
+            stored.get("session_id"),
+            event_payload.get("session_id"),
+            metadata.get("session_id"),
+        ),
+        person_id=_first_nonempty(
+            explanation.get("person_id"),
+            source_evidence.get("person_id"),
+            mem.get("person_id"),
+            mem.get("subject_person_id"),
+            stored.get("person_id"),
+            event_payload.get("person_id"),
+            metadata.get("person_id"),
+        ),
+        situation=_first_nonempty(
+            explanation.get("situation"),
+            source_evidence.get("situation"),
+            mem.get("situation"),
+            provenance.get("situation"),
+            stored.get("situation"),
+            event_payload.get("situation"),
+            event_payload.get("situation_id"),
+            event_payload.get("activity"),
+            event_payload.get("activity_context"),
+            event_payload.get("location_context"),
+            event_payload.get("space_name"),
+            metadata.get("situation"),
+        ),
+    )
+
+
+def _format_memory_source_note(mem: dict) -> str:
+    context = _memory_source_context(mem)
+    source_bits = []
+    if context.source_event_id:
+        source_bits.append(f"event {context.source_event_id}")
+    if context.device_id:
+        source_bits.append(f"device {context.device_id}")
+    if context.space_id:
+        source_bits.append(f"space {context.space_id}")
+    if context.session_id:
+        source_bits.append(f"session {context.session_id}")
+    if context.person_id:
+        source_bits.append(f"person {context.person_id}")
+    if context.situation:
+        source_bits.append(f"situation {context.situation}")
+    return f" (source: {', '.join(source_bits)})" if source_bits else ""
+
+
+def _memory_recall_distance(mem: dict, fallback_rank: int) -> float:
+    explanation = _dict_or_empty(mem.get("explanation"))
+    ranking = _dict_or_empty(explanation.get("ranking"))
+    for value in (
+        ranking.get("weighted_distance"),
+        ranking.get("embedding_distance"),
+        ranking.get("distance"),
+        mem.get("distance"),
+    ):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return float(fallback_rank)
+
+
+def _dedupe_memories(memories: list[dict]) -> list[dict]:
+    seen = set()
+    deduped = []
+    for mem in memories:
+        mid = str(mem.get("memory_id") or "").strip()
+        key = mid or f"{mem.get('tier')}\0{mem.get('content')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(mem)
+    return deduped
+
+
+def _rank_contextual_memories(
+    memories: list[dict],
+    *,
+    current_space_id: str | None,
+    current_session_id: str | None,
+    active_person_id: str | None,
+    limit: int = 8,
+) -> list[dict]:
+    current_space_id = str(current_space_id or "").strip() or None
+    current_session_id = str(current_session_id or "").strip() or None
+    active_person_id = str(active_person_id or "").strip() or None
+    ranked = []
+    for index, mem in enumerate(_dedupe_memories(memories)):
+        source = _memory_source_context(mem)
+        distance = _memory_recall_distance(mem, index + 1)
+        context_weight = 0.0
+        if current_session_id and source.session_id == current_session_id:
+            context_weight += CURRENT_SESSION_MEMORY_WEIGHT
+        if current_space_id and source.space_id == current_space_id:
+            context_weight += CURRENT_SPACE_MEMORY_WEIGHT
+        elif current_space_id and not source.space_id:
+            context_weight += GENERIC_MEMORY_WEIGHT
+        if active_person_id and source.person_id == active_person_id:
+            context_weight += CURRENT_PERSON_MEMORY_WEIGHT
+        ranked.append((distance - context_weight, distance, index, mem))
+    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [mem for _, _, _, mem in ranked[:limit]]
+
+
+def _contextual_recall_query(
+    base_query: str,
+    *,
+    current_space_id: str | None,
+    current_session_id: str | None,
+    active_person_id: str | None,
+) -> str:
+    context_bits = ["current live conversation"]
+    if current_space_id:
+        context_bits.append(f"current space {current_space_id}")
+    if current_session_id:
+        context_bits.append(f"current session {current_session_id}")
+    if active_person_id:
+        context_bits.append(f"current person {active_person_id}")
+    return f"{base_query}; {'; '.join(context_bits)}"
+
+
+def _fetch_contextual_recall_memories(
+    *,
+    agent_id: str,
+    current_space_id: str,
+    current_session_id: str | None,
+    active_person_id: str | None,
+) -> list[dict]:
+    """Recall agent memories and bias ranking toward the current context.
+
+    Passing ``space_id`` to the Hub recall endpoint filters to that space. Worker
+    hydration needs broader agent memory, so the current space is carried in the
+    query text and applied as local ranking context after recall.
+    """
+    memories: list[dict] = []
+    if active_person_id:
+        memories.extend(
+            _fetch_recall_memories(
+                agent_id=agent_id,
+                space_id=None,
+                person_id=active_person_id,
+                query=_contextual_recall_query(
+                    "facts preferences relationship history about the current speaker",
+                    current_space_id=current_space_id,
+                    current_session_id=current_session_id,
+                    active_person_id=active_person_id,
+                ),
+                k=CONTEXTUAL_RECALL_K,
+            )
+        )
+    memories.extend(
+        _fetch_recall_memories(
+            agent_id=agent_id,
+            space_id=None,
+            query=_contextual_recall_query(
+                "session context recent conversation important facts",
+                current_space_id=current_space_id,
+                current_session_id=current_session_id,
+                active_person_id=active_person_id,
+            ),
+            k=CONTEXTUAL_RECALL_K,
+        )
+    )
+    return _rank_contextual_memories(
+        memories,
+        current_space_id=current_space_id,
+        current_session_id=current_session_id,
+        active_person_id=active_person_id,
+    )
 
 
 def _infer_active_person_id(events: list[dict]) -> str | None:
@@ -511,15 +776,7 @@ def _build_context_block(events: list[dict], memories: list[dict], *, current_se
         for mem in memories[:5]:  # Limit to top 5
             tier = mem.get("tier", "")
             content = mem.get("content", "")[:500]  # Truncate long content
-            explanation = mem.get("explanation") if isinstance(mem.get("explanation"), dict) else {}
-            source_event_id = str(explanation.get("source_event_id") or "").strip()
-            session_id = str(explanation.get("session_id") or "").strip()
-            source_bits = []
-            if source_event_id:
-                source_bits.append(f"event {source_event_id}")
-            if session_id:
-                source_bits.append(f"session {session_id}")
-            source_note = f" (source: {', '.join(source_bits)})" if source_bits else ""
+            source_note = _format_memory_source_note(mem)
             parts.append(f"- [{tier}] {content}{source_note}")
 
     # Add recent conversation summary if available
@@ -646,32 +903,12 @@ async def forge_agent(ctx: agents.JobContext):
         logger.info(f"Fetching context for space {space_id}...")
         events = _fetch_space_events(space_id, limit=50)
         active_person_id = _infer_active_person_id(events)
-
-        # Person-scoped recall (when we can infer who is speaking) plus general space recall.
-        memories_person = []
-        if active_person_id:
-            memories_person = _fetch_recall_memories(
-                agent_id=agent_id,
-                space_id=space_id,
-                person_id=active_person_id,
-                query="facts preferences relationship history about the current speaker",
-                k=6,
-            )
-        memories_space = _fetch_recall_memories(
+        memories = _fetch_contextual_recall_memories(
             agent_id=agent_id,
-            space_id=space_id,
-            query="session context recent conversation important facts",
-            k=8,
+            current_space_id=space_id,
+            current_session_id=session_id,
+            active_person_id=active_person_id,
         )
-        seen = set()
-        memories = []
-        for m in memories_person + memories_space:
-            mid = str(m.get("memory_id") or "")
-            if mid and mid in seen:
-                continue
-            if mid:
-                seen.add(mid)
-            memories.append(m)
         context_block = _build_context_block(events, memories, current_session_id=session_id)
         if context_block:
             logger.info(f"Context hydration: {len(events)} events, {len(memories)} memories")
@@ -764,16 +1001,23 @@ async def forge_agent(ctx: agents.JobContext):
         if AUTOSAVE_EPISODIC_MEMORIES:
             # Auto-save as episodic memory
             if source_event_id and source_event_id != "privacy_mode":
-                for tier in classify_memory_kinds(text, modality="audio"):
+                for classification in classify_memory_for_capture(
+                    text=text,
+                    modality="audio",
+                    source_event_id=source_event_id,
+                    actor_type="agent",
+                    source="livekit_assistant_voice",
+                ):
                     hub_create_memory(
                         space_id=space_id,
                         content=text,
-                        tier=tier,
+                        tier=classification.kind,
                         metadata={
                             "role": role,
                             "input_modality": "voice",
                             "room_name": ctx.room.name,
                             "room_session_id": room_session_id,
+                            "memory_classification": classification.as_metadata(),
                         },
                         source_event_id=source_event_id,
                         session_id=session_id,
@@ -800,17 +1044,24 @@ async def forge_agent(ctx: agents.JobContext):
         )
         if AUTOSAVE_EPISODIC_MEMORIES:
             if source_event_id and source_event_id != "privacy_mode":
-                for tier in classify_memory_kinds(text, modality="audio"):
+                for classification in classify_memory_for_capture(
+                    text=text,
+                    modality="audio",
+                    source_event_id=source_event_id,
+                    actor_type="user",
+                    source="livekit_user_voice",
+                ):
                     hub_create_memory(
                         space_id=space_id,
                         content=text,
-                        tier=tier,
+                        tier=classification.kind,
                         metadata={
                             "role": "user",
                             "input_modality": "voice",
                             "room_name": ctx.room.name,
                             "room_session_id": room_session_id,
                             "participant_identity": participant_identity,
+                            "memory_classification": classification.as_metadata(),
                         },
                         source_event_id=source_event_id,
                         session_id=session_id,
@@ -956,17 +1207,24 @@ async def forge_agent(ctx: agents.JobContext):
             if AUTOSAVE_EPISODIC_MEMORIES:
                 # Auto-save as episodic memory
                 if source_event_id and source_event_id != "privacy_mode":
-                    for tier in classify_memory_kinds(text, modality="text"):
+                    for classification in classify_memory_for_capture(
+                        text=text,
+                        modality="text",
+                        source_event_id=source_event_id,
+                        actor_type="user",
+                        source="livekit_typed_chat",
+                    ):
                         hub_create_memory(
                             space_id=space_id,
                             content=text,
-                            tier=tier,
+                            tier=classification.kind,
                             metadata={
                                 "role": "user",
                                 "input_modality": "text",
                                 "room_name": ctx.room.name,
                                 "room_session_id": room_session_id,
                                 "participant_identity": sender,
+                                "memory_classification": classification.as_metadata(),
                             },
                             source_event_id=source_event_id,
                             session_id=session_id,

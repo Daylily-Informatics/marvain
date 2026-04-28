@@ -12,7 +12,8 @@ def _read(path: str) -> str:
 def test_hub_api_uses_current_daylily_auth_cognito_dependency() -> None:
     requirements = _read("functions/hub_api/requirements.txt")
 
-    assert "daylily-auth-cognito==2.1.4" in requirements
+    assert "daylily-auth-cognito==2.1.5" in requirements
+    assert "daylily-auth-cognito==2.1.4" not in requirements
     assert "daylily-auth-cognito==2.0.1" not in requirements
     assert "python-jose[cryptography]" not in requirements
 
@@ -21,7 +22,8 @@ def test_ws_message_packages_browser_session_and_cognito_auth_dependencies() -> 
     requirements = _read("functions/ws_message/requirements.txt")
 
     assert "itsdangerous" in requirements
-    assert "daylily-auth-cognito==2.1.4" in requirements
+    assert "daylily-auth-cognito==2.1.5" in requirements
+    assert "daylily-auth-cognito==2.1.4" not in requirements
     assert "python-jose[cryptography]" not in requirements
 
 

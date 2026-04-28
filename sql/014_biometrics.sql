@@ -4,8 +4,8 @@
 
 CREATE TABLE IF NOT EXISTS voiceprints (
   voiceprint_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
-  person_id uuid NOT NULL REFERENCES people(person_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
+  person_id uuid NOT NULL REFERENCES people(person_id) ON DELETE RESTRICT,
   embedding vector(256) NOT NULL,
   model text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -15,8 +15,8 @@ CREATE TABLE IF NOT EXISTS voiceprints (
 
 CREATE TABLE IF NOT EXISTS faceprints (
   faceprint_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
-  person_id uuid NOT NULL REFERENCES people(person_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
+  person_id uuid NOT NULL REFERENCES people(person_id) ON DELETE RESTRICT,
   embedding vector(512) NOT NULL,
   model text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),

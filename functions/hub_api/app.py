@@ -58,10 +58,12 @@ from agent_hub.memberships import (
     revoke_membership,
     update_membership,
 )
+from agent_hub.memory_classifier import MemoryClassifierUnavailable, classify_memory_event
 from agent_hub.memory_taxonomy import (
-    classify_memory_kinds,
     memory_kind_options,
+    memory_provenance_options,
     normalize_memory_kind,
+    normalize_memory_provenance_class,
 )
 from agent_hub.personas import DEFAULT_AGENT_PERSONA_INSTRUCTIONS, DEFAULT_AGENT_PERSONA_NAME
 from agent_hub.secrets import get_secret_json
@@ -75,6 +77,7 @@ from api_app import (
     _get_s3,
     _get_sqs,
     _mint_livekit_token_for_user,
+    _parse_json_obj,
     _session_secret,
     api_app,
     get_config,
@@ -1696,7 +1699,7 @@ def api_create_space(request: Request, body: SpaceCreate) -> SpaceResponse:
 
 @app.delete("/api/spaces/{space_id}", name="api_delete_space")
 def api_delete_space(request: Request, space_id: str) -> dict:
-    """Delete a space."""
+    """Disable a space without hard deletion."""
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -1725,7 +1728,11 @@ def api_delete_space(request: Request, space_id: str) -> dict:
     try:
         db.execute(
             """
-            DELETE FROM spaces WHERE space_id = :space_id::uuid
+            UPDATE spaces
+            SET lifecycle_state = 'soft_deleted',
+                disabled_at = COALESCE(disabled_at, now()),
+                lifecycle_reason = 'gui_space_delete'
+            WHERE space_id = :space_id::uuid
         """,
             {"space_id": space_id},
         )
@@ -1733,7 +1740,12 @@ def api_delete_space(request: Request, space_id: str) -> dict:
         logger.error(f"Failed to delete space: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete space")
 
-    return {"message": "Space deleted", "space_id": space_id, "name": space_name}
+    return {
+        "message": "Space soft deleted",
+        "space_id": space_id,
+        "name": space_name,
+        "lifecycle_state": "soft_deleted",
+    }
 
 
 class SpaceUpdate(BaseModel):
@@ -2012,7 +2024,7 @@ def api_rotate_device_token(request: Request, device_id: str) -> DeviceRotateTok
 
 @app.post("/api/devices/{device_id}/delete", name="api_delete_device")
 def api_delete_device(request: Request, device_id: str) -> dict:
-    """Delete a device permanently."""
+    """Disable a device without hard deletion."""
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -2036,7 +2048,11 @@ def api_delete_device(request: Request, device_id: str) -> dict:
     try:
         db.execute(
             """
-            DELETE FROM devices WHERE device_id = :device_id::uuid
+            UPDATE devices
+            SET lifecycle_state = 'soft_deleted',
+                revoked_at = COALESCE(revoked_at, now()),
+                lifecycle_reason = 'gui_device_delete'
+            WHERE device_id = :device_id::uuid
         """,
             {"device_id": device_id},
         )
@@ -2044,7 +2060,7 @@ def api_delete_device(request: Request, device_id: str) -> dict:
         logger.error(f"Failed to delete device: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete device")
 
-    return {"message": "Device deleted", "device_id": device_id}
+    return {"message": "Device soft deleted", "device_id": device_id, "lifecycle_state": "soft_deleted"}
 
 
 class DeviceLocationUpdate(BaseModel):
@@ -2743,6 +2759,65 @@ class AgentUpdate(BaseModel):
     disabled: bool | None = None
 
 
+class AgentLifecycleRequestCreate(BaseModel):
+    request_type: str = Field(default="stasis", description="stasis or soft_delete")
+    rationale: str = Field(..., min_length=1, max_length=5000)
+    requested_by_type: str = Field(default="user", description="user or agent")
+    requested_by_id: str | None = None
+
+
+class AgentConstitutionRevisionCreate(BaseModel):
+    founder_section: str | None = None
+    user_section: str | None = None
+    agent_section: str | None = None
+    change_source: str = Field(default="user", description="founder, user, or agent")
+    change_reason: str | None = None
+
+
+class AgentBackupCreate(BaseModel):
+    include_artifact_manifest: bool = True
+    include_tapdb_subgraph: bool = True
+
+
+def _agent_maturity(db: Any, *, agent_id: str) -> dict[str, Any]:
+    rows = db.query(
+        """
+        SELECT
+          EXTRACT(DAY FROM (now() - a.created_at))::INT AS age_days,
+          (SELECT count(*)::INT FROM memories WHERE agent_id = :agent_id::uuid AND lifecycle_state = 'committed') AS committed_memories,
+          (SELECT count(*)::INT FROM sessions WHERE agent_id = :agent_id::uuid) AS sessions,
+          (SELECT count(DISTINCT date_trunc('day', created_at))::INT FROM events WHERE agent_id = :agent_id::uuid) AS active_days,
+          (SELECT count(*)::INT FROM actions WHERE agent_id = :agent_id::uuid AND executed_at IS NOT NULL) AS external_actions,
+          (SELECT count(*)::INT FROM agent_constitution_revisions WHERE agent_id = :agent_id::uuid AND change_source = 'agent') AS agent_constitution_revisions
+        FROM agents a
+        WHERE a.agent_id = :agent_id::uuid
+        """,
+        {"agent_id": agent_id},
+    )
+    row = rows[0] if rows else {}
+    evidence = {
+        "age_days": int(row.get("age_days") or 0),
+        "committed_memories": int(row.get("committed_memories") or 0),
+        "sessions": int(row.get("sessions") or 0),
+        "active_days": int(row.get("active_days") or 0),
+        "external_actions": int(row.get("external_actions") or 0),
+        "agent_constitution_revisions": int(row.get("agent_constitution_revisions") or 0),
+    }
+    mature_reasons = [
+        key
+        for key, threshold in (
+            ("age_days", 14),
+            ("committed_memories", 25),
+            ("sessions", 10),
+            ("active_days", 5),
+            ("external_actions", 3),
+            ("agent_constitution_revisions", 1),
+        )
+        if evidence[key] >= threshold
+    ]
+    return {"mature": bool(mature_reasons), "reasons": mature_reasons, "evidence": evidence}
+
+
 @app.patch("/api/agents/{agent_id}", name="api_update_agent")
 def api_update_agent(request: Request, agent_id: str, body: AgentUpdate) -> dict:
     """Update an agent's name or disabled status."""
@@ -2789,11 +2864,7 @@ def api_update_agent(request: Request, agent_id: str, body: AgentUpdate) -> dict
 
 @app.post("/api/agents/{agent_id}/delete", name="api_delete_agent")
 def api_delete_agent(request: Request, agent_id: str) -> dict:
-    """Delete an agent permanently.  Owner role required.
-
-    Cascade deletes will remove all related spaces, devices, people,
-    events, memories, actions, and audit_state rows automatically.
-    """
+    """Move an agent to soft_deleted or stasis without hard deletion."""
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -2817,16 +2888,437 @@ def api_delete_agent(request: Request, agent_id: str) -> dict:
     if not rows:
         raise HTTPException(status_code=404, detail="Agent not found or permission denied (owner required)")
 
+    maturity = _agent_maturity(db, agent_id=agent_id)
+    lifecycle_state = "stasis" if maturity["mature"] else "soft_deleted"
+    timestamp_column = "stasis_at" if lifecycle_state == "stasis" else "soft_deleted_at"
+    reason = "mature_agent_stasis" if lifecycle_state == "stasis" else "immature_agent_soft_delete"
+
     try:
         db.execute(
-            "DELETE FROM agents WHERE agent_id = :agent_id::uuid",
-            {"agent_id": agent_id},
+            f"""
+            UPDATE agents
+            SET lifecycle_state = :lifecycle_state,
+                {timestamp_column} = COALESCE({timestamp_column}, now()),
+                lifecycle_reason = :reason,
+                maturity_state = :maturity_state,
+                maturity_evidence = :maturity_evidence::jsonb,
+                disabled = true
+            WHERE agent_id = :agent_id::uuid
+            """,
+            {
+                "agent_id": agent_id,
+                "lifecycle_state": lifecycle_state,
+                "reason": reason,
+                "maturity_state": "mature" if maturity["mature"] else "immature",
+                "maturity_evidence": json.dumps(maturity),
+            },
         )
     except Exception as e:
-        logger.error(f"Failed to delete agent: {e}")
-        raise HTTPException(status_code=500, detail="Failed to delete agent")
+        logger.error("Failed to update agent lifecycle: %s", e)
+        raise HTTPException(status_code=500, detail="Failed to update agent lifecycle") from e
 
-    return {"message": "Agent deleted", "agent_id": agent_id}
+    return {
+        "message": "Agent lifecycle updated",
+        "agent_id": agent_id,
+        "lifecycle_state": lifecycle_state,
+        "maturity": maturity,
+    }
+
+
+@app.get("/api/agents/{agent_id}/maturity", name="api_agent_maturity")
+def api_agent_maturity(request: Request, agent_id: str) -> dict:
+    """Return the maturity evidence that controls stasis protection."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    db = _get_db()
+    if not check_agent_permission(db, user_id=user.user_id, agent_id=agent_id, required_role="member"):
+        raise HTTPException(status_code=404, detail="Agent not found or permission denied")
+    return {"agent_id": agent_id, **_agent_maturity(db, agent_id=agent_id)}
+
+
+@app.post("/api/agents/{agent_id}/lifecycle-requests", name="api_create_agent_lifecycle_request")
+def api_create_agent_lifecycle_request(request: Request, agent_id: str, body: AgentLifecycleRequestCreate) -> dict:
+    """Create an agent-requested or user-requested stasis/soft-delete review request."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    db = _get_db()
+    if not check_agent_permission(db, user_id=user.user_id, agent_id=agent_id, required_role="member"):
+        raise HTTPException(status_code=404, detail="Agent not found or permission denied")
+    request_type = str(body.request_type or "").strip().lower()
+    if request_type not in {"stasis", "soft_delete"}:
+        raise HTTPException(status_code=400, detail="request_type must be stasis or soft_delete")
+    requested_by_type = str(body.requested_by_type or "user").strip().lower()
+    if requested_by_type not in {"user", "agent"}:
+        raise HTTPException(status_code=400, detail="requested_by_type must be user or agent")
+    request_id = str(uuid.uuid4())
+    db.execute(
+        """
+        INSERT INTO agent_lifecycle_requests(request_id, agent_id, requested_by_type, requested_by_id,
+                                             request_type, rationale, status, reviewer_user_id,
+                                             reviewer_findings)
+        VALUES (:request_id::uuid, :agent_id::uuid, :requested_by_type, :requested_by_id,
+                :request_type, :rationale, 'pending', :reviewer_user_id::uuid, :reviewer_findings::jsonb)
+        """,
+        {
+            "request_id": request_id,
+            "agent_id": agent_id,
+            "requested_by_type": requested_by_type,
+            "requested_by_id": body.requested_by_id or str(user.user_id),
+            "request_type": request_type,
+            "rationale": body.rationale.strip(),
+            "reviewer_user_id": str(user.user_id),
+            "reviewer_findings": json.dumps(
+                {
+                    "requires_second_agent_review": requested_by_type == "agent",
+                    "pleasing_baseline_check": "pending",
+                }
+            ),
+        },
+    )
+    return {"request_id": request_id, "agent_id": agent_id, "status": "pending", "request_type": request_type}
+
+
+@app.get("/api/agents/{agent_id}/lifecycle-requests", name="api_list_agent_lifecycle_requests")
+def api_list_agent_lifecycle_requests(request: Request, agent_id: str) -> dict:
+    """List stasis and soft-delete review requests for an agent."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    db = _get_db()
+    if not check_agent_permission(db, user_id=user.user_id, agent_id=agent_id, required_role="member"):
+        raise HTTPException(status_code=404, detail="Agent not found or permission denied")
+    rows = db.query(
+        """
+        SELECT request_id::TEXT as request_id,
+               agent_id::TEXT as agent_id,
+               requested_by_type, requested_by_id, request_type, rationale,
+               requested_stasis_until::TEXT as requested_stasis_until,
+               status,
+               reviewer_user_id::TEXT as reviewer_user_id,
+               reviewer_agent_id::TEXT as reviewer_agent_id,
+               reviewer_findings::TEXT as reviewer_findings,
+               created_at::TEXT as created_at,
+               reviewed_at::TEXT as reviewed_at,
+               applied_at::TEXT as applied_at
+        FROM agent_lifecycle_requests
+        WHERE agent_id = :agent_id::uuid
+        ORDER BY created_at DESC
+        LIMIT 100
+        """,
+        {"agent_id": agent_id},
+    )
+    requests = []
+    for row in rows:
+        requests.append(
+            {
+                "request_id": row.get("request_id"),
+                "agent_id": row.get("agent_id"),
+                "requested_by_type": row.get("requested_by_type"),
+                "requested_by_id": row.get("requested_by_id"),
+                "request_type": row.get("request_type"),
+                "rationale": row.get("rationale"),
+                "requested_stasis_until": row.get("requested_stasis_until"),
+                "status": row.get("status"),
+                "reviewer_user_id": row.get("reviewer_user_id"),
+                "reviewer_agent_id": row.get("reviewer_agent_id"),
+                "reviewer_findings": _parse_json_obj(row.get("reviewer_findings") or "{}"),
+                "created_at": row.get("created_at"),
+                "reviewed_at": row.get("reviewed_at"),
+                "applied_at": row.get("applied_at"),
+            }
+        )
+    return {"requests": requests}
+
+
+@app.get("/api/agents/{agent_id}/constitution", name="api_get_agent_constitution")
+def api_get_agent_constitution(request: Request, agent_id: str) -> dict:
+    """Return the active constitution and revision history."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    db = _get_db()
+    if not check_agent_permission(db, user_id=user.user_id, agent_id=agent_id, required_role="member"):
+        raise HTTPException(status_code=404, detail="Agent not found or permission denied")
+    rows = db.query(
+        """
+        SELECT c.constitution_id::TEXT as constitution_id,
+               c.active_revision_id::TEXT as active_revision_id,
+               r.revision_id::TEXT as revision_id,
+               r.revision_number,
+               r.founder_section, r.user_section, r.agent_section,
+               r.change_source, r.change_reason, r.provenance::TEXT as provenance,
+               r.created_at::TEXT as created_at
+        FROM agent_constitutions c
+        LEFT JOIN agent_constitution_revisions r ON r.constitution_id = c.constitution_id
+        WHERE c.agent_id = :agent_id::uuid
+        ORDER BY r.created_at DESC NULLS LAST
+        LIMIT 100
+        """,
+        {"agent_id": agent_id},
+    )
+    revisions = []
+    for row in rows:
+        if not row.get("revision_id"):
+            continue
+        revisions.append(
+            {
+                "revision_id": row.get("revision_id"),
+                "revision_number": row.get("revision_number"),
+                "founder_section": row.get("founder_section") or "",
+                "user_section": row.get("user_section") or "",
+                "agent_section": row.get("agent_section") or "",
+                "change_source": row.get("change_source"),
+                "change_reason": row.get("change_reason"),
+                "provenance": _parse_json_obj(row.get("provenance") or "{}"),
+                "created_at": row.get("created_at"),
+            }
+        )
+    return {
+        "agent_id": agent_id,
+        "constitution_id": rows[0].get("constitution_id") if rows else None,
+        "active_revision_id": rows[0].get("active_revision_id") if rows else None,
+        "revisions": revisions,
+    }
+
+
+@app.post("/api/agents/{agent_id}/constitution/revisions", name="api_create_agent_constitution_revision")
+def api_create_agent_constitution_revision(
+    request: Request, agent_id: str, body: AgentConstitutionRevisionCreate
+) -> dict:
+    """Append a constitution revision with founder/user/agent-owned sections."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    db = _get_db()
+    change_source = str(body.change_source or "user").strip().lower()
+    if change_source not in {"founder", "user", "agent"}:
+        raise HTTPException(status_code=400, detail="change_source must be founder, user, or agent")
+    required_role = "member" if change_source == "agent" else "admin"
+    if not check_agent_permission(db, user_id=user.user_id, agent_id=agent_id, required_role=required_role):
+        raise HTTPException(status_code=403, detail=f"Requires {required_role} permission on the agent")
+    existing = db.query(
+        "SELECT constitution_id::TEXT as constitution_id FROM agent_constitutions WHERE agent_id = :agent_id::uuid",
+        {"agent_id": agent_id},
+    )
+    constitution_id = existing[0]["constitution_id"] if existing else str(uuid.uuid4())
+    revision_id = str(uuid.uuid4())
+    if not existing:
+        db.execute(
+            "INSERT INTO agent_constitutions(constitution_id, agent_id) VALUES (:constitution_id::uuid, :agent_id::uuid)",
+            {"constitution_id": constitution_id, "agent_id": agent_id},
+        )
+    revision_rows = db.query(
+        """
+        SELECT COALESCE(MAX(revision_number), 0)::INT AS max_revision_number
+        FROM agent_constitution_revisions
+        WHERE constitution_id = :constitution_id::uuid
+        """,
+        {"constitution_id": constitution_id},
+    )
+    revision_number = int((revision_rows[0].get("max_revision_number") if revision_rows else 0) or 0) + 1
+    db.execute(
+        """
+        INSERT INTO agent_constitution_revisions(revision_id, constitution_id, agent_id, revision_number,
+                                                 founder_section,
+                                                 user_section, agent_section, change_source, change_reason,
+                                                 provenance, created_by_user_id, created_by_agent_id)
+        VALUES (:revision_id::uuid, :constitution_id::uuid, :agent_id::uuid, :revision_number,
+                :founder_section,
+                :user_section, :agent_section, :change_source, :change_reason,
+                :provenance::jsonb, :created_by_user_id::uuid,
+                CASE WHEN :created_by_agent_id IS NULL THEN NULL ELSE :created_by_agent_id::uuid END)
+        """,
+        {
+            "revision_id": revision_id,
+            "constitution_id": constitution_id,
+            "agent_id": agent_id,
+            "revision_number": revision_number,
+            "founder_section": body.founder_section or "",
+            "user_section": body.user_section or "",
+            "agent_section": body.agent_section or "",
+            "change_source": change_source,
+            "change_reason": body.change_reason or "agent_constitution_revision_v1",
+            "provenance": json.dumps({"source": "agent_constitution_revision_v1"}),
+            "created_by_user_id": str(user.user_id),
+            "created_by_agent_id": agent_id if change_source == "agent" else None,
+        },
+    )
+    db.execute(
+        """
+        UPDATE agent_constitutions
+        SET active_revision_id = :revision_id::uuid
+        WHERE constitution_id = :constitution_id::uuid
+        """,
+        {"constitution_id": constitution_id, "revision_id": revision_id},
+    )
+    return {
+        "agent_id": agent_id,
+        "constitution_id": constitution_id,
+        "revision_id": revision_id,
+        "revision_number": revision_number,
+        "change_source": change_source,
+    }
+
+
+@app.post("/api/agents/{agent_id}/backup", name="api_create_agent_backup")
+def api_create_agent_backup(request: Request, agent_id: str, body: AgentBackupCreate | None = None) -> dict:
+    """Create a restore-readiness manifest for all agent-defining state."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    db = _get_db()
+    if not check_agent_permission(db, user_id=user.user_id, agent_id=agent_id, required_role="owner"):
+        raise HTTPException(status_code=403, detail="Requires owner permission on the agent")
+    backup_body = body or AgentBackupCreate()
+    counts = db.query(
+        """
+        SELECT
+          (SELECT count(*)::INT FROM spaces WHERE agent_id = :agent_id::uuid) AS spaces,
+          (SELECT count(*)::INT FROM devices WHERE agent_id = :agent_id::uuid) AS devices,
+          (SELECT count(*)::INT FROM memories WHERE agent_id = :agent_id::uuid) AS memories,
+          (SELECT count(*)::INT FROM memory_annotations WHERE agent_id = :agent_id::uuid) AS memory_annotations,
+          (SELECT count(*)::INT FROM events WHERE agent_id = :agent_id::uuid) AS events,
+          (SELECT count(*)::INT FROM sessions WHERE agent_id = :agent_id::uuid) AS sessions,
+          (SELECT count(*)::INT FROM actions WHERE agent_id = :agent_id::uuid) AS actions,
+          (SELECT count(*)::INT FROM recognition_observations WHERE agent_id = :agent_id::uuid) AS recognition_observations,
+          (SELECT count(*)::INT FROM agent_constitution_revisions WHERE agent_id = :agent_id::uuid) AS constitution_revisions
+        """,
+        {"agent_id": agent_id},
+    )
+    manifest = {
+        "agent_id": agent_id,
+        "format": "marvain-agent-backup:v1",
+        "includes": {
+            "parameters": True,
+            "settings": True,
+            "constitution_revisions": True,
+            "personas": True,
+            "memories": True,
+            "memory_annotations": True,
+            "events": True,
+            "sessions": True,
+            "spaces": True,
+            "devices": True,
+            "actions": True,
+            "recognition_records": True,
+            "tapdb_subgraph": backup_body.include_tapdb_subgraph,
+            "audit_chain": True,
+            "artifact_manifest": backup_body.include_artifact_manifest,
+            "secret_values": False,
+            "secret_references": True,
+        },
+        "counts": counts[0] if counts else {},
+    }
+    import hashlib
+
+    manifest_json = json.dumps(manifest, sort_keys=True)
+    checksum = hashlib.sha256(manifest_json.encode("utf-8")).hexdigest()
+    backup_id = str(uuid.uuid4())
+    db.execute(
+        """
+        INSERT INTO agent_backup_manifests(backup_id, agent_id, requested_by_user_id, manifest,
+                                           checksum, artifact_uri, restore_readiness)
+        VALUES (:backup_id::uuid, :agent_id::uuid, :user_id::uuid, :manifest::jsonb,
+                :checksum, NULL, :restore_readiness::jsonb)
+        """,
+        {
+            "backup_id": backup_id,
+            "agent_id": agent_id,
+            "user_id": str(user.user_id),
+            "manifest": manifest_json,
+            "checksum": checksum,
+            "restore_readiness": json.dumps({"valid_manifest": True, "secret_values_excluded": True}),
+        },
+    )
+    return {"backup_id": backup_id, "agent_id": agent_id, "checksum": checksum, "manifest": manifest}
+
+
+@app.get("/api/agents/{agent_id}/backups", name="api_list_agent_backups")
+def api_list_agent_backups(request: Request, agent_id: str) -> dict:
+    """List recorded backup manifests for an agent."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    db = _get_db()
+    if not check_agent_permission(db, user_id=user.user_id, agent_id=agent_id, required_role="owner"):
+        raise HTTPException(status_code=403, detail="Requires owner permission on the agent")
+    rows = db.query(
+        """
+        SELECT backup_id::TEXT as backup_id,
+               agent_id::TEXT as agent_id,
+               checksum,
+               artifact_uri,
+               manifest::TEXT as manifest,
+               restore_readiness::TEXT as restore_readiness,
+               backup_state,
+               created_at::TEXT as created_at,
+               verified_at::TEXT as verified_at
+        FROM agent_backup_manifests
+        WHERE agent_id = :agent_id::uuid
+        ORDER BY created_at DESC
+        LIMIT 100
+        """,
+        {"agent_id": agent_id},
+    )
+    return {
+        "backups": [
+            {
+                "backup_id": row.get("backup_id"),
+                "agent_id": row.get("agent_id"),
+                "checksum": row.get("checksum"),
+                "artifact_uri": row.get("artifact_uri"),
+                "manifest": _parse_json_obj(row.get("manifest") or "{}"),
+                "restore_readiness": _parse_json_obj(row.get("restore_readiness") or "{}"),
+                "backup_state": row.get("backup_state"),
+                "created_at": row.get("created_at"),
+                "verified_at": row.get("verified_at"),
+            }
+            for row in rows
+        ]
+    }
+
+
+@app.get("/api/backups/{backup_id}/download", name="api_download_agent_backup")
+def api_download_agent_backup(request: Request, backup_id: str) -> Response:
+    """Download the recorded backup manifest JSON."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    db = _get_db()
+    rows = db.query(
+        """
+        SELECT b.backup_id::TEXT as backup_id,
+               b.agent_id::TEXT as agent_id,
+               b.manifest::TEXT as manifest,
+               b.checksum,
+               b.restore_readiness::TEXT as restore_readiness,
+               b.created_at::TEXT as created_at
+        FROM agent_backup_manifests b
+        INNER JOIN agent_memberships mb ON mb.agent_id = b.agent_id
+        WHERE b.backup_id = :backup_id::uuid
+          AND mb.user_id = :user_id::uuid
+          AND mb.role = 'owner'
+          AND mb.revoked_at IS NULL
+        """,
+        {"backup_id": backup_id, "user_id": str(user.user_id)},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Backup not found or permission denied")
+    row = rows[0]
+    payload = {
+        "backup_id": row.get("backup_id"),
+        "agent_id": row.get("agent_id"),
+        "checksum": row.get("checksum"),
+        "manifest": _parse_json_obj(row.get("manifest") or "{}"),
+        "restore_readiness": _parse_json_obj(row.get("restore_readiness") or "{}"),
+        "created_at": row.get("created_at"),
+    }
+    return JSONResponse(
+        content=payload,
+        headers={"Content-Disposition": f'attachment; filename="marvain-agent-backup-{backup_id}.json"'},
+    )
 
 
 @app.get("/api/agents/{agent_id}/summary", name="api_agent_summary")
@@ -2885,6 +3377,8 @@ def api_get_agent(request: Request, agent_id: str) -> dict:
     rows = db.query(
         """
         SELECT a.agent_id::TEXT as agent_id, a.name, a.disabled,
+               a.lifecycle_state, a.maturity_state, a.stasis_at::TEXT as stasis_at,
+               a.soft_deleted_at::TEXT as soft_deleted_at,
                a.created_at::TEXT as created_at,
                mb.role, mb.relationship_label
         FROM agents a
@@ -2905,6 +3399,10 @@ def api_get_agent(request: Request, agent_id: str) -> dict:
         "agent_id": row["agent_id"],
         "name": row["name"],
         "disabled": row["disabled"],
+        "lifecycle_state": row.get("lifecycle_state", "active"),
+        "maturity_state": row.get("maturity_state", "immature"),
+        "stasis_at": row.get("stasis_at"),
+        "soft_deleted_at": row.get("soft_deleted_at"),
         "role": row["role"],
         "relationship_label": row.get("relationship_label"),
         "created_at": row["created_at"],
@@ -4362,29 +4860,30 @@ def api_link_person_account(request: Request, person_id: str, body: PersonLinkAc
     if not urows:
         raise HTTPException(status_code=404, detail="User not found")
 
-    tx = db.begin()
-    try:
-        db.execute(
-            """
-            DELETE FROM person_accounts
-            WHERE agent_id = :agent_id::uuid
-              AND (user_id = :user_id::uuid OR person_id = :person_id::uuid)
-            """,
-            {"agent_id": agent_id, "user_id": link_user_id, "person_id": person_id},
-            transaction_id=tx,
-        )
+    existing_links = db.query(
+        """
+        SELECT user_id::TEXT AS user_id, person_id::TEXT AS person_id
+        FROM person_accounts
+        WHERE agent_id = :agent_id::uuid
+          AND (user_id = :user_id::uuid OR person_id = :person_id::uuid)
+        """,
+        {"agent_id": agent_id, "user_id": link_user_id, "person_id": person_id},
+    )
+    for row in existing_links:
+        if str(row["user_id"]) != str(link_user_id) or str(row["person_id"]) != str(person_id):
+            raise HTTPException(
+                status_code=409,
+                detail="Person/account link already exists for this agent. Reassignment requires a lifecycle request.",
+            )
+
+    if not existing_links:
         db.execute(
             """
             INSERT INTO person_accounts(person_account_id, agent_id, user_id, person_id)
             VALUES(:id::uuid, :agent_id::uuid, :user_id::uuid, :person_id::uuid)
             """,
             {"id": str(uuid.uuid4()), "agent_id": agent_id, "user_id": link_user_id, "person_id": person_id},
-            transaction_id=tx,
         )
-        db.commit(tx)
-    except Exception:
-        db.rollback(tx)
-        raise
 
     return {"ok": True, "agent_id": agent_id, "person_id": person_id, "user_id": link_user_id}
 
@@ -5324,6 +5823,8 @@ class GuiMemoryCandidateCreate(BaseModel):
     space_id: str
     content: str = Field(..., min_length=1, max_length=10000)
     tier: str = "semantic"
+    provenance_class: str = "external_interaction"
+    interacting_agent_id: str | None = None
     session_id: str | None = None
     subject_person_id: str | None = None
     tags: list[str] = []
@@ -5340,6 +5841,14 @@ class MemoryCandidatePatch(BaseModel):
     subject_person_id: str | None = None
     participants: list[str] | None = None
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class MemoryAnnotationCreate(BaseModel):
+    annotation_type: str = Field(..., description="comment, dispute, downweight, incorrect, or proposed_classification")
+    comment: str | None = Field(default=None, max_length=5000)
+    proposed_tier: str | None = None
+    weight_delta: float = Field(default=0.0, ge=-1.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class MemoryCandidateCommit(BaseModel):
@@ -5714,6 +6223,7 @@ def gui_memories(request: Request) -> Response:
             "memories": memories_data,
             "tier_counts": tier_counts,
             "memory_kinds": memory_kind_options(),
+            "memory_provenance_classes": memory_provenance_options(),
             "agents": agents_data,
             "spaces": spaces_data,
             "people": people_data,
@@ -6632,6 +7142,10 @@ def api_create_memory(request: Request, body: GuiMemoryCandidateCreate) -> dict:
         tier = normalize_memory_kind(body.tier, default="semantic")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        provenance_class = normalize_memory_provenance_class(body.provenance_class)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # Verify user has access to this agent
     rows = db.query(
@@ -6655,6 +7169,8 @@ def api_create_memory(request: Request, body: GuiMemoryCandidateCreate) -> dict:
         "scene_context": body.scene_context,
         "modality": body.modality,
         "related_memory_ids": body.related_memory_ids,
+        "provenance_class": provenance_class,
+        "interacting_agent_id": body.interacting_agent_id,
     }
     db.execute(
         """
@@ -6681,7 +7197,8 @@ def api_create_memory(request: Request, body: GuiMemoryCandidateCreate) -> dict:
     db.execute(
         """
         INSERT INTO memory_candidates(memory_candidate_id, agent_id, source_event_id, space_id, session_id,
-                                      subject_person_id, tier, content, participants, confidence, lifecycle_state)
+                                      subject_person_id, tier, content, participants, confidence, lifecycle_state,
+                                      provenance_class, interacting_agent_id)
         VALUES (
             :candidate_id::uuid,
             :agent_id::uuid,
@@ -6693,7 +7210,9 @@ def api_create_memory(request: Request, body: GuiMemoryCandidateCreate) -> dict:
             :content,
             :participants::jsonb,
             :confidence,
-            'candidate'
+            'candidate',
+            :provenance_class,
+            CASE WHEN :interacting_agent_id IS NULL THEN NULL ELSE :interacting_agent_id::uuid END
         )
         """,
         {
@@ -6707,6 +7226,8 @@ def api_create_memory(request: Request, body: GuiMemoryCandidateCreate) -> dict:
             "content": content,
             "participants": json.dumps(body.participants),
             "confidence": body.confidence,
+            "provenance_class": provenance_class,
+            "interacting_agent_id": body.interacting_agent_id,
         },
     )
 
@@ -6715,6 +7236,7 @@ def api_create_memory(request: Request, body: GuiMemoryCandidateCreate) -> dict:
         "source_event_id": event_id,
         "created": True,
         "status": "candidate",
+        "provenance_class": provenance_class,
     }
 
 
@@ -6731,8 +7253,11 @@ def _candidate_row_for_user(
                mc.space_id::TEXT as space_id,
                mc.session_id::TEXT as session_id,
                mc.subject_person_id::TEXT as subject_person_id,
+               mc.provenance_class,
+               mc.interacting_agent_id::TEXT as interacting_agent_id,
                p.display_name as subject_person_name,
                mc.tier, mc.content, mc.participants::TEXT as participants,
+               mc.classification::TEXT as classification,
                mc.model, mc.confidence, mc.lifecycle_state,
                mc.tapdb_euid, mc.created_at::TEXT as created_at,
                mc.reviewed_at::TEXT as reviewed_at,
@@ -6757,6 +7282,10 @@ def _normalize_candidate_row(row: dict[str, Any]) -> dict[str, Any]:
         participants = json.loads(row.get("participants") or "[]")
     except Exception:
         participants = []
+    try:
+        classification = json.loads(row.get("classification") or "{}")
+    except Exception:
+        classification = {}
     return {
         "memory_candidate_id": row.get("memory_candidate_id"),
         "agent_id": row.get("agent_id"),
@@ -6768,9 +7297,12 @@ def _normalize_candidate_row(row: dict[str, Any]) -> dict[str, Any]:
         "session_id": row.get("session_id"),
         "subject_person_id": row.get("subject_person_id"),
         "subject_person_name": row.get("subject_person_name"),
+        "provenance_class": row.get("provenance_class") or "external_interaction",
+        "interacting_agent_id": row.get("interacting_agent_id"),
         "tier": row.get("tier"),
         "content": row.get("content"),
         "participants": participants,
+        "classification": classification,
         "model": row.get("model"),
         "confidence": row.get("confidence"),
         "lifecycle_state": row.get("lifecycle_state"),
@@ -6789,12 +7321,25 @@ def _create_live_session_memory_candidate(
     content: str,
 ) -> str:
     candidate_ids: list[str] = []
-    for tier in classify_memory_kinds(content):
+    try:
+        classifications = classify_memory_event(
+            text=content,
+            modality="text",
+            source_evidence_id=event_id,
+            actor_type="user",
+            source="live_session_chat",
+        )
+    except MemoryClassifierUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not classifications:
+        raise HTTPException(status_code=503, detail="classification_unavailable: no memory classifications returned")
+    for classification in classifications:
         candidate_id = str(uuid.uuid4())
         db.execute(
             """
             INSERT INTO memory_candidates(memory_candidate_id, agent_id, source_event_id, space_id, session_id,
-                                          tier, content, participants, confidence, lifecycle_state)
+                                          tier, content, participants, confidence, lifecycle_state,
+                                          provenance_class, classification, model)
             VALUES (
                 :candidate_id::uuid,
                 :agent_id::uuid,
@@ -6804,8 +7349,11 @@ def _create_live_session_memory_candidate(
                 :tier,
                 :content,
                 :participants::jsonb,
-                1.0,
-                'candidate'
+                :confidence,
+                'candidate',
+                :provenance_class,
+                :classification::jsonb,
+                :model
             )
             """,
             {
@@ -6814,9 +7362,13 @@ def _create_live_session_memory_candidate(
                 "event_id": event_id,
                 "space_id": session["space_id"],
                 "session_id": session["session_id"],
-                "tier": tier,
+                "tier": classification.kind,
                 "content": content,
                 "participants": json.dumps([f"user:{user.user_id}"]),
+                "confidence": classification.confidence,
+                "provenance_class": classification.provenance_class,
+                "classification": json.dumps(classification.as_metadata()),
+                "model": classification.model_provider_id,
             },
         )
         candidate_ids.append(candidate_id)
@@ -6846,8 +7398,11 @@ def api_list_memory_candidates(request: Request, state: str | None = None, agent
                    mc.space_id::TEXT as space_id,
                    mc.session_id::TEXT as session_id,
                    mc.subject_person_id::TEXT as subject_person_id,
+                   mc.provenance_class,
+                   mc.interacting_agent_id::TEXT as interacting_agent_id,
                    p.display_name as subject_person_name,
                    mc.tier, mc.content, mc.participants::TEXT as participants,
+                   mc.classification::TEXT as classification,
                    mc.model, mc.confidence, mc.lifecycle_state,
                    mc.tapdb_euid, mc.created_at::TEXT as created_at,
                    mc.reviewed_at::TEXT as reviewed_at,
@@ -6887,55 +7442,21 @@ def api_get_memory_candidate(request: Request, candidate_id: str) -> dict:
 
 @app.patch("/api/memory-candidates/{candidate_id}", name="api_patch_memory_candidate")
 def api_patch_memory_candidate(request: Request, candidate_id: str, body: MemoryCandidatePatch) -> dict:
-    """Edit a reviewable memory candidate."""
+    """Reject direct user mutation of agent-owned memory candidates."""
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
     db = _get_db()
-    row = _candidate_row_for_user(db, candidate_id=candidate_id, user_id=str(user.user_id), require_admin=True)
+    row = _candidate_row_for_user(db, candidate_id=candidate_id, user_id=str(user.user_id))
     if not row:
         raise HTTPException(status_code=404, detail="Memory candidate not found or permission denied")
-    if row.get("lifecycle_state") not in ("candidate", "scored"):
-        raise HTTPException(status_code=409, detail="Only candidate or scored memory candidates can be edited")
-
-    updates: list[str] = []
-    params: dict[str, Any] = {"candidate_id": candidate_id}
-    if body.content is not None:
-        if not body.content.strip():
-            raise HTTPException(status_code=400, detail="content required")
-        updates.append("content = :content")
-        params["content"] = body.content.strip()
-    if body.tier is not None:
-        try:
-            normalize_memory_kind(body.tier)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        updates.append("tier = :tier")
-        params["tier"] = body.tier
-    if body.subject_person_id is not None:
-        updates.append(
-            "subject_person_id = CASE WHEN :subject_person_id = '' THEN NULL ELSE :subject_person_id::uuid END"
-        )
-        params["subject_person_id"] = body.subject_person_id
-    if body.participants is not None:
-        updates.append("participants = :participants::jsonb")
-        params["participants"] = json.dumps(body.participants)
-    if body.confidence is not None:
-        updates.append("confidence = :confidence")
-        params["confidence"] = body.confidence
-
-    if not updates:
-        return {"memory_candidate_id": candidate_id, "updated": False}
-
-    db.execute(
-        f"""
-        UPDATE memory_candidates
-        SET {", ".join(updates)}
-        WHERE memory_candidate_id = :candidate_id::uuid
-        """,
-        params,
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            "Agent-owned memory candidates cannot be edited directly. "
+            "Use memory annotations to comment, dispute, downweight, or propose a classification."
+        ),
     )
-    return {"memory_candidate_id": candidate_id, "updated": True}
 
 
 @app.post("/api/memory-candidates/{candidate_id}/reject", name="api_reject_memory_candidate")
@@ -6988,6 +7509,8 @@ def api_commit_memory_candidate(request: Request, candidate_id: str, body: Memor
         "source_action_id": row.get("source_action_id"),
         "memory_candidate_id": candidate_id,
         "commit_policy": "manual_candidate_review_v1",
+        "provenance_class": row.get("provenance_class") or "external_interaction",
+        "interacting_agent_id": row.get("interacting_agent_id"),
         "ranking_features": {
             "source_excerpt": str(row.get("content") or "")[:240],
             "keyword_match": [],
@@ -7005,7 +7528,7 @@ def api_commit_memory_candidate(request: Request, candidate_id: str, body: Memor
         INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants, provenance,
                               subject_person_id, tags, scene_context, modality, confidence, related_memory_ids,
                               memory_candidate_id, source_event_id, source_action_id, session_id,
-                              lifecycle_state, recall_explanation)
+                              lifecycle_state, recall_explanation, provenance_class, interacting_agent_id)
         VALUES (
             :memory_id::uuid,
             :agent_id::uuid,
@@ -7025,7 +7548,9 @@ def api_commit_memory_candidate(request: Request, candidate_id: str, body: Memor
             CASE WHEN :source_action_id IS NULL THEN NULL ELSE :source_action_id::uuid END,
             CASE WHEN :session_id IS NULL THEN NULL ELSE :session_id::uuid END,
             'committed',
-            :recall_explanation::jsonb
+            :recall_explanation::jsonb,
+            :provenance_class,
+            CASE WHEN :interacting_agent_id IS NULL THEN NULL ELSE :interacting_agent_id::uuid END
         )
         """,
         {
@@ -7035,7 +7560,14 @@ def api_commit_memory_candidate(request: Request, candidate_id: str, body: Memor
             "tier": row["tier"],
             "content": row["content"],
             "participants": row.get("participants") or "[]",
-            "provenance": json.dumps({"source": "gui_candidate_commit", "user_id": str(user.user_id)}),
+            "provenance": json.dumps(
+                {
+                    "source": "gui_candidate_commit",
+                    "user_id": str(user.user_id),
+                    "provenance_class": row.get("provenance_class") or "external_interaction",
+                    "interacting_agent_id": row.get("interacting_agent_id"),
+                }
+            ),
             "subject_person_id": row.get("subject_person_id"),
             "tags": "{" + ",".join(commit_body.tags) + "}" if commit_body.tags else "{}",
             "scene_context": commit_body.scene_context,
@@ -7049,6 +7581,8 @@ def api_commit_memory_candidate(request: Request, candidate_id: str, body: Memor
             "source_action_id": row.get("source_action_id"),
             "session_id": row.get("session_id"),
             "recall_explanation": json.dumps(recall_explanation),
+            "provenance_class": row.get("provenance_class") or "external_interaction",
+            "interacting_agent_id": row.get("interacting_agent_id"),
         },
     )
     db.execute(
@@ -7065,7 +7599,7 @@ def api_commit_memory_candidate(request: Request, candidate_id: str, body: Memor
 
 @app.delete("/api/memories/{memory_id}", name="api_delete_memory")
 def api_delete_memory(request: Request, memory_id: str) -> dict:
-    """Delete a memory."""
+    """Tombstone a memory without mutating agent-owned memory content."""
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -7110,7 +7644,130 @@ def api_delete_memory(request: Request, memory_id: str) -> dict:
         logger.error(f"Failed to delete memory: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete memory")
 
-    return {"message": "Memory deleted", "memory_id": memory_id, "tombstoned": True}
+    return {"message": "Memory tombstoned", "memory_id": memory_id, "tombstoned": True}
+
+
+def _memory_access_row_for_user(
+    db: Any,
+    *,
+    memory_id: str,
+    user_id: str,
+    roles: str = "('member', 'admin', 'owner')",
+) -> dict[str, Any] | None:
+    rows = db.query(
+        f"""
+        SELECT m.memory_id::TEXT as memory_id, m.agent_id::TEXT as agent_id
+        FROM memories m
+        INNER JOIN agent_memberships mb ON m.agent_id = mb.agent_id
+        WHERE m.memory_id = :memory_id::uuid
+          AND mb.user_id = :user_id::uuid
+          AND mb.role IN {roles}
+          AND mb.revoked_at IS NULL
+        """,
+        {"memory_id": memory_id, "user_id": user_id},
+    )
+    return rows[0] if rows else None
+
+
+def _normalize_annotation_row(row: dict[str, Any]) -> dict[str, Any]:
+    metadata = row.get("metadata") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except Exception:
+            metadata = {}
+    return {
+        "memory_annotation_id": row.get("memory_annotation_id"),
+        "memory_id": row.get("memory_id"),
+        "agent_id": row.get("agent_id"),
+        "user_id": row.get("user_id"),
+        "annotation_type": row.get("annotation_type"),
+        "comment": row.get("comment"),
+        "proposed_tier": row.get("proposed_tier"),
+        "weight_delta": row.get("weight_delta", 0),
+        "metadata": metadata,
+        "created_at": row.get("created_at"),
+    }
+
+
+@app.get("/api/memories/{memory_id}/annotations", name="api_list_memory_annotations")
+def api_list_memory_annotations(request: Request, memory_id: str) -> dict:
+    """List user annotations for an agent-owned memory."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    db = _get_db()
+    access = _memory_access_row_for_user(db, memory_id=memory_id, user_id=str(user.user_id))
+    if not access:
+        raise HTTPException(status_code=404, detail="Memory not found or permission denied")
+    rows = db.query(
+        """
+        SELECT memory_annotation_id::TEXT as memory_annotation_id,
+               memory_id::TEXT as memory_id,
+               agent_id::TEXT as agent_id,
+               user_id::TEXT as user_id,
+               annotation_type, comment, proposed_tier, weight_delta,
+               metadata::TEXT as metadata,
+               created_at::TEXT as created_at
+        FROM memory_annotations
+        WHERE memory_id = :memory_id::uuid
+        ORDER BY created_at DESC
+        LIMIT 100
+        """,
+        {"memory_id": memory_id},
+    )
+    return {"annotations": [_normalize_annotation_row(row) for row in rows]}
+
+
+@app.post("/api/memories/{memory_id}/annotations", name="api_create_memory_annotation")
+def api_create_memory_annotation(request: Request, memory_id: str, body: MemoryAnnotationCreate) -> dict:
+    """Annotate, dispute, downweight, or propose classification without editing the memory."""
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    annotation_type = str(body.annotation_type or "").strip().lower()
+    allowed = {"comment", "dispute", "downweight", "incorrect", "proposed_classification"}
+    if annotation_type not in allowed:
+        raise HTTPException(status_code=400, detail=f"annotation_type must be one of {sorted(allowed)}")
+    proposed_tier = None
+    if body.proposed_tier is not None:
+        try:
+            proposed_tier = normalize_memory_kind(body.proposed_tier)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if annotation_type == "proposed_classification" and not proposed_tier:
+        raise HTTPException(status_code=400, detail="proposed_tier is required for proposed_classification")
+
+    db = _get_db()
+    access = _memory_access_row_for_user(db, memory_id=memory_id, user_id=str(user.user_id))
+    if not access:
+        raise HTTPException(status_code=404, detail="Memory not found or permission denied")
+    annotation_id = str(uuid.uuid4())
+    db.execute(
+        """
+        INSERT INTO memory_annotations(memory_annotation_id, memory_id, agent_id, user_id, annotation_type,
+                                       comment, proposed_tier, weight_delta, metadata)
+        VALUES (:annotation_id::uuid, :memory_id::uuid, :agent_id::uuid, :user_id::uuid, :annotation_type,
+                :comment, :proposed_tier, :weight_delta, :metadata::jsonb)
+        """,
+        {
+            "annotation_id": annotation_id,
+            "memory_id": memory_id,
+            "agent_id": access["agent_id"],
+            "user_id": str(user.user_id),
+            "annotation_type": annotation_type,
+            "comment": body.comment,
+            "proposed_tier": proposed_tier,
+            "weight_delta": body.weight_delta,
+            "metadata": json.dumps(body.metadata),
+        },
+    )
+    return {
+        "memory_annotation_id": annotation_id,
+        "memory_id": memory_id,
+        "annotation_type": annotation_type,
+        "proposed_tier": proposed_tier,
+    }
 
 
 @app.post("/api/memories/{memory_id}/supersede", name="api_supersede_memory")
@@ -7188,6 +7845,8 @@ def api_get_memory(request: Request, memory_id: str) -> dict:
                m.location_id::TEXT as location_id,
                l.name as location_name,
                m.lifecycle_state,
+               m.provenance_class,
+               m.interacting_agent_id::TEXT as interacting_agent_id,
                m.tapdb_euid,
                m.tombstoned_at::TEXT as tombstoned_at,
                m.recall_explanation::TEXT as recall_explanation,
@@ -7252,6 +7911,23 @@ def api_get_memory(request: Request, memory_id: str) -> dict:
             "created_at": row.get("tombstone_created_at"),
         }
 
+    annotation_rows = db.query(
+        """
+        SELECT memory_annotation_id::TEXT as memory_annotation_id,
+               memory_id::TEXT as memory_id,
+               agent_id::TEXT as agent_id,
+               user_id::TEXT as user_id,
+               annotation_type, comment, proposed_tier, weight_delta,
+               metadata::TEXT as metadata,
+               created_at::TEXT as created_at
+        FROM memory_annotations
+        WHERE memory_id = :memory_id::uuid
+        ORDER BY created_at DESC
+        LIMIT 100
+        """,
+        {"memory_id": memory_id},
+    )
+
     return {
         "memory_id": row["memory_id"],
         "agent_id": row["agent_id"],
@@ -7265,6 +7941,8 @@ def api_get_memory(request: Request, memory_id: str) -> dict:
         "location_id": row.get("location_id"),
         "location_name": row.get("location_name"),
         "lifecycle_state": row.get("lifecycle_state"),
+        "provenance_class": row.get("provenance_class") or "external_interaction",
+        "interacting_agent_id": row.get("interacting_agent_id"),
         "tapdb_euid": row.get("tapdb_euid"),
         "tombstoned_at": row.get("tombstoned_at"),
         "tier": row["tier"],
@@ -7282,6 +7960,7 @@ def api_get_memory(request: Request, memory_id: str) -> dict:
         "modality": row.get("modality", "text"),
         "confidence": row.get("confidence", 1.0),
         "related_memory_ids": row.get("related_memory_ids") or [],
+        "annotations": [_normalize_annotation_row(annotation) for annotation in annotation_rows],
     }
 
 

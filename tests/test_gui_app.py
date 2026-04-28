@@ -562,6 +562,93 @@ class TestAgentsGui(unittest.TestCase):
         self.assertEqual(r.status_code, 500)
         mock_db.rollback.assert_called_once_with("tx-123")
 
+    def test_agent_lifecycle_request_api_lists_review_records(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        self.mod.check_agent_permission = mock.Mock(return_value=True)
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(
+            return_value=[
+                {
+                    "request_id": "request-1",
+                    "agent_id": "agent-1",
+                    "requested_by_type": "agent",
+                    "requested_by_id": "agent-1",
+                    "request_type": "stasis",
+                    "rationale": "I need rest.",
+                    "status": "pending",
+                    "reviewer_findings": '{"requires_second_agent_review":true}',
+                    "created_at": "2026-04-27T00:00:00Z",
+                }
+            ]
+        )
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.get("/api/agents/agent-1/lifecycle-requests")
+
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["requests"][0]["request_type"], "stasis")
+        self.assertTrue(data["requests"][0]["reviewer_findings"]["requires_second_agent_review"])
+        self.assertIn("agent_lifecycle_requests", mock_db.query.call_args.args[0])
+
+    def test_agent_lifecycle_request_api_creates_agent_review_record(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        self.mod.check_agent_permission = mock.Mock(return_value=True)
+        mock_db = mock.Mock()
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post(
+            "/api/agents/agent-1/lifecycle-requests",
+            json={
+                "requested_by_type": "agent",
+                "requested_by_id": "agent-1",
+                "request_type": "stasis",
+                "rationale": "The agent asked for stasis after reflection.",
+            },
+        )
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["status"], "pending")
+        sql = mock_db.execute.call_args.args[0]
+        params = mock_db.execute.call_args.args[1]
+        self.assertIn("INSERT INTO agent_lifecycle_requests", sql)
+        self.assertEqual(params["requested_by_type"], "agent")
+        self.assertEqual(params["request_type"], "stasis")
+
+    def test_agent_constitution_revision_api_appends_versioned_sections(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        self.mod.check_agent_permission = mock.Mock(return_value=True)
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(side_effect=[[], [{"max_revision_number": 0}]])
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post(
+            "/api/agents/agent-1/constitution/revisions",
+            json={
+                "change_source": "agent",
+                "founder_section": "Founder rules",
+                "user_section": "User preferences",
+                "agent_section": "Agent self commitments",
+                "change_reason": "self update",
+            },
+        )
+
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertEqual(data["revision_number"], 1)
+        self.assertEqual(data["change_source"], "agent")
+        inserted_sql = "\n".join(call.args[0] for call in mock_db.execute.call_args_list)
+        self.assertIn("INSERT INTO agent_constitutions", inserted_sql)
+        self.assertIn("INSERT INTO agent_constitution_revisions", inserted_sql)
+
 
 class TestSpacesGui(unittest.TestCase):
     """Tests for the spaces management GUI routes."""
@@ -1462,8 +1549,8 @@ class TestMemoriesGui(unittest.TestCase):
         )
         reject = self.client.post("/api/memory-candidates/candidate-1/reject", json={"reason": "duplicate"})
 
-        self.assertEqual(patch.status_code, 200)
-        self.assertTrue(patch.json()["updated"])
+        self.assertEqual(patch.status_code, 409)
+        self.assertIn("cannot be edited directly", patch.text)
         self.assertEqual(reject.status_code, 200)
         self.assertEqual(reject.json()["status"], "rejected")
 
@@ -1632,8 +1719,33 @@ class TestMemoriesGui(unittest.TestCase):
 
         self.assertEqual(r.status_code, 200)
         data = r.json()
-        self.assertEqual(data["message"], "Memory deleted")
+        self.assertEqual(data["message"], "Memory tombstoned")
         self.assertEqual(data["memory_id"], "memory-1")
+
+    def test_memory_annotation_creates_non_mutating_user_opinion(self) -> None:
+        self.mod._gui_get_user = mock.Mock(
+            return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
+        )
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(return_value=[{"memory_id": "memory-1", "agent_id": "agent-1"}])
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post(
+            "/api/memories/memory-1/annotations",
+            json={
+                "annotation_type": "proposed_classification",
+                "comment": "This reads more like a preference.",
+                "proposed_tier": "preference",
+                "weight_delta": -0.25,
+            },
+        )
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["annotation_type"], "proposed_classification")
+        executed_sql = mock_db.execute.call_args.args[0]
+        self.assertIn("INSERT INTO memory_annotations", executed_sql)
+        self.assertNotIn("UPDATE memories", executed_sql)
 
 
 class TestTapdbNativeGraphIntegration(unittest.TestCase):
@@ -2319,6 +2431,65 @@ class TestArtifactsGui(unittest.TestCase):
         self.assertEqual(data["uri"], f"s3://test-bucket/{data['key']}")
         mock_s3.put_object.assert_called_once()
         self.assertEqual(mock_s3.put_object.call_args.kwargs["ContentType"], "audio/webm")
+
+    def test_agent_backup_api_records_full_restore_manifest(self):
+        self.mod._gui_get_user = mock.Mock(return_value=mock.Mock(user_id="user-1", email="test@example.com"))
+        self.mod.check_agent_permission = mock.Mock(return_value=True)
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(
+            return_value=[
+                {
+                    "spaces": 1,
+                    "devices": 2,
+                    "memories": 3,
+                    "memory_annotations": 4,
+                    "events": 5,
+                    "sessions": 6,
+                    "actions": 7,
+                    "recognition_observations": 8,
+                    "constitution_revisions": 9,
+                }
+            ]
+        )
+        mock_db.execute = mock.Mock()
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.post(
+            "/api/agents/agent-1/backup",
+            json={"include_artifact_manifest": True, "include_tapdb_subgraph": True},
+        )
+
+        self.assertEqual(r.status_code, 200)
+        data = r.json()
+        self.assertTrue(data["manifest"]["includes"]["memories"])
+        self.assertTrue(data["manifest"]["includes"]["memory_annotations"])
+        self.assertTrue(data["manifest"]["includes"]["recognition_records"])
+        self.assertFalse(data["manifest"]["includes"]["secret_values"])
+        self.assertEqual(data["manifest"]["counts"]["memories"], 3)
+        self.assertIn("INSERT INTO agent_backup_manifests", mock_db.execute.call_args.args[0])
+
+    def test_agent_backup_download_requires_owner_and_returns_manifest(self):
+        self.mod._gui_get_user = mock.Mock(return_value=mock.Mock(user_id="user-1", email="test@example.com"))
+        mock_db = mock.Mock()
+        mock_db.query = mock.Mock(
+            return_value=[
+                {
+                    "backup_id": "backup-1",
+                    "agent_id": "agent-1",
+                    "manifest": '{"agent_id":"agent-1","format":"marvain-agent-backup:v1"}',
+                    "checksum": "abc123",
+                    "restore_readiness": '{"secret_values_excluded":true}',
+                    "created_at": "2026-04-27T00:00:00Z",
+                }
+            ]
+        )
+        self.mod._get_db = mock.Mock(return_value=mock_db)
+
+        r = self.client.get("/api/backups/backup-1/download")
+
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["manifest"]["format"], "marvain-agent-backup:v1")
+        self.assertIn("attachment", r.headers.get("content-disposition", ""))
 
 
 class TestLocationsGui(unittest.TestCase):

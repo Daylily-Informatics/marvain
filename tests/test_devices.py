@@ -270,7 +270,7 @@ class TestDeviceDeletion(unittest.TestCase):
         self.assertEqual(r.status_code, 404)
 
     def test_delete_device_success(self) -> None:
-        """Successful device deletion should remove the device."""
+        """Successful device deletion should soft-delete the device."""
         self.mod._gui_get_user = mock.Mock(
             return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
         )
@@ -285,11 +285,13 @@ class TestDeviceDeletion(unittest.TestCase):
         data = r.json()
         self.assertIn("message", data)
         self.assertEqual(data["device_id"], "device-123")
-        # Verify execute was called to delete the device
+        self.assertEqual(data["message"], "Device soft deleted")
+        self.assertEqual(data["lifecycle_state"], "soft_deleted")
+        # Verify execute was called to lifecycle-transition the device
         mock_db.execute.assert_called_once()
-        # Verify it was a DELETE statement
         call_args = mock_db.execute.call_args
-        self.assertIn("DELETE FROM devices", call_args[0][0])
+        self.assertIn("UPDATE devices", call_args[0][0])
+        self.assertIn("lifecycle_state = 'soft_deleted'", call_args[0][0])
 
 
 class TestDeviceTokenRotation(unittest.TestCase):

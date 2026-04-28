@@ -3,7 +3,7 @@
 
 CREATE TABLE IF NOT EXISTS locations (
   location_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
   name text NOT NULL,
   address_label text,
   metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -26,7 +26,7 @@ CREATE INDEX IF NOT EXISTS devices_current_space_idx ON devices(current_space_id
 
 CREATE TABLE IF NOT EXISTS personas (
   persona_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
   name text NOT NULL,
   instructions text NOT NULL,
   is_default boolean NOT NULL DEFAULT false,
@@ -43,7 +43,7 @@ CREATE INDEX IF NOT EXISTS personas_agent_idx ON personas(agent_id);
 
 CREATE TABLE IF NOT EXISTS sessions (
   session_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
   location_id uuid REFERENCES locations(location_id) ON DELETE SET NULL,
   space_id uuid REFERENCES spaces(space_id) ON DELETE SET NULL,
   persona_id uuid REFERENCES personas(persona_id) ON DELETE SET NULL,
@@ -67,7 +67,7 @@ CREATE INDEX IF NOT EXISTS events_session_idx ON events(session_id) WHERE sessio
 
 CREATE TABLE IF NOT EXISTS artifact_references (
   artifact_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
   space_id uuid REFERENCES spaces(space_id) ON DELETE SET NULL,
   device_id uuid REFERENCES devices(device_id) ON DELETE SET NULL,
   session_id uuid REFERENCES sessions(session_id) ON DELETE SET NULL,
@@ -87,7 +87,7 @@ CREATE INDEX IF NOT EXISTS artifact_references_agent_idx ON artifact_references(
 
 CREATE TABLE IF NOT EXISTS memory_candidates (
   memory_candidate_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
   source_event_id uuid REFERENCES events(event_id) ON DELETE RESTRICT,
   source_action_id uuid REFERENCES actions(action_id) ON DELETE SET NULL,
   space_id uuid REFERENCES spaces(space_id) ON DELETE SET NULL,
@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS memory_candidates (
   tier text NOT NULL,
   content text NOT NULL,
   participants jsonb NOT NULL DEFAULT '[]'::jsonb,
+  classification jsonb NOT NULL DEFAULT '{}'::jsonb,
   model text,
   confidence real NOT NULL DEFAULT 1.0,
   lifecycle_state text NOT NULL DEFAULT 'candidate',
@@ -147,7 +148,7 @@ CREATE INDEX IF NOT EXISTS memories_source_event_idx ON memories(source_event_id
 CREATE TABLE IF NOT EXISTS memory_tombstones (
   memory_tombstone_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   memory_id uuid NOT NULL REFERENCES memories(memory_id) ON DELETE RESTRICT,
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
   reason text,
   actor_type text NOT NULL,
   actor_id text,
@@ -159,7 +160,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS memory_tombstones_memory_idx ON memory_tombsto
 
 CREATE TABLE IF NOT EXISTS recognition_observations (
   recognition_observation_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
   space_id uuid REFERENCES spaces(space_id) ON DELETE SET NULL,
   location_id uuid REFERENCES locations(location_id) ON DELETE SET NULL,
   session_id uuid REFERENCES sessions(session_id) ON DELETE SET NULL,
@@ -178,7 +179,7 @@ CREATE INDEX IF NOT EXISTS recognition_observations_agent_idx ON recognition_obs
 
 CREATE TABLE IF NOT EXISTS recognition_hypotheses (
   identity_hypothesis_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  recognition_observation_id uuid NOT NULL REFERENCES recognition_observations(recognition_observation_id) ON DELETE CASCADE,
+  recognition_observation_id uuid NOT NULL REFERENCES recognition_observations(recognition_observation_id) ON DELETE RESTRICT,
   candidate_person_id uuid REFERENCES people(person_id) ON DELETE SET NULL,
   consent_id uuid REFERENCES consent_grants(consent_id) ON DELETE SET NULL,
   confidence real NOT NULL DEFAULT 0,
@@ -194,7 +195,7 @@ CREATE INDEX IF NOT EXISTS recognition_hypotheses_observation_idx ON recognition
 
 CREATE TABLE IF NOT EXISTS presence_assertions (
   presence_assertion_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE CASCADE,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
   space_id uuid REFERENCES spaces(space_id) ON DELETE SET NULL,
   location_id uuid REFERENCES locations(location_id) ON DELETE SET NULL,
   person_id uuid REFERENCES people(person_id) ON DELETE SET NULL,

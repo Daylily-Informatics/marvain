@@ -93,6 +93,33 @@
   {% endfor %}
 </div>
 
+<!-- Memory Governance Visibility -->
+<div class="card mb-lg lifecycle-visibility-card">
+  <div class="card-header">
+    <div>
+      <h3><i class="fas fa-scale-balanced"></i> Memory Review And Recall Governance</h3>
+      <p class="text-muted">Review controls for candidate commitment, provenance, annotations, disputes, downweights, cross-space recall, and tombstones.</p>
+    </div>
+    <span class="badge badge-warning">Partial API</span>
+  </div>
+  <div class="card-body">
+    <div class="gui-status-grid">
+      <div class="gui-status-item">
+        <span class="detail-label">Active now</span>
+        <span class="detail-value">Candidate commit/reject, memory annotation/dispute/downweight, supersede, tombstone, provenance detail</span>
+      </div>
+      <div class="gui-status-item">
+        <span class="detail-label">Still missing</span>
+        <span class="detail-value">Memory-level stasis/deletion request history</span>
+      </div>
+      <div class="gui-status-item">
+        <span class="detail-label">Cross-space recall</span>
+        <span class="detail-value">Shown from <code>recall_explanation</code> when returned by <code>GET /api/memories/{memory_id}</code></span>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Memory Candidates -->
 <div class="card mb-lg">
   <div class="card-header">
@@ -407,6 +434,138 @@ function jsonSection(title, icon, value) {
     </div>`;
 }
 
+function apiNeeded(title, endpoints) {
+  return `
+    <div class="api-needed">
+      <div class="api-needed-title"><i class="fas fa-plug-circle-xmark"></i> ${escapeHtml(title)}</div>
+      <div class="api-needed-list">
+        ${endpoints.map(endpoint => `<code>${escapeHtml(endpoint)}</code>`).join('')}
+      </div>
+    </div>`;
+}
+
+function crossSpaceRecallSection(memory, recallExplanation, provenance) {
+  const values = {
+    'Recall Scope': firstDetailValue(recallExplanation.recall_scope, recallExplanation.space_scope, provenance.recall_scope),
+    'Query Space': firstDetailValue(recallExplanation.query_space_name, recallExplanation.query_space_id, provenance.query_space_id),
+    'Source Space': firstDetailValue(
+      memory.space_name,
+      memory.space_id,
+      recallExplanation.source_space_name,
+      recallExplanation.source_space_id,
+      provenance.source_space_id
+    ),
+    'Matched Space': firstDetailValue(
+      recallExplanation.matched_space_name,
+      recallExplanation.matched_space_id,
+      recallExplanation.recalled_from_space_name,
+      recallExplanation.recalled_from_space_id
+    ),
+    'Disclosure Policy': firstDetailValue(
+      recallExplanation.disclosure_policy,
+      recallExplanation.policy_decision,
+      provenance.disclosure_policy
+    ),
+    'Reason': firstDetailValue(recallExplanation.reason, recallExplanation.explanation, provenance.recall_reason),
+  };
+  const rows = Object.entries(values)
+    .map(([label, value]) => detailRow(label, value))
+    .join('');
+  const hasContext = Object.values(values).some(hasDetailValue);
+  return `
+    <div class="detail-section">
+      <h4><i class="fas fa-share-nodes"></i> Cross-Space Recall Context</h4>
+      <div class="detail-grid">
+        ${hasContext ? rows : detailRow('Status', 'No cross-space recall context returned by the API')}
+      </div>
+    </div>`;
+}
+
+function annotationList(annotations) {
+  if (!annotations || annotations.length === 0) {
+    return '<p class="text-muted">No annotations recorded for this memory.</p>';
+  }
+  return `
+    <div class="annotation-list">
+      ${annotations.map(annotation => `
+        <div class="annotation-row">
+          <div class="annotation-row-header">
+            <span class="badge badge-outline">${escapeHtml(annotation.annotation_type || 'comment')}</span>
+            <span class="text-muted">${escapeHtml(annotation.created_at || '')}</span>
+          </div>
+          ${annotation.comment ? `<p>${escapeHtml(annotation.comment)}</p>` : ''}
+          <div class="detail-grid">
+            ${detailRow('Weight Delta', annotation.weight_delta)}
+            ${detailRow('Proposed Tier', annotation.proposed_tier)}
+          </div>
+        </div>`).join('')}
+    </div>`;
+}
+
+function memoryAnnotationReviewSection(memory) {
+  const memoryId = memory.memory_id;
+  const annotations = memory.annotations || [];
+  return `
+    <div class="detail-section">
+      <h4><i class="fas fa-pen-to-square"></i> Annotation, Dispute, And Downweight</h4>
+      ${annotationList(annotations)}
+      <form class="mt-md" onsubmit="return submitMemoryAnnotation(event, '${escapeHtml(memoryId)}')">
+        <div class="disabled-control-grid">
+          <label class="disabled-control">
+            <span>Annotation Type</span>
+            <select id="memory-annotation-type">
+              <option value="comment">Comment</option>
+              <option value="dispute">Dispute</option>
+              <option value="downweight">Downweight</option>
+              <option value="incorrect">Incorrect</option>
+              <option value="proposed_classification">Proposed classification</option>
+            </select>
+          </label>
+          <label class="disabled-control">
+            <span>Weight Delta</span>
+            <input id="memory-annotation-weight" type="number" min="-1" max="1" step="0.1" value="0">
+          </label>
+          <label class="disabled-control">
+            <span>Proposed Tier</span>
+            <select id="memory-annotation-tier">
+              <option value="">No proposed tier</option>
+              ${memoryKindOptions().map(item => `<option value="${item.value}">${item.label}</option>`).join('')}
+            </select>
+          </label>
+          <label class="disabled-control disabled-control-wide">
+            <span>Reviewer Comment</span>
+            <textarea id="memory-annotation-comment" rows="3" placeholder="Explain the dispute, correction, or confidence change."></textarea>
+          </label>
+        </div>
+        <div class="form-actions mt-md">
+          <button type="submit" class="btn btn-outline"><i class="fas fa-comment"></i> Save Annotation</button>
+          <button type="button" class="btn btn-outline" onclick="quickMemoryAnnotation('${escapeHtml(memoryId)}', 'dispute')"><i class="fas fa-triangle-exclamation"></i> Dispute</button>
+          <button type="button" class="btn btn-outline" onclick="quickMemoryAnnotation('${escapeHtml(memoryId)}', 'downweight')"><i class="fas fa-arrow-trend-down"></i> Downweight</button>
+        </div>
+      </form>
+    </div>`;
+}
+
+function memoryDeletionRequestSection(memoryId, lifecycleState, tombstoneValue) {
+  return `
+    <div class="detail-section">
+      <h4><i class="fas fa-box-archive"></i> Stasis And Deletion Request Status</h4>
+      <div class="detail-grid">
+        ${detailRow('Projection Lifecycle', lifecycleState || 'active', {badge: lifecycleState === 'tombstoned' ? 'error' : 'outline'})}
+        ${detailRow('Tombstone', tombstoneValue, {badge: lifecycleState === 'tombstoned' ? 'error' : 'outline'})}
+        ${detailRow('Deletion Request', 'Status API unavailable')}
+      </div>
+      <div class="form-actions mt-md">
+        <button type="button" class="btn btn-outline" disabled><i class="fas fa-hourglass-half"></i> Request Stasis Review</button>
+        <button type="button" class="btn btn-outline" disabled><i class="fas fa-file-signature"></i> Request Deletion Review</button>
+      </div>
+      ${apiNeeded('API needed for memory-level stasis/deletion requests', [
+        `GET /api/memories/${memoryId}/lifecycle-requests`,
+        `POST /api/memories/${memoryId}/lifecycle-requests`
+      ])}
+    </div>`;
+}
+
 function buildLineageLinks(sourceEventId, sourceActionId, tapdbEuid, explicitLineageUrl) {
   const links = [];
   if (hasDetailValue(sourceEventId)) {
@@ -523,34 +682,15 @@ async function viewCandidate(candidateId) {
         </div>
       </div>
       <div class="detail-section">
-        <h4><i class="fas fa-edit"></i> Edit Candidate</h4>
-        <form onsubmit="return saveCandidateEdit(event, '${escapeHtml(candidate.memory_candidate_id)}')">
-          <div class="form-group">
-            <label for="candidate-edit-content">Content</label>
-            <textarea id="candidate-edit-content" rows="4" required>${escapeHtml(candidate.content || '')}</textarea>
-          </div>
-          <div class="form-row" style="display: flex; gap: var(--space-md);">
-            <div class="form-group" style="flex: 1;">
-              <label for="candidate-edit-tier">Tier</label>
-              <select id="candidate-edit-tier">
-                ${memoryKindOptions().map(item => `<option value="${item.value}" ${candidate.tier === item.value ? 'selected' : ''}>${item.label}</option>`).join('')}
-              </select>
-            </div>
-            <div class="form-group" style="flex: 1;">
-              <label for="candidate-edit-confidence">Confidence</label>
-              <input id="candidate-edit-confidence" type="number" min="0" max="1" step="0.01" value="${escapeHtml(candidate.confidence ?? 1)}">
-            </div>
-          </div>
-          <div class="form-group">
-            <label for="candidate-edit-participants">Participants</label>
-            <input id="candidate-edit-participants" value="${escapeHtml(participantsText)}">
-          </div>
-          <div class="form-actions" style="display:flex; justify-content:flex-end; gap:var(--space-sm);">
-            <button type="submit" class="btn btn-outline"><i class="fas fa-save"></i> Save</button>
-            <button type="button" class="btn btn-primary" onclick="commitCandidate('${escapeHtml(candidate.memory_candidate_id)}')"><i class="fas fa-check"></i> Commit</button>
-            <button type="button" class="btn btn-danger" onclick="rejectCandidate('${escapeHtml(candidate.memory_candidate_id)}')"><i class="fas fa-times"></i> Reject</button>
-          </div>
-        </form>
+        <h4><i class="fas fa-clipboard-check"></i> Candidate Review</h4>
+        <div class="detail-grid">
+          ${detailRow('Direct Mutation', 'Disabled by API contract; review with commit, reject, or post-commit annotations')}
+          ${detailRow('Participants', participantsText)}
+        </div>
+        <div class="form-actions" style="display:flex; justify-content:flex-end; gap:var(--space-sm);">
+          <button type="button" class="btn btn-primary" onclick="commitCandidate('${escapeHtml(candidate.memory_candidate_id)}')"><i class="fas fa-check"></i> Commit</button>
+          <button type="button" class="btn btn-danger" onclick="rejectCandidate('${escapeHtml(candidate.memory_candidate_id)}')"><i class="fas fa-times"></i> Reject</button>
+        </div>
       </div>
       <div class="detail-section">
         <h4><i class="fas fa-file-alt"></i> Content</h4>
@@ -723,11 +863,12 @@ async function viewMemory(memoryId) {
           ${detailRow('Source Action', sourceActionId, {code: true})}
           ${detailRow('Session', sessionId, {code: true})}
           ${detailRow('Location', locationLabel)}
-          ${detailRow('Lifecycle State', lifecycleState, {badge: lifecycleState === 'tombstoned' ? 'danger' : 'outline'})}
-          ${detailRow('Tombstone', tombstoneValue, {badge: lifecycleState === 'tombstoned' ? 'danger' : 'outline'})}
+          ${detailRow('Lifecycle State', lifecycleState, {badge: lifecycleState === 'tombstoned' ? 'error' : 'outline'})}
           ${detailRow('Lineage', lineageLinks, {html: true})}
         </div>
       </div>
+
+      ${crossSpaceRecallSection(memory, recallExplanation, provenance)}
 
       ${tags.length > 0 ? `
       <div class="detail-section">
@@ -758,6 +899,8 @@ async function viewMemory(memoryId) {
       ${jsonSection('Provenance', 'fa-history', provenance)}
       ${jsonSection('Tombstone Record', 'fa-archive', tombstone)}
       ${jsonSection('Retention', 'fa-clock', retention)}
+      ${memoryAnnotationReviewSection(memory)}
+      ${memoryDeletionRequestSection(memory.memory_id, lifecycleState, tombstoneValue)}
       <div class="form-actions" style="display:flex; justify-content:flex-end; gap:var(--space-sm);">
         <button type="button" class="btn btn-outline" onclick="supersedeMemory('${escapeHtml(memory.memory_id)}')">
           <i class="fas fa-code-branch"></i> Supersede
@@ -770,6 +913,43 @@ async function viewMemory(memoryId) {
   } catch (error) {
     content.innerHTML = `<div class="error-message"><i class="fas fa-exclamation-triangle"></i> ${error.message}</div>`;
   }
+}
+
+function quickMemoryAnnotation(memoryId, annotationType) {
+  document.getElementById('memory-annotation-type').value = annotationType;
+  if (annotationType === 'downweight') {
+    document.getElementById('memory-annotation-weight').value = '-0.2';
+  }
+  document.getElementById('memory-annotation-comment').focus();
+}
+
+async function submitMemoryAnnotation(event, memoryId) {
+  event.preventDefault();
+  const annotationType = document.getElementById('memory-annotation-type').value;
+  const proposedTier = document.getElementById('memory-annotation-tier').value || null;
+  const body = {
+    annotation_type: annotationType,
+    comment: document.getElementById('memory-annotation-comment').value.trim() || null,
+    proposed_tier: proposedTier,
+    weight_delta: parseFloat(document.getElementById('memory-annotation-weight').value || '0'),
+    metadata: {source: 'gui_memory_detail'}
+  };
+  try {
+    Marvain.showLoading('Saving annotation...');
+    const response = await fetch(`/api/memories/${memoryId}/annotations`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    await readMemoryFetchResponse(response, 'Failed to save annotation');
+    Marvain.hideLoading();
+    Marvain.showToast('success', 'Saved', 'Memory annotation saved');
+    await viewMemory(memoryId);
+  } catch (error) {
+    Marvain.hideLoading();
+    Marvain.showToast('error', 'Error', error.message);
+  }
+  return false;
 }
 
 async function supersedeMemory(memoryId) {
