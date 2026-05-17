@@ -352,7 +352,7 @@ def _ensure_tapdb_runtime_config(ctx: Ctx, *, resources: dict[str, Any]) -> Path
             "client_id": "marvain",
             "database_name": ctx.env.stack_name,
             "owner_repo_name": "marvain",
-            "domain_code": "M",
+            "domain_code": "V",
             "domain_registry_path": str(repo_root / "tapdb_templates" / "domain_code_registry.json"),
             "prefix_ownership_registry_path": str(repo_root / "tapdb_templates" / "prefix_ownership_registry.json"),
         },
@@ -369,7 +369,7 @@ def _ensure_tapdb_runtime_config(ctx: Ctx, *, resources: dict[str, Any]) -> Path
                 "region": ctx.env.aws_region,
                 "iam_auth": "false",
                 "ssl": "true",
-                "domain_code": "M",
+                "domain_code": "V",
             }
         },
     }
@@ -1545,7 +1545,7 @@ def gui_start(
         env["MARVAIN_TAPDB_CONFIG_PATH"] = str(tapdb_config_path)
         env["TAPDB_CONFIG_PATH"] = str(tapdb_config_path)
         env["TAPDB_ENV"] = ctx.env.env
-        env["MERIDIAN_DOMAIN_CODE"] = "M"
+        env["MERIDIAN_DOMAIN_CODE"] = "V"
         env["TAPDB_OWNER_REPO"] = "marvain"
         _eprint(f"TapDB config: {tapdb_config_path}")
 

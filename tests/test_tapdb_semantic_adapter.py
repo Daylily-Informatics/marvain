@@ -227,7 +227,7 @@ def test_daylily_tapdb_store_uses_factory_lookup_query_seed_and_graph_patterns(
 ) -> None:
     store = DaylilyTapdbSemanticStore(
         db_url="postgresql+psycopg2://user:pass@example.test/tapdb",
-        domain_code="M",
+        domain_code="V",
         owner_repo_name="marvain",
         template_dir=Path("/templates"),
     )
@@ -279,7 +279,7 @@ def test_daylily_tapdb_store_uses_factory_lookup_query_seed_and_graph_patterns(
     assert factory.linked == [
         {"parent": agent.semantic_id, "child": memory.semantic_id, "relationship_type": "REMEMBERS"}
     ]
-    assert ("eq", "domain_code", "M") in connection.session.query_filters
+    assert ("eq", "domain_code", "V") in connection.session.query_filters
     assert ("eq", "category", "MVN") in connection.session.query_filters
     assert ("eq", "type", "agent") in connection.session.query_filters
     assert ("eq", "subtype", "companion") in connection.session.query_filters

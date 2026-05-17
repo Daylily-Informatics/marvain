@@ -35,7 +35,7 @@ Title: Marvain Greenfield TapDB V1 Refactor Plan With Environment, CLI, And Auth
 - Allowed TapDB usage: one boundary module/service may use public `daylily_tapdb` APIs to seed templates, create instances, create lineage, query lineage/DAG data, and record lifecycle transitions.
 - Forbidden outside the boundary: direct imports of `daylily_tapdb.models`, `daylily_tapdb.connection`, `daylily_tapdb.aurora`, SQLAlchemy sessions, psycopg connections, or raw SQL against TapDB-owned tables.
 - Add static tests enforcing that rule.
-- Use TapDB domain `MVN`, owner repo `marvain`, and a Marvain template pack stored in this repo.
+- Use TapDB Meridian domain code `V`, template category/instance prefix `MVN`, owner repo `marvain`, and a Marvain template pack stored in this repo.
 - Resolve dependency alignment intentionally: Marvain should pin `cli-core-yo==2.1.1`, `daylily-auth-cognito==2.1.5`, and `daylily-tapdb[admin]==6.0.8`.
 
 ## 4. Target Runtime Architecture
@@ -196,7 +196,7 @@ Phase 10, full integration, dev deploy, e2e, and report:
   `daylily-auth-cognito==2.1.5`
   `daylily-tapdb[admin]==6.0.8`
 - Required TapDB env:
-  `MERIDIAN_DOMAIN_CODE=MVN`
+  `MERIDIAN_DOMAIN_CODE=V`
   `TAPDB_OWNER_REPO=marvain`
 - Required secrets/config: admin API key, OpenAI key, Cognito pool/client/domain/session secret, Cognito test username/password, optional Google OAuth, LiveKit credentials when media tests are in scope, DB secret, generated TapDB config.
 - Expected resources updated/created: TapDB writer Lambda, writer queue/DLQ, writer VPC access, writer IAM permissions, TapDB template seed path, optional graph query/proxy API, auth/session updates, metrics/alarms.

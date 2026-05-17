@@ -386,7 +386,7 @@ class TestGuiLifecycle(unittest.TestCase):
             self.assertIn("engine_type: aurora", text)
             self.assertIn("host: db.example.com", text)
             self.assertIn("secret_arn:", text)
-            self.assertIn("domain_code: M", text)
+            self.assertIn("domain_code: V", text)
             run_json_mock.assert_called_once()
 
     def test_write_and_read_pid_file(self) -> None:
