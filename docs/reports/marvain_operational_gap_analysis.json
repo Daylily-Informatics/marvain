@@ -1,0 +1,251 @@
+{
+  "date": "2026-05-19",
+  "reviewed_branch": "codex/marvain-tapdb-boundary-closure",
+  "reviewed_commit": "fcba7d7",
+  "generated_evidence": {
+    "design_objective_score_percent": 100,
+    "design_objective_checks": "86/86",
+    "api_route_coverage": "65/65",
+    "api_route_coverage_percent": 100,
+    "gui_route_coverage": "114/114",
+    "gui_route_coverage_percent": 100,
+    "playwright_workflow_coverage": "22/22",
+    "playwright_workflow_coverage_percent": 100
+  },
+  "readiness_estimates": {
+    "static_implementation_percent": 90,
+    "local_api_backend_workflow_percent": 82,
+    "gui_route_workflow_percent": 84,
+    "deployed_runtime_proof_percent": 45,
+    "core_v1_operational_readiness_percent": 78,
+    "all_desired_capability_average_percent": 71
+  },
+  "capabilities": [
+    {
+      "id": "CAP-001",
+      "capability": "Requirements, architecture purity, no fallback",
+      "completion_percent": 88,
+      "status": "mostly-complete",
+      "work_shape": "refactor guard maintenance",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-002",
+      "capability": "Activation, CLI, config, auth foundation",
+      "completion_percent": 82,
+      "status": "mostly-complete",
+      "work_shape": "anticipated by current code",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-003",
+      "capability": "Deploy/bootstrap clean-room readiness",
+      "completion_percent": 65,
+      "status": "partial",
+      "work_shape": "anticipated by current code",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-004",
+      "capability": "Agents, personas, constitution, lifecycle",
+      "completion_percent": 78,
+      "status": "mostly-complete",
+      "work_shape": "anticipated by current code",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-005",
+      "capability": "Agent-owned memory and annotations",
+      "completion_percent": 76,
+      "status": "mostly-complete",
+      "work_shape": "anticipated by current code",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-006",
+      "capability": "People, consent, account links",
+      "completion_percent": 78,
+      "status": "mostly-complete",
+      "work_shape": "anticipated by current code",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-007",
+      "capability": "Locations, spaces, sessions, topology",
+      "completion_percent": 76,
+      "status": "mostly-complete",
+      "work_shape": "anticipated by current code",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-008",
+      "capability": "Devices and remote satellites",
+      "completion_percent": 72,
+      "status": "partial",
+      "work_shape": "anticipated by current code",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-009",
+      "capability": "Live session, media, worker",
+      "completion_percent": 68,
+      "status": "partial",
+      "work_shape": "refactor and external proof",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-010",
+      "capability": "Memory taxonomy and classification",
+      "completion_percent": 80,
+      "status": "mostly-complete",
+      "work_shape": "anticipated by current code",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-011",
+      "capability": "Recall ranking and cross-context memory",
+      "completion_percent": 72,
+      "status": "partial",
+      "work_shape": "refactor-required",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-012",
+      "capability": "Recognition, biometrics, presence",
+      "completion_percent": 70,
+      "status": "partial",
+      "work_shape": "external-proof-needed",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-013",
+      "capability": "Actions, policies, tools",
+      "completion_percent": 78,
+      "status": "mostly-complete",
+      "work_shape": "anticipated by current code",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-014",
+      "capability": "Integrations and messaging",
+      "completion_percent": 60,
+      "status": "partial",
+      "work_shape": "anticipated and external config",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-015",
+      "capability": "TapDB semantic graph/query boundary",
+      "completion_percent": 84,
+      "status": "mostly-complete",
+      "work_shape": "anticipated by current code",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-016",
+      "capability": "Audit, privacy, retention, artifacts",
+      "completion_percent": 78,
+      "status": "mostly-complete",
+      "work_shape": "anticipated by current code",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-017",
+      "capability": "Observability and Kahlo discovery",
+      "completion_percent": 70,
+      "status": "partial",
+      "work_shape": "external-proof-needed",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-018",
+      "capability": "GUI operability and smoke guide",
+      "completion_percent": 84,
+      "status": "mostly-complete",
+      "work_shape": "anticipated by current code",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-019",
+      "capability": "Test gates and generated evidence",
+      "completion_percent": 86,
+      "status": "mostly-complete",
+      "work_shape": "refactor guard maintenance",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-020",
+      "capability": "Deployed smoke and acceptance",
+      "completion_percent": 55,
+      "status": "external-proof-needed",
+      "work_shape": "external-proof and implementation hardening",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-021",
+      "capability": "Fresh clean-room validation",
+      "completion_percent": 25,
+      "status": "anticipated",
+      "work_shape": "anticipated by current code",
+      "terminal_state": "SUCCESS"
+    },
+    {
+      "id": "CAP-022",
+      "capability": "Broader post-V1 integrations",
+      "completion_percent": 35,
+      "status": "anticipated",
+      "work_shape": "partly novel",
+      "terminal_state": "SUCCESS"
+    }
+  ],
+  "high_risk_gaps": [
+    "Deployed proof is the main gap.",
+    "smoke v1-dev needs live-evidence hardening.",
+    "Live media and worker behavior remain under-proven.",
+    "Recognition lifecycle is implemented but model quality is not proven.",
+    "Device/action topology needs a deployed two-device proof.",
+    "Memory/recall needs stronger live semantic quality proof.",
+    "GUI coverage can over-credit route rendering.",
+    "Observability needs real runtime samples.",
+    "TapDB boundary is mostly correct but needs live graph/query proof."
+  ],
+  "validation": [
+    {
+      "command": "ruff check functions/ layers/ apps/ marvain_cli/ tests/",
+      "result": "PASS"
+    },
+    {
+      "command": "ruff format --check functions/ layers/ apps/ marvain_cli/ tests/",
+      "result": "PASS"
+    },
+    {
+      "command": "python scripts/verify_docs_contracts.py",
+      "result": "PASS"
+    },
+    {
+      "command": "python scripts/generate_capability_matrix.py --check",
+      "result": "PASS"
+    },
+    {
+      "command": "python scripts/generate_design_objective_status.py --check --min-score 90",
+      "result": "PASS"
+    },
+    {
+      "command": "python scripts/generate_route_coverage.py --check --min-api 75 --min-gui 75 --min-playwright 75",
+      "result": "PASS"
+    },
+    {
+      "command": "python -m json.tool docs/reports/marvain_operational_gap_analysis.json",
+      "result": "PASS"
+    },
+    {
+      "command": "git diff --check",
+      "result": "PASS"
+    },
+    {
+      "command": "python -m pytest tests/ -q --tb=short",
+      "result": "FAIL",
+      "details": "641 passed, 60 skipped, 2 failed. Failures were missing Playwright Chromium executable and missing sam CLI on PATH."
+    }
+  ]
+}
