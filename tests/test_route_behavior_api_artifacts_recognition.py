@@ -861,8 +861,9 @@ def test_recognition_worker_heartbeat_persists_owning_evidence(
     harness,
 ) -> None:
     _module, client, _artifacts, state, _database = harness
+    worker_key = "recognition-cleanroom-1"
     response = client.post(
-        "/v1/recognition/workers/recognition-cleanroom-1/heartbeat",
+        f"/v1/recognition/workers/{worker_key}/heartbeat",
         json=_heartbeat_body(),
     )
     assert response.status_code == 200, response.text
@@ -899,17 +900,18 @@ def test_recognition_worker_heartbeat_rejects_unbound_or_invalid_evidence(
     harness,
 ) -> None:
     module, client, _artifacts, state, _database = harness
+    worker_key = "recognition-cleanroom-1"
     unbound = client.post(
-        "/v1/recognition/workers/recognition-cleanroom-1/heartbeat",
+        f"/v1/recognition/workers/{worker_key}/heartbeat",
         json=_heartbeat_body(worker_id="another-worker"),
     )
     invalid = client.post(
-        "/v1/recognition/workers/recognition-cleanroom-1/heartbeat",
+        f"/v1/recognition/workers/{worker_key}/heartbeat",
         json=_heartbeat_body(state="invented"),
     )
     module.api_app.dependency_overrides[module.get_device] = lambda: _worker_device(kind="worker")
     denied = client.post(
-        "/v1/recognition/workers/recognition-cleanroom-1/heartbeat",
+        f"/v1/recognition/workers/{worker_key}/heartbeat",
         json=_heartbeat_body(),
     )
     assert unbound.status_code == 400

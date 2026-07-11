@@ -1237,7 +1237,8 @@ def create_space(body: CreateSpaceIn, user: AuthenticatedUser = Depends(get_user
 
 
 @api_app.get("/v1/spaces/{space_id}", response_model=SpaceOut)
-def get_space(space_id: str, user: AuthenticatedUser = Depends(get_user)) -> SpaceOut:
+def get_space(space_id: uuid.UUID, user: AuthenticatedUser = Depends(get_user)) -> SpaceOut:
+    space_id_value = str(space_id)
     rows = _get_db().query(
         """
         SELECT space_id::TEXT AS space_id, agent_id::TEXT AS agent_id, name, privacy_mode,
@@ -1245,7 +1246,7 @@ def get_space(space_id: str, user: AuthenticatedUser = Depends(get_user)) -> Spa
         FROM spaces
         WHERE space_id = :space_id::uuid
         """,
-        {"space_id": space_id},
+        {"space_id": space_id_value},
     )
     if not rows:
         raise HTTPException(status_code=404, detail="Space not found")
@@ -1254,7 +1255,8 @@ def get_space(space_id: str, user: AuthenticatedUser = Depends(get_user)) -> Spa
 
 
 @api_app.patch("/v1/spaces/{space_id}", response_model=SpaceOut)
-def update_space(space_id: str, body: UpdateSpaceIn, user: AuthenticatedUser = Depends(get_user)) -> SpaceOut:
+def update_space(space_id: uuid.UUID, body: UpdateSpaceIn, user: AuthenticatedUser = Depends(get_user)) -> SpaceOut:
+    space_id_value = str(space_id)
     rows = _get_db().query(
         """
         SELECT space_id::TEXT AS space_id, agent_id::TEXT AS agent_id, name, privacy_mode,
@@ -1263,7 +1265,7 @@ def update_space(space_id: str, body: UpdateSpaceIn, user: AuthenticatedUser = D
         WHERE space_id = :space_id::uuid
           AND lifecycle_state = 'active'
         """,
-        {"space_id": space_id},
+        {"space_id": space_id_value},
     )
     if not rows:
         raise HTTPException(status_code=404, detail="Space not found")
@@ -1283,7 +1285,7 @@ def update_space(space_id: str, body: UpdateSpaceIn, user: AuthenticatedUser = D
             WHERE space_id = :space_id::uuid
               AND lifecycle_state = 'active'
             """,
-            {"space_id": space_id, "name": name, "privacy_mode": privacy_mode},
+            {"space_id": space_id_value, "name": name, "privacy_mode": privacy_mode},
             transaction_id=tx,
         )
         enqueue_semantic_record(
@@ -1291,13 +1293,13 @@ def update_space(space_id: str, body: UpdateSpaceIn, user: AuthenticatedUser = D
             transaction_id=tx,
             agent_id=agent_id,
             source_table="spaces",
-            source_id=space_id,
+            source_id=space_id_value,
             target_template_code=TEMPLATE_CODES["space"],
             name=name,
             lifecycle_state="active",
             properties={
                 "agent_id": agent_id,
-                "space_id": space_id,
+                "space_id": space_id_value,
                 "privacy_mode": privacy_mode,
                 "livekit_room_mode": str(current.get("livekit_room_mode") or "ephemeral"),
             },
@@ -1307,7 +1309,7 @@ def update_space(space_id: str, body: UpdateSpaceIn, user: AuthenticatedUser = D
         _get_db().rollback(tx)
         raise
     return SpaceOut(
-        space_id=space_id,
+        space_id=space_id_value,
         agent_id=agent_id,
         name=name,
         privacy_mode=privacy_mode,
@@ -1318,7 +1320,8 @@ def update_space(space_id: str, body: UpdateSpaceIn, user: AuthenticatedUser = D
 
 
 @api_app.delete("/v1/spaces/{space_id}", response_model=SpaceOut)
-def delete_space(space_id: str, user: AuthenticatedUser = Depends(get_user)) -> SpaceOut:
+def delete_space(space_id: uuid.UUID, user: AuthenticatedUser = Depends(get_user)) -> SpaceOut:
+    space_id_value = str(space_id)
     rows = _get_db().query(
         """
         SELECT space_id::TEXT AS space_id, agent_id::TEXT AS agent_id, name, privacy_mode,
@@ -1327,7 +1330,7 @@ def delete_space(space_id: str, user: AuthenticatedUser = Depends(get_user)) -> 
         WHERE space_id = :space_id::uuid
           AND lifecycle_state = 'active'
         """,
-        {"space_id": space_id},
+        {"space_id": space_id_value},
     )
     if not rows:
         raise HTTPException(status_code=404, detail="Space not found")
@@ -1345,7 +1348,7 @@ def delete_space(space_id: str, user: AuthenticatedUser = Depends(get_user)) -> 
             WHERE space_id = :space_id::uuid
               AND lifecycle_state = 'active'
             """,
-            {"space_id": space_id},
+            {"space_id": space_id_value},
             transaction_id=tx,
         )
         enqueue_semantic_record(
@@ -1353,18 +1356,18 @@ def delete_space(space_id: str, user: AuthenticatedUser = Depends(get_user)) -> 
             transaction_id=tx,
             agent_id=agent_id,
             source_table="spaces",
-            source_id=space_id,
+            source_id=space_id_value,
             target_template_code=TEMPLATE_CODES["space"],
             name=str(current["name"]),
             lifecycle_state="soft_deleted",
-            properties={"agent_id": agent_id, "space_id": space_id},
+            properties={"agent_id": agent_id, "space_id": space_id_value},
         )
         _get_db().commit(tx)
     except Exception:
         _get_db().rollback(tx)
         raise
     return SpaceOut(
-        space_id=space_id,
+        space_id=space_id_value,
         agent_id=agent_id,
         name=str(current["name"]),
         privacy_mode=bool(current.get("privacy_mode")),

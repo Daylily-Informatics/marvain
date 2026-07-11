@@ -639,6 +639,21 @@ def test_api_delete_space_denial(request: pytest.FixtureRequest, api_harness: Ap
     )
 
 
+def test_api_delete_space_validation(request: pytest.FixtureRequest, api_harness: ApiHarness) -> None:
+    _authenticate_user(api_harness)
+    response = api_harness.client.delete("/v1/spaces/not-a-uuid")
+
+    assert response.status_code == 422
+    record_http_evidence(
+        request,
+        surface="api",
+        method="DELETE",
+        path="/v1/spaces/{space_id}",
+        kind="validation",
+        response=response,
+    )
+
+
 def test_api_memberships_success(
     request: pytest.FixtureRequest,
     api_harness: ApiHarness,

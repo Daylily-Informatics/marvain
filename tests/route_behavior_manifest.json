@@ -313,15 +313,13 @@
       "requirements": {
         "success": "required",
         "denial": "required",
-        "validation": {
-          "status": "not_applicable",
-          "reason": "The soft-delete command has no request body to validate."
-        },
+        "validation": "required",
         "postcondition": "required"
       },
       "tests": {
         "success": "tests/test_route_behavior_api.py::test_api_delete_space_success_and_readback",
         "denial": "tests/test_route_behavior_api.py::test_api_delete_space_denial",
+        "validation": "tests/test_route_behavior_api.py::test_api_delete_space_validation",
         "postcondition": "tests/test_route_behavior_api.py::test_api_delete_space_success_and_readback"
       }
     },
