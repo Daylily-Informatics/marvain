@@ -60,7 +60,7 @@ The compact evidence fields below are initialized from the assessment. Agents re
 | ID | Capability | Baseline | Target | Current | Status | Owner | Gate | Dependencies | Implementation evidence | Local proof | Deployed proof | Failure proof | Root cause | Terminal note |
 |---|---|---:|---:|---:|---|---|---|---|---|---|---|---|---|---|
 | FND-01 | Product mission and domain model | 72 | 100 | 72 | OPEN | A1 | 1 | - | Assessment report | Baseline docs checks | none | pending | Conflicting historical contracts | |
-| FND-02 | No-fallback/no-legacy architecture | 46 | 100 | 46 | OPEN | A1 | 1 | FND-01 | Assessment report | Static guards partial | none | pending | Runtime defaults and silent substitutions remain | |
+| FND-02 | No-fallback/no-legacy architecture | 46 | 100 | 46 | IN_PROGRESS | A1 | 1 | FND-01 | Session secret now hard-fails; broader purge pending | Import-failure contract plus GUI suite | none | pending | Other runtime defaults and silent substitutions remain | |
 | FND-03 | Python and dependency contract | 38 | 100 | 38 | OPEN | A2 | 1 | FND-01 | Python 3.12 package, Python 3.11 SAM | Environment tests | none | pending | Runtime mismatch and missing SAM | |
 | FND-04 | CLI and explicit configuration | 68 | 100 | 68 | OPEN | A2 | 1 | FND-03 | CLI and config modules | CLI tests; one failure | none | pending | Build preflight unavailable | |
 | FND-05 | Cognito browser and runtime auth | 62 | 100 | 62 | OPEN | A4 | 1 | FND-03 | Auth boundary present | Auth tests | none | pending | Raw-token/default behavior remains | |

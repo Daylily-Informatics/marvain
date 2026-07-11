@@ -25,7 +25,7 @@ Capabilities at 100/SUCCESS: **0/85**.
 | ID | Capability | Score | Evidence cap | Status | Owner | Gate |
 |---|---|---:|---:|---|---|---:|
 | `FND-01` | Product mission and domain model | 72% | 74% | `OPEN` | `A1` | 1 |
-| `FND-02` | No-fallback/no-legacy architecture | 46% | 49% | `OPEN` | `A1` | 1 |
+| `FND-02` | No-fallback/no-legacy architecture | 46% | 49% | `IN_PROGRESS` | `A1` | 1 |
 | `FND-03` | Python and dependency contract | 38% | 49% | `OPEN` | `A2` | 1 |
 | `FND-04` | CLI and explicit configuration | 68% | 74% | `OPEN` | `A2` | 1 |
 | `FND-05` | Cognito browser and runtime auth | 62% | 74% | `OPEN` | `A4` | 1 |

@@ -180,9 +180,7 @@ def _validate_critical_secrets(cfg) -> list[str]:
 
     # 5. Session Secret (required for secure sessions)
     if not cfg.session_secret_key and not cfg.session_secret_arn:
-        errors.append(
-            "SESSION_SECRET_KEY or SESSION_SECRET_ARN not set - sessions will use random key (not persistent)"
-        )
+        errors.append("SESSION_SECRET_KEY or SESSION_SECRET_ARN not set")
 
     return errors
 

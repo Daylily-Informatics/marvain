@@ -16,7 +16,6 @@ import json
 import logging
 import os
 import re
-import secrets
 import uuid
 from dataclasses import asdict
 from typing import Any, Optional
@@ -106,10 +105,10 @@ def _get_session_secret() -> str:
             key = data.get("session_secret_key")
             if key:
                 return str(key)
-        except Exception:
-            logger.warning("Failed to load session secret from Secrets Manager")
-    logger.warning("SESSION_SECRET_KEY not set - using random key")
-    return secrets.token_urlsafe(32)
+        except Exception as exc:
+            raise RuntimeError("Failed to load SESSION_SECRET_ARN") from exc
+        raise RuntimeError("SESSION_SECRET_ARN does not contain session_secret_key")
+    raise RuntimeError("SESSION_SECRET_KEY or SESSION_SECRET_ARN is required")
 
 
 # Add SessionMiddleware (needed for API routes that use sessions)
