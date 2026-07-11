@@ -513,20 +513,20 @@ app.add_api_route("/api/dag", _api_tapdb_dag_proxy, methods=["GET", "POST"], nam
 app.add_api_route("/api/dag/{path:path}", _api_tapdb_dag_proxy, methods=["GET", "POST"], name="api_tapdb_dag")
 
 
-_KAHLO_CONTRACT_VERSION = "v3"
+_MARVAIN_OBSERVABILITY_SCHEMA = "marvain.observability.v1"
 
 
 def _observed_at() -> str:
     return dt_datetime.now(timezone.utc).isoformat()
 
 
-def _projection(status: str = "ready", *, detail: str | None = None) -> dict[str, Any]:
+def _projection(status: str = "unmeasured", *, detail: str | None = None) -> dict[str, Any]:
     observed_at = _observed_at()
     return {
         "state": status,
-        "stale": False,
+        "stale": status == "unmeasured",
         "observed_at": observed_at,
-        "last_synced_at": observed_at,
+        "last_synced_at": None,
         "detail": detail,
     }
 
@@ -546,16 +546,18 @@ def _observability_principal(request: Request) -> dict[str, Any]:
 
 
 def _observability_base(request: Request, *, status: str = "ok") -> dict[str, Any]:
+    build_version = str(os.getenv("MARVAIN_BUILD_VERSION") or "").strip() or None
+    build_sha = str(os.getenv("GIT_SHA") or "").strip() or None
     return {
-        "contract_version": _KAHLO_CONTRACT_VERSION,
+        "schema": _MARVAIN_OBSERVABILITY_SCHEMA,
         "service": "marvain",
-        "environment": str(_cfg.stage or "unknown"),
-        "instance_id": f"marvain-{_cfg.stage or 'local'}",
+        "environment": str(_cfg.stage or ""),
+        "instance_id": str(os.getenv("MARVAIN_INSTANCE_ID") or "").strip() or None,
         "observed_at": _observed_at(),
         "status": status,
         "request_id": str(getattr(request.state, "request_id", "") or ""),
         "correlation_id": str(getattr(request.state, "correlation_id", "") or ""),
-        "build": {"version": "unknown", "sha": os.getenv("GIT_SHA", "")},
+        "build": {"version": build_version, "sha": build_sha},
     }
 
 
@@ -577,12 +579,12 @@ def _endpoint_rollup_item(*, route_template: str, method: str, family: str, kind
     return {
         "method": method,
         "route_template": route_template,
-        "status": "ok",
+        "status": "unmeasured",
         "kind": kind,
         "auth": auth,
         "family": family,
-        "request_count": 0,
-        "status_class_counts": {},
+        "request_count": None,
+        "status_class_counts": None,
         "p50_ms": None,
         "p95_ms": None,
         "p99_ms": None,
@@ -624,10 +626,11 @@ def _route_items() -> list[dict[str, Any]]:
     return sorted(items, key=lambda item: (item["route_template"], item["method"]))
 
 
-@app.get("/obs_services", name="kahlo_obs_services")
-def kahlo_obs_services(request: Request) -> JSONResponse:
+@app.get("/obs_services", name="marvain_service_manifest")
+def marvain_service_manifest(request: Request) -> JSONResponse:
     payload = _observability_base(request)
-    payload["projection"] = _projection()
+    payload["kind"] = "service_manifest"
+    payload["projection"] = _projection("configured", detail="Marvain service manifest")
     payload["endpoints"] = _observability_endpoints()
     payload["extensions"] = [
         "marvain.tapdb_graph",
@@ -644,7 +647,6 @@ def kahlo_obs_services(request: Request) -> JSONResponse:
                 "configured": bool(os.getenv("MARVAIN_TAPDB_CONFIG_PATH") or os.getenv("TAPDB_CONFIG_PATH")),
             },
         ],
-        "observed_services": [],
     }
     payload["graph_endpoints"] = [
         {
@@ -673,26 +675,34 @@ def kahlo_obs_services(request: Request) -> JSONResponse:
     return JSONResponse(payload)
 
 
-@app.get("/api_health", name="kahlo_api_health")
-def kahlo_api_health(request: Request) -> JSONResponse:
+@app.get("/api_health", name="marvain_api_health")
+def marvain_api_health(request: Request) -> JSONResponse:
     items = _route_items()
     families: list[dict[str, Any]] = []
     for family in ("gui", "gui_api", "observability", "tapdb_graph", "v1_api"):
         count = sum(1 for item in items if item["family"] == family)
-        families.append({"family": family, "request_count": 0, "error_count": 0, "route_count": count, "status": "ok"})
-    payload = _observability_base(request)
-    payload["projection"] = _projection()
+        families.append(
+            {
+                "family": family,
+                "request_count": None,
+                "error_count": None,
+                "route_count": count,
+                "status": "unmeasured",
+            }
+        )
+    payload = _observability_base(request, status="unmeasured")
+    payload["projection"] = _projection(detail="Request metrics are not yet connected")
     payload["families"] = families
     return JSONResponse(payload)
 
 
-@app.get("/endpoint_health", name="kahlo_endpoint_health")
-def kahlo_endpoint_health(request: Request, offset: int = 0, limit: int = 25) -> JSONResponse:
+@app.get("/endpoint_health", name="marvain_endpoint_health")
+def marvain_endpoint_health(request: Request, offset: int = 0, limit: int = 25) -> JSONResponse:
     items = _route_items()
     offset = max(0, int(offset))
     limit = min(200, max(1, int(limit)))
-    payload = _observability_base(request)
-    payload["projection"] = _projection()
+    payload = _observability_base(request, status="unmeasured")
+    payload["projection"] = _projection(detail="Per-route metrics are not yet connected")
     for item in items:
         item["observed_at"] = payload["observed_at"]
     payload["page"] = {"total": len(items), "offset": offset, "limit": limit}
@@ -700,12 +710,12 @@ def kahlo_endpoint_health(request: Request, offset: int = 0, limit: int = 25) ->
     return JSONResponse(payload)
 
 
-@app.get("/db_health", name="kahlo_db_health")
-def kahlo_db_health(request: Request) -> JSONResponse:
+@app.get("/db_health", name="marvain_db_health")
+def marvain_db_health(request: Request) -> JSONResponse:
     db_configured = bool(_cfg.db_resource_arn and _cfg.db_secret_arn and _cfg.db_name)
-    status = "ok" if db_configured else "degraded"
+    status = "configured" if db_configured else "degraded"
     payload = _observability_base(request, status=status)
-    payload["projection"] = _projection("ready", detail="static configuration summary")
+    payload["projection"] = _projection(status, detail="Configuration state; connectivity is not inferred")
     payload["database"] = {
         "status": status,
         "latest": None,
@@ -733,13 +743,15 @@ def kahlo_db_health(request: Request) -> JSONResponse:
     return JSONResponse(payload)
 
 
-@app.get("/auth_health", name="kahlo_auth_health")
-def kahlo_auth_health(request: Request) -> JSONResponse:
+@app.get("/auth_health", name="marvain_auth_health")
+def marvain_auth_health(request: Request) -> JSONResponse:
     status = (
-        "ok" if (_cfg.cognito_user_pool_id and _cfg.cognito_user_pool_client_id and _cfg.cognito_domain) else "degraded"
+        "configured"
+        if (_cfg.cognito_user_pool_id and _cfg.cognito_user_pool_client_id and _cfg.cognito_domain)
+        else "degraded"
     )
     payload = _observability_base(request, status=status)
-    payload["projection"] = _projection()
+    payload["projection"] = _projection(status, detail="Configuration state; Cognito reachability is not inferred")
     payload["auth"] = {
         "status": status,
         "mode": "daylily-auth-cognito",
@@ -764,8 +776,8 @@ def kahlo_auth_health(request: Request) -> JSONResponse:
     return JSONResponse(payload)
 
 
-@app.get("/my_health", name="kahlo_my_health")
-def kahlo_my_health(request: Request) -> JSONResponse:
+@app.get("/my_health", name="marvain_my_health")
+def marvain_my_health(request: Request) -> JSONResponse:
     principal = _observability_principal(request)
     payload = _observability_base(request)
     payload["principal"] = principal

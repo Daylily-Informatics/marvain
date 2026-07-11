@@ -132,7 +132,7 @@ The compact evidence fields below are initialized from the assessment. Agents re
 | OPS-01 | GUI page inventory | 80 | 100 | 80 | OPEN | A10 | 6 | FND-01 | 23 templates | Route tests | none | pending | Inventory exceeds workflow depth | |
 | OPS-02 | GUI workflow operability | 45 | 100 | 45 | OPEN | A10 | 6 | FND-04 | Forms and partial controls | Fake-backed Playwright | none | pending | Disabled controls and duplicate APIs | |
 | OPS-03 | GUI accessibility/responsiveness | 28 | 100 | 28 | OPEN | A10 | 6 | OPS-02 | Responsive CSS partial | none accepted | none | pending | Navigation/accessibility gates absent | |
-| OPS-04 | Marvain-native discovery and health | 52 | 100 | 52 | OPEN | A10 | 6 | FND-04 | Kahlo-shaped endpoints | Local tests | none | pending | External contract and synthetic values | |
+| OPS-04 | Marvain-native discovery and health | 52 | 100 | 52 | IN_PROGRESS | A10 | 6 | FND-04 | Marvain-native schema and debranded route functions | 135 GUI tests; honest unmeasured counters | none | pending | Real dependency/request metrics still required | |
 | OPS-05 | Operational observability | 36 | 100 | 36 | OPEN | A10 | 6 | DAT-06,LIV-09 | Metrics/page/resources | Partial tests | none | pending | Invalid query and sparse worker evidence | |
 | OPS-06 | Queue failure handling | 34 | 100 | 34 | OPEN | A2 | 5 | DAT-04 | TapDB DLQ only | Template tests | none | pending | Four queues lack redrive/replay | |
 | OPS-07 | Static and unit regression suite | 78 | 100 | 78 | OPEN | A10 | 6 | FND-03 | Broad suite | 666 pass; one fail | none | pending | Heavy mocking and missing SAM | |
@@ -157,7 +157,7 @@ The compact evidence fields below are initialized from the assessment. Agents re
 | XG-006 | Recognition lifecycle and quality proof passes | OPEN | A8 | 4 | IDN-02 through IDN-09 | pending | Worker bypasses lifecycle | |
 | XG-007 | Two-device/two-location action proof passes | OPEN | A9 | 5 | TOP-01 through ACT-03 | pending | Existing proof is REST-only | |
 | XG-008 | Four live provider tenants pass ingress/outbound proof | OPEN | A9 | 5 | INT-01 through INT-03 | pending | Live credentials not yet configured | |
-| XG-009 | Marvain-native observability and accessibility pass | OPEN | A10 | 6 | OPS-01 through OPS-10 | pending | Synthetic health and weak accessibility | |
+| XG-009 | Marvain-native observability and accessibility pass | IN_PROGRESS | A10 | 6 | OPS-01 through OPS-10 | Debranded native health payloads; GUI accessibility work parallelized | Synthetic health and weak accessibility | |
 | XG-010 | Agent export/restore behavioral equivalence passes | OPEN | A6,A3 | 7 | AGT-08,AGT-09,DAT-06 | pending | Restore absent | |
 | XG-011 | Fresh clean-room acceptance receipt passes | OPEN | A2 | 8 | XG-002 through XG-010 | pending | No deployed receipt | |
 | XG-012 | All 85 capabilities score 100 and all rows are terminal | OPEN | A1 | 8 | all rows | pending | Program incomplete | |

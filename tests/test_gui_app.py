@@ -1963,13 +1963,14 @@ class TestTapdbNativeGraphIntegration(unittest.TestCase):
             captured, {"config_path": "/tmp/tapdb-config.yaml", "env_name": "test", "service_name": "marvain"}
         )
 
-    def test_obs_services_advertises_kahlo_and_graph_endpoints(self) -> None:
+    def test_obs_services_advertises_marvain_and_graph_endpoints(self) -> None:
         r = self.client.get("/obs_services")
 
         self.assertEqual(r.status_code, 200)
         payload = r.json()
-        self.assertEqual(payload["contract_version"], "v3")
+        self.assertEqual(payload["schema"], "marvain.observability.v1")
         self.assertEqual(payload["service"], "marvain")
+        self.assertEqual(payload["kind"], "service_manifest")
         endpoint_paths = {item["path"] for item in payload["endpoints"]}
         for path in {
             "/obs_services",
@@ -1990,22 +1991,24 @@ class TestTapdbNativeGraphIntegration(unittest.TestCase):
         self.assertNotIn("pool-123", r.text)
         self.assertNotIn("arn:aws:secretsmanager", r.text)
 
-    def test_kahlo_health_endpoints_return_safe_payloads(self) -> None:
+    def test_marvain_health_endpoints_return_safe_honest_payloads(self) -> None:
         for path in ("/api_health", "/endpoint_health?limit=200", "/db_health", "/auth_health"):
             with self.subTest(path=path):
                 r = self.client.get(path)
 
                 self.assertEqual(r.status_code, 200)
                 payload = r.json()
-                self.assertEqual(payload["contract_version"], "v3")
+                self.assertEqual(payload["schema"], "marvain.observability.v1")
                 self.assertEqual(payload["service"], "marvain")
-                self.assertIn(payload["status"], {"ok", "degraded"})
+                self.assertIn(payload["status"], {"configured", "degraded", "unmeasured"})
                 self.assertNotIn("client-123", r.text)
                 self.assertNotIn("pool-123", r.text)
                 self.assertNotIn("arn:aws:secretsmanager", r.text)
                 self.assertNotIn("user@example.com", r.text)
 
         endpoint_payload = self.client.get("/endpoint_health?limit=200").json()
+        self.assertTrue(all(item["status"] == "unmeasured" for item in endpoint_payload["items"]))
+        self.assertTrue(all(item["request_count"] is None for item in endpoint_payload["items"]))
         route_templates = {item["route_template"] for item in endpoint_payload["items"]}
         self.assertIn("/api/dag/data", route_templates)
         self.assertIn("/api/dag/object/{euid}", route_templates)
@@ -2022,7 +2025,7 @@ class TestTapdbNativeGraphIntegration(unittest.TestCase):
 
         self.assertEqual(r.status_code, 200)
         payload = r.json()
-        self.assertEqual(payload["contract_version"], "v3")
+        self.assertEqual(payload["schema"], "marvain.observability.v1")
         self.assertEqual(payload["service"], "marvain")
         self.assertEqual(
             payload["principal"],

@@ -97,7 +97,7 @@ Capabilities at 100/SUCCESS: **0/85**.
 | `OPS-01` | GUI page inventory | 80% | 84% | `OPEN` | `A10` | 6 |
 | `OPS-02` | GUI workflow operability | 45% | 49% | `OPEN` | `A10` | 6 |
 | `OPS-03` | GUI accessibility/responsiveness | 28% | 49% | `OPEN` | `A10` | 6 |
-| `OPS-04` | Marvain-native discovery and health | 52% | 74% | `OPEN` | `A10` | 6 |
+| `OPS-04` | Marvain-native discovery and health | 52% | 74% | `IN_PROGRESS` | `A10` | 6 |
 | `OPS-05` | Operational observability | 36% | 49% | `OPEN` | `A10` | 6 |
 | `OPS-06` | Queue failure handling | 34% | 49% | `OPEN` | `A2` | 5 |
 | `OPS-07` | Static and unit regression suite | 78% | 84% | `OPEN` | `A10` | 6 |
