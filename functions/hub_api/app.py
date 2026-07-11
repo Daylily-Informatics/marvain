@@ -16,11 +16,8 @@ import logging
 import os
 import secrets
 import socket
-import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime as dt_datetime
-from datetime import timezone
 from pathlib import Path
 from typing import Any
 
@@ -65,7 +62,6 @@ from agent_hub.memory_taxonomy import (
     normalize_memory_kind,
     normalize_memory_provenance_class,
 )
-from agent_hub.observability import OBSERVABILITY_SCHEMA, RequestMeasurement, runtime_measurements
 from agent_hub.personas import DEFAULT_AGENT_PERSONA_INSTRUCTIONS, DEFAULT_AGENT_PERSONA_NAME
 from agent_hub.secrets import get_secret_json
 from agent_hub.session_tokens import mint_ws_session_token
@@ -82,6 +78,9 @@ from api_app import (
     _session_secret,
     api_app,
     get_config,
+)
+from api_app import (
+    get_user as canonical_get_user,
 )
 from daylily_auth_cognito.browser.session import (
     CONFIG_STATE_KEY,
@@ -202,6 +201,7 @@ def validate_configuration_or_fail():
 
 # Use the API app as the base - all API routes are already defined
 app = api_app
+CANONICAL_USER_DEPENDENCY = canonical_get_user
 
 # Get config from api_app
 _cfg = get_config()
@@ -546,340 +546,6 @@ async def _api_tapdb_dag_proxy(request: Request) -> Response:
 
 app.add_api_route("/api/dag", _api_tapdb_dag_proxy, methods=["GET", "POST"], name="api_tapdb_dag_root")
 app.add_api_route("/api/dag/{path:path}", _api_tapdb_dag_proxy, methods=["GET", "POST"], name="api_tapdb_dag")
-
-
-_MARVAIN_OBSERVABILITY_SCHEMA = OBSERVABILITY_SCHEMA
-
-
-def _observed_at() -> str:
-    return dt_datetime.now(timezone.utc).isoformat()
-
-
-def _projection(status: str = "unmeasured", *, detail: str | None = None) -> dict[str, Any]:
-    observed_at = _observed_at()
-    return {
-        "state": status,
-        "stale": status == "unmeasured",
-        "observed_at": observed_at,
-        "last_synced_at": None,
-        "detail": detail,
-    }
-
-
-def _observability_principal(request: Request) -> dict[str, Any]:
-    user = _gui_get_user(request)
-    if user:
-        return {
-            "kind": "browser_session",
-            "authenticated": True,
-            "subject_present": bool(str(user.cognito_sub or "").strip()),
-            "user_id_present": bool(str(user.user_id or "").strip()),
-            "email_present": bool(str(user.email or "").strip()),
-        }
-
-    raise HTTPException(status_code=401, detail="Not authenticated")
-
-
-def _observability_base(request: Request, *, status: str = "unmeasured") -> dict[str, Any]:
-    build_version = str(os.getenv("MARVAIN_BUILD_VERSION") or "").strip() or None
-    build_sha = str(os.getenv("GIT_SHA") or "").strip() or None
-    return {
-        "schema": _MARVAIN_OBSERVABILITY_SCHEMA,
-        "service": "marvain",
-        "environment": str(_cfg.stage or ""),
-        "instance_id": str(os.getenv("MARVAIN_INSTANCE_ID") or "").strip() or None,
-        "observed_at": _observed_at(),
-        "status": status,
-        "request_id": str(getattr(request.state, "request_id", "") or ""),
-        "correlation_id": str(getattr(request.state, "correlation_id", "") or ""),
-        "build": {"version": build_version, "sha": build_sha},
-    }
-
-
-def _observability_endpoints() -> list[dict[str, str]]:
-    return [
-        {"path": "/obs_services", "auth": "none", "kind": "discovery"},
-        {"path": "/api_health", "auth": "none", "kind": "api_rollup"},
-        {"path": "/endpoint_health", "auth": "none", "kind": "endpoint_rollup"},
-        {"path": "/db_health", "auth": "none", "kind": "database"},
-        {"path": "/auth_health", "auth": "none", "kind": "auth"},
-        {"path": "/my_health", "auth": "authenticated_self", "kind": "self"},
-        {"path": "/api/dag/data", "auth": "browser_session", "kind": "graph_data"},
-        {"path": "/api/dag/object/{euid}", "auth": "browser_session", "kind": "graph_object"},
-        {"path": "/tapdb/graph", "auth": "browser_session", "kind": "graph_ui"},
-    ]
-
-
-def _endpoint_rollup_item(*, route_template: str, method: str, family: str, kind: str, auth: str) -> dict[str, Any]:
-    return {
-        "method": method,
-        "route_template": route_template,
-        "status": "unmeasured",
-        "kind": kind,
-        "auth": auth,
-        "family": family,
-        "request_count": None,
-        "status_class_counts": None,
-        "p50_ms": None,
-        "p95_ms": None,
-        "p99_ms": None,
-        "fingerprint_count": 0,
-        "observed_at": None,
-    }
-
-
-def _route_items() -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    for route in app.routes:
-        path = str(getattr(route, "path", "") or "")
-        if not path or path.startswith("/static"):
-            continue
-        methods = sorted(str(m) for m in getattr(route, "methods", []) if str(m) not in {"HEAD", "OPTIONS"})
-        if not methods:
-            continue
-        family = "v1_api" if path.startswith("/v1") else "gui_api" if path.startswith("/api") else "gui"
-        for method in methods:
-            items.append(
-                _endpoint_rollup_item(route_template=path, method=method, family=family, kind="route", auth="mixed")
-            )
-
-    observed_templates = {str(item["route_template"]) for item in items}
-    for endpoint in _observability_endpoints():
-        if endpoint["path"] in observed_templates:
-            continue
-        family = "tapdb_graph" if endpoint["kind"].startswith("graph_") else "observability"
-        items.append(
-            _endpoint_rollup_item(
-                route_template=endpoint["path"],
-                method="GET",
-                family=family,
-                kind=endpoint["kind"],
-                auth=endpoint["auth"],
-            )
-        )
-
-    measured = {
-        (str(item["method"]), str(item["route_template"])): item
-        for item in runtime_measurements.request_snapshot()["routes"]
-    }
-    for item in items:
-        measurement = measured.get((str(item["method"]), str(item["route_template"])))
-        if measurement is None:
-            continue
-        status_counts = dict(measurement["status_class_counts"])
-        item.update(
-            {
-                "status": "failed" if int(status_counts.get("5xx", 0)) else "healthy",
-                "request_count": measurement["request_count"],
-                "status_class_counts": status_counts,
-                "p50_ms": measurement["p50_ms"],
-                "p95_ms": measurement["p95_ms"],
-                "p99_ms": measurement["p99_ms"],
-                "fingerprint_count": len(measurement["error_code_counts"]),
-                "observed_at": measurement["last_observed_at"],
-            }
-        )
-    return sorted(items, key=lambda item: (item["route_template"], item["method"]))
-
-
-@app.get("/obs_services", name="marvain_service_manifest")
-def marvain_service_manifest(request: Request) -> JSONResponse:
-    payload = _observability_base(request, status="configured")
-    payload["kind"] = "service_manifest"
-    payload["projection"] = _projection("configured", detail="Marvain service manifest")
-    payload["endpoints"] = _observability_endpoints()
-    payload["extensions"] = [
-        "marvain.tapdb_graph",
-        "marvain.live_session",
-        "marvain.memory_recall",
-        "marvain.recognition",
-    ]
-    payload["dependencies"] = {
-        "configured_services": [
-            {"service": "cognito", "configured": bool(_cfg.cognito_user_pool_id and _cfg.cognito_user_pool_client_id)},
-            {"service": "livekit", "configured": bool(_cfg.livekit_url and _cfg.livekit_secret_arn)},
-            {
-                "service": "tapdb",
-                "configured": bool(os.getenv("MARVAIN_TAPDB_CONFIG_PATH") or os.getenv("TAPDB_CONFIG_PATH")),
-            },
-        ],
-    }
-    payload["graph_endpoints"] = [
-        {
-            "path": "/api/dag/data",
-            "auth": "browser_session",
-            "kind": "graph_data",
-            "start_param": "start_euid",
-            "depth_param": "depth",
-            "format": "dag:v1",
-        },
-        {
-            "path": "/api/dag/object/{euid}",
-            "auth": "browser_session",
-            "kind": "graph_object",
-            "euid_param": "euid",
-            "format": "tapdb-object:v1",
-        },
-        {
-            "path": "/tapdb/graph",
-            "auth": "browser_session",
-            "kind": "graph_ui",
-            "start_param": "start_euid",
-            "format": "html",
-        },
-    ]
-    return JSONResponse(payload)
-
-
-@app.get("/api_health", name="marvain_api_health")
-def marvain_api_health(request: Request) -> JSONResponse:
-    items = _route_items()
-    families: list[dict[str, Any]] = []
-    for family in ("gui", "gui_api", "observability", "tapdb_graph", "v1_api"):
-        count = sum(1 for item in items if item["family"] == family)
-        family_items = [item for item in items if item["family"] == family]
-        measured_items = [item for item in family_items if item["request_count"] is not None]
-        request_count = sum(int(item["request_count"]) for item in measured_items)
-        error_count = sum(int((item["status_class_counts"] or {}).get("5xx", 0)) for item in measured_items)
-        families.append(
-            {
-                "family": family,
-                "request_count": request_count if measured_items else None,
-                "error_count": error_count if measured_items else None,
-                "route_count": count,
-                "status": "failed" if error_count else "healthy" if measured_items else "unmeasured",
-            }
-        )
-    has_measurements = any(item["request_count"] is not None for item in items)
-    has_failures = any(item["status"] == "failed" for item in items)
-    status = "failed" if has_failures else "healthy" if has_measurements else "unmeasured"
-    payload = _observability_base(request, status=status)
-    payload["projection"] = _projection(status, detail="Measured in-process request metrics")
-    payload["families"] = families
-    return JSONResponse(payload)
-
-
-@app.get("/endpoint_health", name="marvain_endpoint_health")
-def marvain_endpoint_health(request: Request, offset: int = 0, limit: int = 25) -> JSONResponse:
-    items = _route_items()
-    offset = max(0, int(offset))
-    limit = min(200, max(1, int(limit)))
-    has_measurements = any(item["request_count"] is not None for item in items)
-    has_failures = any(item["status"] == "failed" for item in items)
-    status = "failed" if has_failures else "healthy" if has_measurements else "unmeasured"
-    payload = _observability_base(request, status=status)
-    payload["projection"] = _projection(status, detail="Measured in-process route metrics")
-    for item in items:
-        if item["observed_at"] is None:
-            item["observed_at"] = payload["observed_at"]
-    payload["page"] = {"total": len(items), "offset": offset, "limit": limit}
-    payload["items"] = items[offset : offset + limit]
-    return JSONResponse(payload)
-
-
-@app.get("/db_health", name="marvain_db_health")
-def marvain_db_health(request: Request) -> JSONResponse:
-    db_configured = bool(_cfg.db_resource_arn and _cfg.db_secret_arn and _cfg.db_name)
-    status = "configured" if db_configured else "degraded"
-    payload = _observability_base(request, status=status)
-    payload["projection"] = _projection(status, detail="Configuration state; connectivity is not inferred")
-    payload["database"] = {
-        "status": status,
-        "latest": None,
-        "recent": [],
-        "schema_drift": {
-            "status": "not_run",
-            "checked_at": None,
-            "environment": str(os.getenv("MARVAIN_TAPDB_ENV") or os.getenv("TAPDB_ENV") or _cfg.stage or ""),
-            "tool_version": "",
-            "summary": "Schema drift check has not been run.",
-            "report": {},
-        },
-        "observed_at": payload["observed_at"],
-        "last_synced_at": None,
-        "config": {
-            "rds_data_api_configured": bool(_cfg.db_resource_arn),
-            "database_name_configured": bool(_cfg.db_name),
-            "secret_configured": bool(_cfg.db_secret_arn),
-            "tapdb_config_path_configured": bool(
-                os.getenv("MARVAIN_TAPDB_CONFIG_PATH") or os.getenv("TAPDB_CONFIG_PATH")
-            ),
-            "tapdb_env_configured": bool(os.getenv("MARVAIN_TAPDB_ENV") or os.getenv("TAPDB_ENV") or _cfg.stage),
-        },
-    }
-    return JSONResponse(payload)
-
-
-@app.get("/auth_health", name="marvain_auth_health")
-def marvain_auth_health(request: Request) -> JSONResponse:
-    status = (
-        "configured"
-        if (_cfg.cognito_user_pool_id and _cfg.cognito_user_pool_client_id and _cfg.cognito_domain)
-        else "degraded"
-    )
-    payload = _observability_base(request, status=status)
-    payload["projection"] = _projection(status, detail="Configuration state; Cognito reachability is not inferred")
-    payload["auth"] = {
-        "status": status,
-        "mode": "daylily-auth-cognito",
-        "cognito_configured": bool(
-            _cfg.cognito_user_pool_id and _cfg.cognito_user_pool_client_id and _cfg.cognito_domain
-        ),
-        "cognito_domain": "configured" if _cfg.cognito_domain else "",
-        "user_pool_id": "configured" if _cfg.cognito_user_pool_id else "",
-        "app_client_id_present": bool(_cfg.cognito_user_pool_client_id),
-        "client_secret_present": bool(_cfg.cognito_user_pool_client_secret),
-        "recent": [],
-        "status_counts": {},
-        "sessions": {
-            "supported": True,
-            "active_session_count": None,
-            "recent_user_count": None,
-            "observed_at": payload["observed_at"],
-        },
-        "observed_at": payload["observed_at"],
-        "last_synced_at": None,
-    }
-    return JSONResponse(payload)
-
-
-@app.get("/my_health", name="marvain_my_health")
-def marvain_my_health(request: Request) -> JSONResponse:
-    principal = _observability_principal(request)
-    request_snapshot = runtime_measurements.request_snapshot()
-    status = "healthy" if request_snapshot["measured"] else "unmeasured"
-    payload = _observability_base(request, status=status)
-    payload["principal"] = principal
-    payload["requests"] = request_snapshot
-    return JSONResponse(payload)
-
-
-@app.middleware("http")
-async def _request_measurement_middleware(request: Request, call_next):
-    request_id = str(request.headers.get("x-request-id") or "").strip() or str(uuid.uuid4())
-    correlation_id = str(request.headers.get("x-correlation-id") or "").strip() or request_id
-    request.state.request_id = request_id
-    request.state.correlation_id = correlation_id
-    started = time.perf_counter()
-    response = await call_next(request)
-    route = request.scope.get("route")
-    route_template = str(getattr(route, "path", "") or request.url.path)
-    elapsed_ms = (time.perf_counter() - started) * 1000.0
-    runtime_measurements.record_request(
-        RequestMeasurement(
-            method=request.method,
-            route_template=route_template,
-            status_code=response.status_code,
-            elapsed_ms=elapsed_ms,
-            observed_at=dt_datetime.now(timezone.utc),
-            request_id=request_id,
-            correlation_id=correlation_id,
-            error_code=f"http_{response.status_code}" if response.status_code >= 500 else None,
-        )
-    )
-    response.headers["X-Request-Id"] = request_id
-    response.headers["X-Correlation-Id"] = correlation_id
-    return response
 
 
 @app.middleware("http")

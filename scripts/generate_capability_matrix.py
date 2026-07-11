@@ -134,7 +134,11 @@ def _dedupe(items: Iterable[SourceItem]) -> tuple[SourceItem, ...]:
 
 def collect_fastapi_routes(root: Path = ROOT) -> tuple[SourceItem, ...]:
     items: list[SourceItem] = []
-    for path in (root / "functions" / "hub_api").glob("*.py"):
+    paths = list((root / "functions" / "hub_api").glob("*.py"))
+    paths.append(root / "layers/shared/python/agent_hub/observability_routes.py")
+    for path in paths:
+        if not path.is_file():
+            continue
         tree = _read_ast(path)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):

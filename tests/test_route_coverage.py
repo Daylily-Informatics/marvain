@@ -231,7 +231,7 @@ def test_current_metrics_separate_reachability_from_same_commit_behavioral_proof
     coverage = generator.build_coverage(REPO_ROOT)
 
     assert coverage.api.total >= 64
-    assert coverage.gui.total >= 114
+    assert coverage.gui.total >= 108
     assert 0 <= coverage.api.covered < coverage.api.total
     assert 0 <= coverage.gui.covered < coverage.gui.total
     assert coverage.api_reachability.percent == 100

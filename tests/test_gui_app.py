@@ -1761,6 +1761,7 @@ class TestTapdbNativeGraphIntegration(unittest.TestCase):
         cls._orig_resolve_tapdb_runtime_config = cls.mod._resolve_tapdb_runtime_config
         cls._orig_create_tapdb_web_app = cls.mod.create_tapdb_web_app
         cls._orig_create_tapdb_dag_router = cls.mod.create_tapdb_dag_router
+        cls._orig_get_user = cls.mod.CANONICAL_USER_DEPENDENCY
 
     def setUp(self) -> None:
         self.client = self.__class__._TestClient(self.mod.app, raise_server_exceptions=False)
@@ -1770,6 +1771,7 @@ class TestTapdbNativeGraphIntegration(unittest.TestCase):
         self.mod.create_tapdb_dag_router = self.__class__._orig_create_tapdb_dag_router
         self.mod._tapdb_web_asgi_app = None
         self.mod._tapdb_dag_asgi_app = None
+        self.mod.app.dependency_overrides.clear()
 
     def tearDown(self) -> None:
         self.mod._gui_get_user = self.__class__._orig_gui_get_user
@@ -1778,6 +1780,7 @@ class TestTapdbNativeGraphIntegration(unittest.TestCase):
         self.mod.create_tapdb_dag_router = self.__class__._orig_create_tapdb_dag_router
         self.mod._tapdb_web_asgi_app = None
         self.mod._tapdb_dag_asgi_app = None
+        self.mod.app.dependency_overrides.clear()
 
     def _auth_user(self):
         return self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="user@example.com")
@@ -2000,7 +2003,7 @@ class TestTapdbNativeGraphIntegration(unittest.TestCase):
                 payload = r.json()
                 self.assertEqual(payload["schema"], "marvain.observability.v1")
                 self.assertEqual(payload["service"], "marvain")
-                self.assertIn(payload["status"], {"configured", "degraded", "healthy", "failed"})
+                self.assertIn(payload["status"], {"healthy", "failed", "unavailable", "unmeasured"})
                 self.assertNotIn("client-123", r.text)
                 self.assertNotIn("pool-123", r.text)
                 self.assertNotIn("arn:aws:secretsmanager", r.text)
@@ -2022,11 +2025,14 @@ class TestTapdbNativeGraphIntegration(unittest.TestCase):
         self.assertNotIn("/lineage", route_templates)
 
     def test_my_health_requires_auth_and_omits_identity_values(self) -> None:
-        self.mod._gui_get_user = mock.Mock(return_value=None)
+        def reject_user():
+            raise self.mod.HTTPException(status_code=401, detail="Not authenticated")
+
+        self.mod.app.dependency_overrides[self.__class__._orig_get_user] = reject_user
         unauthenticated = self.client.get("/my_health")
         self.assertEqual(unauthenticated.status_code, 401)
 
-        self.mod._gui_get_user = mock.Mock(return_value=self._auth_user())
+        self.mod.app.dependency_overrides[self.__class__._orig_get_user] = self._auth_user
         r = self.client.get("/my_health")
 
         self.assertEqual(r.status_code, 200)

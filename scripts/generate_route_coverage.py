@@ -188,7 +188,16 @@ def collect_decorated_routes(root: Path, rel_path: str, owner_name: str) -> tupl
 
 
 def collect_api_routes(root: Path = ROOT) -> tuple[RouteTarget, ...]:
-    return collect_decorated_routes(root, "functions/hub_api/api_app.py", "api_app")
+    return _dedupe_routes(
+        (
+            *collect_decorated_routes(root, "functions/hub_api/api_app.py", "api_app"),
+            *collect_decorated_routes(
+                root,
+                "layers/shared/python/agent_hub/observability_routes.py",
+                "app",
+            ),
+        )
+    )
 
 
 def collect_gui_routes(root: Path = ROOT) -> tuple[RouteTarget, ...]:

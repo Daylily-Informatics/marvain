@@ -393,7 +393,7 @@
       }
     },
     {
-      "surface": "gui",
+      "surface": "api",
       "method": "GET",
       "path": "/obs_services",
       "requirements": {
@@ -416,7 +416,7 @@
       }
     },
     {
-      "surface": "gui",
+      "surface": "api",
       "method": "GET",
       "path": "/api_health",
       "requirements": {
@@ -439,7 +439,7 @@
       }
     },
     {
-      "surface": "gui",
+      "surface": "api",
       "method": "GET",
       "path": "/endpoint_health",
       "requirements": {
@@ -462,14 +462,14 @@
       }
     },
     {
-      "surface": "gui",
+      "surface": "api",
       "method": "GET",
       "path": "/db_health",
       "requirements": {
         "success": "required",
         "denial": {
           "status": "not_applicable",
-          "reason": "The database configuration projection is intentionally public."
+          "reason": "The measured database dependency projection is intentionally public."
         },
         "validation": {
           "status": "not_applicable",
@@ -485,14 +485,14 @@
       }
     },
     {
-      "surface": "gui",
+      "surface": "api",
       "method": "GET",
       "path": "/auth_health",
       "requirements": {
         "success": "required",
         "denial": {
           "status": "not_applicable",
-          "reason": "The authentication configuration projection is intentionally public."
+          "reason": "The observed authentication dependency projection is intentionally public."
         },
         "validation": {
           "status": "not_applicable",
@@ -508,15 +508,12 @@
       }
     },
     {
-      "surface": "gui",
+      "surface": "api",
       "method": "GET",
       "path": "/my_health",
       "requirements": {
         "success": "required",
-        "denial": {
-          "status": "not_applicable",
-          "reason": "The principal projection supports an explicit anonymous state."
-        },
+        "denial": "required",
         "validation": {
           "status": "not_applicable",
           "reason": "The principal health read has no user input to validate."
@@ -527,7 +524,8 @@
         }
       },
       "tests": {
-        "success": "tests/test_route_behavior_gui.py::test_gui_my_health_success"
+        "success": "tests/test_route_behavior_gui.py::test_gui_my_health_success",
+        "denial": "tests/test_route_behavior_gui.py::test_gui_my_health_denial"
       }
     },
     {

@@ -26,11 +26,14 @@ def test_hub_persists_livekit_sessions_and_exposes_default_persona_endpoint() ->
     assert "Default persona not configured" in api
 
 
-def test_memory_create_records_evidence_candidate_and_committed_projection() -> None:
+def test_memory_create_requires_evidence_and_records_candidate_and_committed_projection() -> None:
     api = (REPO_ROOT / "functions" / "hub_api" / "api_app.py").read_text(encoding="utf-8")
 
-    assert "space_id is required for memory evidence" in api
-    assert "'memory.evidence'" in api
+    assert "space_id: str = Field(..., min_length=1)" in api
+    assert (
+        'source_event_id: str = Field(..., min_length=1, description="Existing durable source-evidence event")' in api
+    )
+    assert "Source evidence event was not found for this agent and space" in api
     assert "INSERT INTO memory_candidates" in api
     assert "memory_candidate_id" in api
     assert "source_event_id" in api

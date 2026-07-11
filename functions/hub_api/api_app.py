@@ -19,10 +19,12 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import boto3
 from agent_hub.artifact_service import (
@@ -92,6 +94,8 @@ from agent_hub.memberships import (
 from agent_hub.memory_classifier import MemoryClassification
 from agent_hub.memory_taxonomy import normalize_memory_kind
 from agent_hub.metrics import emit_count, emit_ms
+from agent_hub.observability import ComponentMeasurement, runtime_measurements
+from agent_hub.observability_routes import install_observability_routes
 from agent_hub.openai_http import call_embeddings
 from agent_hub.personas import DEFAULT_AGENT_PERSONA_INSTRUCTIONS, DEFAULT_AGENT_PERSONA_NAME
 from agent_hub.policy import (
@@ -172,6 +176,38 @@ api_app.add_middleware(
     https_only=_is_https or not _is_local,
 )
 
+
+def _register_browser_session_config() -> None:
+    """Register the explicit deployed browser-session contract at startup."""
+
+    if not (_cfg.cognito_domain and _cfg.cognito_user_pool_client_id and _cfg.cognito_redirect_uri):
+        return
+    redirect = urlsplit(_cfg.cognito_redirect_uri)
+    callback_suffix = "/auth/callback"
+    if redirect.scheme not in {"http", "https"} or not redirect.netloc or not redirect.path.endswith(callback_suffix):
+        raise RuntimeError("COGNITO_REDIRECT_URI must be an absolute /auth/callback URL")
+    root_path = redirect.path[: -len(callback_suffix)].rstrip("/")
+    public_base_url = urlunsplit((redirect.scheme, redirect.netloc, root_path, "", "")).rstrip("/")
+    api_app.state.__dict__[CONFIG_STATE_KEY] = CognitoWebSessionConfig(
+        domain=_cfg.cognito_domain,
+        client_id=_cfg.cognito_user_pool_client_id,
+        redirect_uri=_cfg.cognito_redirect_uri,
+        logout_uri=f"{public_base_url}/logged-out",
+        session_secret_key=_session_secret,
+        session_cookie_name="marvain_session",
+        session_max_age=3600 * 8,
+        public_base_url=public_base_url,
+        auth_mode="cognito",
+        scope="openid email profile aws.cognito.signin.user.admin",
+        client_secret=_cfg.cognito_user_pool_client_secret,
+        same_site="lax",
+        allow_insecure_http=redirect.scheme == "http" and _is_local,
+        server_instance_id=f"marvain-{_cfg.stage}",
+    )
+
+
+_register_browser_session_config()
+
 # Lazy-load clients
 _db: RdsData | None = None
 _sqs: Any = None
@@ -234,9 +270,12 @@ def get_bearer_user(request: Request) -> AuthenticatedUser:
         raise HTTPException(status_code=401, detail="Missing bearer token")
     token = auth.split(" ", 1)[1].strip()
     try:
-        return authenticate_user_access_token(_get_db(), token)
+        user = authenticate_user_access_token(_get_db(), token)
     except PermissionError:
+        _record_auth_measurement(request, state="failed", detail_code="invalid_bearer_token")
         raise HTTPException(status_code=401, detail="Invalid access token")
+    _record_auth_measurement(request, state="healthy", detail_code="cognito_bearer_verified")
+    return user
 
 
 def get_browser_user(request: Request) -> AuthenticatedUser:
@@ -244,16 +283,20 @@ def get_browser_user(request: Request) -> AuthenticatedUser:
     if not isinstance(registered, CognitoWebSessionConfig):
         raise HTTPException(status_code=500, detail="Browser session authentication is not configured")
     try:
-        return resolve_browser_session_user(
+        user = resolve_browser_session_user(
             request,
             registered_session_config=registered,
             expected_server_instance_id=f"marvain-{_cfg.stage}",
             ensure_user=lambda **identity: ensure_user_row(_get_db(), **identity),
         )
     except BrowserSessionAuthenticationError as exc:
+        _record_auth_measurement(request, state="failed", detail_code=exc.code)
         raise HTTPException(status_code=401, detail="Invalid browser session") from exc
     except BrowserSessionConfigurationError as exc:
+        _record_auth_measurement(request, state="failed", detail_code=exc.code)
         raise HTTPException(status_code=500, detail="Browser session authentication is not configured") from exc
+    _record_auth_measurement(request, state="healthy", detail_code="browser_session_verified")
+    return user
 
 
 def get_user(request: Request) -> AuthenticatedUser:
@@ -263,6 +306,67 @@ def get_user(request: Request) -> AuthenticatedUser:
     if auth is not None:
         return get_bearer_user(request)
     return get_browser_user(request)
+
+
+def _measurement_evidence_id(request: Request, prefix: str) -> str:
+    request_id = str(getattr(request.state, "request_id", "") or "").strip()
+    return f"{prefix}:{request_id or uuid.uuid4()}"
+
+
+def _record_auth_measurement(request: Request, *, state: str, detail_code: str) -> None:
+    runtime_measurements.record_component(
+        ComponentMeasurement(
+            component="authentication",
+            state=state,
+            observed_at=datetime.now(timezone.utc),
+            latency_ms=None,
+            evidence_id=_measurement_evidence_id(request, "auth"),
+            detail_code=detail_code,
+        )
+    )
+
+
+def _probe_database(request: Request) -> ComponentMeasurement:
+    started = time.perf_counter()
+    try:
+        rows = _get_db().query("SELECT 1 AS health_check")
+        if len(rows) != 1 or int(rows[0].get("health_check") or 0) != 1:
+            raise RuntimeError("database health query returned malformed evidence")
+    except Exception as exc:
+        logger.warning("Database health probe failed: %s", type(exc).__name__)
+        state = "failed"
+        detail_code = "database_probe_failed"
+    else:
+        state = "healthy"
+        detail_code = "database_query_succeeded"
+    return ComponentMeasurement(
+        component="database",
+        state=state,
+        observed_at=datetime.now(timezone.utc),
+        latency_ms=(time.perf_counter() - started) * 1000.0,
+        evidence_id=_measurement_evidence_id(request, "database"),
+        detail_code=detail_code,
+    )
+
+
+def _dependency_configuration() -> dict[str, bool]:
+    return {
+        "artifact_storage": bool(_cfg.artifact_bucket),
+        "authentication": bool(_cfg.cognito_user_pool_id and _cfg.cognito_user_pool_client_id),
+        "database": bool(_cfg.db_resource_arn and _cfg.db_secret_arn and _cfg.db_name),
+        "livekit": bool(_cfg.livekit_url and _cfg.livekit_secret_arn),
+        "tapdb": bool(os.getenv("MARVAIN_TAPDB_CONFIG_PATH") or os.getenv("TAPDB_CONFIG_PATH")),
+    }
+
+
+install_observability_routes(
+    api_app,
+    environment=str(_cfg.stage),
+    registry=runtime_measurements,
+    resolve_principal=get_user,
+    probe_database=_probe_database,
+    dependency_configuration=_dependency_configuration,
+)
 
 
 # Expose shared state for gui routes (app.py) to use

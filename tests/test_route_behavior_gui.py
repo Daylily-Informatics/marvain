@@ -18,7 +18,9 @@ USER_ID = "33333333-3333-3333-3333-333333333333"
 
 
 class EmptyDb:
-    def query(self, _sql: str, _params: dict[str, object] | None = None) -> list[dict[str, object]]:
+    def query(self, sql: str, _params: dict[str, object] | None = None) -> list[dict[str, object]]:
+        if "SELECT 1 AS health_check" in sql:
+            return [{"health_check": 1}]
         return []
 
     def execute(self, _sql: str, _params: dict[str, object] | None = None) -> dict[str, object]:
@@ -51,6 +53,9 @@ def _load_gui_module() -> ModuleType:
     os.environ.setdefault("ENVIRONMENT", "test")
     os.environ.setdefault("HTTPS_ENABLED", "false")
     os.environ.setdefault("SESSION_SECRET_KEY", "route-behavior-session-secret")
+    os.environ.setdefault("COGNITO_DOMAIN", "auth.route-behavior.test")
+    os.environ.setdefault("COGNITO_APP_CLIENT_ID", "route-behavior-client")
+    os.environ.setdefault("COGNITO_REDIRECT_URI", "http://testserver/auth/callback")
     for module_name in ("api_app", "hub_api_app_for_route_behavior_gui"):
         sys.modules.pop(module_name, None)
     spec = importlib.util.spec_from_file_location(
@@ -72,6 +77,7 @@ def gui_harness(monkeypatch: pytest.MonkeyPatch) -> GuiHarness:
     user = mod.AuthenticatedUser(user_id=USER_ID, cognito_sub="route-sub", email="route@example.test")
     monkeypatch.setattr(mod, "_gui_get_user", lambda _request: user)
     monkeypatch.setattr(mod, "_get_db", lambda: EmptyDb())
+    monkeypatch.setattr(sys.modules["api_app"], "_get_db", lambda: EmptyDb())
     monkeypatch.setattr(mod, "list_agents_for_user", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(mod, "list_spaces_for_user", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
@@ -85,6 +91,7 @@ def gui_harness(monkeypatch: pytest.MonkeyPatch) -> GuiHarness:
             cognito_redirect_uri="http://testserver/auth/callback",
         ),
     )
+    mod.app.dependency_overrides[mod.CANONICAL_USER_DEPENDENCY] = lambda: user
     return GuiHarness(mod=mod, client=TestClient(mod.app, raise_server_exceptions=False))
 
 
@@ -99,7 +106,7 @@ def test_gui_service_manifest_success(request: pytest.FixtureRequest, gui_harnes
 
     assert response.status_code == 200
     assert response.json()["schema"] == "marvain.observability.v1"
-    record_http_evidence(request, surface="gui", method="GET", path="/obs_services", kind="success", response=response)
+    record_http_evidence(request, surface="api", method="GET", path="/obs_services", kind="success", response=response)
 
 
 def test_gui_api_health_success(request: pytest.FixtureRequest, gui_harness: GuiHarness) -> None:
@@ -108,7 +115,7 @@ def test_gui_api_health_success(request: pytest.FixtureRequest, gui_harness: Gui
     assert response.status_code == 200
     assert response.json()["schema"] == "marvain.observability.v1"
     assert isinstance(response.json()["families"], list)
-    record_http_evidence(request, surface="gui", method="GET", path="/api_health", kind="success", response=response)
+    record_http_evidence(request, surface="api", method="GET", path="/api_health", kind="success", response=response)
 
 
 def test_gui_endpoint_health_success(request: pytest.FixtureRequest, gui_harness: GuiHarness) -> None:
@@ -117,7 +124,7 @@ def test_gui_endpoint_health_success(request: pytest.FixtureRequest, gui_harness
     assert response.status_code == 200
     assert isinstance(response.json()["items"], list)
     record_http_evidence(
-        request, surface="gui", method="GET", path="/endpoint_health", kind="success", response=response
+        request, surface="api", method="GET", path="/endpoint_health", kind="success", response=response
     )
 
 
@@ -125,16 +132,19 @@ def test_gui_db_health_success(request: pytest.FixtureRequest, gui_harness: GuiH
     response = gui_harness.client.get("/db_health")
 
     assert response.status_code == 200
-    assert response.json()["database"]["config"]["rds_data_api_configured"] is True
-    record_http_evidence(request, surface="gui", method="GET", path="/db_health", kind="success", response=response)
+    assert response.json()["database"]["measured"] is True
+    assert response.json()["database"]["state"] == "healthy"
+    record_http_evidence(request, surface="api", method="GET", path="/db_health", kind="success", response=response)
 
 
 def test_gui_auth_health_success(request: pytest.FixtureRequest, gui_harness: GuiHarness) -> None:
     response = gui_harness.client.get("/auth_health")
 
     assert response.status_code == 200
-    assert response.json()["auth"]["cognito_configured"] is True
-    record_http_evidence(request, surface="gui", method="GET", path="/auth_health", kind="success", response=response)
+    assert response.json()["auth"]["measured"] is True
+    assert response.json()["auth"]["state"] in {"healthy", "failed"}
+    assert response.json()["auth"]["components"][0]["detail_code"]
+    record_http_evidence(request, surface="api", method="GET", path="/auth_health", kind="success", response=response)
 
 
 def test_gui_my_health_success(request: pytest.FixtureRequest, gui_harness: GuiHarness) -> None:
@@ -142,7 +152,18 @@ def test_gui_my_health_success(request: pytest.FixtureRequest, gui_harness: GuiH
 
     assert response.status_code == 200
     assert response.json()["principal"]["authenticated"] is True
-    record_http_evidence(request, surface="gui", method="GET", path="/my_health", kind="success", response=response)
+    record_http_evidence(request, surface="api", method="GET", path="/my_health", kind="success", response=response)
+
+
+def test_gui_my_health_denial(request: pytest.FixtureRequest, gui_harness: GuiHarness) -> None:
+    def deny_user():
+        raise gui_harness.mod.HTTPException(status_code=401, detail="Not authenticated")
+
+    gui_harness.mod.app.dependency_overrides[gui_harness.mod.CANONICAL_USER_DEPENDENCY] = deny_user
+    response = gui_harness.client.get("/my_health")
+
+    assert response.status_code == 401
+    record_http_evidence(request, surface="api", method="GET", path="/my_health", kind="denial", response=response)
 
 
 def test_gui_login_success(request: pytest.FixtureRequest, gui_harness: GuiHarness) -> None:

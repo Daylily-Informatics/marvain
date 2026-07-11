@@ -93,6 +93,9 @@ def _load_api_module() -> ModuleType:
     os.environ.setdefault("DB_NAME", "route_behavior")
     os.environ.setdefault("STAGE", "test")
     os.environ.setdefault("SESSION_SECRET_KEY", "route-behavior-session-secret")
+    os.environ.setdefault("COGNITO_DOMAIN", "auth.route-behavior.test")
+    os.environ.setdefault("COGNITO_APP_CLIENT_ID", "route-behavior-client")
+    os.environ.setdefault("COGNITO_REDIRECT_URI", "http://testserver/auth/callback")
     os.environ.setdefault("OPENAI_EMBED_MODEL", "route-behavior-embedding-model")
     spec = importlib.util.spec_from_file_location(
         "hub_api_api_app_for_route_behavior",

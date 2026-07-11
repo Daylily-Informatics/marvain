@@ -193,7 +193,7 @@ OBJECTIVES: tuple[DesignObjective, ...] = (
                 "test",
                 "Greenfield schema test",
                 "tests/test_greenfield_schema.py",
-                "test_greenfield_semantic_lifecycle_schema_declares_required_projections",
+                "test_core_semantic_projections_and_current_columns_are_declared_inline",
             ),
         ),
     ),

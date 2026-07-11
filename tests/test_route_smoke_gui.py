@@ -43,6 +43,9 @@ def _load_hub_api_gui_module():
     os.environ.setdefault("ENVIRONMENT", "test")
     os.environ.setdefault("HTTPS_ENABLED", "false")
     os.environ.setdefault("SESSION_SECRET_KEY", "test-session-secret")
+    os.environ.setdefault("COGNITO_DOMAIN", "auth.route-smoke.test")
+    os.environ.setdefault("COGNITO_APP_CLIENT_ID", "route-smoke-client")
+    os.environ.setdefault("COGNITO_REDIRECT_URI", "http://testserver/auth/callback")
 
     # Prevent route duplication when multiple test modules import app.py (which imports api_app and adds GUI routes
     # to the same FastAPI app object).

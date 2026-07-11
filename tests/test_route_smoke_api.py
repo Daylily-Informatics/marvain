@@ -33,6 +33,12 @@ def _load_hub_api_app_module():
     os.environ.setdefault("DB_SECRET_ARN", "arn:aws:secretsmanager:us-west-2:123:secret:dummy")
     os.environ.setdefault("DB_NAME", "dummy")
     os.environ.setdefault("STAGE", "test")
+    os.environ.setdefault("ENVIRONMENT", "test")
+    os.environ.setdefault("HTTPS_ENABLED", "false")
+    os.environ.setdefault("SESSION_SECRET_KEY", "route-smoke-session-secret")
+    os.environ.setdefault("COGNITO_DOMAIN", "auth.route-smoke.test")
+    os.environ.setdefault("COGNITO_APP_CLIENT_ID", "route-smoke-client")
+    os.environ.setdefault("COGNITO_REDIRECT_URI", "http://testserver/auth/callback")
 
     api_app_py = repo_root / "functions" / "hub_api" / "api_app.py"
     spec = importlib.util.spec_from_file_location("hub_api_api_app_for_route_smoke", api_app_py)
