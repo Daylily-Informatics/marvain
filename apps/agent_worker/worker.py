@@ -144,12 +144,14 @@ HUB_API_BASE = os.getenv("HUB_API_BASE", "").rstrip("/")
 HUB_DEVICE_TOKEN = os.getenv("HUB_DEVICE_TOKEN", "")
 
 EVENT_CONTRACT_VERSION = 1
-SESSION_STATES = frozenset({"open", "paused", "closed", "failed"})
+SESSION_STATES = frozenset({"opening", "active", "reconnecting", "closed", "failed", "reconciled"})
 SESSION_STATE_TRANSITIONS = {
-    "open": frozenset({"paused", "closed", "failed"}),
-    "paused": frozenset({"open", "closed", "failed"}),
-    "closed": frozenset(),
-    "failed": frozenset(),
+    "opening": frozenset({"active", "closed", "failed"}),
+    "active": frozenset({"reconnecting", "closed", "failed"}),
+    "reconnecting": frozenset({"active", "closed", "failed"}),
+    "closed": frozenset({"reconciled"}),
+    "failed": frozenset({"reconciled"}),
+    "reconciled": frozenset(),
 }
 VISUAL_OBSERVATION_MAX_AGE_SECONDS = 15.0
 
@@ -178,12 +180,18 @@ class DispatchMetadata:
 @dataclass
 class SessionStateMachine:
     session_id: str
-    state: str = "open"
+    state: str = "opening"
+    last_event_id: str | None = None
 
     def __post_init__(self) -> None:
         self.session_id = _require_runtime_text(self.session_id, "session_id")
         if self.state not in SESSION_STATES:
             raise WorkerContractError(f"invalid initial session state: {self.state}")
+        if self.state != "opening":
+            self.last_event_id = _require_runtime_text(
+                self.last_event_id,
+                "last_event_id for rehydrated session state",
+            )
 
     def transition_payload(
         self,
@@ -210,11 +218,91 @@ class SessionStateMachine:
             "occurred_at": _isoformat_utc(occurred_at),
         }
 
-    def apply(self, to_state: str) -> None:
+    def accept_transition(self, *, to_state: str, owning_event_id: str) -> None:
         normalized_to_state = str(to_state or "").strip().lower()
         if normalized_to_state not in SESSION_STATE_TRANSITIONS[self.state]:
             raise WorkerContractError(f"invalid session transition: {self.state} -> {normalized_to_state}")
+        self.last_event_id = _require_runtime_text(owning_event_id, "owning session transition event_id")
         self.state = normalized_to_state
+
+
+class DurableSessionLifecycle:
+    """Serialize worker state changes behind durably accepted Hub events."""
+
+    def __init__(
+        self,
+        *,
+        state_machine: SessionStateMachine,
+        space_id: str,
+        room_name: str,
+        worker_version: str,
+    ) -> None:
+        self.state_machine = state_machine
+        self.space_id = _require_runtime_text(space_id, "space_id")
+        self.room_name = _require_runtime_text(room_name, "room_name")
+        self.worker_version = _require_runtime_text(worker_version, "worker_version")
+        self._lock = asyncio.Lock()
+
+    @property
+    def state(self) -> str:
+        return self.state_machine.state
+
+    async def transition(self, *, to_state: str, reason: str) -> str:
+        async with self._lock:
+            return await asyncio.to_thread(
+                hub_transition_session_state,
+                state_machine=self.state_machine,
+                space_id=self.space_id,
+                to_state=to_state,
+                reason=reason,
+                room_name=self.room_name,
+                worker_version=self.worker_version,
+            )
+
+    async def transition_if_current(
+        self,
+        *,
+        from_states: set[str] | frozenset[str],
+        to_state: str,
+        reason: str,
+    ) -> str | None:
+        normalized_from_states = frozenset(str(state or "").strip().lower() for state in from_states)
+        unknown_states = normalized_from_states - SESSION_STATES
+        if unknown_states:
+            raise WorkerContractError(f"invalid expected session states: {sorted(unknown_states)}")
+        async with self._lock:
+            if self.state_machine.state not in normalized_from_states:
+                return None
+            return await asyncio.to_thread(
+                hub_transition_session_state,
+                state_machine=self.state_machine,
+                space_id=self.space_id,
+                to_state=to_state,
+                reason=reason,
+                room_name=self.room_name,
+                worker_version=self.worker_version,
+            )
+
+    async def start_agent_session(self, *, session: Any, start_kwargs: dict[str, object]) -> str | None:
+        """Start LiveKit first, then durably accept the transition to active."""
+
+        await session.start(**start_kwargs)
+        return await self.transition_if_current(
+            from_states={"opening"},
+            to_state="active",
+            reason="livekit_agent_session_started",
+        )
+
+    async def reconcile(self, *, reason: str) -> str:
+        async with self._lock:
+            return await asyncio.to_thread(
+                hub_reconcile_session_state,
+                state_machine=self.state_machine,
+                space_id=self.space_id,
+                reason=reason,
+                room_name=self.room_name,
+                worker_version=self.worker_version,
+            )
 
 
 @dataclass(frozen=True)
@@ -564,16 +652,57 @@ def hub_transition_session_state(
         room_name=room_name,
         worker_version=worker_version,
     )
-    event_id = _require_runtime_text(
+    event_id = _require_durable_session_event_id(
         hub_ingest_event(
             space_id=space_id,
             event_type="session.state_transition",
             payload=payload,
             session_id=state_machine.session_id,
         ),
-        "session transition event_id",
+        operation="session.transition",
     )
-    state_machine.apply(to_state)
+    state_machine.accept_transition(to_state=to_state, owning_event_id=event_id)
+    return event_id
+
+
+def _require_durable_session_event_id(value: object, *, operation: str) -> str:
+    event_id = _require_runtime_text(value, f"{operation} event_id")
+    if event_id == "privacy_mode":
+        raise HubWriteError(operation, "owning service did not persist the session event")
+    return event_id
+
+
+def hub_reconcile_session_state(
+    *,
+    state_machine: SessionStateMachine,
+    space_id: str,
+    reason: str,
+    room_name: str,
+    worker_version: str,
+) -> str:
+    if state_machine.state not in {"closed", "failed"}:
+        raise WorkerContractError(f"session reconciliation requires closed or failed state, got {state_machine.state}")
+    terminal_event_id = _require_runtime_text(
+        state_machine.last_event_id,
+        "terminal session transition event_id",
+    )
+    payload = state_machine.transition_payload(
+        to_state="reconciled",
+        reason=reason,
+        room_name=room_name,
+        worker_version=worker_version,
+    )
+    payload["reconciles_event_id"] = terminal_event_id
+    event_id = _require_durable_session_event_id(
+        hub_ingest_event(
+            space_id=space_id,
+            event_type="session.state_transition",
+            payload=payload,
+            session_id=state_machine.session_id,
+        ),
+        operation="session.reconcile",
+    )
+    state_machine.accept_transition(to_state="reconciled", owning_event_id=event_id)
     return event_id
 
 
@@ -1186,33 +1315,46 @@ async def forge_agent(ctx: agents.JobContext):
     expected_participant_identity = metadata.participant_identity
     worker_version = _require_worker_version()
     session_state = SessionStateMachine(session_id=session_id)
-
-    # Connect only after the durable dispatch/session identity has been validated.
-    await ctx.connect()
-
-    logger.info(f"Agent dispatched to space: {space_id} (room: {ctx.room.name}, session: {room_session_id})")
-    persona = _resolve_persona(agent_id=agent_id, space_id=space_id, session_id=session_id)
-    logger.info(
-        "Resolved persona %s for session %s from %s", persona.name, session_id or room_session_id, persona.source
+    lifecycle = DurableSessionLifecycle(
+        state_machine=session_state,
+        space_id=space_id,
+        room_name=ctx.room.name,
+        worker_version=worker_version,
     )
 
-    # Context hydration: fetch prior events and memories for continuity
-    context_block = ""
-    if agent_id and HUB_API_BASE and HUB_DEVICE_TOKEN:
-        logger.info(f"Fetching context for space {space_id}...")
-        events = _fetch_space_events(space_id, limit=50)
-        active_person_id = _infer_active_person_id(events)
-        memories = _fetch_contextual_recall_memories(
-            agent_id=agent_id,
-            current_space_id=space_id,
-            current_session_id=session_id,
-            active_person_id=active_person_id,
+    try:
+        # Connect only after the durable dispatch/session identity has been validated.
+        await ctx.connect()
+
+        logger.info(f"Agent dispatched to space: {space_id} (room: {ctx.room.name}, session: {room_session_id})")
+        persona = _resolve_persona(agent_id=agent_id, space_id=space_id, session_id=session_id)
+        logger.info(
+            "Resolved persona %s for session %s from %s", persona.name, session_id or room_session_id, persona.source
         )
-        context_block = _build_context_block(events, memories, current_session_id=session_id)
-        if context_block:
-            logger.info(f"Context hydration: {len(events)} events, {len(memories)} memories")
-        else:
-            logger.debug("No prior context found for this space")
+
+        # Context hydration: fetch prior events and memories for continuity
+        context_block = ""
+        if agent_id and HUB_API_BASE and HUB_DEVICE_TOKEN:
+            logger.info(f"Fetching context for space {space_id}...")
+            events = _fetch_space_events(space_id, limit=50)
+            active_person_id = _infer_active_person_id(events)
+            memories = _fetch_contextual_recall_memories(
+                agent_id=agent_id,
+                current_space_id=space_id,
+                current_session_id=session_id,
+                active_person_id=active_person_id,
+            )
+            context_block = _build_context_block(events, memories, current_session_id=session_id)
+            if context_block:
+                logger.info(f"Context hydration: {len(events)} events, {len(memories)} memories")
+            else:
+                logger.debug("No prior context found for this space")
+    except Exception as exc:
+        try:
+            await lifecycle.transition(to_state="failed", reason="worker_session_initialization_failed")
+        except Exception as transition_exc:
+            raise ExceptionGroup("worker initialization and transition failures", [exc, transition_exc]) from exc
+        raise
 
     # Track whether we should auto-disconnect when humans leave
     should_disconnect_on_empty = True
@@ -1264,15 +1406,12 @@ async def forge_agent(ctx: agents.JobContext):
             failures.append(exc)
             logger.error("Failed to emit closing worker health: %s", exc, exc_info=True)
         try:
-            if session_state.state in {"open", "paused"}:
-                transition_event_id = hub_transition_session_state(
-                    state_machine=session_state,
-                    space_id=space_id,
-                    to_state="closed",
-                    reason="last_human_disconnected",
-                    room_name=ctx.room.name,
-                    worker_version=worker_version,
-                )
+            transition_event_id = await lifecycle.transition_if_current(
+                from_states={"opening", "active", "reconnecting"},
+                to_state="closed",
+                reason="last_human_disconnected",
+            )
+            if transition_event_id is not None:
                 logger.info(
                     "Recorded session close transition %s for session %s",
                     transition_event_id,
@@ -1289,8 +1428,41 @@ async def forge_agent(ctx: agents.JobContext):
         if failures:
             raise ExceptionGroup("agent disconnect failures", failures)
 
-    # Subscribe to participant disconnection events
+    def on_room_reconnecting() -> None:
+        _create_background_task(
+            lifecycle.transition_if_current(
+                from_states={"active"},
+                to_state="reconnecting",
+                reason="livekit_room_reconnecting",
+            ),
+            operation="session.reconnecting",
+        )
+
+    def on_room_reconnected() -> None:
+        _create_background_task(
+            lifecycle.transition_if_current(
+                from_states={"reconnecting"},
+                to_state="active",
+                reason="livekit_room_reconnected",
+            ),
+            operation="session.reconnected",
+        )
+
+    def on_room_disconnected(*_args: object) -> None:
+        _create_background_task(
+            lifecycle.transition_if_current(
+                from_states={"opening", "active", "reconnecting"},
+                to_state="failed",
+                reason="livekit_room_disconnected_unexpectedly",
+            ),
+            operation="session.disconnected",
+        )
+
+    # Subscribe to participant and room lifecycle events before starting the agent session.
     ctx.room.on("participant_disconnected", on_participant_disconnected)
+    ctx.room.on("reconnecting", on_room_reconnecting)
+    ctx.room.on("reconnected", on_room_reconnected)
+    ctx.room.on("disconnected", on_room_disconnected)
 
     # Realtime model (speech-to-speech). Configure voice via env.
     voice = os.getenv("OPENAI_VOICE", "alloy")
@@ -1896,25 +2068,30 @@ async def forge_agent(ctx: agents.JobContext):
 
     try:
         await _emit_worker_health("starting")
-        await session.start(
-            room=ctx.room,
-            agent=ForgeAssistant(persona=persona, context_block=context_block),
-            room_options=room_io.RoomOptions(
-                audio_input=room_io.AudioInputOptions(
-                    noise_cancellation=lambda params: (
-                        noise_cancellation.BVCTelephony()
-                        if params.participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
-                        else noise_cancellation.BVC()
+        active_event_id = await lifecycle.start_agent_session(
+            session=session,
+            start_kwargs={
+                "room": ctx.room,
+                "agent": ForgeAssistant(persona=persona, context_block=context_block),
+                "room_options": room_io.RoomOptions(
+                    audio_input=room_io.AudioInputOptions(
+                        noise_cancellation=lambda params: (
+                            noise_cancellation.BVCTelephony()
+                            if params.participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+                            else noise_cancellation.BVC()
+                        ),
                     ),
+                    # Disable auto-close so our disconnect handler fires properly.
+                    close_on_disconnect=False,
+                    # The Hub API owns room deletion before token minting.
+                    delete_room_on_close=False,
                 ),
-                # Disable auto-close so our disconnect handler fires properly
-                close_on_disconnect=False,
-                # Do NOT delete room on close - the Hub API handles room deletion
-                # before minting tokens. This ensures a single deletion point and
-                # avoids race conditions with LiveKit Cloud's dispatch logic.
-                delete_room_on_close=False,
-            ),
+            },
         )
+        if active_event_id is None:
+            logger.info("LiveKit session started after lifecycle reached %s; skipping ready state", lifecycle.state)
+            return
+        logger.info("Recorded active session transition %s for session %s", active_event_id, session_id)
         await _emit_worker_health("ready")
 
         # Initial greeting
@@ -1923,15 +2100,11 @@ async def forge_agent(ctx: agents.JobContext):
         )
     except Exception as exc:
         transition_error: Exception | None = None
-        if session_state.state in {"open", "paused"}:
+        if lifecycle.state in {"opening", "active", "reconnecting"}:
             try:
-                hub_transition_session_state(
-                    state_machine=session_state,
-                    space_id=space_id,
+                await lifecycle.transition(
                     to_state="failed",
                     reason="worker_session_runtime_failed",
-                    room_name=ctx.room.name,
-                    worker_version=worker_version,
                 )
             except Exception as state_exc:
                 transition_error = state_exc

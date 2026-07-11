@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import importlib.util
 import json
@@ -45,18 +46,19 @@ def test_session_state_transition_is_durable_before_local_state_changes() -> Non
         event_id = worker.hub_transition_session_state(
             state_machine=state,
             space_id="space-1",
-            to_state="closed",
-            reason="last_human_disconnected",
+            to_state="active",
+            reason="livekit_agent_session_started",
             room_name="space-1:room-1",
             worker_version="worker-1",
         )
 
     assert event_id == "event-transition-1"
-    assert state.state == "closed"
+    assert state.state == "active"
+    assert state.last_event_id == "event-transition-1"
     payload = ingest.call_args.kwargs["payload"]
     assert ingest.call_args.kwargs["event_type"] == "session.state_transition"
-    assert payload["from_state"] == "open"
-    assert payload["to_state"] == "closed"
+    assert payload["from_state"] == "opening"
+    assert payload["to_state"] == "active"
     assert payload["session_id"] == "session-1"
 
 
@@ -77,20 +79,266 @@ def test_session_state_does_not_change_when_transition_event_fails() -> None:
             worker_version="worker-1",
         )
 
-    assert state.state == "open"
+    assert state.state == "opening"
+    assert state.last_event_id is None
 
 
-def test_terminal_session_state_rejects_follow_on_transition() -> None:
+def test_session_state_rejects_non_durable_privacy_mode_sentinel() -> None:
     worker = _load_agent_worker_module()
-    state = worker.SessionStateMachine(session_id="session-1", state="closed")
+    state = worker.SessionStateMachine(session_id="session-1")
 
-    with pytest.raises(worker.WorkerContractError, match="closed -> open"):
+    with (
+        mock.patch.object(worker, "hub_ingest_event", return_value="privacy_mode"),
+        pytest.raises(worker.HubWriteError, match="did not persist"),
+    ):
+        worker.hub_transition_session_state(
+            state_machine=state,
+            space_id="space-1",
+            to_state="active",
+            reason="livekit_agent_session_started",
+            room_name="room-1",
+            worker_version="worker-1",
+        )
+
+    assert state.state == "opening"
+    assert state.last_event_id is None
+
+
+def test_session_lifecycle_uses_only_required_states_and_rejects_compatibility_states() -> None:
+    worker = _load_agent_worker_module()
+
+    assert worker.SESSION_STATES == {
+        "opening",
+        "active",
+        "reconnecting",
+        "closed",
+        "failed",
+        "reconciled",
+    }
+    for removed_state in ("open", "paused"):
+        with pytest.raises(worker.WorkerContractError, match="invalid initial session state"):
+            worker.SessionStateMachine(session_id="session-1", state=removed_state)
+
+
+def test_session_state_transition_matrix_is_strict() -> None:
+    worker = _load_agent_worker_module()
+    expected_transitions = {
+        "opening": {"active", "closed", "failed"},
+        "active": {"reconnecting", "closed", "failed"},
+        "reconnecting": {"active", "closed", "failed"},
+        "closed": {"reconciled"},
+        "failed": {"reconciled"},
+        "reconciled": set(),
+    }
+
+    assert worker.SESSION_STATE_TRANSITIONS == {
+        state: frozenset(targets) for state, targets in expected_transitions.items()
+    }
+    for from_state, valid_targets in expected_transitions.items():
+        state = worker.SessionStateMachine(
+            session_id="session-1",
+            state=from_state,
+            last_event_id=None if from_state == "opening" else f"event-{from_state}",
+        )
+        for to_state in worker.SESSION_STATES:
+            if to_state in valid_targets:
+                payload = state.transition_payload(
+                    to_state=to_state,
+                    reason="test_transition",
+                    room_name="room-1",
+                    worker_version="worker-1",
+                )
+                assert payload["from_state"] == from_state
+                assert payload["to_state"] == to_state
+            else:
+                with pytest.raises(worker.WorkerContractError, match=f"{from_state} -> {to_state}"):
+                    state.transition_payload(
+                        to_state=to_state,
+                        reason="test_transition",
+                        room_name="room-1",
+                        worker_version="worker-1",
+                    )
+
+
+def test_livekit_session_becomes_active_only_after_start_and_durable_acceptance() -> None:
+    worker = _load_agent_worker_module()
+    state = worker.SessionStateMachine(session_id="session-1")
+    lifecycle = worker.DurableSessionLifecycle(
+        state_machine=state,
+        space_id="space-1",
+        room_name="room-1",
+        worker_version="worker-1",
+    )
+    observed: list[tuple[str, str]] = []
+
+    class FakeAgentSession:
+        async def start(self, **kwargs: object) -> None:
+            assert kwargs == {"room": "room-object"}
+            observed.append(("start", lifecycle.state))
+
+    def accept_event(**kwargs: object) -> str:
+        observed.append(("persist", lifecycle.state))
+        assert kwargs["event_type"] == "session.state_transition"
+        return "event-active-1"
+
+    with mock.patch.object(worker, "hub_ingest_event", side_effect=accept_event):
+        event_id = asyncio.run(
+            lifecycle.start_agent_session(
+                session=FakeAgentSession(),
+                start_kwargs={"room": "room-object"},
+            )
+        )
+
+    assert observed == [("start", "opening"), ("persist", "opening")]
+    assert event_id == "event-active-1"
+    assert lifecycle.state == "active"
+    assert state.last_event_id == "event-active-1"
+
+
+def test_completed_start_does_not_reactivate_an_orderly_closed_session() -> None:
+    worker = _load_agent_worker_module()
+    state = worker.SessionStateMachine(session_id="session-1")
+    lifecycle = worker.DurableSessionLifecycle(
+        state_machine=state,
+        space_id="space-1",
+        room_name="room-1",
+        worker_version="worker-1",
+    )
+
+    class FakeAgentSession:
+        async def start(self, **_kwargs: object) -> None:
+            await lifecycle.transition(
+                to_state="closed",
+                reason="last_human_disconnected",
+            )
+
+    with mock.patch.object(worker, "hub_ingest_event", return_value="event-closed-1") as ingest:
+        event_id = asyncio.run(
+            lifecycle.start_agent_session(
+                session=FakeAgentSession(),
+                start_kwargs={"room": "room-object"},
+            )
+        )
+
+    assert event_id is None
+    assert lifecycle.state == "closed"
+    assert state.last_event_id == "event-closed-1"
+    assert ingest.call_count == 1
+    assert ingest.call_args.kwargs["payload"]["to_state"] == "closed"
+
+
+def test_reconnect_transitions_are_durable_and_serialized() -> None:
+    worker = _load_agent_worker_module()
+    state = worker.SessionStateMachine(
+        session_id="session-1",
+        state="active",
+        last_event_id="event-active-1",
+    )
+    lifecycle = worker.DurableSessionLifecycle(
+        state_machine=state,
+        space_id="space-1",
+        room_name="room-1",
+        worker_version="worker-1",
+    )
+
+    with mock.patch.object(worker, "hub_ingest_event", side_effect=["event-reconnecting-1", "event-active-2"]):
+
+        async def exercise() -> tuple[str, str]:
+            reconnecting_event = await lifecycle.transition(
+                to_state="reconnecting",
+                reason="livekit_room_reconnecting",
+            )
+            active_event = await lifecycle.transition(
+                to_state="active",
+                reason="livekit_room_reconnected",
+            )
+            return reconnecting_event, active_event
+
+        assert asyncio.run(exercise()) == ("event-reconnecting-1", "event-active-2")
+
+    assert lifecycle.state == "active"
+    assert state.last_event_id == "event-active-2"
+
+
+@pytest.mark.parametrize("terminal_state", ["closed", "failed"])
+def test_terminal_state_reconciliation_references_durable_terminal_event(terminal_state: str) -> None:
+    worker = _load_agent_worker_module()
+    terminal_event_id = f"event-{terminal_state}-1"
+    state = worker.SessionStateMachine(
+        session_id="session-1",
+        state=terminal_state,
+        last_event_id=terminal_event_id,
+    )
+    lifecycle = worker.DurableSessionLifecycle(
+        state_machine=state,
+        space_id="space-1",
+        room_name="room-1",
+        worker_version="worker-1",
+    )
+
+    with mock.patch.object(worker, "hub_ingest_event", return_value="event-reconciled-1") as ingest:
+        event_id = asyncio.run(lifecycle.reconcile(reason="owning_service_reconciled_runtime_state"))
+
+    assert event_id == "event-reconciled-1"
+    assert lifecycle.state == "reconciled"
+    assert state.last_event_id == "event-reconciled-1"
+    payload = ingest.call_args.kwargs["payload"]
+    assert payload["from_state"] == terminal_state
+    assert payload["to_state"] == "reconciled"
+    assert payload["reconciles_event_id"] == terminal_event_id
+
+    with pytest.raises(worker.WorkerContractError, match="reconciled -> active"):
         state.transition_payload(
-            to_state="open",
+            to_state="active",
             reason="invalid_reopen",
             room_name="room-1",
             worker_version="worker-1",
         )
+
+
+def test_reconciliation_failure_preserves_terminal_state() -> None:
+    worker = _load_agent_worker_module()
+    state = worker.SessionStateMachine(
+        session_id="session-1",
+        state="failed",
+        last_event_id="event-failed-1",
+    )
+    lifecycle = worker.DurableSessionLifecycle(
+        state_machine=state,
+        space_id="space-1",
+        room_name="room-1",
+        worker_version="worker-1",
+    )
+
+    with (
+        mock.patch.object(worker, "hub_ingest_event", side_effect=worker.HubWriteError("event", "down")),
+        pytest.raises(worker.HubWriteError),
+    ):
+        asyncio.run(lifecycle.reconcile(reason="owning_service_reconciled_runtime_state"))
+
+    assert lifecycle.state == "failed"
+    assert state.last_event_id == "event-failed-1"
+
+
+def test_reconciliation_rejects_nonterminal_session_without_writing() -> None:
+    worker = _load_agent_worker_module()
+    lifecycle = worker.DurableSessionLifecycle(
+        state_machine=worker.SessionStateMachine(
+            session_id="session-1",
+            state="active",
+            last_event_id="event-active-1",
+        ),
+        space_id="space-1",
+        room_name="room-1",
+        worker_version="worker-1",
+    )
+
+    with mock.patch.object(worker, "hub_ingest_event") as ingest:
+        with pytest.raises(worker.WorkerContractError, match="requires closed or failed"):
+            asyncio.run(lifecycle.reconcile(reason="invalid_early_reconciliation"))
+
+    ingest.assert_not_called()
+    assert lifecycle.state == "active"
 
 
 def test_hub_ingest_event_raises_instead_of_returning_none_on_failure() -> None:
