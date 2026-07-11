@@ -1140,10 +1140,11 @@ async def handle_command(msg: dict[str, Any]) -> dict[str, Any] | None:
 
 def load_config_file(path: str) -> dict[str, Any]:
     """Load configuration from YAML file."""
-    if os.path.exists(path):
-        with open(path) as f:
-            return yaml.safe_load(f) or {}
-    return {}
+    with open(path, encoding="utf-8") as f:
+        payload = yaml.safe_load(f)
+    if not isinstance(payload, dict):
+        raise click.ClickException("Satellite config must be a YAML object")
+    return payload
 
 
 @click.command()
@@ -1176,8 +1177,15 @@ def load_config_file(path: str) -> dict[str, Any]:
     "--config-file",
     envvar="MARVAIN_CONFIG_FILE",
     default=None,
-    type=click.Path(exists=False),
+    type=click.Path(exists=True, dir_okay=False),
     help="Path to YAML configuration file",
+)
+@click.option(
+    "--receipt-store-path",
+    envvar="MARVAIN_RECEIPT_STORE_PATH",
+    default=None,
+    type=click.Path(dir_okay=False),
+    help="Required durable command receipt file used for replay-safe execution",
 )
 @click.option(
     "--location-label",
@@ -1296,6 +1304,7 @@ def main(
     device_token: str,
     heartbeat_interval: int,
     config_file: str | None,
+    receipt_store_path: str | None,
     location_label: str | None,
     space_id: str | None,
     location_mode: str,
@@ -1357,6 +1366,10 @@ def main(
         camera_rtsp_url = file_config.get("camera_rtsp_url", camera_rtsp_url)
         audio_in_device = file_config.get("audio_in_device", audio_in_device)
         audio_out_device = file_config.get("audio_out_device", audio_out_device)
+        receipt_store_path = file_config.get("receipt_store_path", receipt_store_path)
+
+    if not str(receipt_store_path or "").strip():
+        raise click.ClickException("--receipt-store-path or MARVAIN_RECEIPT_STORE_PATH is required")
 
     # Make hub REST URL + token available to device actions that need to upload artifacts/events.
     _set_hub_context(hub_rest_url=hub_rest_url, device_token=device_token, default_space_id=space_id)
@@ -1376,6 +1389,7 @@ def main(
         heartbeat_interval=heartbeat_interval,
         location_label=location_label,
         location_space_id=space_id,
+        receipt_store_path=receipt_store_path,
     )
 
     client = HubClient(config, on_command=handle_command)

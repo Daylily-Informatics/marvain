@@ -191,6 +191,7 @@ def load_action(db: RdsData, action_id: str) -> dict[str, Any] | None:
                required_scopes::TEXT as required_scopes_json,
                status,
                target_device_id::TEXT as target_device_id,
+               location_id::TEXT as location_id,
                correlation_id::TEXT as correlation_id,
                approved_by::TEXT as approved_by,
                approved_at::TEXT as approved_at,
@@ -601,6 +602,8 @@ def begin_device_dispatch(
     correlation_id: str | None,
     timeout_seconds: int,
     execution_metadata: dict[str, Any],
+    target_location_id: str | None = None,
+    target_space_id: str | None = None,
     audit_bucket: str | None = None,
 ) -> dict[str, Any]:
     rows = db.query(
@@ -608,6 +611,16 @@ def begin_device_dispatch(
         UPDATE actions
         SET status = 'awaiting_device_result',
             updated_at = now(),
+            space_id = CASE
+              WHEN :target_space_id IS NULL OR :target_space_id = ''
+              THEN space_id
+              ELSE :target_space_id::uuid
+            END,
+            location_id = CASE
+              WHEN :target_location_id IS NULL OR :target_location_id = ''
+              THEN location_id
+              ELSE :target_location_id::uuid
+            END,
             target_device_id = CASE
               WHEN :target_device_id IS NULL OR :target_device_id = ''
               THEN NULL
@@ -624,9 +637,16 @@ def begin_device_dispatch(
             error = NULL
         WHERE action_id = :action_id::uuid
           AND status = 'executing'
+          AND (
+            :target_space_id IS NULL
+            OR :target_space_id = ''
+            OR space_id IS NULL
+            OR space_id = :target_space_id::uuid
+          )
         RETURNING action_id::TEXT as action_id,
                   agent_id::TEXT as agent_id,
                   space_id::TEXT as space_id,
+                  location_id::TEXT as location_id,
                   kind,
                   status,
                   target_device_id::TEXT as target_device_id,
@@ -639,12 +659,16 @@ def begin_device_dispatch(
             "correlation_id": correlation_id,
             "timeout_seconds": timeout_seconds,
             "execution_metadata": json.dumps(execution_metadata),
+            "target_location_id": target_location_id,
+            "target_space_id": target_space_id,
         },
     )
     if not rows:
         action = load_action(db, action_id)
         if not action:
             raise ActionServiceError("action_not_found")
+        if target_space_id and action.get("space_id") and str(action["space_id"]) != target_space_id:
+            raise ActionServiceError("device_space_mismatch")
         raise ActionServiceError("invalid_status", extra={"current_status": action.get("status")})
     row = rows[0]
     row["execution_metadata"] = _json_loads(row.get("execution_metadata_json"), {})
@@ -659,7 +683,54 @@ def begin_device_dispatch(
             "target_device_id": target_device_id,
             "correlation_id": correlation_id,
             "timeout_seconds": timeout_seconds,
+            "location_id": row.get("location_id"),
+            "space_id": row.get("space_id"),
         },
+    )
+    return row
+
+
+def record_device_dispatch_receipt(
+    db: RdsData,
+    *,
+    action_id: str,
+    receipt: dict[str, Any],
+    audit_bucket: str | None = None,
+) -> dict[str, Any]:
+    rows = db.query(
+        """
+        UPDATE actions
+        SET updated_at = now(),
+            execution_metadata = COALESCE(execution_metadata, '{}'::jsonb) || :receipt::jsonb
+        WHERE action_id = :action_id::uuid
+          AND status = 'awaiting_device_result'
+        RETURNING agent_id::TEXT AS agent_id,
+                  space_id::TEXT AS space_id,
+                  location_id::TEXT AS location_id,
+                  kind,
+                  status,
+                  target_device_id::TEXT AS target_device_id,
+                  correlation_id::TEXT AS correlation_id,
+                  execution_metadata::TEXT AS execution_metadata_json
+        """,
+        {
+            "action_id": action_id,
+            "receipt": json.dumps({"dispatch_receipt": receipt}),
+        },
+    )
+    if not rows:
+        action = load_action(db, action_id)
+        if not action:
+            raise ActionServiceError("action_not_found")
+        raise ActionServiceError("invalid_status", extra={"current_status": action.get("status")})
+    row = rows[0]
+    row["execution_metadata"] = _json_loads(row.get("execution_metadata_json"), {})
+    _append_action_audit(
+        db,
+        audit_bucket=audit_bucket,
+        agent_id=str(row["agent_id"]),
+        entry_type="action_dispatch_receipt",
+        entry={"action_id": action_id, "receipt": receipt},
     )
     return row
 
@@ -804,12 +875,22 @@ def record_device_ack(
     device_id: str,
     correlation_id: str,
     received_at_ms: int | None,
+    connection_id: str | None = None,
+    connection_epoch: str | None = None,
+    location_id: str | None = None,
+    space_id: str | None = None,
     audit_bucket: str | None = None,
 ) -> dict[str, Any]:
     action = _load_action_for_device_result(db, action_id)
     target_device_id = str(action.get("target_device_id") or "")
     if target_device_id and target_device_id != device_id:
         raise ActionServiceError("permission_denied")
+    action_location_id = str(action.get("location_id") or "")
+    if action_location_id and action_location_id != str(location_id or ""):
+        raise ActionServiceError("device_location_mismatch")
+    action_space_id = str(action.get("space_id") or "")
+    if action_space_id and action_space_id != str(space_id or ""):
+        raise ActionServiceError("device_space_mismatch")
     action_correlation_id = str(action.get("correlation_id") or "")
     if action_correlation_id and action_correlation_id != correlation_id:
         raise ActionServiceError("correlation_mismatch")
@@ -840,6 +921,10 @@ def record_device_ack(
                 {
                     "acknowledged_by_device_id": device_id,
                     "acknowledged_at_ms": received_at_ms,
+                    "ack_connection_id": connection_id,
+                    "ack_connection_epoch": connection_epoch,
+                    "ack_location_id": location_id,
+                    "ack_space_id": space_id,
                 }
             ),
         },
@@ -864,6 +949,10 @@ def record_device_ack(
             "device_id": device_id,
             "correlation_id": correlation_id,
             "received_at_ms": received_at_ms,
+            "connection_id": connection_id,
+            "connection_epoch": connection_epoch,
+            "location_id": location_id,
+            "space_id": space_id,
         },
     )
     action["status"] = "device_acknowledged"
@@ -880,12 +969,22 @@ def record_device_result(
     result_payload: dict[str, Any] | None,
     error_text: str | None,
     completed_at_ms: int | None,
+    connection_id: str | None = None,
+    connection_epoch: str | None = None,
+    location_id: str | None = None,
+    space_id: str | None = None,
     audit_bucket: str | None = None,
 ) -> dict[str, Any]:
     action = _load_action_for_device_result(db, action_id)
     target_device_id = str(action.get("target_device_id") or "")
     if target_device_id and target_device_id != device_id:
         raise ActionServiceError("permission_denied")
+    action_location_id = str(action.get("location_id") or "")
+    if action_location_id and action_location_id != str(location_id or ""):
+        raise ActionServiceError("device_location_mismatch")
+    action_space_id = str(action.get("space_id") or "")
+    if action_space_id and action_space_id != str(space_id or ""):
+        raise ActionServiceError("device_space_mismatch")
     action_correlation_id = str(action.get("correlation_id") or "")
     if action_correlation_id and action_correlation_id != correlation_id:
         raise ActionServiceError("correlation_mismatch")
@@ -906,7 +1005,8 @@ def record_device_result(
             device_response_at = now(),
             awaiting_result_until = NULL,
             result = :result::jsonb,
-            error = :error
+            error = :error,
+            execution_metadata = COALESCE(execution_metadata, '{}'::jsonb) || :meta::jsonb
         WHERE action_id = :action_id::uuid
           AND status IN ('awaiting_device_result', 'device_acknowledged')
         RETURNING agent_id::TEXT as agent_id,
@@ -921,6 +1021,16 @@ def record_device_result(
             "status": new_status,
             "result": json.dumps(result_payload or {}),
             "error": err_text,
+            "meta": json.dumps(
+                {
+                    "result_device_id": device_id,
+                    "result_connection_id": connection_id,
+                    "result_connection_epoch": connection_epoch,
+                    "result_location_id": location_id,
+                    "result_space_id": space_id,
+                    "completed_at_ms": completed_at_ms,
+                }
+            ),
         },
     )
     if not rows:
@@ -944,6 +1054,10 @@ def record_device_result(
             "correlation_id": correlation_id,
             "completed_at_ms": completed_at_ms,
             "error": err_text,
+            "connection_id": connection_id,
+            "connection_epoch": connection_epoch,
+            "location_id": location_id,
+            "space_id": space_id,
         },
     )
     action["status"] = new_status
@@ -957,10 +1071,7 @@ def mark_action_timed_out(
     action_id: str,
     audit_bucket: str | None = None,
 ) -> dict[str, Any]:
-    action = load_action(db, action_id)
-    if not action:
-        raise ActionServiceError("action_not_found")
-    db.execute(
+    rows = db.query(
         """
         UPDATE actions
         SET status = 'device_timeout',
@@ -969,12 +1080,27 @@ def mark_action_timed_out(
             device_response_at = now(),
             error = :error
         WHERE action_id = :action_id::uuid
+          AND status IN ('awaiting_device_result', 'device_acknowledged')
+        RETURNING agent_id::TEXT AS agent_id,
+                  space_id::TEXT AS space_id,
+                  kind,
+                  status,
+                  error
         """,
         {
             "action_id": action_id,
             "error": "device_timeout",
         },
     )
+    if not rows:
+        action = load_action(db, action_id)
+        if not action:
+            raise ActionServiceError("action_not_found")
+        if str(action.get("status") or "") == "device_timeout":
+            action["duplicate"] = True
+            return action
+        raise ActionServiceError("invalid_status", extra={"current_status": action.get("status")})
+    action = rows[0]
     _append_action_audit(
         db,
         audit_bucket=audit_bucket,

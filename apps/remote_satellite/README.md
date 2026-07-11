@@ -47,6 +47,7 @@ export MARVAIN_HUB_WS_URL="wss://your-hub.example.com/ws"
 export MARVAIN_HUB_REST_URL="https://your-hub.example.com"
 export MARVAIN_DEVICE_TOKEN="YOUR_DEVICE_TOKEN"
 export MARVAIN_HEARTBEAT_INTERVAL=20
+export MARVAIN_RECEIPT_STORE_PATH="$HOME/.local/state/marvain/satellite-receipts.json"
 python daemon.py
 ```
 
@@ -59,6 +60,7 @@ hub_ws_url: wss://your-hub.example.com/ws
 hub_rest_url: https://your-hub.example.com
 device_token: YOUR_DEVICE_TOKEN
 heartbeat_interval: 20
+receipt_store_path: /var/lib/marvain/satellite-receipts.json
 ```
 
 Then run:

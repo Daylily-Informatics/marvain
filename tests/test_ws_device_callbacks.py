@@ -6,6 +6,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
@@ -43,6 +44,9 @@ def test_device_action_ack_transitions_to_acknowledged(mock_mgmt, mock_db, mock_
             "status": "authenticated",
             "principal_type": "device",
             "device_id": "device-1",
+            "location_id": "location-1",
+            "space_id": "space-1",
+            "connection_epoch": "epoch-1",
         }
     }
     mock_dynamo.Table.return_value = mock_table
@@ -104,6 +108,9 @@ def test_device_action_result_success_marks_executed(
             "status": "authenticated",
             "principal_type": "device",
             "device_id": "device-1",
+            "location_id": "location-1",
+            "space_id": "space-1",
+            "connection_epoch": "epoch-1",
         }
     }
     mock_dynamo.Table.return_value = mock_table
@@ -165,6 +172,9 @@ def test_device_action_result_rejects_correlation_mismatch(mock_mgmt, mock_db, m
             "status": "authenticated",
             "principal_type": "device",
             "device_id": "device-1",
+            "location_id": "location-1",
+            "space_id": "space-1",
+            "connection_epoch": "epoch-1",
         }
     }
     mock_dynamo.Table.return_value = mock_table
@@ -207,6 +217,70 @@ def test_device_action_result_rejects_correlation_mismatch(mock_mgmt, mock_db, m
     assert sent["type"] == "device_action_result"
     assert sent["ok"] is False
     assert sent["error"] == "correlation_mismatch"
+
+
+@patch("handler.record_device_connection_state", return_value="event-disconnect-1")
+@patch("handler.load_device_route")
+@patch("handler._dynamo")
+@patch("handler._get_db")
+@patch("handler._mgmt_api")
+def test_device_clean_disconnect_persists_route_receipt(
+    mock_mgmt,
+    mock_db,
+    mock_dynamo,
+    mock_load_route,
+    mock_record_state,
+):
+    from handler import handler
+
+    mock_table = MagicMock()
+    mock_table.get_item.return_value = {
+        "Item": {
+            "connection_id": "conn-123",
+            "status": "authenticated",
+            "principal_type": "device",
+            "device_id": "device-1",
+            "agent_id": "agent-1",
+            "location_id": "location-1",
+            "space_id": "space-1",
+            "connection_epoch": "epoch-1",
+        }
+    }
+    mock_dynamo.Table.return_value = mock_table
+    mock_db.return_value = MagicMock()
+    mock_load_route.return_value = SimpleNamespace(
+        device_id="device-1",
+        agent_id="agent-1",
+        location_id="location-1",
+        space_id="space-1",
+    )
+    mock_post = MagicMock()
+    mock_mgmt.return_value.post_to_connection = mock_post
+
+    response = handler(
+        _event(
+            {
+                "action": "device_connection_state",
+                "state": "disconnected",
+                "connection_epoch": "epoch-1",
+                "reason": "client_stop",
+            }
+        ),
+        {},
+    )
+
+    assert response["statusCode"] == 200
+    mock_record_state.assert_called_once()
+    assert mock_record_state.call_args.kwargs["state"] == "disconnected"
+    assert mock_record_state.call_args.kwargs["reason"] == "client_stop"
+    assert mock_table.update_item.call_args.kwargs["ExpressionAttributeValues"][":status"] == "disconnected"
+    sent = json.loads(mock_post.call_args.kwargs["Data"].decode())
+    assert sent == {
+        "type": "device_connection_state",
+        "ok": True,
+        "state": "disconnected",
+        "event_id": "event-disconnect-1",
+    }
 
 
 @patch("handler._upsert_subscription_index")

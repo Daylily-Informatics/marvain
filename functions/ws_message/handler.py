@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import time
+import uuid
 
 import boto3
 from agent_hub.action_service import (
@@ -20,6 +21,14 @@ from agent_hub.auth import AuthenticatedUser, authenticate_device, authenticate_
 from agent_hub.broadcast import broadcast_event
 from agent_hub.config import load_config
 from agent_hub.contracts import DeviceActionAck, DeviceActionResult
+from agent_hub.device_routing import (
+    DeviceRoute,
+    DeviceRoutingError,
+    load_device_route,
+    query_device_connection_items,
+    record_device_connection_state,
+    record_device_heartbeat,
+)
 from agent_hub.memberships import check_agent_permission, list_agents_for_user
 from agent_hub.metrics import emit_count, emit_ms
 from agent_hub.rds_data import RdsData, RdsDataEnv
@@ -127,69 +136,39 @@ def _upsert_subscription_index(connection_id: str, topic_key: str, ttl: int | No
         logger.warning("Failed to update subscription index for %s: %s", topic_key, exc)
 
 
-def _get_device_connections(table, target_device_id: str) -> list[str]:
-    """Find all WebSocket connection IDs for a specific device.
+def _supersede_prior_device_connections(table, *, route: DeviceRoute, current_connection_id: str) -> int:
+    items = query_device_connection_items(table, device_id=route.device_id)
 
-    Uses the ``device_id_index`` GSI for efficient lookup.
-
-    Returns list of connection_ids where device_id matches and status is authenticated.
-    """
-    try:
-        response = table.query(
-            IndexName="device_id_index",
-            KeyConditionExpression="device_id = :did",
-            FilterExpression="#s = :status",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={
-                ":did": target_device_id,
-                ":status": "authenticated",
-            },
+    superseded = 0
+    for item in items:
+        prior_connection_id = str(item.get("connection_id") or "")
+        if not prior_connection_id or prior_connection_id == current_connection_id:
+            continue
+        if str(item.get("status") or "") != "authenticated":
+            continue
+        if str(item.get("principal_type") or "") != "device":
+            continue
+        if str(item.get("device_id") or "") != route.device_id:
+            continue
+        prior_epoch = str(item.get("connection_epoch") or "")
+        if not prior_epoch:
+            raise DeviceRoutingError("device_connection_registry_malformed")
+        record_device_connection_state(
+            _get_db(),
+            route=route,
+            connection_id=prior_connection_id,
+            connection_epoch=prior_epoch,
+            state="superseded",
+            reason="new_authenticated_connection",
         )
-        return [item["connection_id"] for item in response.get("Items", [])]
-    except Exception as e:
-        logger.warning("Device connection index query failed for device %s: %s", target_device_id, e)
-        return []
-
-
-def _send_to_device(event, table, target_device_id: str, message: dict) -> tuple[int, int]:
-    """Send a message to all WebSocket connections for a device.
-
-    Returns (sent_count, stale_count).
-    """
-    from botocore.exceptions import ClientError
-
-    connection_ids = _get_device_connections(table, target_device_id)
-    if not connection_ids:
-        return (0, 0)
-
-    mgmt_api = _mgmt_api(event)
-    data = json.dumps(message).encode("utf-8")
-
-    sent_count = 0
-    stale_connections = []
-
-    for conn_id in connection_ids:
-        try:
-            mgmt_api.post_to_connection(ConnectionId=conn_id, Data=data)
-            sent_count += 1
-        except ClientError as e:
-            error_code = e.response.get("Error", {}).get("Code", "")
-            if error_code == "GoneException":
-                stale_connections.append(conn_id)
-            else:
-                logger.warning("Failed to send to device connection %s: %s", conn_id, e)
-        except Exception as e:
-            logger.warning("Failed to send to device connection %s: %s", conn_id, e)
-
-    # Clean up stale connections
-    for conn_id in stale_connections:
-        try:
-            table.delete_item(Key={"connection_id": conn_id})
-            logger.debug("Cleaned up stale connection: %s", conn_id)
-        except Exception:
-            pass
-
-    return (sent_count, len(stale_connections))
+        table.update_item(
+            Key={"connection_id": prior_connection_id},
+            UpdateExpression="SET #s = :status",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":status": "superseded"},
+        )
+        superseded += 1
+    return superseded
 
 
 def _handle_action_decision(
@@ -278,13 +257,22 @@ def _handle_device_action_ack(event, connection_id: str, conn_item: dict, msg: d
         _send(event, connection_id, {"type": "device_action_ack", "ok": False, "error": f"invalid_payload: {exc}"})
         return {"statusCode": 200, "body": "ok"}
 
+    authenticated_device_id = str(conn_item.get("device_id") or "")
+    if ack.device_id != authenticated_device_id:
+        _send(event, connection_id, {"type": "device_action_ack", "ok": False, "error": "device_identity_mismatch"})
+        return {"statusCode": 200, "body": "ok"}
+
     try:
         action_row = record_device_ack(
             _get_db(),
             action_id=ack.action_id,
-            device_id=str(conn_item.get("device_id") or ""),
+            device_id=authenticated_device_id,
             correlation_id=ack.correlation_id,
             received_at_ms=ack.received_at,
+            connection_id=connection_id,
+            connection_epoch=str(conn_item.get("connection_epoch") or ""),
+            location_id=str(conn_item.get("location_id") or ""),
+            space_id=str(conn_item.get("space_id") or ""),
             audit_bucket=_get_cfg().audit_bucket,
         )
     except ActionServiceError as exc:
@@ -309,6 +297,9 @@ def _handle_device_action_ack(event, connection_id: str, conn_item: dict, msg: d
             "ok": True,
             "action_id": ack.action_id,
             "duplicate": bool(action_row.get("duplicate")),
+            "connection_epoch": str(conn_item.get("connection_epoch") or ""),
+            "location_id": str(conn_item.get("location_id") or ""),
+            "space_id": str(conn_item.get("space_id") or ""),
         },
     )
     return {"statusCode": 200, "body": "ok"}
@@ -326,16 +317,29 @@ def _handle_device_action_result(event, connection_id: str, conn_item: dict, msg
         _send(event, connection_id, {"type": "device_action_result", "ok": False, "error": f"invalid_payload: {exc}"})
         return {"statusCode": 200, "body": "ok"}
 
+    authenticated_device_id = str(conn_item.get("device_id") or "")
+    if result_in.device_id != authenticated_device_id:
+        _send(
+            event,
+            connection_id,
+            {"type": "device_action_result", "ok": False, "error": "device_identity_mismatch"},
+        )
+        return {"statusCode": 200, "body": "ok"}
+
     try:
         action_row = record_device_result(
             _get_db(),
             action_id=result_in.action_id,
-            device_id=str(conn_item.get("device_id") or ""),
+            device_id=authenticated_device_id,
             correlation_id=result_in.correlation_id,
             result_status=result_in.status,
             result_payload=result_in.result or {},
             error_text=result_in.error,
             completed_at_ms=result_in.completed_at,
+            connection_id=connection_id,
+            connection_epoch=str(conn_item.get("connection_epoch") or ""),
+            location_id=str(conn_item.get("location_id") or ""),
+            space_id=str(conn_item.get("space_id") or ""),
             audit_bucket=_get_cfg().audit_bucket,
         )
     except ActionServiceError as exc:
@@ -386,6 +390,9 @@ def _handle_device_action_result(event, connection_id: str, conn_item: dict, msg
             "ok": True,
             "action_id": result_in.action_id,
             "duplicate": bool(action_row.get("duplicate")),
+            "connection_epoch": str(conn_item.get("connection_epoch") or ""),
+            "location_id": str(conn_item.get("location_id") or ""),
+            "space_id": str(conn_item.get("space_id") or ""),
         },
     )
     return {"statusCode": 200, "body": "ok"}
@@ -472,6 +479,41 @@ def handler(event, context):
                 _send(event, connection_id, {"type": "hello", "ok": False, "error": "invalid_device_token"})
                 return {"statusCode": 200, "body": "ok"}
 
+            if "space_id" in msg or "location_id" in msg:
+                _send(
+                    event,
+                    connection_id,
+                    {"type": "hello", "ok": False, "error": "client_topology_claim_not_allowed"},
+                )
+                return {"statusCode": 200, "body": "ok"}
+
+            try:
+                route = load_device_route(
+                    _get_db(),
+                    device_id=device.device_id,
+                    expected_agent_id=device.agent_id,
+                )
+                if tuple(device.scopes) != route.scopes or dict(device.capabilities) != route.capabilities:
+                    raise DeviceRoutingError("device_auth_route_state_mismatch")
+                connection_epoch = str(uuid.uuid4())
+                superseded_count = _supersede_prior_device_connections(
+                    table,
+                    route=route,
+                    current_connection_id=connection_id,
+                )
+                connection_state = "reconnected" if superseded_count else "connected"
+                connection_event_id = record_device_connection_state(
+                    _get_db(),
+                    route=route,
+                    connection_id=connection_id,
+                    connection_epoch=connection_epoch,
+                    state=connection_state,
+                    reason="device_token_authenticated",
+                )
+            except DeviceRoutingError as exc:
+                _send(event, connection_id, {"type": "hello", "ok": False, "error": exc.code})
+                return {"statusCode": 200, "body": "ok"}
+
             now_ts = int(time.time())
             expr_values = {
                 ":s": "authenticated",
@@ -480,6 +522,9 @@ def handler(event, context):
                 ":agid": device.agent_id,
                 ":sc": device.scopes,
                 ":cap": device.capabilities,
+                ":loc": route.location_id,
+                ":space": route.space_id,
+                ":epoch": connection_epoch,
                 ":aat": now_ts,
                 ":ttl": now_ts + _WS_AUTH_TTL,
             }
@@ -490,12 +535,12 @@ def handler(event, context):
                 "agent_id=:agid",
                 "scopes=:sc",
                 "capabilities=:cap",
+                "location_id=:loc",
+                "space_id=:space",
+                "connection_epoch=:epoch",
                 "authenticated_at=:aat",
                 "#ttl=:ttl",
             ]
-            if msg.get("space_id"):
-                expr_values[":space"] = str(msg.get("space_id"))
-                set_parts.append("space_id=:space")
             update_expr = "SET " + ", ".join(set_parts) + " REMOVE user_id, cognito_sub, email, agents"
             table.update_item(
                 Key={"connection_id": connection_id},
@@ -513,6 +558,10 @@ def handler(event, context):
                     "device_id": device.device_id,
                     "agent_id": device.agent_id,
                     "scopes": device.scopes,
+                    "route": route.receipt(),
+                    "connection_epoch": connection_epoch,
+                    "connection_state": connection_state,
+                    "connection_event_id": connection_event_id,
                 },
             )
             return {"statusCode": 200, "body": "ok"}
@@ -628,7 +677,90 @@ def handler(event, context):
     # ping - simple heartbeat
     # -------------------------------------------------------------------------
     if action == "ping":
-        _send(event, connection_id, {"type": "pong", "timestamp": int(time.time() * 1000)})
+        heartbeat_payload = {"type": "pong", "timestamp": int(time.time() * 1000)}
+        if principal_type == "device":
+            try:
+                heartbeat_route = load_device_route(
+                    _get_db(),
+                    device_id=str(conn_item.get("device_id") or ""),
+                    expected_agent_id=str(conn_item.get("agent_id") or ""),
+                )
+                if heartbeat_route.location_id != str(
+                    conn_item.get("location_id") or ""
+                ) or heartbeat_route.space_id != str(conn_item.get("space_id") or ""):
+                    raise DeviceRoutingError("device_connection_topology_stale")
+                record_device_heartbeat(_get_db(), route=heartbeat_route)
+                heartbeat_payload.update(
+                    {
+                        "device_id": heartbeat_route.device_id,
+                        "location_id": heartbeat_route.location_id,
+                        "space_id": heartbeat_route.space_id,
+                        "connection_epoch": str(conn_item.get("connection_epoch") or ""),
+                    }
+                )
+            except DeviceRoutingError as exc:
+                _send(event, connection_id, {"type": "pong", "ok": False, "error": exc.code})
+                return {"statusCode": 200, "body": "ok"}
+        _send(event, connection_id, heartbeat_payload)
+        return {"statusCode": 200, "body": "ok"}
+
+    if action == "device_connection_state":
+        if principal_type != "device":
+            _send(event, connection_id, {"type": "device_connection_state", "ok": False, "error": "device_only"})
+            return {"statusCode": 200, "body": "ok"}
+        requested_state = str(msg.get("state") or "").strip()
+        requested_epoch = str(msg.get("connection_epoch") or "").strip()
+        if requested_state != "disconnected":
+            _send(
+                event,
+                connection_id,
+                {"type": "device_connection_state", "ok": False, "error": "invalid_connection_state"},
+            )
+            return {"statusCode": 200, "body": "ok"}
+        if requested_epoch != str(conn_item.get("connection_epoch") or ""):
+            _send(
+                event,
+                connection_id,
+                {"type": "device_connection_state", "ok": False, "error": "connection_epoch_mismatch"},
+            )
+            return {"statusCode": 200, "body": "ok"}
+        try:
+            disconnect_route = load_device_route(
+                _get_db(),
+                device_id=str(conn_item.get("device_id") or ""),
+                expected_agent_id=str(conn_item.get("agent_id") or ""),
+            )
+            if disconnect_route.location_id != str(
+                conn_item.get("location_id") or ""
+            ) or disconnect_route.space_id != str(conn_item.get("space_id") or ""):
+                raise DeviceRoutingError("device_connection_topology_stale")
+            event_id = record_device_connection_state(
+                _get_db(),
+                route=disconnect_route,
+                connection_id=connection_id,
+                connection_epoch=requested_epoch,
+                state="disconnected",
+                reason=str(msg.get("reason") or "client_disconnect"),
+            )
+        except DeviceRoutingError as exc:
+            _send(event, connection_id, {"type": "device_connection_state", "ok": False, "error": exc.code})
+            return {"statusCode": 200, "body": "ok"}
+        table.update_item(
+            Key={"connection_id": connection_id},
+            UpdateExpression="SET #s = :status",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":status": "disconnected"},
+        )
+        _send(
+            event,
+            connection_id,
+            {
+                "type": "device_connection_state",
+                "ok": True,
+                "state": "disconnected",
+                "event_id": event_id,
+            },
+        )
         return {"statusCode": 200, "body": "ok"}
 
     # -------------------------------------------------------------------------
@@ -673,10 +805,19 @@ def handler(event, context):
                 return {"statusCode": 200, "body": "ok"}
             target_agent_id = rows[0]["agent_id"]
         try:
+            target_route = load_device_route(
+                _get_db(),
+                device_id=target_device_id,
+                expected_agent_id=target_agent_id,
+            )
+        except DeviceRoutingError as exc:
+            _send(event, connection_id, {"type": "cmd.ping", "ok": False, "error": exc.code})
+            return {"statusCode": 200, "body": "ok"}
+        try:
             created = create_action(
                 _get_db(),
                 agent_id=target_agent_id,
-                space_id=None,
+                space_id=target_route.space_id,
                 kind="device_command",
                 payload={
                     "device_id": target_device_id,
@@ -704,7 +845,7 @@ def handler(event, context):
             broadcast_event(
                 event_type="actions.updated",
                 agent_id=target_agent_id,
-                space_id=None,
+                space_id=target_route.space_id,
                 payload={
                     "action_id": created["action_id"],
                     "kind": created["kind"],
@@ -780,10 +921,20 @@ def handler(event, context):
             return {"statusCode": 200, "body": "ok"}
 
         try:
+            target_route = load_device_route(
+                _get_db(),
+                device_id=target_device_id,
+                expected_agent_id=target_agent_id,
+            )
+        except DeviceRoutingError as exc:
+            _send(event, connection_id, {"type": "cmd.run_action", "ok": False, "error": exc.code})
+            return {"statusCode": 200, "body": "ok"}
+
+        try:
             created = create_action(
                 _get_db(),
                 agent_id=target_agent_id,
-                space_id=None,
+                space_id=target_route.space_id,
                 kind="device_command",
                 payload={
                     "device_id": target_device_id,
@@ -814,7 +965,7 @@ def handler(event, context):
             broadcast_event(
                 event_type="actions.updated",
                 agent_id=target_agent_id,
-                space_id=None,
+                space_id=target_route.space_id,
                 payload={
                     "action_id": created["action_id"],
                     "kind": created["kind"],
@@ -870,10 +1021,20 @@ def handler(event, context):
             return {"statusCode": 200, "body": "ok"}
 
         try:
+            target_route = load_device_route(
+                _get_db(),
+                device_id=target_device_id,
+                expected_agent_id=target_agent_id,
+            )
+        except DeviceRoutingError as exc:
+            _send(event, connection_id, {"type": "cmd.config", "ok": False, "error": exc.code})
+            return {"statusCode": 200, "body": "ok"}
+
+        try:
             created = create_action(
                 _get_db(),
                 agent_id=target_agent_id,
-                space_id=None,
+                space_id=target_route.space_id,
                 kind="device_command",
                 payload={
                     "device_id": target_device_id,
@@ -901,7 +1062,7 @@ def handler(event, context):
             broadcast_event(
                 event_type="actions.updated",
                 agent_id=target_agent_id,
-                space_id=None,
+                space_id=target_route.space_id,
                 payload={
                     "action_id": created["action_id"],
                     "kind": created["kind"],

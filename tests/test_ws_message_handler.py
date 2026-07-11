@@ -174,11 +174,30 @@ class TestWsMessageHelloAuth(unittest.TestCase):
             )
         )
 
+        route = mock.Mock(
+            device_id="d1",
+            agent_id="a1",
+            location_id="location-1",
+            space_id="space-1",
+            scopes=("events:write",),
+            capabilities={"audio": True},
+        )
+        route.receipt.return_value = {
+            "device_id": "d1",
+            "agent_id": "a1",
+            "location_id": "location-1",
+            "space_id": "space-1",
+        }
         event = {
             "requestContext": {"connectionId": "c1", "domainName": "example.com", "stage": "dev"},
-            "body": json.dumps({"action": "hello", "device_token": "dtok", "space_id": "space-1"}),
+            "body": json.dumps({"action": "hello", "device_token": "dtok"}),
         }
-        resp = self.mod.handler(event, context=None)
+        with (
+            mock.patch.object(self.mod, "load_device_route", return_value=route),
+            mock.patch.object(self.mod, "_supersede_prior_device_connections", return_value=0),
+            mock.patch.object(self.mod, "record_device_connection_state", return_value="event-1"),
+        ):
+            resp = self.mod.handler(event, context=None)
         self.assertEqual(resp["statusCode"], 200)
 
         vals = self.table.update_calls[0]["ExpressionAttributeValues"]
@@ -186,8 +205,31 @@ class TestWsMessageHelloAuth(unittest.TestCase):
         self.assertEqual(vals[":did"], "d1")
         self.assertEqual(vals[":agid"], "a1")
         self.assertEqual(vals[":space"], "space-1")
+        self.assertEqual(vals[":loc"], "location-1")
+        self.assertTrue(vals[":epoch"])
         self.assertEqual(self.sent[-1]["payload"]["principal_type"], "device")
         self.assertEqual(self.sent[-1]["payload"]["device_id"], "d1")
+        self.assertEqual(self.sent[-1]["payload"]["route"]["space_id"], "space-1")
+
+    def test_hello_device_rejects_client_topology_claim(self) -> None:
+        self.mod.authenticate_device = mock.Mock(
+            return_value=types.SimpleNamespace(
+                device_id="d1",
+                agent_id="a1",
+                scopes=["events:write"],
+                capabilities={"audio": True},
+            )
+        )
+        event = {
+            "requestContext": {"connectionId": "c1", "domainName": "example.com", "stage": "dev"},
+            "body": json.dumps({"action": "hello", "device_token": "dtok", "space_id": "space-claimed"}),
+        }
+
+        resp = self.mod.handler(event, context=None)
+
+        self.assertEqual(resp["statusCode"], 200)
+        self.assertEqual(self.table.update_calls, [])
+        self.assertEqual(self.sent[-1]["payload"]["error"], "client_topology_claim_not_allowed")
 
     def test_hello_access_token_invalid_sends_error(self) -> None:
         self.mod.authenticate_user_access_token = mock.Mock(side_effect=PermissionError("bad token"))

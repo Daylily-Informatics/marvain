@@ -53,7 +53,9 @@ def test_timeout_sweeper_marks_actions_and_broadcasts_updates():
         out = sweeper.handler({}, None)
 
     assert out["timed_out"] == 2
-    assert mock_db.execute.call_count == 2
+    assert mock_db.query.call_count == 3
+    for call in mock_db.query.call_args_list[1:]:
+        assert "status IN ('awaiting_device_result', 'device_acknowledged')" in call.args[0]
     assert mock_broadcast.call_count == 2
     assert mock_emit_count.call_count == 2
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 # Set region before importing handler (boto3 needs it at import time)
@@ -19,6 +20,15 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "functions" / "ws_message"))
+
+
+def _persisted_device_route() -> SimpleNamespace:
+    return SimpleNamespace(
+        device_id="device-xyz",
+        agent_id="agent-xyz",
+        location_id="location-xyz",
+        space_id="space-xyz",
+    )
 
 
 def test_ws_message_template_can_queue_and_dispatch_device_actions():
@@ -758,6 +768,7 @@ class TestCmdPingBroadcast:
 
         with (
             patch("handler.check_agent_permission", return_value=True),
+            patch("handler.load_device_route", return_value=_persisted_device_route()),
             patch(
                 "handler.create_action",
                 return_value={"action_id": "action-ping-1", "kind": "device_command", "status": "approved"},
@@ -815,6 +826,7 @@ class TestCmdPingBroadcast:
 
         with (
             patch("handler.check_agent_permission", return_value=True),
+            patch("handler.load_device_route", return_value=_persisted_device_route()),
             patch(
                 "handler.create_action",
                 return_value={"action_id": "action-ping-2", "kind": "device_command", "status": "approved"},
@@ -879,6 +891,7 @@ class TestCmdRunActionBroadcast:
 
         with (
             patch("handler.check_agent_permission", return_value=True),
+            patch("handler.load_device_route", return_value=_persisted_device_route()),
             patch(
                 "handler.create_action",
                 return_value={"action_id": "action-run-1", "kind": "device_command", "status": "approved"},
@@ -944,6 +957,7 @@ class TestCmdRunActionBroadcast:
 
         with (
             patch("handler.check_agent_permission", return_value=True),
+            patch("handler.load_device_route", return_value=_persisted_device_route()),
             patch(
                 "handler.create_action",
                 return_value={"action_id": "action-run-2", "kind": "device_command", "status": "approved"},
@@ -1011,6 +1025,7 @@ class TestCmdConfigBroadcast:
 
         with (
             patch("handler.check_agent_permission", return_value=True),
+            patch("handler.load_device_route", return_value=_persisted_device_route()),
             patch(
                 "handler.create_action",
                 return_value={"action_id": "action-config-1", "kind": "device_command", "status": "approved"},

@@ -10,13 +10,55 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from agent_hub.device_routing import DeviceDispatchReceipt, DeviceRoute
 from agent_hub.integrations import IntegrationAccountRecord, IntegrationMessageRecord, IntegrationMessageWriteResult
+from agent_hub.provider_contracts import ProviderContractError, ProviderDestinationReceipt
 from agent_hub.tools.registry import ToolResult
 
 os.environ.setdefault("DB_RESOURCE_ARN", "arn:aws:rds:us-east-1:123:cluster:test")
 os.environ.setdefault("DB_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:123:secret:test")
 os.environ.setdefault("DB_NAME", "testdb")
 os.environ.setdefault("ACTION_QUEUE_URL", "https://sqs.us-east-1.amazonaws.com/123/action-queue")
+os.environ.setdefault("TOOL_RUNNER_SCOPES", "devices:write,slack:message:write,twilio:sms:send")
+os.environ.setdefault("WS_TABLE", "test-ws-connections")
+os.environ.setdefault("WS_API_ENDPOINT", "https://test.execute-api.us-east-1.amazonaws.com/prod")
+
+
+def _device_route() -> DeviceRoute:
+    return DeviceRoute(
+        device_id="00000000-0000-0000-0000-000000000111",
+        agent_id="00000000-0000-0000-0000-000000000001",
+        location_id="00000000-0000-0000-0000-000000000112",
+        location_name="Test Location",
+        space_id="00000000-0000-0000-0000-000000000002",
+        space_name="Test Space",
+        scopes=("devices:write",),
+        capabilities={"kind": "satellite"},
+    )
+
+
+def _dispatch_receipt() -> DeviceDispatchReceipt:
+    return DeviceDispatchReceipt(
+        route=_device_route(),
+        correlation_id="00000000-0000-0000-0000-000000000222",
+        connection_epochs=("epoch-1",),
+        sent_count=1,
+        stale_count=0,
+    )
+
+
+def _provider_receipt(
+    *, provider: str, destination: str, scope: str, account_id: str, action_id: str
+) -> ProviderDestinationReceipt:
+    return ProviderDestinationReceipt(
+        action_id=action_id,
+        agent_id="00000000-0000-0000-0000-000000000001",
+        space_id="00000000-0000-0000-0000-000000000002",
+        integration_account_id=account_id,
+        provider=provider,
+        destination=destination,
+        required_scope=scope,
+    )
 
 
 def _load_module():
@@ -45,29 +87,21 @@ def test_device_command_moves_to_awaiting_device_result():
         "payload": {
             "device_id": "00000000-0000-0000-0000-000000000111",
             "command": "run_action",
-            "kind": "device_status",
-            "payload": {},
+            "data": {"kind": "device_status", "payload": {}},
         },
         "required_scopes": ["devices:write"],
         "status": "approved",
     }
 
-    tool_result = ToolResult(
-        ok=True,
-        data={
-            "dispatched": True,
-            "device_id": "00000000-0000-0000-0000-000000000111",
-            "correlation_id": "00000000-0000-0000-0000-000000000222",
-            "timeout_seconds": 90,
-            "command": "run_action",
-            "connections_sent": 1,
-        },
-    )
-
     with (
         patch.object(runner, "_db", mock_db),
         patch.object(runner, "_cfg", SimpleNamespace(audit_bucket=None)),
         patch.object(runner, "_load_action", return_value=action),
+        patch.object(runner, "_reserve_action", return_value=action),
+        patch.object(runner, "get_tool_runner_scopes", return_value=["devices:write"]),
+        patch.object(runner, "load_device_route", return_value=_device_route()),
+        patch.object(runner, "_dispatch_device_message", return_value=_dispatch_receipt()),
+        patch.object(runner, "record_device_dispatch_receipt"),
         patch.object(
             runner,
             "begin_device_dispatch",
@@ -79,7 +113,6 @@ def test_device_command_moves_to_awaiting_device_result():
                 "status": "awaiting_device_result",
             },
         ) as mock_begin_dispatch,
-        patch.object(runner, "execute_tool", return_value=tool_result),
         patch.object(runner, "is_agent_disabled", return_value=False),
         patch.object(runner, "broadcast_event") as mock_broadcast,
         patch.object(runner, "emit_count"),
@@ -126,6 +159,8 @@ def test_non_device_tool_completes_immediately():
         patch.object(runner, "_db", mock_db),
         patch.object(runner, "_cfg", SimpleNamespace(audit_bucket=None)),
         patch.object(runner, "_load_action", return_value=action),
+        patch.object(runner, "_reserve_action", return_value=action),
+        patch.object(runner, "get_tool_runner_scopes", return_value=["events:write"]),
         patch.object(runner, "execute_tool", return_value=ToolResult(ok=True, data={"delivered": True})),
         patch.object(runner, "is_agent_disabled", return_value=False),
         patch.object(runner, "broadcast_event") as mock_broadcast,
@@ -257,6 +292,19 @@ def test_slack_post_message_executes_through_runner():
         patch.object(runner, "_db", mock_db),
         patch.object(runner, "_cfg", SimpleNamespace(audit_bucket=None)),
         patch.object(runner, "_load_action", return_value=action),
+        patch.object(runner, "_reserve_action", return_value=action),
+        patch.object(runner, "get_tool_runner_scopes", return_value=["slack:message:write"]),
+        patch.object(
+            runner,
+            "require_outbound_destination",
+            return_value=_provider_receipt(
+                provider="slack",
+                destination="C123",
+                scope="slack:message:write",
+                account_id="slack-acct-1",
+                action_id=action["action_id"],
+            ),
+        ),
         patch.object(runner, "is_agent_disabled", return_value=False),
         patch.object(runner, "broadcast_event") as mock_broadcast,
         patch.object(runner, "emit_count"),
@@ -336,6 +384,19 @@ def test_twilio_send_sms_executes_through_runner():
         patch.object(runner, "_db", mock_db),
         patch.object(runner, "_cfg", SimpleNamespace(audit_bucket=None)),
         patch.object(runner, "_load_action", return_value=action),
+        patch.object(runner, "_reserve_action", return_value=action),
+        patch.object(runner, "get_tool_runner_scopes", return_value=["twilio:sms:send"]),
+        patch.object(
+            runner,
+            "require_outbound_destination",
+            return_value=_provider_receipt(
+                provider="twilio",
+                destination="+15551230001",
+                scope="twilio:sms:send",
+                account_id="twilio-acct-1",
+                action_id=action["action_id"],
+            ),
+        ),
         patch.object(runner, "is_agent_disabled", return_value=False),
         patch.object(runner, "broadcast_event") as mock_broadcast,
         patch.object(runner, "emit_count"),
@@ -394,3 +455,48 @@ def test_twilio_send_sms_executes_through_runner():
     assert inserted_message.dedupe_key == "action:00000000-0000-0000-0000-000000000304"
     assert mock_finalize.call_count == 1
     assert mock_finalize.call_args.kwargs["status"] == "sent"
+
+
+def test_runner_rejects_unconfigured_provider_destination_before_tool_execution() -> None:
+    runner = _load_module()
+    mock_db = MagicMock()
+    action = {
+        "action_id": "00000000-0000-0000-0000-000000000305",
+        "agent_id": "00000000-0000-0000-0000-000000000001",
+        "space_id": "00000000-0000-0000-0000-000000000002",
+        "kind": "slack_post_message",
+        "payload": {
+            "integration_account_id": "slack-acct-1",
+            "channel_id": "C-NOT-ALLOWED",
+            "text": "must not send",
+        },
+        "required_scopes": ["slack:message:write"],
+        "status": "approved",
+    }
+
+    with (
+        patch.object(runner, "_db", mock_db),
+        patch.object(runner, "_cfg", SimpleNamespace(audit_bucket=None)),
+        patch.object(runner, "_load_action", return_value=action),
+        patch.object(runner, "_reserve_action", return_value=action),
+        patch.object(runner, "get_tool_runner_scopes", return_value=["slack:message:write"]),
+        patch.object(
+            runner,
+            "require_outbound_destination",
+            side_effect=ProviderContractError("provider_destination_not_allowed"),
+        ),
+        patch.object(runner, "execute_tool") as mock_execute_tool,
+        patch.object(runner, "is_agent_disabled", return_value=False),
+        patch.object(runner, "broadcast_event"),
+        patch.object(runner, "emit_count"),
+    ):
+        out = runner.handler(
+            {"Records": [{"body": json.dumps({"action_id": action["action_id"]})}]},
+            {},
+        )
+
+    assert out["processed"] == 1
+    mock_execute_tool.assert_not_called()
+    final_params = mock_db.execute.call_args.args[1]
+    assert final_params["status"] == "failed"
+    assert final_params["error"] == "provider_destination_not_allowed"

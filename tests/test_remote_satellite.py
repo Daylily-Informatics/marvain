@@ -9,6 +9,7 @@ import asyncio
 import importlib.util
 import platform
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -299,32 +300,40 @@ class TestSecurityHardening:
         assert "disallowed_host_ip" in result["error"]
 
     def test_hub_client_rejects_non_local_insecure_ws_url(self):
-        client = _daemon_module.HubClient(
-            _daemon_module.HubClientConfig(
-                ws_url="ws://example.com/ws",
-                rest_url="https://example.com",
-                device_token="token-123",
-            ),
-            on_command=None,
-        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = _daemon_module.HubClient(
+                _daemon_module.HubClientConfig(
+                    ws_url="ws://example.com/ws",
+                    rest_url="https://example.com",
+                    device_token="token-123",
+                    receipt_store_path=str(Path(temp_dir) / "receipts.json"),
+                ),
+                on_command=None,
+            )
 
-        with pytest.raises(ValueError, match="wss_required_for_non_local_endpoint"):
-            _run_async(client.connect())
+            with pytest.raises(ValueError, match="wss_required_for_non_local_endpoint"):
+                _run_async(client.connect())
 
     def test_hub_client_allows_local_ws_for_development(self):
-        client = _daemon_module.HubClient(
-            _daemon_module.HubClientConfig(
-                ws_url="ws://localhost:9000/ws",
-                rest_url="http://localhost:8000",
-                device_token="token-123",
-            ),
-            on_command=None,
-        )
-        hub_client_module = sys.modules["hub_client"]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = _daemon_module.HubClient(
+                _daemon_module.HubClientConfig(
+                    ws_url="ws://localhost:9000/ws",
+                    rest_url="http://localhost:8000",
+                    device_token="token-123",
+                    receipt_store_path=str(Path(temp_dir) / "receipts.json"),
+                ),
+                on_command=None,
+            )
+            hub_client_module = sys.modules["hub_client"]
 
-        with patch.object(hub_client_module.websockets, "connect", new=AsyncMock(side_effect=RuntimeError("stop"))):
-            with pytest.raises(RuntimeError, match="stop"):
-                _run_async(client.connect())
+            with patch.object(
+                hub_client_module.websockets,
+                "connect",
+                new=AsyncMock(side_effect=RuntimeError("stop")),
+            ):
+                with pytest.raises(RuntimeError, match="stop"):
+                    _run_async(client.connect())
 
     def test_status_returns_disk_info(self):
         """Status action should return disk usage information."""
@@ -363,3 +372,79 @@ class TestSecurityHardening:
 
         assert result is not None
         assert result["status"] == "success"
+
+
+def test_satellite_persists_result_and_does_not_reexecute_duplicate_command(tmp_path: Path) -> None:
+    calls = 0
+
+    async def command_handler(msg: dict[str, Any]) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return {
+            "action": "device_action_result",
+            "kind": str(msg["kind"]),
+            "status": "success",
+            "result": {"call": calls},
+            "completed_at": 123,
+        }
+
+    config = _daemon_module.HubClientConfig(
+        ws_url="ws://localhost:9000/ws",
+        rest_url="http://localhost:8000",
+        device_token="token-123",
+        receipt_store_path=str(tmp_path / "receipts.json"),
+    )
+    client = _daemon_module.HubClient(config, on_command=command_handler)
+    client._device_id = "device-1"
+    client._send = AsyncMock()
+    message = {
+        "type": "cmd.run_action",
+        "action_id": "action-1",
+        "correlation_id": "correlation-1",
+        "kind": "echo",
+        "payload": {"message": "hello"},
+    }
+
+    _run_async(client._handle_message(message))
+    _run_async(client._handle_message(message))
+
+    assert calls == 1
+    assert client._send.await_count == 4
+    persisted = (tmp_path / "receipts.json").read_text(encoding="utf-8")
+    assert "action-1:correlation-1" in persisted
+
+    restarted = _daemon_module.HubClient(config, on_command=command_handler)
+    restarted._device_id = "device-1"
+    restarted._send = AsyncMock()
+    _run_async(restarted._handle_message(message))
+
+    assert calls == 1
+    assert restarted._send.await_count == 2
+
+
+def test_satellite_clean_stop_emits_disconnect_receipt(tmp_path: Path) -> None:
+    client = _daemon_module.HubClient(
+        _daemon_module.HubClientConfig(
+            ws_url="ws://localhost:9000/ws",
+            rest_url="http://localhost:8000",
+            device_token="token-123",
+            receipt_store_path=str(tmp_path / "receipts.json"),
+        ),
+        on_command=None,
+    )
+    client._authenticated = True
+    client._connection_epoch = "epoch-1"
+    client._ws = AsyncMock()
+    client._send = AsyncMock()
+
+    _run_async(client.stop())
+
+    client._send.assert_awaited_once_with(
+        {
+            "action": "device_connection_state",
+            "state": "disconnected",
+            "connection_epoch": "epoch-1",
+            "reason": "client_stop",
+        }
+    )
+    assert client._authenticated is False

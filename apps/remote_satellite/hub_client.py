@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import urllib.parse
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Coroutine
 
 import aiohttp
@@ -44,6 +46,7 @@ class HubClientConfig:
     max_reconnect_delay: int = 60  # seconds
     location_label: str | None = None  # Human-readable location label
     location_space_id: str | None = None  # Optional space_id for "this device represents this space"
+    receipt_store_path: str | None = None
 
 
 class HubClient:
@@ -61,7 +64,49 @@ class HubClient:
         self._authenticated = False
         self._device_id: str | None = None
         self._agent_id: str | None = None
+        self._connection_epoch: str | None = None
+        self._route: dict[str, Any] | None = None
         self._reconnect_delay = config.reconnect_delay
+        if not str(config.receipt_store_path or "").strip():
+            raise ValueError("receipt_store_path_required_for_command_execution")
+        self._receipt_store_path = Path(str(config.receipt_store_path)).expanduser()
+        self._command_receipts = self._load_command_receipts()
+
+    def _load_command_receipts(self) -> dict[str, dict[str, Any]]:
+        if self._receipt_store_path is None or not self._receipt_store_path.exists():
+            return {}
+        try:
+            payload = json.loads(self._receipt_store_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError("command_receipt_store_invalid") from exc
+        if not isinstance(payload, dict) or any(
+            not isinstance(key, str) or not isinstance(value, dict) for key, value in payload.items()
+        ):
+            raise ValueError("command_receipt_store_invalid")
+        return {key: dict(value) for key, value in payload.items()}
+
+    def _persist_command_receipt(self, key: str, result: dict[str, Any]) -> None:
+        if self._receipt_store_path is None:
+            raise RuntimeError("command_receipt_store_not_configured")
+        self._command_receipts[key] = dict(result)
+        while len(self._command_receipts) > 1024:
+            del self._command_receipts[next(iter(self._command_receipts))]
+        self._receipt_store_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self._receipt_store_path.with_suffix(self._receipt_store_path.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(self._command_receipts, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, self._receipt_store_path)
+
+    @staticmethod
+    def _command_receipt_key(msg: dict[str, Any]) -> str | None:
+        action_id = str(msg.get("action_id") or "").strip()
+        correlation_id = str(msg.get("correlation_id") or "").strip()
+        if not action_id or not correlation_id:
+            return None
+        return f"{action_id}:{correlation_id}"
 
     async def connect(self) -> None:
         """Connect to Hub WebSocket and authenticate."""
@@ -81,6 +126,16 @@ class HubClient:
             self._authenticated = True
             self._device_id = response.get("device_id")
             self._agent_id = response.get("agent_id")
+            self._connection_epoch = str(response.get("connection_epoch") or "").strip() or None
+            route = response.get("route")
+            if not isinstance(route, dict):
+                raise ConnectionError("Hub authentication response missing device route")
+            route_space_id = str(route.get("space_id") or "").strip()
+            if not route_space_id:
+                raise ConnectionError("Hub authentication response missing route space")
+            if self.config.location_space_id and route_space_id != self.config.location_space_id:
+                raise ConnectionError("Configured space does not match persisted device route")
+            self._route = dict(route)
             self._reconnect_delay = self.config.reconnect_delay  # Reset on success
             logger.info("Authenticated as device %s for agent %s", self._device_id, self._agent_id)
         else:
@@ -103,8 +158,9 @@ class HubClient:
     async def _handle_message(self, msg: dict[str, Any]) -> None:
         """Handle incoming message from Hub."""
         msg_type = msg.get("type", "")
+        receipt_key = self._command_receipt_key(msg)
 
-        if msg_type.startswith("cmd.") and msg.get("action_id") and msg.get("correlation_id"):
+        if msg_type.startswith("cmd.") and receipt_key:
             await self._send(
                 {
                     "action": "device_action_ack",
@@ -114,26 +170,31 @@ class HubClient:
                     "received_at": int(time.time() * 1000),
                 }
             )
+            prior_result = self._command_receipts.get(receipt_key)
+            if prior_result is not None:
+                await self._send(dict(prior_result))
+                logger.info("Replayed persisted result for duplicate command %s", msg.get("action_id"))
+                return
 
         if msg_type == "cmd.ping":
             action_id = str(msg.get("action_id") or "")
             correlation_id = str(msg.get("correlation_id") or "")
             if action_id and correlation_id:
-                await self._send(
-                    {
-                        "action": "device_action_result",
-                        "action_id": action_id,
-                        "correlation_id": correlation_id,
-                        "device_id": self._device_id,
-                        "kind": "ping",
-                        "status": "success",
-                        "result": {
-                            "original_sent_at": msg.get("sent_at"),
-                            "received_at": int(time.time() * 1000),
-                        },
-                        "completed_at": int(time.time() * 1000),
-                    }
-                )
+                result = {
+                    "action": "device_action_result",
+                    "action_id": action_id,
+                    "correlation_id": correlation_id,
+                    "device_id": self._device_id,
+                    "kind": "ping",
+                    "status": "success",
+                    "result": {
+                        "original_sent_at": msg.get("sent_at"),
+                        "received_at": int(time.time() * 1000),
+                    },
+                    "completed_at": int(time.time() * 1000),
+                }
+                self._persist_command_receipt(str(receipt_key), result)
+                await self._send(result)
             else:
                 await self._send(
                     {
@@ -149,6 +210,10 @@ class HubClient:
             if result:
                 if msg_type in {"cmd.run_action", "cmd.config"} and not result.get("device_id"):
                     result["device_id"] = self._device_id
+                if receipt_key:
+                    result["action_id"] = str(msg.get("action_id") or "")
+                    result["correlation_id"] = str(msg.get("correlation_id") or "")
+                    self._persist_command_receipt(receipt_key, result)
                 await self._send(result)
 
         elif msg_type == "pong":
@@ -238,5 +303,15 @@ class HubClient:
         """Stop the client."""
         self._running = False
         if self._ws:
+            if self._authenticated and self._connection_epoch:
+                await self._send(
+                    {
+                        "action": "device_connection_state",
+                        "state": "disconnected",
+                        "connection_epoch": self._connection_epoch,
+                        "reason": "client_stop",
+                    }
+                )
             await self._ws.close()
             self._ws = None
+        self._authenticated = False
