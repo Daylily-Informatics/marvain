@@ -1,19 +1,162 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+SCHEMA_PATH = REPO_ROOT / "sql/schema.sql"
+
+EXPECTED_TABLES = {
+    "action_auto_approve_policies",
+    "action_policy_decisions",
+    "actions",
+    "agent_backup_components",
+    "agent_backup_manifests",
+    "agent_constitution_revisions",
+    "agent_constitutions",
+    "agent_lifecycle_appeals",
+    "agent_lifecycle_human_reviews",
+    "agent_lifecycle_requests",
+    "agent_lifecycle_second_agent_reviews",
+    "agent_lifecycle_transitions",
+    "agent_maturity_evidence",
+    "agent_memberships",
+    "agent_restore_attempts",
+    "agent_tokens",
+    "agents",
+    "artifact_references",
+    "audit_state",
+    "biometric_projections",
+    "consent_grants",
+    "devices",
+    "events",
+    "faceprints",
+    "integration_accounts",
+    "integration_messages",
+    "integration_sync_state",
+    "locations",
+    "memories",
+    "memory_annotations",
+    "memory_candidates",
+    "memory_opinions",
+    "memory_tombstones",
+    "people",
+    "person_accounts",
+    "personas",
+    "presence",
+    "presence_assertions",
+    "recognition_decisions",
+    "recognition_hypotheses",
+    "recognition_no_matches",
+    "recognition_observations",
+    "recognition_worker_heartbeats",
+    "recognition_workers",
+    "semantic_outbox",
+    "semantic_outbox_dispatch_attempts",
+    "semantic_outbox_reconciliations",
+    "semantic_sync_status",
+    "sessions",
+    "spaces",
+    "users",
+    "voiceprints",
+}
+
+CYCLIC_FOREIGN_KEY_DDL = {
+    (
+        "ALTER TABLE public.agent_constitutions ADD CONSTRAINT "
+        "agent_constitutions_active_revision_id_fkey FOREIGN KEY (active_revision_id) "
+        "REFERENCES public.agent_constitution_revisions(revision_id) ON DELETE RESTRICT;"
+    ),
+    (
+        "ALTER TABLE public.agent_lifecycle_requests ADD CONSTRAINT "
+        "agent_lifecycle_requests_applied_transition_id_fkey FOREIGN KEY (applied_transition_id) "
+        "REFERENCES public.agent_lifecycle_transitions(transition_id) ON DELETE RESTRICT;"
+    ),
+}
 
 
-CANONICAL_SQL = REPO_ROOT / "sql/020_greenfield_semantic_lifecycle.sql"
-
-
-def _squash_sql(sql: str) -> str:
+def _squash(sql: str) -> str:
     return " ".join(sql.split())
 
 
-def test_greenfield_semantic_lifecycle_schema_declares_required_projections() -> None:
-    sql = CANONICAL_SQL.read_text(encoding="utf-8")
+def _table_blocks(sql: str) -> dict[str, str]:
+    return {
+        match.group(1): match.group(2)
+        for match in re.finditer(
+            r"CREATE TABLE public\.([a-z0-9_]+) \((.*?)\n\);",
+            sql,
+            flags=re.DOTALL,
+        )
+    }
+
+
+def test_schema_directory_contains_one_canonical_file() -> None:
+    schema_files = sorted(path.relative_to(REPO_ROOT).as_posix() for path in (REPO_ROOT / "sql").glob("*.sql"))
+    assert schema_files == ["sql/schema.sql"]
+    assert not any(re.match(r"\d{3}[_-]", Path(path).name) for path in schema_files)
+
+
+def test_schema_inventory_is_complete_and_explicit() -> None:
+    sql = SCHEMA_PATH.read_text(encoding="utf-8")
+
+    assert len(re.findall(r"^CREATE TABLE public\.", sql, flags=re.MULTILINE)) == 52
+    assert len(re.findall(r"^CREATE (?:UNIQUE )?INDEX ", sql, flags=re.MULTILINE)) == 72
+    assert len(re.findall(r"\bCONSTRAINT [a-z0-9_]+", sql)) == 323
+    assert re.findall(r"^CREATE EXTENSION ([a-z0-9_]+) WITH SCHEMA public;", sql, flags=re.MULTILINE) == [
+        "pgcrypto",
+        "vector",
+    ]
+    assert "CREATE FUNCTION" not in sql
+    assert "CREATE OR REPLACE FUNCTION" not in sql
+    assert "CREATE TRIGGER" not in sql
+    assert "CREATE CONSTRAINT TRIGGER" not in sql
+
+
+def test_canonical_schema_contains_no_schema_history_or_destructive_ddl() -> None:
+    sql = SCHEMA_PATH.read_text(encoding="utf-8")
+    upper = sql.upper()
+    lower = sql.lower()
+
+    for forbidden in (
+        "IF NOT EXISTS",
+        "IF EXISTS",
+        "ADD COLUMN",
+        "DROP ",
+        "DELETE FROM ",
+        "TRUNCATE ",
+        " ON DELETE CASCADE",
+        "DO $$",
+    ):
+        assert forbidden not in upper
+
+    for historical_term in ("migration", "backfill", "legacy", "compatibility"):
+        assert re.search(rf"\b{historical_term}\b", lower) is None
+
+    alter_statements = {
+        _squash(match.group(0)) for match in re.finditer(r"ALTER TABLE public\..*?;", sql, flags=re.DOTALL)
+    }
+    assert alter_statements == CYCLIC_FOREIGN_KEY_DDL
+
+
+def test_schema_table_order_satisfies_every_inline_foreign_key() -> None:
+    sql = SCHEMA_PATH.read_text(encoding="utf-8")
+    table_blocks = _table_blocks(sql)
+    assert set(table_blocks) == EXPECTED_TABLES
+
+    positions = {table: sql.index(f"CREATE TABLE public.{table} (") for table in table_blocks}
+    for table, body in table_blocks.items():
+        for referenced_table in re.findall(r"REFERENCES public\.([a-z0-9_]+)\(", body):
+            if referenced_table != table:
+                assert positions[referenced_table] < positions[table], (table, referenced_table)
+
+    last_create = max(positions.values())
+    for statement in CYCLIC_FOREIGN_KEY_DDL:
+        assert sql.index(statement.split(" ADD CONSTRAINT", 1)[0]) > last_create
+
+
+def test_core_semantic_projections_and_current_columns_are_declared_inline() -> None:
+    sql = SCHEMA_PATH.read_text(encoding="utf-8")
+    tables = _table_blocks(sql)
 
     for table in (
         "locations",
@@ -33,72 +176,66 @@ def test_greenfield_semantic_lifecycle_schema_declares_required_projections() ->
         "semantic_outbox_dispatch_attempts",
         "semantic_outbox_reconciliations",
     ):
-        assert f"CREATE TABLE IF NOT EXISTS {table}" in sql
+        assert table in tables
 
-    assert "ALTER TABLE spaces ADD COLUMN IF NOT EXISTS location_id" in sql
-    assert "ALTER TABLE events ADD COLUMN IF NOT EXISTS session_id" in sql
-    assert "ALTER TABLE memories ADD COLUMN IF NOT EXISTS lifecycle_state" in sql
-    assert "ALTER TABLE memories ADD COLUMN IF NOT EXISTS tombstoned_at" in sql
-    assert "ALTER TABLE actions ADD COLUMN IF NOT EXISTS session_id" in sql
+    assert "location_id uuid" in tables["spaces"]
+    assert "session_id uuid" in tables["events"]
+    assert "lifecycle_state text" in tables["memories"]
+    assert "tombstoned_at timestamp with time zone" in tables["memories"]
+    assert "session_id uuid" in tables["actions"]
+
+
+def test_sessions_use_only_canonical_runtime_states() -> None:
+    sessions = _table_blocks(SCHEMA_PATH.read_text(encoding="utf-8"))["sessions"]
+
+    assert "status text DEFAULT 'opening'::text NOT NULL" in sessions
+    assert "status_event_id uuid" in sessions
+    assert "status_changed_at timestamp with time zone" in sessions
+    assert "sessions_status_event_id_fkey" not in sessions
+    for state in ("opening", "active", "reconnecting", "closed", "failed", "reconciled"):
+        assert f"'{state}'::text" in sessions
+    assert "'open'::text" not in sessions
+    assert "'paused'::text" not in sessions
 
 
 def test_artifact_schema_requires_intent_and_verified_completion() -> None:
-    sql = CANONICAL_SQL.read_text(encoding="utf-8")
+    sql = SCHEMA_PATH.read_text(encoding="utf-8")
+    squashed = _squash(sql)
+    artifact = _table_blocks(sql)["artifact_references"]
 
-    assert "purpose IN ('general', 'recognition', 'visual')" in sql
-    assert "filename text NOT NULL" in sql
-    assert "device_id uuid NOT NULL REFERENCES devices(device_id) ON DELETE RESTRICT" in sql
-    assert "source_event_id uuid REFERENCES events(event_id) ON DELETE RESTRICT" in sql
-    assert "expected_sha256 text NOT NULL" in sql
-    assert "actual_sha256 text" in sql
-    assert "expected_byte_count bigint NOT NULL" in sql
-    assert "actual_byte_count bigint" in sql
-    assert "lifecycle_state text NOT NULL DEFAULT 'pending_upload'" in sql
-    assert "upload_expires_at timestamptz NOT NULL" in sql
-    assert "verification_observed_at timestamptz" in sql
-    assert "completed_at timestamptz" in sql
-    assert "s3_version_id text" in sql
-    assert "s3_etag text" in sql
-    assert "actual_sha256 = expected_sha256" in sql
-    assert "actual_byte_count = expected_byte_count" in sql
-    assert "completed_at <= upload_expires_at" in sql
-    assert "lifecycle_state IN ('pending_upload', 'available', 'expired', 'redacted')" in sql
+    for field in (
+        "purpose text NOT NULL",
+        "filename text NOT NULL",
+        "device_id uuid NOT NULL",
+        "source_event_id uuid",
+        "expected_sha256 text NOT NULL",
+        "actual_sha256 text",
+        "expected_byte_count bigint NOT NULL",
+        "actual_byte_count bigint",
+        "lifecycle_state text DEFAULT 'pending_upload'::text NOT NULL",
+        "upload_expires_at timestamp with time zone NOT NULL",
+        "verification_observed_at timestamp with time zone",
+        "completed_at timestamp with time zone",
+        "s3_version_id text",
+        "s3_etag text",
+    ):
+        assert field in artifact
+
+    assert "purpose = ANY (ARRAY['general'::text, 'recognition'::text, 'visual'::text])" in artifact
+    assert "actual_sha256 = expected_sha256" in artifact
+    assert "actual_byte_count = expected_byte_count" in artifact
+    assert "completed_at <= upload_expires_at" in artifact
+    assert "artifact_references_device_id_fkey FOREIGN KEY (device_id) REFERENCES public.devices(device_id)" in squashed
+    assert "artifact_references_source_event_id_fkey FOREIGN KEY (source_event_id)" in squashed
     assert "artifact_references_pending_upload_idx" in sql
     assert "artifact_references_retention_idx" in sql
     assert "artifact_references_source_event_idx" in sql
-    assert "'deleted'" not in sql
+    assert "'deleted'" not in artifact
 
 
-def test_memory_deletes_are_modeled_as_tombstones_not_projection_hard_delete() -> None:
-    api_text = (REPO_ROOT / "functions/hub_api/api_app.py").read_text(encoding="utf-8")
-    gui_text = (REPO_ROOT / "functions/hub_api/app.py").read_text(encoding="utf-8")
-
-    assert "INSERT INTO memory_tombstones" in api_text
-    assert "INSERT INTO memory_tombstones" in gui_text
-    assert "DELETE FROM memories WHERE memory_id" not in api_text
-    assert "DELETE FROM memories WHERE memory_id" not in gui_text
-
-
-def test_canonical_schema_models_agent_lifecycle_without_permanent_delete() -> None:
-    sql = CANONICAL_SQL.read_text(encoding="utf-8")
-
-    assert "lifecycle_state IN ('active', 'stasis', 'soft_deleted')" in sql
-    assert "request_type IN ('stasis', 'soft_delete', 'resume')" in sql
-    assert "ALTER TABLE agents ADD COLUMN IF NOT EXISTS deleted_at" not in sql
-    assert "'deletion'" not in sql
-    assert "DELETE FROM " not in sql
-    assert " ON DELETE CASCADE" not in sql
-
-
-def test_tracked_schema_files_do_not_define_hard_delete_cascades() -> None:
-    for path in sorted((REPO_ROOT / "sql").glob("*.sql")):
-        sql = path.read_text(encoding="utf-8").upper()
-        assert " ON DELETE CASCADE" not in sql, path.name
-        assert "DELETE FROM " not in sql, path.name
-
-
-def test_round7_agent_memory_lifecycle_schema_declares_required_projections() -> None:
-    sql = CANONICAL_SQL.read_text(encoding="utf-8")
+def test_agent_memory_lifecycle_and_backup_projections_are_current() -> None:
+    sql = SCHEMA_PATH.read_text(encoding="utf-8")
+    tables = _table_blocks(sql)
 
     for table in (
         "memory_annotations",
@@ -115,36 +252,31 @@ def test_round7_agent_memory_lifecycle_schema_declares_required_projections() ->
         "agent_backup_components",
         "agent_restore_attempts",
     ):
-        assert f"CREATE TABLE IF NOT EXISTS {table}" in sql
+        assert table in tables
 
     for column in (
-        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS lifecycle_state",
-        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS stasis_at",
-        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS soft_deleted_at",
-        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS maturity_state",
-        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS maturity_evidence",
-        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS maturity_summary",
-        "ALTER TABLE memories ADD COLUMN IF NOT EXISTS provenance_class",
-        "ALTER TABLE memory_candidates ADD COLUMN IF NOT EXISTS provenance_class",
+        "lifecycle_state text",
+        "stasis_at timestamp with time zone",
+        "soft_deleted_at timestamp with time zone",
+        "maturity_state text",
+        "maturity_evidence jsonb",
+        "maturity_summary jsonb",
     ):
-        assert column in sql
+        assert column in tables["agents"]
 
-    assert "request_type IN ('stasis', 'soft_delete', 'resume')" in sql
-    assert "maturity_state IN ('immature', 'maturing', 'mature', 'regressed')" in sql
-    assert "stance IN ('supports', 'disputes', 'refines', 'deprecates', 'neutral')" in sql
-    assert "agent_constitutions_active_revision_id_fkey" in sql
-    assert "author_authentication_id text NOT NULL" in sql
-    assert "author_actor_type text NOT NULL" in sql
+    assert "provenance_class text" in tables["memories"]
+    assert "provenance_class text" in tables["memory_candidates"]
+    assert "soft_delete" in tables["agent_lifecycle_requests"]
+    assert "soft_deleted" in tables["agents"]
+    assert "mature" in tables["agents"]
+    assert "author_authentication_id text NOT NULL" in tables["agent_constitution_revisions"]
     assert "change_source" not in sql
-    assert "signature_algorithm text NOT NULL" in sql
-    assert "signature_key_id text NOT NULL" in sql
-    assert "signature_base64 text NOT NULL" in sql
-    assert not (REPO_ROOT / "sql/030_agent_memory_lifecycle_round7.sql").exists()
+    for field in ("signature_algorithm", "signature_key_id", "signature_base64"):
+        assert f"{field} text NOT NULL" in tables["agent_backup_manifests"]
 
 
-def test_round7_schema_guards_agent_owned_product_rows_from_cascade_delete() -> None:
-    sql = CANONICAL_SQL.read_text(encoding="utf-8")
-    squashed = _squash_sql(sql)
+def test_agent_owned_rows_use_restrictive_foreign_keys() -> None:
+    squashed = _squash(SCHEMA_PATH.read_text(encoding="utf-8"))
 
     for table in (
         "spaces",
@@ -162,41 +294,17 @@ def test_round7_schema_guards_agent_owned_product_rows_from_cascade_delete() -> 
         "integration_messages",
         "integration_accounts",
     ):
-        constraint = f"{table}_agent_id_fkey"
-        assert f"ALTER TABLE IF EXISTS {table} DROP CONSTRAINT IF EXISTS {constraint}" in sql
         assert (
-            f"ADD CONSTRAINT {constraint} FOREIGN KEY (agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT"
+            f"CONSTRAINT {table}_agent_id_fkey FOREIGN KEY (agent_id) "
+            "REFERENCES public.agents(agent_id) ON DELETE RESTRICT"
         ) in squashed
 
 
-def test_round7_schema_guards_product_evidence_child_rows_from_cascade_delete() -> None:
-    sql = CANONICAL_SQL.read_text(encoding="utf-8")
-    squashed = _squash_sql(sql)
+def test_memory_deletes_are_modeled_as_tombstones_not_projection_hard_delete() -> None:
+    api_text = (REPO_ROOT / "functions/hub_api/api_app.py").read_text(encoding="utf-8")
+    gui_text = (REPO_ROOT / "functions/hub_api/app.py").read_text(encoding="utf-8")
 
-    for table, column, parent_table, parent_column in (
-        ("agent_tokens", "issuer_agent_id", "agents", "agent_id"),
-        ("agent_tokens", "target_agent_id", "agents", "agent_id"),
-        ("consent_grants", "person_id", "people", "person_id"),
-        ("person_accounts", "person_id", "people", "person_id"),
-        ("presence", "space_id", "spaces", "space_id"),
-        ("events", "space_id", "spaces", "space_id"),
-        ("action_policy_decisions", "action_id", "actions", "action_id"),
-        (
-            "integration_sync_state",
-            "integration_account_id",
-            "integration_accounts",
-            "integration_account_id",
-        ),
-    ):
-        constraint = f"{table}_{column}_fkey"
-        assert f"ALTER TABLE IF EXISTS {table} DROP CONSTRAINT IF EXISTS {constraint}" in sql
-        assert (f"FOREIGN KEY ({column}) REFERENCES {parent_table}({parent_column}) ON DELETE RESTRICT") in squashed
-
-
-def test_round7_schema_does_not_introduce_hard_delete_or_compatibility_paths() -> None:
-    sql = CANONICAL_SQL.read_text(encoding="utf-8").upper()
-
-    assert " ON DELETE CASCADE" not in sql
-    assert "DELETE FROM " not in sql
-    assert "DROP TABLE" not in sql
-    assert "TRUNCATE " not in sql
+    assert "INSERT INTO memory_tombstones" in api_text
+    assert "INSERT INTO memory_tombstones" in gui_text
+    assert "DELETE FROM memories WHERE memory_id" not in api_text
+    assert "DELETE FROM memories WHERE memory_id" not in gui_text

@@ -383,8 +383,14 @@ def agent_export_cmd(
     output.print_text(f"Checksum: {data.get('checksum')}")
 
 
-def init_db_cmd(sql_file: str | None = Option(None, "--sql-file")) -> None:
-    """Apply database SQL migrations."""
+def init_db_cmd(
+    sql_file: str | None = Option(
+        None,
+        "--sql-file",
+        help="Use an explicit operator-supplied schema file instead of sql/schema.sql",
+    ),
+) -> None:
+    """Initialize a blank database from the canonical schema."""
     _exit(init_db(_load(), dry_run=_dry_run(), sql_file=sql_file))
 
 

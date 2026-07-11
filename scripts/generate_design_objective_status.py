@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -165,26 +166,26 @@ OBJECTIVES: tuple[DesignObjective, ...] = (
             EvidenceToken(
                 "code",
                 "Locations table",
-                "sql/020_greenfield_semantic_lifecycle.sql",
-                "CREATE TABLE IF NOT EXISTS locations",
+                "sql/schema.sql",
+                "CREATE TABLE public.locations",
             ),
             EvidenceToken(
                 "code",
                 "Sessions table",
-                "sql/020_greenfield_semantic_lifecycle.sql",
-                "CREATE TABLE IF NOT EXISTS sessions",
+                "sql/schema.sql",
+                "CREATE TABLE public.sessions",
             ),
             EvidenceToken(
                 "code",
                 "Events session link",
-                "sql/020_greenfield_semantic_lifecycle.sql",
-                "ALTER TABLE events ADD COLUMN IF NOT EXISTS session_id",
+                "sql/schema.sql",
+                "session_id uuid",
             ),
             EvidenceToken(
                 "code",
                 "Devices current space",
-                "sql/020_greenfield_semantic_lifecycle.sql",
-                "ALTER TABLE devices ADD COLUMN IF NOT EXISTS current_space_id",
+                "sql/schema.sql",
+                "current_space_id uuid",
             ),
             EvidenceToken("gui", "Locations page", "functions/hub_api/app.py", '@app.get("/locations"'),
             EvidenceToken("gui", "Sessions page", "functions/hub_api/app.py", '@app.get("/sessions"'),
@@ -205,19 +206,19 @@ OBJECTIVES: tuple[DesignObjective, ...] = (
             EvidenceToken(
                 "code",
                 "Memory candidates table",
-                "sql/020_greenfield_semantic_lifecycle.sql",
-                "CREATE TABLE IF NOT EXISTS memory_candidates",
+                "sql/schema.sql",
+                "CREATE TABLE public.memory_candidates",
             ),
             EvidenceToken(
                 "code",
                 "Memory tombstones table",
-                "sql/020_greenfield_semantic_lifecycle.sql",
-                "CREATE TABLE IF NOT EXISTS memory_tombstones",
+                "sql/schema.sql",
+                "CREATE TABLE public.memory_tombstones",
             ),
             EvidenceToken(
                 "code",
                 "Recall explanation projection",
-                "sql/020_greenfield_semantic_lifecycle.sql",
+                "sql/schema.sql",
                 "recall_explanation",
             ),
             EvidenceToken(
@@ -247,26 +248,26 @@ OBJECTIVES: tuple[DesignObjective, ...] = (
             EvidenceToken(
                 "code",
                 "Recognition observations table",
-                "sql/020_greenfield_semantic_lifecycle.sql",
-                "CREATE TABLE IF NOT EXISTS recognition_observations",
+                "sql/schema.sql",
+                "CREATE TABLE public.recognition_observations",
             ),
             EvidenceToken(
                 "code",
                 "Recognition hypotheses table",
-                "sql/020_greenfield_semantic_lifecycle.sql",
-                "CREATE TABLE IF NOT EXISTS recognition_hypotheses",
+                "sql/schema.sql",
+                "CREATE TABLE public.recognition_hypotheses",
             ),
             EvidenceToken(
                 "code",
                 "Presence assertions table",
-                "sql/020_greenfield_semantic_lifecycle.sql",
-                "CREATE TABLE IF NOT EXISTS presence_assertions",
+                "sql/schema.sql",
+                "CREATE TABLE public.presence_assertions",
             ),
             EvidenceToken(
                 "code",
                 "Biometric consent projection",
-                "sql/020_greenfield_semantic_lifecycle.sql",
-                "ALTER TABLE voiceprints ADD COLUMN IF NOT EXISTS consent_id",
+                "sql/schema.sql",
+                "consent_id uuid",
             ),
             EvidenceToken(
                 "code",
@@ -308,8 +309,8 @@ OBJECTIVES: tuple[DesignObjective, ...] = (
             EvidenceToken(
                 "code",
                 "Device location projection",
-                "sql/020_greenfield_semantic_lifecycle.sql",
-                "ALTER TABLE devices ADD COLUMN IF NOT EXISTS location_id",
+                "sql/schema.sql",
+                "location_id uuid",
             ),
             EvidenceToken("gui", "Locations device view", "functions/hub_api/templates/locations.html", "Devices"),
             EvidenceToken("test", "Remote satellite contract", "tests/test_remote_satellite.py", "device_token"),
@@ -334,10 +335,10 @@ OBJECTIVES: tuple[DesignObjective, ...] = (
             EvidenceToken(
                 "code",
                 "Device execution lifecycle",
-                "sql/009_action_device_execution_lifecycle.sql",
+                "sql/schema.sql",
                 "awaiting_result_until",
             ),
-            EvidenceToken("code", "Action idempotency", "sql/016_action_idempotency.sql", "idempotency_key"),
+            EvidenceToken("code", "Action idempotency", "sql/schema.sql", "request_idempotency_key"),
             EvidenceToken("code", "Timeout sweeper", "functions/action_timeout_sweeper/handler.py", "timed_out"),
             EvidenceToken("gui", "Actions page", "functions/hub_api/app.py", '@app.get("/actions"'),
             EvidenceToken(
@@ -360,7 +361,7 @@ OBJECTIVES: tuple[DesignObjective, ...] = (
         source="docs/design/MARVAIN_GLOBAL_DESIGN_OBJECTIVES_AND_REQUIREMENTS.md",
         requirement="Consent and privacy gates apply at use time, and audit/observability surfaces expose state and integrity checks.",
         evidence=(
-            EvidenceToken("code", "Consent table", "sql/001_init.sql", "CREATE TABLE IF NOT EXISTS consent_grants"),
+            EvidenceToken("code", "Consent table", "sql/schema.sql", "CREATE TABLE public.consent_grants"),
             EvidenceToken("code", "Privacy mode gate", "functions/hub_api/api_app.py", "is_privacy_mode"),
             EvidenceToken("code", "Audit helper", "layers/shared/python/agent_hub/audit.py", "append_audit_entry"),
             EvidenceToken("code", "Metrics helper", "layers/shared/python/agent_hub/metrics.py", "emit_metric"),
@@ -409,14 +410,14 @@ OBJECTIVES: tuple[DesignObjective, ...] = (
             EvidenceToken(
                 "code",
                 "Personas table",
-                "sql/020_greenfield_semantic_lifecycle.sql",
-                "CREATE TABLE IF NOT EXISTS personas",
+                "sql/schema.sql",
+                "CREATE TABLE public.personas",
             ),
             EvidenceToken(
                 "code",
                 "Sessions link persona",
-                "sql/020_greenfield_semantic_lifecycle.sql",
-                "persona_id uuid REFERENCES personas",
+                "sql/schema.sql",
+                "persona_id uuid",
             ),
             EvidenceToken("gui", "Persona page", "functions/hub_api/app.py", '@app.get("/personas"'),
             EvidenceToken("gui", "Persona template", "functions/hub_api/templates/personas.html", "persona"),
@@ -780,9 +781,9 @@ def round7_hard_gate_issues(root: Path = ROOT) -> list[str]:
         if f'"{excluded_section}",' in export_ops and "plaintext_secret_values" not in export_ops:
             issues.append(f"marvain_cli/ops.py: export appears to exclude required section {excluded_section!r}")
 
-    round7_sql_path = root / "sql" / "020_greenfield_semantic_lifecycle.sql"
+    round7_sql_path = root / "sql" / "schema.sql"
     if not round7_sql_path.exists():
-        issues.append("sql/020_greenfield_semantic_lifecycle.sql: missing canonical lifecycle schema")
+        issues.append("sql/schema.sql: missing canonical greenfield schema")
     else:
         round7_sql = round7_sql_path.read_text(encoding="utf-8", errors="ignore")
         for table in (
@@ -795,9 +796,21 @@ def round7_hard_gate_issues(root: Path = ROOT) -> list[str]:
             "agent_backup_manifests",
         ):
             if table not in round7_sql:
-                issues.append(f"sql/020_greenfield_semantic_lifecycle.sql: missing table {table!r}")
+                issues.append(f"sql/schema.sql: missing table {table!r}")
         if "DELETE FROM" in round7_sql or "ON DELETE CASCADE" in round7_sql:
-            issues.append("sql/020_greenfield_semantic_lifecycle.sql: contains hard-delete or cascade-delete behavior")
+            issues.append("sql/schema.sql: contains hard-delete or cascade-delete behavior")
+
+        schema_files = sorted(path.name for path in (root / "sql").glob("*.sql"))
+        if schema_files != ["schema.sql"]:
+            issues.append("sql/: expected exactly one canonical schema file named schema.sql")
+        if "ADD COLUMN" in round7_sql or "IF NOT EXISTS" in round7_sql:
+            issues.append("sql/schema.sql: contains incremental schema-history DDL")
+        sessions_match = re.search(r"CREATE TABLE public\.sessions \((.*?)\n\);", round7_sql, flags=re.DOTALL)
+        required_session_states = ("opening", "active", "reconnecting", "closed", "failed", "reconciled")
+        if sessions_match is None or "DEFAULT 'opening'::text" not in sessions_match.group(1):
+            issues.append("sql/schema.sql: sessions do not default to opening")
+        elif any(f"'{state}'::text" not in sessions_match.group(1) for state in required_session_states):
+            issues.append("sql/schema.sql: sessions are missing canonical runtime states")
 
     for sql_path in sorted((root / "sql").glob("*.sql")):
         sql_text = sql_path.read_text(encoding="utf-8", errors="ignore").upper()
@@ -807,7 +820,7 @@ def round7_hard_gate_issues(root: Path = ROOT) -> list[str]:
             issues.append(f"{sql_path.relative_to(root)}: contains hard-delete behavior")
 
     required_tests = {
-        "tests/test_greenfield_schema.py": "test_canonical_schema_models_agent_lifecycle_without_permanent_delete",
+        "tests/test_greenfield_schema.py": "test_canonical_schema_contains_no_schema_history_or_destructive_ddl",
         "tests/test_gui_app.py": "test_memory_annotation_creates_non_mutating_user_opinion",
         "tests/test_gui_app.py#lifecycle": "test_agent_lifecycle_request_api_creates_agent_review_record",
         "tests/test_gui_app.py#constitution": "test_agent_constitution_revision_api_appends_versioned_sections",

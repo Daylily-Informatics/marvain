@@ -262,7 +262,7 @@ def collect_sql_tables(root: Path = ROOT) -> tuple[SourceItem, ...]:
     for path in sql_paths:
         text = path.read_text(encoding="utf-8")
         for match in SQL_TABLE_RE.finditer(text):
-            table = match.group(1).strip('"')
+            table = match.group(1).rsplit(".", 1)[-1].strip('"')
             line = text.count("\n", 0, match.start()) + 1
             items.append(_source_item(table, f"{_rel(path)}:{line}"))
     return _dedupe(items)

@@ -28,6 +28,8 @@ def test_capability_inventory_uses_required_sources() -> None:
     assert inventory["tools"], "Tool module inventory is empty"
     assert inventory["workers"], "Worker directory inventory is empty"
     assert inventory["sql"], "SQL table inventory is empty"
+    assert {item.label for item in inventory["sql"]} >= {"agents", "sessions", "semantic_outbox"}
+    assert all(not item.label.startswith("public.") for item in inventory["sql"])
     assert inventory["tapdb"], "TapDB template code inventory is empty"
 
 

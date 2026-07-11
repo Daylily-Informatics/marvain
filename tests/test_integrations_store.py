@@ -149,27 +149,28 @@ class _ScriptedDb:
         return self.responses.pop(0)
 
 
-class TestIntegrationMessagesMigration(unittest.TestCase):
-    def test_migration_contains_expected_shape(self) -> None:
-        path = Path(__file__).resolve().parents[1] / "sql" / "017_integration_messages.sql"
-        text = path.read_text(encoding="utf-8")
-        self.assertIn("CREATE TABLE IF NOT EXISTS integration_messages", text)
-        self.assertIn("event_id uuid REFERENCES events(event_id) ON DELETE SET NULL", text)
-        self.assertIn("CREATE UNIQUE INDEX IF NOT EXISTS integration_messages_agent_dedupe_idx", text)
+class TestIntegrationMessagesSchema(unittest.TestCase):
+    def test_canonical_schema_contains_current_integration_shape(self) -> None:
+        text = (Path(__file__).resolve().parents[1] / "sql" / "schema.sql").read_text(encoding="utf-8")
+        squashed = " ".join(text.split())
 
-    def test_follow_on_migrations_add_account_and_sync_state_tables(self) -> None:
-        accounts_sql = (Path(__file__).resolve().parents[1] / "sql" / "018_integration_accounts.sql").read_text(
-            encoding="utf-8"
+        self.assertIn("CREATE TABLE public.integration_messages", text)
+        self.assertIn("event_id uuid", text)
+        self.assertIn(
+            "integration_messages_event_id_fkey FOREIGN KEY (event_id) REFERENCES public.events(event_id) "
+            "ON DELETE SET NULL",
+            squashed,
         )
-        sync_sql = (Path(__file__).resolve().parents[1] / "sql" / "019_integration_sync_state.sql").read_text(
-            encoding="utf-8"
+        self.assertIn("CREATE UNIQUE INDEX integration_messages_agent_dedupe_idx", text)
+        self.assertIn("CREATE TABLE public.integration_accounts", text)
+        self.assertIn("integration_account_id uuid", text)
+        self.assertIn("action_id uuid", text)
+        self.assertIn("contains_phi boolean DEFAULT false NOT NULL", text)
+        self.assertIn("CREATE TABLE public.integration_sync_state", text)
+        self.assertIn(
+            "integration_sync_state_pkey PRIMARY KEY (integration_account_id, sync_key)",
+            squashed,
         )
-        self.assertIn("CREATE TABLE IF NOT EXISTS integration_accounts", accounts_sql)
-        self.assertIn("ADD COLUMN IF NOT EXISTS integration_account_id", accounts_sql)
-        self.assertIn("ADD COLUMN IF NOT EXISTS action_id", accounts_sql)
-        self.assertIn("ADD COLUMN IF NOT EXISTS contains_phi", accounts_sql)
-        self.assertIn("CREATE TABLE IF NOT EXISTS integration_sync_state", sync_sql)
-        self.assertIn("PRIMARY KEY (integration_account_id, sync_key)", sync_sql)
 
 
 class TestIntegrationMessageStore(unittest.TestCase):

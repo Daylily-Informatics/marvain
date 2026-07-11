@@ -22,7 +22,7 @@ Marvain remains an AWS-backed hub-and-satellite system. The Hub owns identity, p
 
 - Hub API memory/recognition/session endpoints: `functions/hub_api/api_app.py`.
 - Local GUI memory/recognition/action pages: `functions/hub_api/app.py`, `functions/hub_api/templates/*`.
-- SQL migrations: `sql/*.sql`.
+- Canonical greenfield SQL schema: `sql/schema.sql`.
 - Memory tool: `layers/shared/python/agent_hub/tools/create_memory.py`.
 - Planner memory/action candidate path: `functions/planner/handler.py`.
 - Action lifecycle: `layers/shared/python/agent_hub/action_service.py`, `functions/tool_runner/handler.py`.

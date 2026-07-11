@@ -25,13 +25,13 @@ TapDB is not a generic graph database. It is a small template/instance/lineage s
 ## 3. Current Marvain persistence map
 
 - Aurora/PostgreSQL via RDS Data API: `sql/*.sql`, read/write through `layers/shared/python/agent_hub/rds_data.py`.
-- Memories and pgvector recall: `memories` table in `sql/001_init.sql`, enriched by `sql/012_rich_memories.sql`; endpoints in `functions/hub_api/api_app.py`; planner writes in `functions/planner/handler.py`.
+- Memories and pgvector recall: `memories` in the canonical `sql/schema.sql`; endpoints in `functions/hub_api/api_app.py`; planner writes in `functions/planner/handler.py`.
 - Events: `events` table; ingestion endpoint in `functions/hub_api/api_app.py`; planner consumes through `TranscriptQueue`.
 - Identity/account/person/consent: `agents`, `users`, `agent_memberships`, `people`, `consent_grants`, `person_accounts`; code in `api_app.py`, `auth.py`, `memberships.py`.
 - Devices/presence: `devices`, `presence`; code in `api_app.py`, `auth.py`, `apps/remote_satellite/*`.
-- Biometrics: `voiceprints`, `faceprints` in `sql/014_biometrics.sql`; endpoints in `api_app.py`; worker in `apps/recognition_worker/worker.py`.
+- Biometrics: `voiceprints` and `faceprints` in `sql/schema.sql`; endpoints in `api_app.py`; worker in `apps/recognition_worker/worker.py`.
 - Actions/tools: `actions`, `action_auto_approve_policies`, `action_policy_decisions`; code in `action_service.py`, `tool_runner/handler.py`, `tools/*`.
-- Integration messages/accounts/sync state: `sql/017_*` through `sql/019_*`; code in `layers/shared/python/agent_hub/integrations/*`.
+- Integration messages, accounts, and sync state: `sql/schema.sql`; code in `layers/shared/python/agent_hub/integrations/*`.
 - DynamoDB: `WsConnectionsTable`, `WsSubscriptionsTable` in `template.yaml`; code in `functions/ws_*` and `broadcast.py`.
 - SQS: `TranscriptQueue`, `ActionQueue`, `RecognitionQueue`, `IntegrationQueue` in `template.yaml`.
 - S3: `ArtifactBucket`, `AuditBucket` in `template.yaml`; artifact upload endpoint and audit helper.

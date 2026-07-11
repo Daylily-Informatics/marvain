@@ -7,7 +7,7 @@ Marvain should be refactored into a durable, consent-aware, multi-person, multi-
 Repository evidence:
 
 - Hub/API: `functions/hub_api/api_app.py`, `functions/hub_api/lambda_handler.py`.
-- Durable relational schema: `sql/001_init.sql` through `sql/019_integration_sync_state.sql`.
+- Durable relational schema: the single canonical greenfield definition in `sql/schema.sql`.
 - Shared service layer: `layers/shared/python/agent_hub/*`.
 - Planner: `functions/planner/handler.py`.
 - Tool runner/action lifecycle: `layers/shared/python/agent_hub/action_service.py`, `functions/tool_runner/handler.py`.
@@ -42,20 +42,20 @@ TapDB is not currently wired into Marvain. Any TapDB use is a target integration
 
 Human actors:
 
-- Account user: authenticated by Cognito and represented in `users` and `agent_memberships` (`sql/002_users_and_memberships.sql`).
-- Person: semantic human identity represented in `people`; may be linked to an account through `person_accounts` (`sql/013_person_accounts.sql`).
+- Account user: authenticated by Cognito and represented in `users` and `agent_memberships` (`sql/schema.sql`).
+- Person: semantic human identity represented in `people`; may be linked to an account through `person_accounts` (`sql/schema.sql`).
 - Unknown person: a transient observation class, not a durable `people` row unless enrolled with consent.
 - Administrator/owner/member/guest: role semantics enforced through `agent_memberships` and `layers/shared/python/agent_hub/memberships.py`.
 
 Physical actors:
 
-- Device/satellite: a token-authenticated node represented in `devices`, enhanced by `sql/006_devices_enhancement.sql` and `sql/011_device_location.sql`.
+- Device/satellite: a token-authenticated node represented in `devices` (`sql/schema.sql`).
 - Location node: remote satellite behavior in `apps/remote_satellite/location_node.py`; not currently a distinct database entity.
-- Room/space: `spaces` in `sql/001_init.sql`, currently doing double duty as logical space and LiveKit room binding.
+- Room/space: `spaces` in `sql/schema.sql`, currently doing double duty as logical space and LiveKit room binding.
 
 AI actors:
 
-- Agent/persona: `agents` in `sql/001_init.sql`; current persona instructions in `apps/agent_worker/worker.py` are hard-coded as `BASE_INSTRUCTIONS`.
+- Agent/persona: `agents` and `personas` in `sql/schema.sql`; worker behavior is implemented in `apps/agent_worker/worker.py`.
 - Planner: asynchronous Lambda in `functions/planner/handler.py`.
 - Realtime worker: LiveKit/OpenAI worker in `apps/agent_worker/worker.py`.
 - Recognition worker: external SQS-polling worker in `apps/recognition_worker/worker.py`.

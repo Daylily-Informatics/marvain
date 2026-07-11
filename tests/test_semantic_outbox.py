@@ -195,17 +195,17 @@ def test_enqueue_semantic_record_rejects_payload_conflict() -> None:
 
 
 def test_canonical_schema_scopes_sync_and_outbox_rows_by_agent() -> None:
-    sql = (REPO_ROOT / "sql" / "020_greenfield_semantic_lifecycle.sql").read_text(encoding="utf-8")
+    sql = (REPO_ROOT / "sql" / "schema.sql").read_text(encoding="utf-8")
     squashed = " ".join(sql.split())
 
-    assert "CREATE TABLE IF NOT EXISTS semantic_outbox" in sql
+    assert "CREATE TABLE public.semantic_outbox" in sql
     assert "source_external_reference jsonb NOT NULL" in sql
     assert "idempotency_key uuid NOT NULL" in sql
     assert "semantic_sync_status_agent_state_idx" in sql
     assert "semantic_outbox_dispatch_idx" in sql
     assert (
-        "CONSTRAINT semantic_sync_status_source_uniq UNIQUE ( agent_id, source_system, source_table, source_id, "
-        "target_template_code )"
+        "CONSTRAINT semantic_sync_status_source_uniq UNIQUE (agent_id, source_system, source_table, source_id, "
+        "target_template_code)"
     ) in squashed
     assert "CONSTRAINT semantic_sync_status_idempotency_uniq UNIQUE (agent_id, idempotency_key)" in squashed
     assert "CONSTRAINT semantic_outbox_idempotency_uniq UNIQUE (agent_id, idempotency_key)" in squashed

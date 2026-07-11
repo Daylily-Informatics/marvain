@@ -57,7 +57,7 @@ class TestOps(unittest.TestCase):
             env=ResolvedEnv(env="dev", aws_profile="p", aws_region="r", stack_name="s", raw=raw),
         )
 
-    def test_sam_deploy_requires_explicit_agent_worker_parameters(self) -> None:
+    def test_sam_deploy_requires_all_explicit_parameters(self) -> None:
         ctx = self._deploy_ctx({"LiveKitUrl": "wss://livekit.example.test"})
 
         with (
@@ -70,6 +70,7 @@ class TestOps(unittest.TestCase):
         self.assertEqual(rc, 2)
         run_cmd.assert_not_called()
         errors = "\n".join(str(call.args[0]) for call in eprint.call_args_list)
+        self.assertIn("ArtifactCorsAllowedOrigins", errors)
         self.assertIn("AgentWorkerImageUri", errors)
         self.assertIn("AgentWorkerVersion", errors)
         self.assertIn("AgentWorkerHubDeviceTokenSecretArn", errors)
@@ -79,6 +80,7 @@ class TestOps(unittest.TestCase):
         ctx = self._deploy_ctx(
             {
                 "LiveKitUrl": "wss://livekit.example.test",
+                "ArtifactCorsAllowedOrigins": "https://localhost:8084",
                 "AgentWorkerImageUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/marvain-agent:latest",
                 "AgentWorkerVersion": "test-release",
                 "AgentWorkerHubDeviceTokenSecretArn": (
@@ -100,11 +102,38 @@ class TestOps(unittest.TestCase):
         errors = "\n".join(str(call.args[0]) for call in eprint.call_args_list)
         self.assertIn("pinned by a 64-character sha256 digest", errors)
 
+    def test_sam_deploy_requires_explicit_artifact_cors_origins(self) -> None:
+        image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/marvain-agent@sha256:" + "a" * 64
+        ctx = self._deploy_ctx(
+            {
+                "LiveKitUrl": "wss://livekit.example.test",
+                "AgentWorkerImageUri": image_uri,
+                "AgentWorkerVersion": "test-release",
+                "AgentWorkerHubDeviceTokenSecretArn": (
+                    "arn:aws:secretsmanager:us-east-1:123456789012:secret:worker-token"
+                ),
+                "AgentWorkerDesiredCount": 0,
+            }
+        )
+
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch("marvain_cli.ops.run_cmd") as run_cmd,
+            mock.patch("marvain_cli.ops._eprint") as eprint,
+        ):
+            rc = sam_deploy(ctx, dry_run=True, guided=False)
+
+        self.assertEqual(rc, 2)
+        run_cmd.assert_not_called()
+        errors = "\n".join(str(call.args[0]) for call in eprint.call_args_list)
+        self.assertIn("Missing required SAM parameter overrides: ArtifactCorsAllowedOrigins", errors)
+
     def test_sam_deploy_passes_explicit_agent_worker_parameters(self) -> None:
         image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/marvain-agent@sha256:" + "a" * 64
         ctx = self._deploy_ctx(
             {
                 "LiveKitUrl": "wss://livekit.example.test",
+                "ArtifactCorsAllowedOrigins": "https://localhost:8084",
                 "AgentWorkerImageUri": image_uri,
                 "AgentWorkerVersion": "test-release",
                 "AgentWorkerHubDeviceTokenSecretArn": (
@@ -124,6 +153,7 @@ class TestOps(unittest.TestCase):
         self.assertEqual(run_cmd.call_count, 2)
         deploy_cmd = run_cmd.call_args_list[1].args[0]
         self.assertIn(f"AgentWorkerImageUri={image_uri}", deploy_cmd)
+        self.assertIn("ArtifactCorsAllowedOrigins=https://localhost:8084", deploy_cmd)
         self.assertIn("AgentWorkerVersion=test-release", deploy_cmd)
         self.assertIn("AgentWorkerDesiredCount=0", deploy_cmd)
 
@@ -133,6 +163,14 @@ class TestOps(unittest.TestCase):
         self.assertEqual(len(stmts), 2)
         self.assertTrue(stmts[0].startswith("CREATE TABLE a"))
         self.assertTrue(stmts[1].startswith("CREATE TABLE b"))
+
+    def test_canonical_schema_splits_into_explicit_initialization_statements(self) -> None:
+        statements = _split_sql(Path("sql/schema.sql").read_text(encoding="utf-8"))
+
+        self.assertEqual(len(statements), 141)
+        self.assertEqual(statements[0], "CREATE EXTENSION pgcrypto WITH SCHEMA public")
+        self.assertEqual(statements[1], "CREATE EXTENSION vector WITH SCHEMA public")
+        self.assertTrue(statements[-1].startswith("COMMENT ON COLUMN public.devices.provisioned_by"))
 
     def test_bootstrap_casts_uuid_params_for_rds_data_api(self) -> None:
         captured_sql: list[str] = []
@@ -309,7 +347,7 @@ class TestOps(unittest.TestCase):
         self.assertIn(" sam logs ", joined)
         self.assertNotIn("--name", joined)
 
-    def test_init_db_dry_run_applies_all_migrations_in_order_when_no_sql_file(self) -> None:
+    def test_init_db_dry_run_uses_only_canonical_schema_by_default(self) -> None:
         emitted: list[str] = []
 
         def cap(msg: str) -> None:
@@ -329,21 +367,23 @@ class TestOps(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         joined = "\n".join(emitted)
-        self.assertIn("sql/001_init.sql", joined)
-        self.assertIn("sql/002_users_and_memberships.sql", joined)
-        self.assertIn("sql/003_owner_unique_index.sql", joined)
-        self.assertIn("sql/017_integration_messages.sql", joined)
-        self.assertIn("sql/018_integration_accounts.sql", joined)
-        self.assertIn("sql/019_integration_sync_state.sql", joined)
-        self.assertLess(joined.find("sql/001_init.sql"), joined.find("sql/002_users_and_memberships.sql"))
-        self.assertLess(joined.find("sql/002_users_and_memberships.sql"), joined.find("sql/003_owner_unique_index.sql"))
-        self.assertLess(joined.find("sql/016_action_idempotency.sql"), joined.find("sql/017_integration_messages.sql"))
-        self.assertLess(
-            joined.find("sql/017_integration_messages.sql"), joined.find("sql/018_integration_accounts.sql")
+        self.assertIn("initialize the database", joined)
+        self.assertIn("sql/schema.sql", joined)
+        self.assertEqual(joined.count("sql/schema.sql"), 1)
+        self.assertNotIn("sql/0", joined)
+
+    def test_init_db_rejects_missing_explicit_schema_file(self) -> None:
+        ctx = Ctx(
+            config_path=Path("/tmp/marvain.yaml"),
+            cfg={"envs": {"dev": {}}},
+            env=ResolvedEnv(env="dev", aws_profile="p", aws_region="r", stack_name="s", raw={}),
         )
-        self.assertLess(
-            joined.find("sql/018_integration_accounts.sql"), joined.find("sql/019_integration_sync_state.sql")
-        )
+
+        with (
+            mock.patch("marvain_cli.ops._conda_preflight", return_value=0),
+            self.assertRaisesRegex(ConfigError, "Schema file does not exist"),
+        ):
+            init_db(ctx, dry_run=True, sql_file="/tmp/does-not-exist-marvain-schema.sql")
 
     def test_hub_claim_first_owner_dry_run_emits_http_request_without_leaking_token(self) -> None:
         emitted: list[str] = []

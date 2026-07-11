@@ -31,7 +31,8 @@ MARVAIN_CONDA_ENV_NAME = "marvain"
 MARVAIN_CONDA_ENV_FILE = "environment.yaml"
 MARVAIN_PYTHON_VERSION = (3, 12)
 MARVAIN_PYTHON_EXECUTABLE = "python3.12"
-REQUIRED_AGENT_WORKER_DEPLOY_PARAMETERS = (
+REQUIRED_SAM_DEPLOY_PARAMETERS = (
+    "ArtifactCorsAllowedOrigins",
     "AgentWorkerImageUri",
     "AgentWorkerVersion",
     "AgentWorkerHubDeviceTokenSecretArn",
@@ -641,13 +642,13 @@ def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool, no_confirm: bool = Fals
         )
         return 2
 
-    missing_worker_parameters = [
+    missing_required_parameters = [
         name
-        for name in REQUIRED_AGENT_WORKER_DEPLOY_PARAMETERS
+        for name in REQUIRED_SAM_DEPLOY_PARAMETERS
         if name not in param_overrides or str(param_overrides[name]).strip() == ""
     ]
-    if missing_worker_parameters:
-        _eprint("ERROR: Missing required agent worker SAM parameter overrides: " + ", ".join(missing_worker_parameters))
+    if missing_required_parameters:
+        _eprint("ERROR: Missing required SAM parameter overrides: " + ", ".join(missing_required_parameters))
         _eprint("Add every value explicitly under sam.parameter_overrides in the selected Marvain config.")
         return 2
 
@@ -2162,50 +2163,38 @@ def init_db(ctx: Ctx, *, dry_run: bool, sql_file: str | None) -> int:
     if rc != 0:
         return rc
 
-    def _list_sql_migrations() -> list[Path]:
-        # Apply all migrations in lexical order (001_..., 002_..., ...).
-        # Keep simple: all *.sql files in sql/.
-        paths = [p for p in Path("sql").glob("*.sql") if p.is_file()]
-        paths.sort(key=lambda p: p.name)
-        return paths
+    path = Path(sql_file).expanduser() if sql_file else Path("sql/schema.sql")
+    if not path.is_file():
+        raise ConfigError(f"Schema file does not exist: {path}")
 
-    paths = [Path(sql_file)] if sql_file else _list_sql_migrations()
-    if not paths:
-        raise ConfigError("No SQL migrations found under sql/")
-
-    stmt_sets: list[tuple[Path, list[str]]] = []
-    for path in paths:
-        sql_text = path.read_text(encoding="utf-8")
-        stmt_sets.append((path, _split_sql(sql_text)))
+    statements = _split_sql(path.read_text(encoding="utf-8"))
 
     if dry_run:
         _eprint(f"[dry-run] Would resolve DbClusterArn/DbSecretArn/DbName from stack outputs for {ctx.env.stack_name}")
-        for path, stmts in stmt_sets:
-            _eprint(f"[dry-run] Would apply {len(stmts)} SQL statements from {path}")
+        _eprint(f"[dry-run] Would initialize the database with {len(statements)} SQL statements from {path}")
         return 0
 
     resource_arn, secret_arn, db_name = _db_outputs(ctx, dry_run=dry_run)
 
-    for path, stmts in stmt_sets:
-        _eprint(f"Applying {len(stmts)} SQL statements from {path}")
-        for s in stmts:
-            cmd = [
-                "aws",
-                "rds-data",
-                "execute-statement",
-                *aws_cli_args(ctx.env),
-                "--resource-arn",
-                resource_arn,
-                "--secret-arn",
-                secret_arn,
-                "--database",
-                db_name,
-                "--sql",
-                s,
-                "--output",
-                "json",
-            ]
-            run_cmd(cmd, env=cmd_env(ctx.env), dry_run=dry_run)
+    _eprint(f"Initializing the database with {len(statements)} SQL statements from {path}")
+    for statement in statements:
+        cmd = [
+            "aws",
+            "rds-data",
+            "execute-statement",
+            *aws_cli_args(ctx.env),
+            "--resource-arn",
+            resource_arn,
+            "--secret-arn",
+            secret_arn,
+            "--database",
+            db_name,
+            "--sql",
+            statement,
+            "--output",
+            "json",
+        ]
+        run_cmd(cmd, env=cmd_env(ctx.env), dry_run=dry_run)
     return 0
 
 
