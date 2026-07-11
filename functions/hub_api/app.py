@@ -16,6 +16,7 @@ import logging
 import os
 import secrets
 import socket
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime as dt_datetime
@@ -64,6 +65,7 @@ from agent_hub.memory_taxonomy import (
     normalize_memory_kind,
     normalize_memory_provenance_class,
 )
+from agent_hub.observability import OBSERVABILITY_SCHEMA, RequestMeasurement, runtime_measurements
 from agent_hub.personas import DEFAULT_AGENT_PERSONA_INSTRUCTIONS, DEFAULT_AGENT_PERSONA_NAME
 from agent_hub.secrets import get_secret_json
 from agent_hub.session_tokens import mint_ws_session_token
@@ -546,7 +548,7 @@ app.add_api_route("/api/dag", _api_tapdb_dag_proxy, methods=["GET", "POST"], nam
 app.add_api_route("/api/dag/{path:path}", _api_tapdb_dag_proxy, methods=["GET", "POST"], name="api_tapdb_dag")
 
 
-_MARVAIN_OBSERVABILITY_SCHEMA = "marvain.observability.v1"
+_MARVAIN_OBSERVABILITY_SCHEMA = OBSERVABILITY_SCHEMA
 
 
 def _observed_at() -> str:
@@ -578,7 +580,7 @@ def _observability_principal(request: Request) -> dict[str, Any]:
     raise HTTPException(status_code=401, detail="Not authenticated")
 
 
-def _observability_base(request: Request, *, status: str = "ok") -> dict[str, Any]:
+def _observability_base(request: Request, *, status: str = "unmeasured") -> dict[str, Any]:
     build_version = str(os.getenv("MARVAIN_BUILD_VERSION") or "").strip() or None
     build_sha = str(os.getenv("GIT_SHA") or "").strip() or None
     return {
@@ -656,12 +658,33 @@ def _route_items() -> list[dict[str, Any]]:
             )
         )
 
+    measured = {
+        (str(item["method"]), str(item["route_template"])): item
+        for item in runtime_measurements.request_snapshot()["routes"]
+    }
+    for item in items:
+        measurement = measured.get((str(item["method"]), str(item["route_template"])))
+        if measurement is None:
+            continue
+        status_counts = dict(measurement["status_class_counts"])
+        item.update(
+            {
+                "status": "failed" if int(status_counts.get("5xx", 0)) else "healthy",
+                "request_count": measurement["request_count"],
+                "status_class_counts": status_counts,
+                "p50_ms": measurement["p50_ms"],
+                "p95_ms": measurement["p95_ms"],
+                "p99_ms": measurement["p99_ms"],
+                "fingerprint_count": len(measurement["error_code_counts"]),
+                "observed_at": measurement["last_observed_at"],
+            }
+        )
     return sorted(items, key=lambda item: (item["route_template"], item["method"]))
 
 
 @app.get("/obs_services", name="marvain_service_manifest")
 def marvain_service_manifest(request: Request) -> JSONResponse:
-    payload = _observability_base(request)
+    payload = _observability_base(request, status="configured")
     payload["kind"] = "service_manifest"
     payload["projection"] = _projection("configured", detail="Marvain service manifest")
     payload["endpoints"] = _observability_endpoints()
@@ -714,17 +737,24 @@ def marvain_api_health(request: Request) -> JSONResponse:
     families: list[dict[str, Any]] = []
     for family in ("gui", "gui_api", "observability", "tapdb_graph", "v1_api"):
         count = sum(1 for item in items if item["family"] == family)
+        family_items = [item for item in items if item["family"] == family]
+        measured_items = [item for item in family_items if item["request_count"] is not None]
+        request_count = sum(int(item["request_count"]) for item in measured_items)
+        error_count = sum(int((item["status_class_counts"] or {}).get("5xx", 0)) for item in measured_items)
         families.append(
             {
                 "family": family,
-                "request_count": None,
-                "error_count": None,
+                "request_count": request_count if measured_items else None,
+                "error_count": error_count if measured_items else None,
                 "route_count": count,
-                "status": "unmeasured",
+                "status": "failed" if error_count else "healthy" if measured_items else "unmeasured",
             }
         )
-    payload = _observability_base(request, status="unmeasured")
-    payload["projection"] = _projection(detail="Request metrics are not yet connected")
+    has_measurements = any(item["request_count"] is not None for item in items)
+    has_failures = any(item["status"] == "failed" for item in items)
+    status = "failed" if has_failures else "healthy" if has_measurements else "unmeasured"
+    payload = _observability_base(request, status=status)
+    payload["projection"] = _projection(status, detail="Measured in-process request metrics")
     payload["families"] = families
     return JSONResponse(payload)
 
@@ -734,10 +764,14 @@ def marvain_endpoint_health(request: Request, offset: int = 0, limit: int = 25) 
     items = _route_items()
     offset = max(0, int(offset))
     limit = min(200, max(1, int(limit)))
-    payload = _observability_base(request, status="unmeasured")
-    payload["projection"] = _projection(detail="Per-route metrics are not yet connected")
+    has_measurements = any(item["request_count"] is not None for item in items)
+    has_failures = any(item["status"] == "failed" for item in items)
+    status = "failed" if has_failures else "healthy" if has_measurements else "unmeasured"
+    payload = _observability_base(request, status=status)
+    payload["projection"] = _projection(status, detail="Measured in-process route metrics")
     for item in items:
-        item["observed_at"] = payload["observed_at"]
+        if item["observed_at"] is None:
+            item["observed_at"] = payload["observed_at"]
     payload["page"] = {"total": len(items), "offset": offset, "limit": limit}
     payload["items"] = items[offset : offset + limit]
     return JSONResponse(payload)
@@ -812,9 +846,40 @@ def marvain_auth_health(request: Request) -> JSONResponse:
 @app.get("/my_health", name="marvain_my_health")
 def marvain_my_health(request: Request) -> JSONResponse:
     principal = _observability_principal(request)
-    payload = _observability_base(request)
+    request_snapshot = runtime_measurements.request_snapshot()
+    status = "healthy" if request_snapshot["measured"] else "unmeasured"
+    payload = _observability_base(request, status=status)
     payload["principal"] = principal
+    payload["requests"] = request_snapshot
     return JSONResponse(payload)
+
+
+@app.middleware("http")
+async def _request_measurement_middleware(request: Request, call_next):
+    request_id = str(request.headers.get("x-request-id") or "").strip() or str(uuid.uuid4())
+    correlation_id = str(request.headers.get("x-correlation-id") or "").strip() or request_id
+    request.state.request_id = request_id
+    request.state.correlation_id = correlation_id
+    started = time.perf_counter()
+    response = await call_next(request)
+    route = request.scope.get("route")
+    route_template = str(getattr(route, "path", "") or request.url.path)
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    runtime_measurements.record_request(
+        RequestMeasurement(
+            method=request.method,
+            route_template=route_template,
+            status_code=response.status_code,
+            elapsed_ms=elapsed_ms,
+            observed_at=dt_datetime.now(timezone.utc),
+            request_id=request_id,
+            correlation_id=correlation_id,
+            error_code=f"http_{response.status_code}" if response.status_code >= 500 else None,
+        )
+    )
+    response.headers["X-Request-Id"] = request_id
+    response.headers["X-Correlation-Id"] = correlation_id
+    return response
 
 
 @app.middleware("http")
