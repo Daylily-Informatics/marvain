@@ -100,6 +100,7 @@ class VerifiedArtifact:
     actual_byte_count: int
     etag: str
     version_id: str
+    verification_observed_at: datetime
     completed_at: datetime
     lifecycle_state: ArtifactLifecycleState = ArtifactLifecycleState.AVAILABLE
 
@@ -217,6 +218,7 @@ class ArtifactLifecycleService:
             actual_byte_count=evidence.byte_count,
             etag=_required(evidence.etag, "evidence.etag"),
             version_id=_required(evidence.version_id, "evidence.version_id"),
+            verification_observed_at=evidence.observed_at,
             completed_at=completed_at,
         )
         self.repository.persist_verified_completion(artifact)

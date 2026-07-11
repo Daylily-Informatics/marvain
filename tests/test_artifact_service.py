@@ -129,6 +129,7 @@ def test_completion_requires_exact_object_evidence() -> None:
     assert completed.lifecycle_state is ArtifactLifecycleState.AVAILABLE
     assert completed.intent.lifecycle_state is ArtifactLifecycleState.AVAILABLE
     assert completed.actual_sha256 == DIGEST
+    assert completed.verification_observed_at == evidence.observed_at
 
 
 @pytest.mark.parametrize(
