@@ -780,9 +780,9 @@ def round7_hard_gate_issues(root: Path = ROOT) -> list[str]:
         if f'"{excluded_section}",' in export_ops and "plaintext_secret_values" not in export_ops:
             issues.append(f"marvain_cli/ops.py: export appears to exclude required section {excluded_section!r}")
 
-    round7_sql_path = root / "sql" / "030_agent_memory_lifecycle_round7.sql"
+    round7_sql_path = root / "sql" / "020_greenfield_semantic_lifecycle.sql"
     if not round7_sql_path.exists():
-        issues.append("sql/030_agent_memory_lifecycle_round7.sql: missing Round 7 lifecycle schema")
+        issues.append("sql/020_greenfield_semantic_lifecycle.sql: missing canonical lifecycle schema")
     else:
         round7_sql = round7_sql_path.read_text(encoding="utf-8", errors="ignore")
         for table in (
@@ -795,9 +795,9 @@ def round7_hard_gate_issues(root: Path = ROOT) -> list[str]:
             "agent_backup_manifests",
         ):
             if table not in round7_sql:
-                issues.append(f"sql/030_agent_memory_lifecycle_round7.sql: missing table {table!r}")
+                issues.append(f"sql/020_greenfield_semantic_lifecycle.sql: missing table {table!r}")
         if "DELETE FROM" in round7_sql or "ON DELETE CASCADE" in round7_sql:
-            issues.append("sql/030_agent_memory_lifecycle_round7.sql: contains hard-delete or cascade-delete behavior")
+            issues.append("sql/020_greenfield_semantic_lifecycle.sql: contains hard-delete or cascade-delete behavior")
 
     for sql_path in sorted((root / "sql").glob("*.sql")):
         sql_text = sql_path.read_text(encoding="utf-8", errors="ignore").upper()
@@ -807,7 +807,7 @@ def round7_hard_gate_issues(root: Path = ROOT) -> list[str]:
             issues.append(f"{sql_path.relative_to(root)}: contains hard-delete behavior")
 
     required_tests = {
-        "tests/test_greenfield_schema.py": "test_round7_schema_models_core_object_deletes_as_lifecycle_not_hard_delete",
+        "tests/test_greenfield_schema.py": "test_canonical_schema_models_agent_lifecycle_without_permanent_delete",
         "tests/test_gui_app.py": "test_memory_annotation_creates_non_mutating_user_opinion",
         "tests/test_gui_app.py#lifecycle": "test_agent_lifecycle_request_api_creates_agent_review_record",
         "tests/test_gui_app.py#constitution": "test_agent_constitution_revision_api_appends_versioned_sections",
