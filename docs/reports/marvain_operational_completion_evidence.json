@@ -1,0 +1,1451 @@
+{
+  "schema_version": "marvain.operational-evidence.v1",
+  "ledger": "docs/plans/20260711T011234Z_marvain_operational_100_percent_ledger.md",
+  "assessment_source": "docs/sol_ultra_repo_assessment_completion_notes.md",
+  "capabilities": {
+    "FND-01": {
+      "title": "Product mission and domain model",
+      "current_score": 72,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#fnd-01"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#fnd-01"
+        ],
+        "regression": []
+      }
+    },
+    "FND-02": {
+      "title": "No-fallback/no-legacy architecture",
+      "current_score": 46,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#fnd-02"
+        ],
+        "regression": []
+      }
+    },
+    "FND-03": {
+      "title": "Python and dependency contract",
+      "current_score": 38,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#fnd-03"
+        ],
+        "regression": []
+      }
+    },
+    "FND-04": {
+      "title": "CLI and explicit configuration",
+      "current_score": 68,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#fnd-04"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#fnd-04"
+        ],
+        "regression": []
+      }
+    },
+    "FND-05": {
+      "title": "Cognito browser and runtime auth",
+      "current_score": 62,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#fnd-05"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#fnd-05"
+        ],
+        "regression": []
+      }
+    },
+    "FND-06": {
+      "title": "Memberships and human roles",
+      "current_score": 70,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#fnd-06"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#fnd-06"
+        ],
+        "regression": []
+      }
+    },
+    "FND-07": {
+      "title": "Agent-to-agent authentication",
+      "current_score": 43,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#fnd-07"
+        ],
+        "regression": []
+      }
+    },
+    "FND-08": {
+      "title": "Multi-tenant isolation",
+      "current_score": 35,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#fnd-08"
+        ],
+        "regression": []
+      }
+    },
+    "AGT-01": {
+      "title": "Agent creation and durable identity",
+      "current_score": 72,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#agt-01"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#agt-01"
+        ],
+        "regression": []
+      }
+    },
+    "AGT-02": {
+      "title": "Persona creation and selection",
+      "current_score": 55,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#agt-02"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#agt-02"
+        ],
+        "regression": []
+      }
+    },
+    "AGT-03": {
+      "title": "Personality and constitution model",
+      "current_score": 34,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#agt-03"
+        ],
+        "regression": []
+      }
+    },
+    "AGT-04": {
+      "title": "Agent self-update of constitution",
+      "current_score": 22,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#agt-04"
+        ],
+        "regression": []
+      }
+    },
+    "AGT-05": {
+      "title": "Maturity rubric",
+      "current_score": 64,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#agt-05"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#agt-05"
+        ],
+        "regression": []
+      }
+    },
+    "AGT-06": {
+      "title": "Stasis and soft deletion",
+      "current_score": 42,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#agt-06"
+        ],
+        "regression": []
+      }
+    },
+    "AGT-07": {
+      "title": "Agent-requested deletion review",
+      "current_score": 22,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#agt-07"
+        ],
+        "regression": []
+      }
+    },
+    "AGT-08": {
+      "title": "Full agent backup/export",
+      "current_score": 38,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#agt-08"
+        ],
+        "regression": []
+      }
+    },
+    "AGT-09": {
+      "title": "Restore and disaster recovery",
+      "current_score": 12,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#agt-09"
+        ],
+        "regression": []
+      }
+    },
+    "AGT-10": {
+      "title": "Agent continuity across upgrades",
+      "current_score": 10,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#agt-10"
+        ],
+        "regression": []
+      }
+    },
+    "MEM-01": {
+      "title": "Eight-kind memory taxonomy",
+      "current_score": 82,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-01"
+        ],
+        "local_workflow": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-01"
+        ],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-01"
+        ],
+        "regression": []
+      }
+    },
+    "MEM-02": {
+      "title": "Provenance classes",
+      "current_score": 72,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-02"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-02"
+        ],
+        "regression": []
+      }
+    },
+    "MEM-03": {
+      "title": "Model-assisted classification",
+      "current_score": 52,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-03"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-03"
+        ],
+        "regression": []
+      }
+    },
+    "MEM-04": {
+      "title": "Source evidence and candidate lifecycle",
+      "current_score": 66,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-04"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-04"
+        ],
+        "regression": []
+      }
+    },
+    "MEM-05": {
+      "title": "Agent ownership and immutable content",
+      "current_score": 61,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-05"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-05"
+        ],
+        "regression": []
+      }
+    },
+    "MEM-06": {
+      "title": "User annotation and disagreement",
+      "current_score": 55,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-06"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-06"
+        ],
+        "regression": []
+      }
+    },
+    "MEM-07": {
+      "title": "Embedding creation and durability",
+      "current_score": 34,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-07"
+        ],
+        "regression": []
+      }
+    },
+    "MEM-08": {
+      "title": "Recall ranking and explanation",
+      "current_score": 58,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-08"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-08"
+        ],
+        "regression": []
+      }
+    },
+    "MEM-09": {
+      "title": "Consent/privacy-aware recall",
+      "current_score": 25,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-09"
+        ],
+        "regression": []
+      }
+    },
+    "MEM-10": {
+      "title": "Cross-space/device/session/person recall",
+      "current_score": 56,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-10"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-10"
+        ],
+        "regression": []
+      }
+    },
+    "MEM-11": {
+      "title": "Cross-agent interaction memory",
+      "current_score": 28,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-11"
+        ],
+        "regression": []
+      }
+    },
+    "MEM-12": {
+      "title": "Self-inspired reflection and learning",
+      "current_score": 24,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-12"
+        ],
+        "regression": []
+      }
+    },
+    "MEM-13": {
+      "title": "Consolidation, forgetting, contradiction",
+      "current_score": 18,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#mem-13"
+        ],
+        "regression": []
+      }
+    },
+    "IDN-01": {
+      "title": "People and account linkage",
+      "current_score": 65,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#idn-01"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#idn-01"
+        ],
+        "regression": []
+      }
+    },
+    "IDN-02": {
+      "title": "Consent grant/revoke lifecycle",
+      "current_score": 58,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#idn-02"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#idn-02"
+        ],
+        "regression": []
+      }
+    },
+    "IDN-03": {
+      "title": "Voice/face enrollment",
+      "current_score": 50,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#idn-03"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#idn-03"
+        ],
+        "regression": []
+      }
+    },
+    "IDN-04": {
+      "title": "Production recognition worker",
+      "current_score": 28,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#idn-04"
+        ],
+        "regression": []
+      }
+    },
+    "IDN-05": {
+      "title": "Unknown/no-match retention",
+      "current_score": 32,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#idn-05"
+        ],
+        "regression": []
+      }
+    },
+    "IDN-06": {
+      "title": "Recognition correction and revocation",
+      "current_score": 35,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#idn-06"
+        ],
+        "regression": []
+      }
+    },
+    "IDN-07": {
+      "title": "Presence assertions",
+      "current_score": 38,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#idn-07"
+        ],
+        "regression": []
+      }
+    },
+    "IDN-08": {
+      "title": "Recognition quality and bias evaluation",
+      "current_score": 15,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#idn-08"
+        ],
+        "regression": []
+      }
+    },
+    "IDN-09": {
+      "title": "Biometric artifact governance",
+      "current_score": 30,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#idn-09"
+        ],
+        "regression": []
+      }
+    },
+    "LIV-01": {
+      "title": "LiveKit room/token/session join",
+      "current_score": 68,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#liv-01"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#liv-01"
+        ],
+        "regression": []
+      }
+    },
+    "LIV-02": {
+      "title": "Typed chat loop",
+      "current_score": 62,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#liv-02"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#liv-02"
+        ],
+        "regression": []
+      }
+    },
+    "LIV-03": {
+      "title": "Speech transcription",
+      "current_score": 52,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#liv-03"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#liv-03"
+        ],
+        "regression": []
+      }
+    },
+    "LIV-04": {
+      "title": "Agent speech and speaker playback",
+      "current_score": 52,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#liv-04"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#liv-04"
+        ],
+        "regression": []
+      }
+    },
+    "LIV-05": {
+      "title": "Mic/speaker/camera controls",
+      "current_score": 70,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#liv-05"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#liv-05"
+        ],
+        "regression": []
+      }
+    },
+    "LIV-06": {
+      "title": "Camera observation and visual truthfulness",
+      "current_score": 60,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#liv-06"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#liv-06"
+        ],
+        "regression": []
+      }
+    },
+    "LIV-07": {
+      "title": "Session lifecycle and recovery",
+      "current_score": 25,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#liv-07"
+        ],
+        "regression": []
+      }
+    },
+    "LIV-08": {
+      "title": "Worker packaging and supervision",
+      "current_score": 28,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#liv-08"
+        ],
+        "regression": []
+      }
+    },
+    "LIV-09": {
+      "title": "Media telemetry",
+      "current_score": 22,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#liv-09"
+        ],
+        "regression": []
+      }
+    },
+    "TOP-01": {
+      "title": "Locations, spaces, devices, sessions",
+      "current_score": 66,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#top-01"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#top-01"
+        ],
+        "regression": []
+      }
+    },
+    "TOP-02": {
+      "title": "Device token auth and scopes",
+      "current_score": 69,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#top-02"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#top-02"
+        ],
+        "regression": []
+      }
+    },
+    "TOP-03": {
+      "title": "Heartbeat and online state",
+      "current_score": 58,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#top-03"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#top-03"
+        ],
+        "regression": []
+      }
+    },
+    "TOP-04": {
+      "title": "Remote satellite/location node",
+      "current_score": 47,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#top-04"
+        ],
+        "regression": []
+      }
+    },
+    "TOP-05": {
+      "title": "Two-device/two-location routing",
+      "current_score": 28,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#top-05"
+        ],
+        "regression": []
+      }
+    },
+    "ACT-01": {
+      "title": "Action proposal and policy",
+      "current_score": 70,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#act-01"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#act-01"
+        ],
+        "regression": []
+      }
+    },
+    "ACT-02": {
+      "title": "Device command ack/result/timeout",
+      "current_score": 62,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#act-02"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#act-02"
+        ],
+        "regression": []
+      }
+    },
+    "ACT-03": {
+      "title": "Local host executors",
+      "current_score": 45,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#act-03"
+        ],
+        "regression": []
+      }
+    },
+    "INT-01": {
+      "title": "Integration account and message model",
+      "current_score": 70,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#int-01"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#int-01"
+        ],
+        "regression": []
+      }
+    },
+    "INT-02": {
+      "title": "Provider ingress",
+      "current_score": 63,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#int-02"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#int-02"
+        ],
+        "regression": []
+      }
+    },
+    "INT-03": {
+      "title": "Provider outbound actions",
+      "current_score": 55,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#int-03"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#int-03"
+        ],
+        "regression": []
+      }
+    },
+    "INT-04": {
+      "title": "Cross-channel conversation continuity",
+      "current_score": 25,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#int-04"
+        ],
+        "regression": []
+      }
+    },
+    "DAT-01": {
+      "title": "TapDB boundary conformance",
+      "current_score": 76,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#dat-01"
+        ],
+        "local_workflow": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#dat-01"
+        ],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#dat-01"
+        ],
+        "regression": []
+      }
+    },
+    "DAT-02": {
+      "title": "TapDB native query/graph/admin surfaces",
+      "current_score": 62,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#dat-02"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#dat-02"
+        ],
+        "regression": []
+      }
+    },
+    "DAT-03": {
+      "title": "TapDB canonical production writes",
+      "current_score": 25,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#dat-03"
+        ],
+        "regression": []
+      }
+    },
+    "DAT-04": {
+      "title": "TapDB write idempotency and retries",
+      "current_score": 22,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#dat-04"
+        ],
+        "regression": []
+      }
+    },
+    "DAT-05": {
+      "title": "Typed external references and lineage",
+      "current_score": 38,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#dat-05"
+        ],
+        "regression": []
+      }
+    },
+    "DAT-06": {
+      "title": "SQL projection consistency",
+      "current_score": 31,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#dat-06"
+        ],
+        "regression": []
+      }
+    },
+    "DAT-07": {
+      "title": "Artifact storage and references",
+      "current_score": 43,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#dat-07"
+        ],
+        "regression": []
+      }
+    },
+    "DAT-08": {
+      "title": "Audit chain and immutability",
+      "current_score": 58,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#dat-08"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#dat-08"
+        ],
+        "regression": []
+      }
+    },
+    "DAT-09": {
+      "title": "Retention and erasure",
+      "current_score": 40,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#dat-09"
+        ],
+        "regression": []
+      }
+    },
+    "OPS-01": {
+      "title": "GUI page inventory",
+      "current_score": 80,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-01"
+        ],
+        "local_workflow": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-01"
+        ],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-01"
+        ],
+        "regression": []
+      }
+    },
+    "OPS-02": {
+      "title": "GUI workflow operability",
+      "current_score": 45,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-02"
+        ],
+        "regression": []
+      }
+    },
+    "OPS-03": {
+      "title": "GUI accessibility/responsiveness",
+      "current_score": 28,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-03"
+        ],
+        "regression": []
+      }
+    },
+    "OPS-04": {
+      "title": "Marvain-native discovery and health",
+      "current_score": 52,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-04"
+        ],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-04"
+        ],
+        "regression": []
+      }
+    },
+    "OPS-05": {
+      "title": "Operational observability",
+      "current_score": 36,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-05"
+        ],
+        "regression": []
+      }
+    },
+    "OPS-06": {
+      "title": "Queue failure handling",
+      "current_score": 34,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-06"
+        ],
+        "regression": []
+      }
+    },
+    "OPS-07": {
+      "title": "Static and unit regression suite",
+      "current_score": 78,
+      "evidence": {
+        "implementation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-07"
+        ],
+        "local_workflow": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-07"
+        ],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-07"
+        ],
+        "regression": []
+      }
+    },
+    "OPS-08": {
+      "title": "API/GUI route coverage measurement",
+      "current_score": 35,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-08"
+        ],
+        "regression": []
+      }
+    },
+    "OPS-09": {
+      "title": "Playwright workflow coverage",
+      "current_score": 40,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-09"
+        ],
+        "regression": []
+      }
+    },
+    "OPS-10": {
+      "title": "GUI smoke guide",
+      "current_score": 34,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-10"
+        ],
+        "regression": []
+      }
+    },
+    "OPS-11": {
+      "title": "Deployed v1-dev smoke",
+      "current_score": 20,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-11"
+        ],
+        "regression": []
+      }
+    },
+    "OPS-12": {
+      "title": "Fresh clean-room deployment",
+      "current_score": 10,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-12"
+        ],
+        "regression": []
+      }
+    },
+    "OPS-13": {
+      "title": "Worker/service supervision",
+      "current_score": 27,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-13"
+        ],
+        "regression": []
+      }
+    },
+    "OPS-14": {
+      "title": "Failure injection and recovery",
+      "current_score": 32,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-14"
+        ],
+        "regression": []
+      }
+    },
+    "OPS-15": {
+      "title": "Cost, quota, and capacity controls",
+      "current_score": 24,
+      "evidence": {
+        "implementation": [],
+        "local_workflow": [],
+        "integration": [],
+        "deployed": [],
+        "failure_recovery": [],
+        "observability": [],
+        "documentation": [
+          "docs/sol_ultra_repo_assessment_completion_notes.md#ops-15"
+        ],
+        "regression": []
+      }
+    }
+  }
+}

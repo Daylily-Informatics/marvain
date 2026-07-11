@@ -149,7 +149,7 @@ The compact evidence fields below are initialized from the assessment. Agents re
 
 | ID | Requirement | Status | Owner | Gate | Dependencies | Evidence | Root cause | Terminal note |
 |---|---|---|---|---|---|---|---|---|
-| XG-001 | Operational scorer consumes executed evidence and starts at 47% | IN_PROGRESS | A1 | 0 | all capability rows | pending | Existing scorers count tokens/files | |
+| XG-001 | Operational scorer consumes executed evidence and starts at 47% | SUCCESS | A1 | 0 | all capability rows | `scripts/generate_operational_completion_status.py`; evidence manifest; 5 focused tests | Existing scorers count tokens/files | Tracks all 85 rows, enforces evidence caps, and reports the assessed 47% baseline. |
 | XG-002 | Python 3.12 build and CI contract is green | OPEN | A2 | 1 | FND-03,FND-04 | pending | SAM mismatch | |
 | XG-003 | Local and deployed APIs use one business service layer | OPEN | A1 | 1 | FND-02 | pending | Local/deployed split | |
 | XG-004 | TapDB semantic transaction and projection rebuild pass | OPEN | A3 | 2 | DAT-01 through DAT-08 | pending | Production writer disconnected | |
@@ -166,7 +166,7 @@ The compact evidence fields below are initialized from the assessment. Agents re
 
 | Gate | Objective | Status | Exit evidence |
 |---|---|---|---|
-| 0 | Baseline and truthful scoring | IN_PROGRESS | Ledger, evidence manifest, scorer baseline 47% |
+| 0 | Baseline and truthful scoring | SUCCESS | Ledger, evidence manifest, scorer baseline 47% |
 | 1 | Build, configuration, and API convergence | OPEN | Python 3.12 build; unified service routes; purity guards |
 | 2 | TapDB and durable persistence | OPEN | Real DB, idempotency, graph, projection rebuild |
 | 3 | Memory and agent governance | OPEN | Policy-correct memory, constitution, lifecycle, restore |
