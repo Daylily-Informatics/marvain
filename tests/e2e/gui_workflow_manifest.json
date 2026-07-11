@@ -3,6 +3,19 @@
   "screenshot_phases": ["before", "before_submit", "after_submit"],
   "workflows": [
     {
+      "id": "auth-hosted-ui-login",
+      "page": "auth-hosted-ui",
+      "path": "/login",
+      "heading": "Sign In",
+      "command": "complete Cognito Hosted UI login",
+      "browser_steps": ["open Sign In", "complete the configured Cognito test-user challenge", "return to an authenticated Marvain session"],
+      "persisted_postcondition": {
+        "owner": "auth-service",
+        "request": "GET /v1/me",
+        "assert": ["authenticated subject and email match the Hosted UI session", "the browser stores only the Marvain session cookie and no raw OAuth token"]
+      }
+    },
+    {
       "id": "dashboard-agent-summary",
       "page": "dashboard",
       "path": "/",

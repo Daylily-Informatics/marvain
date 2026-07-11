@@ -1331,7 +1331,7 @@ def run_gui_smoke_guide(
         )
         try:
             for workflow in workflows:
-                page_dir = run_dir / _slug(workflow.page)
+                page_dir = run_dir / _slug(workflow.workflow_id)
                 page_dir.mkdir(parents=True, exist_ok=True)
                 before = page_dir / "before.png"
                 before_submit = page_dir / "before_submit.png"

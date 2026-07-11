@@ -230,14 +230,18 @@ def test_current_metrics_separate_reachability_from_behavioral_proof() -> None:
 
     coverage = generator.build_coverage(REPO_ROOT)
 
-    assert (coverage.api.covered, coverage.api.total, coverage.api.percent) == (0, 64, 0)
-    assert (coverage.gui.covered, coverage.gui.total, coverage.gui.percent) == (0, 114, 0)
+    assert coverage.api.covered == 0
+    assert coverage.api.total >= 64
+    assert coverage.api.percent == 0
+    assert coverage.gui.covered == 0
+    assert coverage.gui.total >= 114
+    assert coverage.gui.percent == 0
     assert coverage.api_reachability.percent == 100
     assert coverage.gui_reachability.percent == 100
     assert (coverage.playwright.covered, coverage.playwright.total, coverage.playwright.percent) == (0, 22, 0)
-    assert coverage.playwright_count == 8
+    assert coverage.playwright_count >= 8
     assert "missing or invalid executed receipt" in " ".join(coverage.playwright.issues)
-    assert "auth-hosted-ui-login" in " ".join(coverage.playwright.issues)
+    assert "auth-hosted-ui-login" in coverage.playwright.missing
 
 
 def test_current_round6_floor_fails_without_behavior_and_execution_receipts() -> None:

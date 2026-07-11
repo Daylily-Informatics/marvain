@@ -10,6 +10,7 @@ WORKFLOW_MANIFEST = ROOT / "tests" / "e2e" / "gui_workflow_manifest.json"
 SMOKE_RUNNER = ROOT / "marvain_cli" / "smoke.py"
 
 PRIMARY_GUI_PAGES = {
+    "auth-hosted-ui",
     "dashboard",
     "agents",
     "people",

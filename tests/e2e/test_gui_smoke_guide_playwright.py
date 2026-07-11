@@ -220,7 +220,7 @@ def test_gui_smoke_guide_verifies_every_manifest_workflow(tmp_path: Path) -> Non
             assert step in report
         for assertion in workflow.persisted_postcondition.assertions:
             assert f"- Assert: {assertion}" in report
-        page_dir = Path(result["output_dir"]) / workflow.page
+        page_dir = Path(result["output_dir"]) / workflow.workflow_id
         assert (page_dir / "before.png").exists()
         assert (page_dir / "before_submit.png").exists()
         assert (page_dir / "after_submit.png").exists()
@@ -247,7 +247,7 @@ def test_gui_smoke_guide_blocks_missing_named_workflow_control(tmp_path: Path) -
     assert "- Result: `BLOCKED`" in report
     assert f"Command: {workflow.command}" in report
     assert f"- Request: `{workflow.persisted_postcondition.request}`" in report
-    page_dir = Path(result["output_dir"]) / workflow.page
+    page_dir = Path(result["output_dir"]) / workflow.workflow_id
     assert (page_dir / "before.png").exists()
     assert (page_dir / "before_submit.png").exists()
     assert (page_dir / "after_submit.png").exists()
