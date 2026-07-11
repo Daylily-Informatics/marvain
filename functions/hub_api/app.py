@@ -9,7 +9,6 @@ For Lambda deployment, use api_app.py instead (via lambda_handler.py).
 
 from __future__ import annotations
 
-import base64
 import dataclasses
 import html
 import json
@@ -22,7 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime as dt_datetime
 from datetime import timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from agent_hub.action_service import (
     ActionServiceError,
@@ -994,26 +993,6 @@ def _safe_next_app_path(request: Request, next_path: str | None) -> str:
             nxt = "/" + nxt
         nxt = _safe_next_path(nxt)
     return nxt
-
-
-def _encode_next_cookie(path: str) -> str:
-    """Encode a normalized next-path for safe storage in a cookie."""
-    # Path is already normalized by _safe_next_app_path; we further make it opaque.
-    data = path.encode("utf-8")
-    return base64.urlsafe_b64encode(data).decode("ascii")
-
-
-def _decode_next_cookie(value: Optional[str]) -> str:
-    """Decode a next-path from cookie storage, falling back to root on error."""
-    if not value:
-        return "/"
-    try:
-        raw = base64.urlsafe_b64decode(value.encode("ascii"), validate=True)
-        path = raw.decode("utf-8", errors="strict")
-    except Exception:
-        return "/"
-    # Re-apply safety normalization to be defensive.
-    return _safe_next_path(path)
 
 
 def _gui_get_user(request: Request) -> AuthenticatedUser | None:
