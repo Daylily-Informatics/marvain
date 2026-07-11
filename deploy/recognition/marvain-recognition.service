@@ -1,0 +1,30 @@
+[Unit]
+Description=Marvain Recognition Worker
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=marvain-recognition
+Group=marvain-recognition
+EnvironmentFile=/etc/marvain/recognition.env
+WorkingDirectory=/opt/marvain-recognition/app
+ExecStart=/opt/marvain-recognition/venv/bin/python /opt/marvain-recognition/app/worker.py
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/marvain-recognition
+CapabilityBoundingSet=
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
