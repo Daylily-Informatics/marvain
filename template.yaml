@@ -413,6 +413,12 @@ Resources:
         deadLetterTargetArn: !GetAtt TapdbWriterDlq.Arn
         maxReceiveCount: 3
 
+  SemanticOutboxDispatcherInvocationDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
   # -----------------------------
   # WebSocket connection registry
   # -----------------------------
@@ -873,7 +879,158 @@ Resources:
       TreatMissingData: breaching
 
   # -----------------------------
-  # Planner (deliberative loop)
+  # Semantic outbox delivery
+  # -----------------------------
+  SemanticOutboxDispatcherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/semantic_outbox_dispatcher/
+      Handler: handler.handler
+      Timeout: 60
+      MemorySize: 512
+      Layers:
+        - !Ref SharedLayer
+      Environment:
+        Variables:
+          DB_RESOURCE_ARN: !GetAtt AuroraCluster.DBClusterArn
+          DB_SECRET_ARN: !Ref DbCredentialsSecret
+          DB_NAME: !Ref DbName
+          TAPDB_WRITER_QUEUE_URL: !Ref TapdbWriterQueue
+          SEMANTIC_OUTBOX_DISPATCHER_ID: !Sub ${AWS::StackName}-semantic-outbox-dispatcher
+          SEMANTIC_OUTBOX_BATCH_SIZE: "25"
+          SEMANTIC_OUTBOX_LEASE_SECONDS: "120"
+          SEMANTIC_OUTBOX_MAX_ATTEMPTS: "5"
+          SEMANTIC_OUTBOX_RETRY_SECONDS: "60"
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BeginTransaction
+                - rds-data:CommitTransaction
+                - rds-data:RollbackTransaction
+              Resource:
+                - !GetAtt AuroraCluster.DBClusterArn
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DbCredentialsSecret
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource:
+                - !GetAtt TapdbWriterQueue.Arn
+
+  SemanticOutboxDispatcherSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Drain committed semantic outbox rows into the TapDB writer queue.
+      ScheduleExpression: rate(1 minute)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt SemanticOutboxDispatcherFunction.Arn
+          Id: SemanticOutboxDispatcher
+          Input: '{"action":"dispatch"}'
+          RetryPolicy:
+            MaximumEventAgeInSeconds: 3600
+            MaximumRetryAttempts: 2
+          DeadLetterConfig:
+            Arn: !GetAtt SemanticOutboxDispatcherInvocationDlq.Arn
+
+  SemanticOutboxDispatcherSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref SemanticOutboxDispatcherFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt SemanticOutboxDispatcherSchedule.Arn
+
+  SemanticOutboxDispatcherInvocationDlqPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref SemanticOutboxDispatcherInvocationDlq
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowSemanticOutboxDispatcherSchedule
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt SemanticOutboxDispatcherInvocationDlq.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt SemanticOutboxDispatcherSchedule.Arn
+
+  SemanticOutboxDispatcherErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-semantic-outbox-dispatcher-errors
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref SemanticOutboxDispatcherFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  SemanticOutboxDispatcherDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-semantic-outbox-dispatcher-dlq
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt SemanticOutboxDispatcherInvocationDlq.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  TapdbWriterDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-tapdb-writer-dlq
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt TapdbWriterDlq.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  TapdbWriterQueueAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-tapdb-writer-queue-age
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt TapdbWriterQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 300
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  # -----------------------------
+  # TapDB writer and planner
   # -----------------------------
   TapdbWriterFunction:
     Type: AWS::Serverless::Function
@@ -1624,6 +1781,12 @@ Outputs:
   TapdbWriterFunctionName:
     Description: Lambda function name for TapDB semantic writer and template seeding
     Value: !Ref TapdbWriterFunction
+  SemanticOutboxDispatcherFunctionName:
+    Description: Lambda function that drains the durable semantic outbox into the TapDB writer queue
+    Value: !Ref SemanticOutboxDispatcherFunction
+  SemanticOutboxDispatcherInvocationDlqUrl:
+    Description: Queue URL for failed EventBridge invocations of the semantic outbox dispatcher
+    Value: !Ref SemanticOutboxDispatcherInvocationDlq
   IntegrationQueueUrl:
     Description: SQS queue URL for normalized inbound integration events
     Value: !Ref IntegrationQueue

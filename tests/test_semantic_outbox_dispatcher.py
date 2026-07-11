@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Any, Mapping
 
 import pytest
+import yaml
 
 from functions.semantic_outbox_dispatcher import handler as dispatcher
 
@@ -12,6 +14,26 @@ OUTBOX_ID = "11111111-1111-4111-8111-111111111111"
 SYNC_ID = "22222222-2222-4222-8222-222222222222"
 AGENT_ID = "33333333-3333-4333-8333-333333333333"
 IDEMPOTENCY_KEY = "44444444-4444-4444-8444-444444444444"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+class _CloudFormationLoader(yaml.SafeLoader):
+    pass
+
+
+def _construct_cloudformation_tag(
+    loader: _CloudFormationLoader,
+    _tag_suffix: str,
+    node: yaml.Node,
+) -> Any:
+    if isinstance(node, yaml.ScalarNode):
+        return loader.construct_scalar(node)
+    if isinstance(node, yaml.SequenceNode):
+        return loader.construct_sequence(node, deep=True)
+    return loader.construct_mapping(node, deep=True)
+
+
+_CloudFormationLoader.add_multi_constructor("!", _construct_cloudformation_tag)
 
 
 def _payload() -> dict[str, Any]:
@@ -124,6 +146,131 @@ def test_dispatcher_config_hard_fails_instead_of_inferring_values() -> None:
     assert "DB_RESOURCE_ARN" in message
     assert "TAPDB_WRITER_QUEUE_URL" in message
     assert "SEMANTIC_OUTBOX_MAX_ATTEMPTS" in message
+
+
+def test_dispatcher_is_wired_to_the_deployed_tapdb_queue_with_explicit_failure_controls() -> None:
+    template = yaml.load(
+        (REPO_ROOT / "template.yaml").read_text(encoding="utf-8"),
+        Loader=_CloudFormationLoader,
+    )
+    resources = template["Resources"]
+    outputs = template["Outputs"]
+
+    function = resources["SemanticOutboxDispatcherFunction"]
+    assert function["Type"] == "AWS::Serverless::Function"
+    properties = function["Properties"]
+    assert properties["CodeUri"] == "functions/semantic_outbox_dispatcher/"
+    assert properties["Handler"] == "handler.handler"
+    assert properties["Timeout"] == 60
+    assert properties["Layers"] == ["SharedLayer"]
+    assert properties["Environment"]["Variables"] == {
+        "DB_RESOURCE_ARN": "AuroraCluster.DBClusterArn",
+        "DB_SECRET_ARN": "DbCredentialsSecret",
+        "DB_NAME": "DbName",
+        "TAPDB_WRITER_QUEUE_URL": "TapdbWriterQueue",
+        "SEMANTIC_OUTBOX_DISPATCHER_ID": "${AWS::StackName}-semantic-outbox-dispatcher",
+        "SEMANTIC_OUTBOX_BATCH_SIZE": "25",
+        "SEMANTIC_OUTBOX_LEASE_SECONDS": "120",
+        "SEMANTIC_OUTBOX_MAX_ATTEMPTS": "5",
+        "SEMANTIC_OUTBOX_RETRY_SECONDS": "60",
+    }
+
+    statements = properties["Policies"][1]["Statement"]
+    assert statements == [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "rds-data:ExecuteStatement",
+                "rds-data:BeginTransaction",
+                "rds-data:CommitTransaction",
+                "rds-data:RollbackTransaction",
+            ],
+            "Resource": ["AuroraCluster.DBClusterArn"],
+        },
+        {
+            "Effect": "Allow",
+            "Action": ["secretsmanager:GetSecretValue"],
+            "Resource": ["DbCredentialsSecret"],
+        },
+        {
+            "Effect": "Allow",
+            "Action": ["sqs:SendMessage"],
+            "Resource": ["TapdbWriterQueue.Arn"],
+        },
+    ]
+
+    assert "Events" not in properties
+    schedule = resources["SemanticOutboxDispatcherSchedule"]
+    assert schedule == {
+        "Type": "AWS::Events::Rule",
+        "Properties": {
+            "Description": "Drain committed semantic outbox rows into the TapDB writer queue.",
+            "ScheduleExpression": "rate(1 minute)",
+            "State": "ENABLED",
+            "Targets": [
+                {
+                    "Arn": "SemanticOutboxDispatcherFunction.Arn",
+                    "Id": "SemanticOutboxDispatcher",
+                    "Input": '{"action":"dispatch"}',
+                    "RetryPolicy": {
+                        "MaximumEventAgeInSeconds": 3600,
+                        "MaximumRetryAttempts": 2,
+                    },
+                    "DeadLetterConfig": {
+                        "Arn": "SemanticOutboxDispatcherInvocationDlq.Arn",
+                    },
+                }
+            ],
+        },
+    }
+    assert resources["SemanticOutboxDispatcherSchedulePermission"] == {
+        "Type": "AWS::Lambda::Permission",
+        "Properties": {
+            "Action": "lambda:InvokeFunction",
+            "FunctionName": "SemanticOutboxDispatcherFunction",
+            "Principal": "events.amazonaws.com",
+            "SourceArn": "SemanticOutboxDispatcherSchedule.Arn",
+        },
+    }
+    assert resources["SemanticOutboxDispatcherInvocationDlqPolicy"] == {
+        "Type": "AWS::SQS::QueuePolicy",
+        "Properties": {
+            "Queues": ["SemanticOutboxDispatcherInvocationDlq"],
+            "PolicyDocument": {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Sid": "AllowSemanticOutboxDispatcherSchedule",
+                        "Effect": "Allow",
+                        "Principal": {"Service": "events.amazonaws.com"},
+                        "Action": "sqs:SendMessage",
+                        "Resource": "SemanticOutboxDispatcherInvocationDlq.Arn",
+                        "Condition": {
+                            "ArnEquals": {
+                                "aws:SourceArn": "SemanticOutboxDispatcherSchedule.Arn",
+                            }
+                        },
+                    }
+                ],
+            },
+        },
+    }
+
+    dlq = resources["SemanticOutboxDispatcherInvocationDlq"]
+    assert dlq["Type"] == "AWS::SQS::Queue"
+    assert dlq["Properties"] == {
+        "MessageRetentionPeriod": 1209600,
+        "SqsManagedSseEnabled": True,
+    }
+    assert resources["SemanticOutboxDispatcherErrorsAlarm"]["Properties"]["MetricName"] == "Errors"
+    assert (
+        resources["SemanticOutboxDispatcherDlqAlarm"]["Properties"]["MetricName"]
+        == "ApproximateNumberOfMessagesVisible"
+    )
+    assert resources["TapdbWriterDlqAlarm"]["Properties"]["MetricName"] == "ApproximateNumberOfMessagesVisible"
+    assert resources["TapdbWriterQueueAgeAlarm"]["Properties"]["MetricName"] == "ApproximateAgeOfOldestMessage"
+    assert outputs["SemanticOutboxDispatcherFunctionName"]["Value"] == "SemanticOutboxDispatcherFunction"
+    assert outputs["SemanticOutboxDispatcherInvocationDlqUrl"]["Value"] == "SemanticOutboxDispatcherInvocationDlq"
 
 
 def test_claim_is_atomic_lease_with_expired_dispatch_recovery_and_attempt_record() -> None:
