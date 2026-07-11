@@ -43,7 +43,7 @@ def test_repository_evidence_score_and_operational_score_are_separate() -> None:
     status = generator.build_status(REPO_ROOT)
 
     assert status["score"] >= 90
-    assert status["operational_score"] == 47
+    assert status["operational_score"] == 49
 
 
 def test_deployed_smoke_placeholder_cannot_satisfy_completion(tmp_path) -> None:
@@ -99,7 +99,7 @@ def test_check_command_can_gate_operational_score_independently() -> None:
     )
 
     assert result.returncode == 1
-    assert "Operational completion score 47% is below required 85%" in result.stderr
+    assert "Operational completion score 49% is below required 85%" in result.stderr
 
 
 def test_generated_design_objective_status_doc_is_current() -> None:

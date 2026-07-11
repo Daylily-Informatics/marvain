@@ -39,10 +39,17 @@
     },
     "FND-03": {
       "title": "Python and dependency contract",
-      "current_score": 38,
+      "current_score": 60,
       "evidence": {
-        "implementation": [],
-        "local_workflow": [],
+        "implementation": [
+          "template.yaml#Globals.Function.Runtime",
+          "environment.yaml#aws-sam-cli",
+          ".github/workflows/ci.yml#sam-build"
+        ],
+        "local_workflow": [
+          "tests/test_environment_contract.py#test_deployment_runtime_contract_is_python_312",
+          "receipt:local-sam-build-10-functions-python312"
+        ],
         "integration": [],
         "deployed": [],
         "failure_recovery": [],
@@ -109,9 +116,12 @@
     },
     "FND-07": {
       "title": "Agent-to-agent authentication",
-      "current_score": 43,
+      "current_score": 49,
       "evidence": {
-        "implementation": [],
+        "implementation": [
+          "layers/shared/python/agent_hub/auth.py#create_agent_token",
+          "functions/hub_api/api_app.py#create_agent_token_endpoint"
+        ],
         "local_workflow": [],
         "integration": [],
         "deployed": [],
@@ -345,12 +355,14 @@
     },
     "MEM-03": {
       "title": "Model-assisted classification",
-      "current_score": 52,
+      "current_score": 60,
       "evidence": {
         "implementation": [
           "docs/sol_ultra_repo_assessment_completion_notes.md#mem-03"
         ],
-        "local_workflow": [],
+        "local_workflow": [
+          "tests/test_memory_classifier.py"
+        ],
         "integration": [],
         "deployed": [],
         "failure_recovery": [],
@@ -368,8 +380,13 @@
         "implementation": [
           "docs/sol_ultra_repo_assessment_completion_notes.md#mem-04"
         ],
-        "local_workflow": [],
-        "integration": [],
+        "local_workflow": [
+          "tests/test_memory_service.py",
+          "tests/test_hub_api_memberships.py#test_create_memory_generates_embedding_when_openai_configured"
+        ],
+        "integration": [
+          "functions/hub_api/api_app.py#create_memory"
+        ],
         "deployed": [],
         "failure_recovery": [],
         "observability": [],
@@ -417,9 +434,12 @@
     },
     "MEM-07": {
       "title": "Embedding creation and durability",
-      "current_score": 34,
+      "current_score": 49,
       "evidence": {
-        "implementation": [],
+        "implementation": [
+          "layers/shared/python/agent_hub/memory_service.py#MemoryCommitRecord",
+          "functions/hub_api/api_app.py#create_memory"
+        ],
         "local_workflow": [],
         "integration": [],
         "deployed": [],
@@ -451,9 +471,12 @@
     },
     "MEM-09": {
       "title": "Consent/privacy-aware recall",
-      "current_score": 25,
+      "current_score": 49,
       "evidence": {
-        "implementation": [],
+        "implementation": [
+          "layers/shared/python/agent_hub/policy.py#evaluate_policy",
+          "functions/hub_api/api_app.py#recall_memories"
+        ],
         "local_workflow": [],
         "integration": [],
         "deployed": [],
@@ -1085,9 +1108,13 @@
     },
     "DAT-03": {
       "title": "TapDB canonical production writes",
-      "current_score": 25,
+      "current_score": 49,
       "evidence": {
-        "implementation": [],
+        "implementation": [
+          "layers/shared/python/agent_hub/semantic_outbox.py#enqueue_semantic_record",
+          "functions/tapdb_writer/handler.py#_dispatch_idempotent",
+          "functions/hub_api/api_app.py#enqueue_semantic_record"
+        ],
         "local_workflow": [],
         "integration": [],
         "deployed": [],

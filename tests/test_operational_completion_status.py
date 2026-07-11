@@ -26,13 +26,13 @@ def test_ledger_tracks_exactly_85_unique_capabilities() -> None:
     assert len({row.capability_id for row in rows}) == 85
 
 
-def test_baseline_manifest_validates_and_scores_47() -> None:
+def test_current_manifest_validates_and_scores_49() -> None:
     generator = _load_generator()
     rows = generator.parse_capability_ledger()
     manifest = generator.build_baseline_manifest(rows)
 
     assert generator.validate(rows, manifest) == []
-    assert generator.operational_score(rows, manifest) == 47
+    assert generator.operational_score(rows, manifest) == 49
 
 
 def test_evidence_caps_prevent_unsupported_scores() -> None:

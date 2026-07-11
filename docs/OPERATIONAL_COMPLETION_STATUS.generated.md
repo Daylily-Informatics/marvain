@@ -2,22 +2,22 @@
 
 This status is computed from the 85-row execution ledger and machine-readable evidence manifest. It is separate from the repository evidence-presence score.
 
-Operational score: **47%**.
+Operational score: **49%**.
 Capabilities at 100/SUCCESS: **0/85**.
 
 ## Category Summary
 
 | Category | Score | Capabilities at 100 | Total |
 |---|---:|---:|---:|
-| `FND` | 54% | 0 | 8 |
+| `FND` | 58% | 0 | 8 |
 | `AGT` | 37% | 0 | 10 |
-| `MEM` | 49% | 0 | 13 |
+| `MEM` | 52% | 0 | 13 |
 | `IDN` | 39% | 0 | 9 |
 | `LIV` | 49% | 0 | 9 |
 | `TOP` | 54% | 0 | 5 |
 | `ACT` | 59% | 0 | 3 |
 | `INT` | 53% | 0 | 4 |
-| `DAT` | 44% | 0 | 9 |
+| `DAT` | 47% | 0 | 9 |
 | `OPS` | 38% | 0 | 15 |
 
 ## Capability Evidence
@@ -26,11 +26,11 @@ Capabilities at 100/SUCCESS: **0/85**.
 |---|---|---:|---:|---|---|---:|
 | `FND-01` | Product mission and domain model | 72% | 74% | `OPEN` | `A1` | 1 |
 | `FND-02` | No-fallback/no-legacy architecture | 46% | 49% | `IN_PROGRESS` | `A1` | 1 |
-| `FND-03` | Python and dependency contract | 38% | 49% | `OPEN` | `A2` | 1 |
+| `FND-03` | Python and dependency contract | 60% | 84% | `IN_PROGRESS` | `A2` | 1 |
 | `FND-04` | CLI and explicit configuration | 68% | 74% | `OPEN` | `A2` | 1 |
 | `FND-05` | Cognito browser and runtime auth | 62% | 74% | `OPEN` | `A4` | 1 |
 | `FND-06` | Memberships and human roles | 70% | 74% | `OPEN` | `A4` | 1 |
-| `FND-07` | Agent-to-agent authentication | 43% | 49% | `OPEN` | `A4` | 3 |
+| `FND-07` | Agent-to-agent authentication | 49% | 74% | `IN_PROGRESS` | `A4` | 3 |
 | `FND-08` | Multi-tenant isolation | 35% | 49% | `OPEN` | `A4` | 2 |
 | `AGT-01` | Agent creation and durable identity | 72% | 74% | `OPEN` | `A6` | 3 |
 | `AGT-02` | Persona creation and selection | 55% | 74% | `OPEN` | `A6` | 3 |
@@ -44,13 +44,13 @@ Capabilities at 100/SUCCESS: **0/85**.
 | `AGT-10` | Agent continuity across upgrades | 10% | 49% | `OPEN` | `A6` | 7 |
 | `MEM-01` | Eight-kind memory taxonomy | 82% | 84% | `OPEN` | `A5` | 3 |
 | `MEM-02` | Provenance classes | 72% | 74% | `OPEN` | `A5` | 3 |
-| `MEM-03` | Model-assisted classification | 52% | 74% | `OPEN` | `A5` | 3 |
-| `MEM-04` | Source evidence and candidate lifecycle | 66% | 74% | `OPEN` | `A5` | 3 |
+| `MEM-03` | Model-assisted classification | 60% | 84% | `IN_PROGRESS` | `A5` | 3 |
+| `MEM-04` | Source evidence and candidate lifecycle | 66% | 94% | `IN_PROGRESS` | `A5` | 3 |
 | `MEM-05` | Agent ownership and immutable content | 61% | 74% | `OPEN` | `A5` | 3 |
 | `MEM-06` | User annotation and disagreement | 55% | 74% | `OPEN` | `A5` | 3 |
-| `MEM-07` | Embedding creation and durability | 34% | 49% | `OPEN` | `A5` | 3 |
+| `MEM-07` | Embedding creation and durability | 49% | 74% | `IN_PROGRESS` | `A5` | 3 |
 | `MEM-08` | Recall ranking and explanation | 58% | 74% | `OPEN` | `A5` | 3 |
-| `MEM-09` | Consent/privacy-aware recall | 25% | 49% | `OPEN` | `A4` | 3 |
+| `MEM-09` | Consent/privacy-aware recall | 49% | 74% | `IN_PROGRESS` | `A4` | 3 |
 | `MEM-10` | Cross-space/device/session/person recall | 56% | 74% | `OPEN` | `A5` | 3 |
 | `MEM-11` | Cross-agent interaction memory | 28% | 49% | `OPEN` | `A5` | 7 |
 | `MEM-12` | Self-inspired reflection and learning | 24% | 49% | `OPEN` | `A5` | 7 |
@@ -87,7 +87,7 @@ Capabilities at 100/SUCCESS: **0/85**.
 | `INT-04` | Cross-channel conversation continuity | 25% | 49% | `OPEN` | `A9` | 7 |
 | `DAT-01` | TapDB boundary conformance | 76% | 84% | `OPEN` | `A3` | 2 |
 | `DAT-02` | TapDB native query/graph/admin surfaces | 62% | 74% | `OPEN` | `A3` | 2 |
-| `DAT-03` | TapDB canonical production writes | 25% | 49% | `OPEN` | `A3` | 2 |
+| `DAT-03` | TapDB canonical production writes | 49% | 74% | `IN_PROGRESS` | `A3` | 2 |
 | `DAT-04` | TapDB write idempotency and retries | 22% | 49% | `OPEN` | `A3` | 2 |
 | `DAT-05` | Typed external references and lineage | 38% | 49% | `OPEN` | `A3` | 2 |
 | `DAT-06` | SQL projection consistency | 31% | 49% | `OPEN` | `A3` | 2 |

@@ -6,7 +6,7 @@ The design score is a deterministic repository evidence-presence check. It is no
 Repository evidence-presence score: **100%** (86/86 checks present).
 Repository evidence minimum: **90%**.
 Repository evidence gate: **PASS**.
-Operational completion score: **47%** from the 85-capability execution ledger and evidence manifest.
+Operational completion score: **49%** from the 85-capability execution ledger and evidence manifest.
 
 ## Architecture Purity Gate
 
