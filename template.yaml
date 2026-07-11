@@ -1240,12 +1240,24 @@ Resources:
         Variables:
           WS_TABLE: !Ref WsConnectionsTable
           WS_SUBSCRIPTIONS_TABLE: !Ref WsSubscriptionsTable
+          DB_RESOURCE_ARN: !GetAtt AuroraCluster.DBClusterArn
+          DB_SECRET_ARN: !Ref DbCredentialsSecret
+          DB_NAME: !Ref DbName
       Policies:
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: !Ref WsConnectionsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref WsSubscriptionsTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbCredentialsSecret
 
   WsMessageFunction:
     Type: AWS::Serverless::Function

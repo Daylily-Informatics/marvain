@@ -10,6 +10,7 @@ from agent_hub.device_routing import (
     dispatch_to_device_route,
     load_device_route,
     query_device_connection_items,
+    record_device_disconnect,
     require_route_scopes,
     select_route_connections,
 )
@@ -182,3 +183,42 @@ def test_connection_registry_query_reads_all_pages() -> None:
 
     assert [item["connection_id"] for item in items] == ["connection-1", "connection-2"]
     assert table.query.call_args_list[1].kwargs["ExclusiveStartKey"] == {"cursor": "next"}
+
+
+def test_disconnect_receipt_is_idempotent_and_bound_to_registry_topology() -> None:
+    db = MagicMock()
+    db.query.return_value = [{"event_id": "event-disconnect-1"}]
+    connection = {
+        "connection_id": "connection-1",
+        "connection_epoch": "epoch-1",
+        "principal_type": "device",
+        "device_id": "device-1",
+        "agent_id": "agent-1",
+        "location_id": "location-1",
+        "space_id": "space-1",
+    }
+
+    event_id = record_device_disconnect(db, connection=connection, reason="api_gateway_disconnect")
+
+    assert event_id == "event-disconnect-1"
+    sql = db.query.call_args.args[0]
+    params = db.query.call_args.args[1]
+    assert "WHERE NOT EXISTS (SELECT 1 FROM existing)" in sql
+    assert "payload ->> 'connection_epoch' = :connection_epoch" in sql
+    assert params["connection_epoch"] == "epoch-1"
+    assert json.loads(params["payload"])["route"] == {
+        "device_id": "device-1",
+        "agent_id": "agent-1",
+        "location_id": "location-1",
+        "space_id": "space-1",
+    }
+
+
+def test_disconnect_receipt_rejects_non_device_registry_row() -> None:
+    with pytest.raises(DeviceRoutingError) as exc_info:
+        record_device_disconnect(
+            MagicMock(),
+            connection={"connection_id": "connection-1", "principal_type": "user"},
+            reason="api_gateway_disconnect",
+        )
+    assert exc_info.value.code == "device_connection_principal_invalid"

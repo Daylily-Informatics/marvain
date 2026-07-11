@@ -319,6 +319,85 @@ def record_device_connection_state(
     return _required_text(rows[0].get("event_id"), "event_id")
 
 
+def record_device_disconnect(db: RdsData, *, connection: Mapping[str, Any], reason: str) -> str:
+    """Persist one idempotent disconnect receipt from the authenticated registry row."""
+    if str(connection.get("principal_type") or "") != "device":
+        raise DeviceRoutingError("device_connection_principal_invalid")
+    connection_id = _required_text(connection.get("connection_id"), "connection_id")
+    connection_epoch = _required_text(connection.get("connection_epoch"), "connection_epoch")
+    device_id = _required_text(connection.get("device_id"), "device_id")
+    agent_id = _required_text(connection.get("agent_id"), "agent_id")
+    location_id = _required_text(connection.get("location_id"), "location_id")
+    space_id = _required_text(connection.get("space_id"), "space_id")
+    reason = _required_text(reason, "reason")
+    payload = json.dumps(
+        {
+            "connection_id": connection_id,
+            "connection_epoch": connection_epoch,
+            "state": "disconnected",
+            "reason": reason,
+            "route": {
+                "device_id": device_id,
+                "agent_id": agent_id,
+                "location_id": location_id,
+                "space_id": space_id,
+            },
+        }
+    )
+    rows = db.query(
+        """
+        WITH verified_route AS (
+          SELECT d.device_id, d.agent_id, l.location_id, s.space_id
+          FROM devices d
+          JOIN locations l
+            ON l.location_id = :location_id::uuid
+           AND l.agent_id = :agent_id::uuid
+          JOIN spaces s
+            ON s.space_id = :space_id::uuid
+           AND s.agent_id = :agent_id::uuid
+           AND s.location_id = :location_id::uuid
+          WHERE d.device_id = :device_id::uuid
+            AND d.agent_id = :agent_id::uuid
+          LIMIT 1
+        ), existing AS (
+          SELECT event_id
+          FROM events
+          WHERE agent_id = :agent_id::uuid
+            AND device_id = :device_id::uuid
+            AND type = 'device.connection.disconnected'
+            AND payload ->> 'connection_epoch' = :connection_epoch
+          LIMIT 1
+        ), inserted AS (
+          INSERT INTO events(agent_id, space_id, device_id, location_id, type, payload)
+          SELECT :agent_id::uuid,
+                 :space_id::uuid,
+                 :device_id::uuid,
+                 :location_id::uuid,
+                 'device.connection.disconnected',
+                 :payload::jsonb
+          FROM verified_route
+          WHERE NOT EXISTS (SELECT 1 FROM existing)
+          RETURNING event_id
+        )
+        SELECT event_id::TEXT AS event_id FROM inserted
+        UNION ALL
+        SELECT event_id::TEXT AS event_id FROM existing
+        LIMIT 1
+        """,
+        {
+            "agent_id": agent_id,
+            "space_id": space_id,
+            "device_id": device_id,
+            "location_id": location_id,
+            "connection_epoch": connection_epoch,
+            "payload": payload,
+        },
+    )
+    if not rows:
+        raise DeviceRoutingError("device_disconnect_receipt_not_persisted")
+    return _required_text(rows[0].get("event_id"), "event_id")
+
+
 def record_device_heartbeat(db: RdsData, *, route: DeviceRoute) -> None:
     rows = db.query(
         """
@@ -353,6 +432,7 @@ __all__ = [
     "load_device_route",
     "query_device_connection_items",
     "record_device_connection_state",
+    "record_device_disconnect",
     "record_device_heartbeat",
     "require_route_scopes",
     "select_route_connections",
