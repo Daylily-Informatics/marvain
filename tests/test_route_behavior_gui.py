@@ -94,6 +94,167 @@ def _assert_html(response: object) -> None:
     assert "Marvain" in str(getattr(response, "text", ""))
 
 
+def test_gui_service_manifest_success(request: pytest.FixtureRequest, gui_harness: GuiHarness) -> None:
+    response = gui_harness.client.get("/obs_services")
+
+    assert response.status_code == 200
+    assert response.json()["schema"] == "marvain.observability.v1"
+    record_http_evidence(request, surface="gui", method="GET", path="/obs_services", kind="success", response=response)
+
+
+def test_gui_api_health_success(request: pytest.FixtureRequest, gui_harness: GuiHarness) -> None:
+    response = gui_harness.client.get("/api_health")
+
+    assert response.status_code == 200
+    assert response.json()["schema"] == "marvain.observability.v1"
+    assert isinstance(response.json()["families"], list)
+    record_http_evidence(request, surface="gui", method="GET", path="/api_health", kind="success", response=response)
+
+
+def test_gui_endpoint_health_success(request: pytest.FixtureRequest, gui_harness: GuiHarness) -> None:
+    response = gui_harness.client.get("/endpoint_health")
+
+    assert response.status_code == 200
+    assert isinstance(response.json()["items"], list)
+    record_http_evidence(
+        request, surface="gui", method="GET", path="/endpoint_health", kind="success", response=response
+    )
+
+
+def test_gui_db_health_success(request: pytest.FixtureRequest, gui_harness: GuiHarness) -> None:
+    response = gui_harness.client.get("/db_health")
+
+    assert response.status_code == 200
+    assert response.json()["database"]["config"]["rds_data_api_configured"] is True
+    record_http_evidence(request, surface="gui", method="GET", path="/db_health", kind="success", response=response)
+
+
+def test_gui_auth_health_success(request: pytest.FixtureRequest, gui_harness: GuiHarness) -> None:
+    response = gui_harness.client.get("/auth_health")
+
+    assert response.status_code == 200
+    assert response.json()["auth"]["cognito_configured"] is True
+    record_http_evidence(request, surface="gui", method="GET", path="/auth_health", kind="success", response=response)
+
+
+def test_gui_my_health_success(request: pytest.FixtureRequest, gui_harness: GuiHarness) -> None:
+    response = gui_harness.client.get("/my_health")
+
+    assert response.status_code == 200
+    assert response.json()["principal"]["authenticated"] is True
+    record_http_evidence(request, surface="gui", method="GET", path="/my_health", kind="success", response=response)
+
+
+def test_gui_login_success(request: pytest.FixtureRequest, gui_harness: GuiHarness) -> None:
+    response = gui_harness.client.get("/login", follow_redirects=False)
+
+    assert response.status_code == 302
+    assert response.headers["location"].startswith("https://marvain-test.auth.us-west-2.amazoncognito.com/")
+    record_http_evidence(request, surface="gui", method="GET", path="/login", kind="success", response=response)
+
+
+def test_gui_logged_out_success(request: pytest.FixtureRequest, gui_harness: GuiHarness) -> None:
+    response = gui_harness.client.get("/logged-out")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "Logged out" in response.text
+    assert "href='/login'" in response.text
+    record_http_evidence(request, surface="gui", method="GET", path="/logged-out", kind="success", response=response)
+
+
+def test_gui_dashboard_kpi_success(request: pytest.FixtureRequest, gui_harness: GuiHarness) -> None:
+    response = gui_harness.client.get("/dashboard/kpi-strip")
+
+    assert response.status_code == 200
+    assert "Agents Online" in response.text
+    record_http_evidence(
+        request, surface="gui", method="GET", path="/dashboard/kpi-strip", kind="success", response=response
+    )
+
+
+def test_gui_dashboard_kpi_denial(
+    request: pytest.FixtureRequest,
+    gui_harness: GuiHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gui_harness.mod, "_gui_get_user", lambda _request: None)
+    response = gui_harness.client.get("/dashboard/kpi-strip")
+
+    assert response.status_code == 401
+    record_http_evidence(
+        request, surface="gui", method="GET", path="/dashboard/kpi-strip", kind="denial", response=response
+    )
+
+
+def test_gui_dashboard_activity_success(request: pytest.FixtureRequest, gui_harness: GuiHarness) -> None:
+    response = gui_harness.client.get("/dashboard/activity-feed")
+
+    assert response.status_code == 200
+    assert "No recent events" in response.text
+    record_http_evidence(
+        request,
+        surface="gui",
+        method="GET",
+        path="/dashboard/activity-feed",
+        kind="success",
+        response=response,
+    )
+
+
+def test_gui_dashboard_activity_denial(
+    request: pytest.FixtureRequest,
+    gui_harness: GuiHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gui_harness.mod, "_gui_get_user", lambda _request: None)
+    response = gui_harness.client.get("/dashboard/activity-feed")
+
+    assert response.status_code == 401
+    record_http_evidence(
+        request,
+        surface="gui",
+        method="GET",
+        path="/dashboard/activity-feed",
+        kind="denial",
+        response=response,
+    )
+
+
+def test_gui_dashboard_actions_success(request: pytest.FixtureRequest, gui_harness: GuiHarness) -> None:
+    response = gui_harness.client.get("/dashboard/recent-actions")
+
+    assert response.status_code == 200
+    assert "No recent actions" in response.text
+    record_http_evidence(
+        request,
+        surface="gui",
+        method="GET",
+        path="/dashboard/recent-actions",
+        kind="success",
+        response=response,
+    )
+
+
+def test_gui_dashboard_actions_denial(
+    request: pytest.FixtureRequest,
+    gui_harness: GuiHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gui_harness.mod, "_gui_get_user", lambda _request: None)
+    response = gui_harness.client.get("/dashboard/recent-actions")
+
+    assert response.status_code == 401
+    record_http_evidence(
+        request,
+        surface="gui",
+        method="GET",
+        path="/dashboard/recent-actions",
+        kind="denial",
+        response=response,
+    )
+
+
 def test_gui_dashboard_success(request: pytest.FixtureRequest, gui_harness: GuiHarness) -> None:
     response = gui_harness.client.get("/")
     _assert_html(response)

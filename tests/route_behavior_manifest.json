@@ -246,6 +246,400 @@
       }
     },
     {
+      "surface": "api",
+      "method": "GET",
+      "path": "/v1/tools",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The authenticated tool catalog read has no user input to validate."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The tool catalog read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_tools_success",
+        "denial": "tests/test_route_behavior_api.py::test_api_tools_denial"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "GET",
+      "path": "/v1/agents/{agent_id}/personas/default",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "A syntactically valid agent identifier fully defines this read."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The default persona read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_default_persona_success",
+        "denial": "tests/test_route_behavior_api.py::test_api_default_persona_denial"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "GET",
+      "path": "/v1/agents/{agent_id}/auto-approve-policies",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "A syntactically valid agent identifier fully defines this read."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The auto-approval policy read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_auto_approve_policies_success",
+        "denial": "tests/test_route_behavior_api.py::test_api_auto_approve_policies_denial"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "GET",
+      "path": "/v1/memories",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The bounded memory list read has no required user input to validate."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The memory list read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_memories_success",
+        "denial": "tests/test_route_behavior_api.py::test_api_memories_denial"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "GET",
+      "path": "/v1/delegate/memories",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The focused proof supplies an authorized, syntactically valid space identifier."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The delegated memory read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_delegate_memories_success",
+        "denial": "tests/test_route_behavior_api.py::test_api_delegate_memories_denial"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "GET",
+      "path": "/v1/delegate/events",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The focused proof supplies an authorized, syntactically valid space identifier."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The delegated event read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_delegate_events_success",
+        "denial": "tests/test_route_behavior_api.py::test_api_delegate_events_denial"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "GET",
+      "path": "/v1/delegate/spaces",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The delegated space list read has no required user input to validate."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The delegated space read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_delegate_spaces_success",
+        "denial": "tests/test_route_behavior_api.py::test_api_delegate_spaces_denial"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/obs_services",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "The service observability manifest is intentionally public."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The service manifest read has no user input to validate."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The service manifest read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_service_manifest_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/api_health",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "The API observability projection is intentionally public."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The API health read has no user input to validate."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The API health read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_api_health_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/endpoint_health",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "The endpoint observability projection is intentionally public."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The focused proof uses the route's valid default pagination."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The endpoint health read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_endpoint_health_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/db_health",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "The database configuration projection is intentionally public."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The database health read has no user input to validate."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The database health read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_db_health_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/auth_health",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "The authentication configuration projection is intentionally public."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The authentication health read has no user input to validate."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The authentication health read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_auth_health_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/my_health",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "The principal projection supports an explicit anonymous state."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The principal health read has no user input to validate."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The principal health read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_my_health_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/login",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "The login route is the public entry to browser authentication."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The login route creates server-owned state without user input."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The login redirect does not persist a signed-in principal."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_login_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/logged-out",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "The logged-out confirmation page is intentionally public."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The logged-out page read has no user input to validate."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The logged-out page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_logged_out_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/dashboard/kpi-strip",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The KPI partial read has no user input to validate."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The KPI partial read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_dashboard_kpi_success",
+        "denial": "tests/test_route_behavior_gui.py::test_gui_dashboard_kpi_denial"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/dashboard/activity-feed",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The activity partial read has no user input to validate."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The activity partial read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_dashboard_activity_success",
+        "denial": "tests/test_route_behavior_gui.py::test_gui_dashboard_activity_denial"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/dashboard/recent-actions",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The action partial read has no user input to validate."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The action partial read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_dashboard_actions_success",
+        "denial": "tests/test_route_behavior_gui.py::test_gui_dashboard_actions_denial"
+      }
+    },
+    {
       "surface": "gui",
       "method": "GET",
       "path": "/",

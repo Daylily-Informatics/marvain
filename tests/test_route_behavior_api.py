@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 AGENT_ID = "11111111-1111-1111-1111-111111111111"
 PERSON_ID = "22222222-2222-2222-2222-222222222222"
 USER_ID = "33333333-3333-3333-3333-333333333333"
+SPACE_ID = "88888888-8888-8888-8888-888888888888"
 
 
 @dataclass
@@ -123,6 +124,27 @@ def _authenticate_user(harness: ApiHarness) -> None:
     harness.mod.api_app.dependency_overrides[harness.mod.get_user] = lambda: user
 
 
+def _authenticate_device(harness: ApiHarness, *, scopes: list[str]) -> None:
+    device = harness.mod.AuthenticatedDevice(
+        device_id="99999999-9999-9999-9999-999999999999",
+        agent_id=AGENT_ID,
+        scopes=scopes,
+        capabilities={"kind": "worker"},
+    )
+    harness.mod.api_app.dependency_overrides[harness.mod.get_device] = lambda: device
+
+
+def _authenticate_agent(harness: ApiHarness, *, scopes: list[str]) -> None:
+    agent = harness.mod.AuthenticatedAgent(
+        token_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        issuer_agent_id=AGENT_ID,
+        target_agent_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        scopes=scopes,
+        allowed_spaces=[SPACE_ID],
+    )
+    harness.mod.api_app.dependency_overrides[harness.mod.get_agent] = lambda: agent
+
+
 def _membership(*, agent_id: str, name: str) -> SimpleNamespace:
     return SimpleNamespace(
         agent_id=agent_id,
@@ -161,6 +183,22 @@ def test_api_delegate_scopes_success(request: pytest.FixtureRequest, api_harness
         kind="success",
         response=response,
     )
+
+
+def test_api_tools_success(request: pytest.FixtureRequest, api_harness: ApiHarness) -> None:
+    _authenticate_device(api_harness, scopes=[])
+    response = api_harness.client.get("/v1/tools")
+
+    assert response.status_code == 200
+    assert isinstance(response.json()["tools"], list)
+    record_http_evidence(request, surface="api", method="GET", path="/v1/tools", kind="success", response=response)
+
+
+def test_api_tools_denial(request: pytest.FixtureRequest, api_harness: ApiHarness) -> None:
+    response = api_harness.client.get("/v1/tools")
+
+    assert response.status_code == 401
+    record_http_evidence(request, surface="api", method="GET", path="/v1/tools", kind="denial", response=response)
 
 
 def test_api_me_success(request: pytest.FixtureRequest, api_harness: ApiHarness) -> None:
@@ -387,6 +425,86 @@ def test_api_memberships_denial(request: pytest.FixtureRequest, api_harness: Api
     )
 
 
+def test_api_default_persona_success(
+    request: pytest.FixtureRequest,
+    api_harness: ApiHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _authenticate_device(api_harness, scopes=["events:read"])
+    monkeypatch.setattr(api_harness.mod, "is_agent_disabled", lambda *_args, **_kwargs: False)
+    api_harness.db.query_responses = [
+        [
+            {
+                "persona_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                "agent_id": AGENT_ID,
+                "name": "Receipt Persona",
+                "instructions": "Use persisted evidence.",
+            }
+        ]
+    ]
+    response = api_harness.client.get(f"/v1/agents/{AGENT_ID}/personas/default")
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Receipt Persona"
+    record_http_evidence(
+        request,
+        surface="api",
+        method="GET",
+        path="/v1/agents/{agent_id}/personas/default",
+        kind="success",
+        response=response,
+    )
+
+
+def test_api_default_persona_denial(request: pytest.FixtureRequest, api_harness: ApiHarness) -> None:
+    response = api_harness.client.get(f"/v1/agents/{AGENT_ID}/personas/default")
+
+    assert response.status_code == 401
+    record_http_evidence(
+        request,
+        surface="api",
+        method="GET",
+        path="/v1/agents/{agent_id}/personas/default",
+        kind="denial",
+        response=response,
+    )
+
+
+def test_api_auto_approve_policies_success(
+    request: pytest.FixtureRequest,
+    api_harness: ApiHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _authenticate_user(api_harness)
+    monkeypatch.setattr(api_harness.mod, "_require_agent_role", lambda **_kwargs: None)
+    response = api_harness.client.get(f"/v1/agents/{AGENT_ID}/auto-approve-policies")
+
+    assert response.status_code == 200
+    assert response.json() == []
+    record_http_evidence(
+        request,
+        surface="api",
+        method="GET",
+        path="/v1/agents/{agent_id}/auto-approve-policies",
+        kind="success",
+        response=response,
+    )
+
+
+def test_api_auto_approve_policies_denial(request: pytest.FixtureRequest, api_harness: ApiHarness) -> None:
+    response = api_harness.client.get(f"/v1/agents/{AGENT_ID}/auto-approve-policies")
+
+    assert response.status_code == 401
+    record_http_evidence(
+        request,
+        surface="api",
+        method="GET",
+        path="/v1/agents/{agent_id}/auto-approve-policies",
+        kind="denial",
+        response=response,
+    )
+
+
 def test_api_people_success(
     request: pytest.FixtureRequest,
     api_harness: ApiHarness,
@@ -607,6 +725,112 @@ def test_api_agent_tokens_denial(request: pytest.FixtureRequest, api_harness: Ap
         surface="api",
         method="GET",
         path="/v1/agents/{agent_id}/tokens",
+        kind="denial",
+        response=response,
+    )
+
+
+def test_api_memories_success(request: pytest.FixtureRequest, api_harness: ApiHarness) -> None:
+    _authenticate_device(api_harness, scopes=["memories:read"])
+    response = api_harness.client.get("/v1/memories")
+
+    assert response.status_code == 200
+    assert response.json() == {"memories": []}
+    record_http_evidence(request, surface="api", method="GET", path="/v1/memories", kind="success", response=response)
+
+
+def test_api_memories_denial(request: pytest.FixtureRequest, api_harness: ApiHarness) -> None:
+    response = api_harness.client.get("/v1/memories")
+
+    assert response.status_code == 401
+    record_http_evidence(request, surface="api", method="GET", path="/v1/memories", kind="denial", response=response)
+
+
+def test_api_delegate_memories_success(request: pytest.FixtureRequest, api_harness: ApiHarness) -> None:
+    _authenticate_agent(api_harness, scopes=["read_memories"])
+    response = api_harness.client.get(f"/v1/delegate/memories?space_id={SPACE_ID}")
+
+    assert response.status_code == 200
+    assert response.json() == []
+    record_http_evidence(
+        request,
+        surface="api",
+        method="GET",
+        path="/v1/delegate/memories",
+        kind="success",
+        response=response,
+    )
+
+
+def test_api_delegate_memories_denial(request: pytest.FixtureRequest, api_harness: ApiHarness) -> None:
+    response = api_harness.client.get(f"/v1/delegate/memories?space_id={SPACE_ID}")
+
+    assert response.status_code == 401
+    record_http_evidence(
+        request,
+        surface="api",
+        method="GET",
+        path="/v1/delegate/memories",
+        kind="denial",
+        response=response,
+    )
+
+
+def test_api_delegate_events_success(request: pytest.FixtureRequest, api_harness: ApiHarness) -> None:
+    _authenticate_agent(api_harness, scopes=["read_events"])
+    response = api_harness.client.get(f"/v1/delegate/events?space_id={SPACE_ID}")
+
+    assert response.status_code == 200
+    assert response.json() == []
+    record_http_evidence(
+        request,
+        surface="api",
+        method="GET",
+        path="/v1/delegate/events",
+        kind="success",
+        response=response,
+    )
+
+
+def test_api_delegate_events_denial(request: pytest.FixtureRequest, api_harness: ApiHarness) -> None:
+    response = api_harness.client.get(f"/v1/delegate/events?space_id={SPACE_ID}")
+
+    assert response.status_code == 401
+    record_http_evidence(
+        request,
+        surface="api",
+        method="GET",
+        path="/v1/delegate/events",
+        kind="denial",
+        response=response,
+    )
+
+
+def test_api_delegate_spaces_success(request: pytest.FixtureRequest, api_harness: ApiHarness) -> None:
+    _authenticate_agent(api_harness, scopes=["read_spaces"])
+    response = api_harness.client.get("/v1/delegate/spaces")
+
+    assert response.status_code == 200
+    assert response.json() == []
+    record_http_evidence(
+        request,
+        surface="api",
+        method="GET",
+        path="/v1/delegate/spaces",
+        kind="success",
+        response=response,
+    )
+
+
+def test_api_delegate_spaces_denial(request: pytest.FixtureRequest, api_harness: ApiHarness) -> None:
+    response = api_harness.client.get("/v1/delegate/spaces")
+
+    assert response.status_code == 401
+    record_http_evidence(
+        request,
+        surface="api",
+        method="GET",
+        path="/v1/delegate/spaces",
         kind="denial",
         response=response,
     )
