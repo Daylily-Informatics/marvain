@@ -111,6 +111,7 @@ from agent_hub.recognition_service import (
 from agent_hub.secrets import get_secret_json
 from agent_hub.semantic_outbox import enqueue_semantic_record
 from agent_hub.semantic_tapdb import TEMPLATE_CODES
+from agent_hub.session_lifecycle import SessionLifecycleError, SessionLifecycleState, validate_session_transition
 from artifact_repository import RdsArtifactRepository
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -652,7 +653,7 @@ def _create_session_record(
                 LIMIT 1
             ),
             :livekit_room,
-            'open',
+            'opening',
             :metadata::jsonb
         )
         """,
@@ -672,6 +673,81 @@ def _device_is_admin(device: AuthenticatedDevice) -> bool:
     # selected in LiveKit sessions, even when their bootstrap token is anchored
     # to a different agent.
     return kind in {"admin", "worker"}
+
+
+def _validated_session_transition(
+    *,
+    db: RdsData,
+    transaction_id: str,
+    body: IngestEventIn,
+    agent_id: str,
+    event_id: str,
+) -> tuple[SessionLifecycleState, datetime] | None:
+    if body.type != "session.state_transition":
+        return None
+    session_id = str(body.session_id or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required for a session transition")
+    rows = db.query(
+        """
+        SELECT session_id::TEXT AS session_id,
+               agent_id::TEXT AS agent_id,
+               space_id::TEXT AS space_id,
+               livekit_room,
+               status,
+               status_event_id::TEXT AS status_event_id
+        FROM sessions
+        WHERE session_id = :session_id::uuid
+        FOR UPDATE
+        """,
+        {"session_id": session_id},
+        transaction_id=transaction_id,
+    )
+    if len(rows) != 1:
+        raise HTTPException(status_code=404, detail="Session not found")
+    row = rows[0]
+    if str(row.get("agent_id") or "") != agent_id or str(row.get("space_id") or "") != body.space_id:
+        raise HTTPException(status_code=409, detail="Session does not belong to the event agent and space")
+    try:
+        transition = validate_session_transition(
+            body.payload,
+            expected_session_id=session_id,
+            current_state=str(row.get("status") or ""),
+            expected_room_name=str(row.get("livekit_room") or ""),
+        )
+    except SessionLifecycleError as exc:
+        status_code = (
+            409 if exc.code in {"session_identity_mismatch", "session_room_mismatch", "session_state_conflict"} else 400
+        )
+        raise HTTPException(status_code=status_code, detail=exc.detail) from exc
+
+    if transition.to_state is SessionLifecycleState.RECONCILED:
+        status_event_id = str(row.get("status_event_id") or "").strip()
+        if not status_event_id or transition.reconciles_event_id != status_event_id:
+            raise HTTPException(status_code=409, detail="Reconciliation does not reference the current terminal event")
+
+    db.execute(
+        """
+        UPDATE sessions
+        SET status = :status,
+            status_event_id = :status_event_id::uuid,
+            status_changed_at = :status_changed_at::timestamptz,
+            ended_at = CASE
+                WHEN :status IN ('closed', 'failed') THEN :status_changed_at::timestamptz
+                WHEN :status = 'reconciled' THEN ended_at
+                ELSE NULL
+            END
+        WHERE session_id = :session_id::uuid
+        """,
+        {
+            "status": transition.to_state.value,
+            "status_event_id": event_id,
+            "status_changed_at": transition.occurred_at.isoformat(),
+            "session_id": session_id,
+        },
+        transaction_id=transaction_id,
+    )
+    return transition.to_state, transition.occurred_at
 
 
 def _resolve_space_agent_for_device(
@@ -2288,13 +2364,12 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
     )
     if is_agent_disabled(_get_db(), space_agent_id):
         raise HTTPException(status_code=403, detail="Agent is disabled")
-    if is_privacy_mode(_get_db(), body.space_id):
+    if is_privacy_mode(_get_db(), body.space_id) and body.type != "session.state_transition":
         return IngestEventOut(event_id="privacy_mode", queued=False)
     event_id = str(uuid.uuid4())
     resolved_person_id = str(body.person_id or "").strip()
 
-    # Best-effort: attribute transcript events to a person when we can map a
-    # LiveKit participant identity -> user_id -> person_id.
+    # Preserve explicit null attribution when no persisted participant mapping exists.
     if not resolved_person_id and body.type == "transcript_chunk":
         participant_identity = body.payload.get("participant_identity")
         if isinstance(participant_identity, str) and participant_identity.startswith("user:"):
@@ -2315,6 +2390,13 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
     db = _get_db()
     tx = db.begin()
     try:
+        _validated_session_transition(
+            db=db,
+            transaction_id=tx,
+            body=body,
+            agent_id=space_agent_id,
+            event_id=event_id,
+        )
         db.execute(
             """INSERT INTO events(event_id, agent_id, space_id, device_id, person_id, type, payload, session_id)
                VALUES (:event_id::uuid, :agent_id::uuid, :space_id::uuid, :device_id::uuid,
@@ -2358,6 +2440,9 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
             },
         )
         db.commit(tx)
+    except HTTPException:
+        db.rollback(tx)
+        raise
     except Exception as exc:
         db.rollback(tx)
         logger.error("Failed to persist event and semantic outbox record: %s", exc)
