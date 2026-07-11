@@ -52,6 +52,11 @@ from agent_hub.auth import (
     revoke_agent_token,
 )
 from agent_hub.broadcast import broadcast_event
+from agent_hub.browser_session_auth import (
+    BrowserSessionAuthenticationError,
+    BrowserSessionConfigurationError,
+    resolve_browser_session_user,
+)
 from agent_hub.config import load_config
 from agent_hub.integrations import (
     IntegrationAccountCreate,
@@ -113,6 +118,7 @@ from agent_hub.semantic_outbox import enqueue_semantic_record
 from agent_hub.semantic_tapdb import TEMPLATE_CODES
 from agent_hub.session_lifecycle import SessionLifecycleError, SessionLifecycleState, validate_session_transition
 from artifact_repository import RdsArtifactRepository
+from daylily_auth_cognito.browser.session import CONFIG_STATE_KEY, CognitoWebSessionConfig
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from recognition_repository import (
@@ -222,7 +228,7 @@ def get_device(request: Request) -> AuthenticatedDevice:
     return dev
 
 
-def get_user(request: Request) -> AuthenticatedUser:
+def get_bearer_user(request: Request) -> AuthenticatedUser:
     auth = request.headers.get("authorization") or request.headers.get("Authorization")
     if not auth or not auth.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token")
@@ -231,6 +237,32 @@ def get_user(request: Request) -> AuthenticatedUser:
         return authenticate_user_access_token(_get_db(), token)
     except PermissionError:
         raise HTTPException(status_code=401, detail="Invalid access token")
+
+
+def get_browser_user(request: Request) -> AuthenticatedUser:
+    registered = request.app.state.__dict__.get(CONFIG_STATE_KEY)
+    if not isinstance(registered, CognitoWebSessionConfig):
+        raise HTTPException(status_code=500, detail="Browser session authentication is not configured")
+    try:
+        return resolve_browser_session_user(
+            request,
+            registered_session_config=registered,
+            expected_server_instance_id=f"marvain-{_cfg.stage}",
+            ensure_user=lambda **identity: ensure_user_row(_get_db(), **identity),
+        )
+    except BrowserSessionAuthenticationError as exc:
+        raise HTTPException(status_code=401, detail="Invalid browser session") from exc
+    except BrowserSessionConfigurationError as exc:
+        raise HTTPException(status_code=500, detail="Browser session authentication is not configured") from exc
+
+
+def get_user(request: Request) -> AuthenticatedUser:
+    """Select exactly one human-authentication mode from presented credentials."""
+
+    auth = request.headers.get("authorization") or request.headers.get("Authorization")
+    if auth is not None:
+        return get_bearer_user(request)
+    return get_browser_user(request)
 
 
 # Expose shared state for gui routes (app.py) to use
