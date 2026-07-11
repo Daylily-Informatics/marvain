@@ -792,7 +792,7 @@ def run_deployed_smoke(*, stack: str | None = None, include_two_device_proof: bo
     run_id = datetime.now(timezone.utc).strftime("round6-%Y%m%dT%H%M%SZ")
     rest_base = outputs["HubRestApiBase"].rstrip("/")
     admin_key = _admin_key(outputs=outputs, region=ctx.env.aws_region, profile=ctx.env.aws_profile)
-    access_token = _cognito_access_token(
+    _cognito_access_token(
         username=env["MARVAIN_SMOKE_COGNITO_USERNAME"],
         password=env["MARVAIN_SMOKE_COGNITO_PASSWORD"],
         user_pool_id=outputs["CognitoUserPoolId"],
@@ -830,52 +830,11 @@ def run_deployed_smoke(*, stack: str | None = None, include_two_device_proof: bo
     if not source_event_id:
         raise SmokeError("API source-evidence probe did not return event_id")
 
-    memory_ids: dict[str, str] = {}
-    for kind in MEMORY_KIND_VALUES:
-        created = _http_json(
-            method="POST",
-            url=_rest_url(rest_base, "/v1/memories"),
-            payload={
-                "space_id": space_id,
-                "source_event_id": source_event_id,
-                "tier": kind,
-                "content": f"Round 6 deployed smoke {kind} memory proof for {run_id}.",
-                "metadata": {"run_id": run_id, "proof": "round6"},
-                "modality": "text",
-            },
-            bearer_token=device_token,
-        )
-        memory_id = str(created.get("memory_id") or "")
-        if not memory_id:
-            raise SmokeError(f"Memory create did not return memory_id for kind {kind}")
-        memory_ids[kind] = memory_id
-
-    recall = _http_json(
-        method="POST",
-        url=_rest_url(rest_base, "/v1/recall"),
-        payload={
-            "agent_id": agent_id,
-            "space_id": space_id,
-            "query": f"Round 6 deployed smoke taxonomy recall {run_id}",
-            "k": 5,
-            "tiers": list(MEMORY_KIND_VALUES),
-        },
-        bearer_token=device_token,
-    )
-    recalled = _assert_recall_proof(recall)
-
-    tapdb_euid = str(recalled.get("explanation", {}).get("tapdb_euid") or "").strip()
-    graph_probe: dict[str, Any] | None = None
-    if tapdb_euid:
-        graph_probe = _http_json(
-            method="GET",
-            url=_rest_url(rest_base, f"/api/dag/data?start_euid={tapdb_euid}&depth=3"),
-            bearer_token=access_token,
-        )
     api_health = _http_json(method="GET", url=_rest_url(rest_base, "/api_health"))
     endpoint_health = _http_json(method="GET", url=_rest_url(rest_base, "/endpoint_health?limit=200"))
     proofs: dict[str, Any] = {
         "cognito_api_auth_probe": {
+            "authenticated": True,
             "user_pool_id": outputs["CognitoUserPoolId"],
             "app_client_id": outputs["CognitoAppClientId"],
         },
@@ -902,9 +861,8 @@ def run_deployed_smoke(*, stack: str | None = None, include_two_device_proof: bo
             "blocker": "No agent audio publication and browser playback receipt was collected.",
         },
         "api_memory_probe": {
-            "memory_ids_by_kind": memory_ids,
-            "recall_memory_id": recalled.get("memory_id"),
-            "recall_explanation": recalled.get("explanation"),
+            "performed": False,
+            "reason": "Admin-device memory creation is not accepted as live worker memory evidence.",
         },
         "memory_lifecycle": {
             "ok": False,
@@ -914,19 +872,10 @@ def run_deployed_smoke(*, stack: str | None = None, include_two_device_proof: bo
             "ok": False,
             "blocker": "No observation lifecycle receipt from the deployed recognition worker was collected.",
         },
-        "tapdb_graph": (
-            {
-                "ok": False,
-                "blocker": "Recall did not return a persisted TapDB EUID for the graph probe.",
-            }
-            if not tapdb_euid
-            else {
-                "ok": False,
-                "blocker": "Graph HTTP response was collected, but owning TapDB graph receipt validation is not implemented.",
-                "start_euid": tapdb_euid,
-                "response": graph_probe,
-            }
-        ),
+        "tapdb_graph": {
+            "ok": False,
+            "blocker": "No live memory lifecycle returned a persisted TapDB EUID for the graph probe.",
+        },
         "observability": {
             "ok": False,
             "blocker": "Health responses were collected, but no run-correlated runtime state receipt was available.",

@@ -71,13 +71,23 @@ from agent_hub.memberships import (
     revoke_membership,
     update_membership,
 )
-from agent_hub.memory_taxonomy import normalize_memory_kind, normalize_memory_provenance_class
+from agent_hub.memory_classifier import MemoryClassification
+from agent_hub.memory_taxonomy import normalize_memory_kind
 from agent_hub.metrics import emit_count, emit_ms
 from agent_hub.openai_http import call_embeddings
 from agent_hub.personas import DEFAULT_AGENT_PERSONA_INSTRUCTIONS, DEFAULT_AGENT_PERSONA_NAME
-from agent_hub.policy import is_agent_disabled, is_privacy_mode
+from agent_hub.policy import (
+    ConsentCheckRequest,
+    PolicyStateError,
+    PrivacyCheckRequest,
+    evaluate_policy,
+    is_agent_disabled,
+    is_privacy_mode,
+)
 from agent_hub.rds_data import RdsData, RdsDataEnv
 from agent_hub.secrets import get_secret_json
+from agent_hub.semantic_outbox import enqueue_semantic_record
+from agent_hub.semantic_tapdb import TEMPLATE_CODES
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
@@ -701,7 +711,29 @@ def create_agent(body: CreateAgentIn, user: AuthenticatedUser = Depends(get_user
             {"agent_id": agent_id, "user_id": user.user_id, "relationship_label": body.relationship_label},
             transaction_id=tx,
         )
-        _seed_default_persona(agent_id=agent_id, transaction_id=tx)
+        persona_id = _seed_default_persona(agent_id=agent_id, transaction_id=tx)
+        enqueue_semantic_record(
+            _get_db(),
+            transaction_id=tx,
+            agent_id=agent_id,
+            source_table="agents",
+            source_id=agent_id,
+            target_template_code=TEMPLATE_CODES["agent"],
+            name=body.name,
+            lifecycle_state="active",
+            properties={"agent_id": agent_id, "disabled": False},
+        )
+        enqueue_semantic_record(
+            _get_db(),
+            transaction_id=tx,
+            agent_id=agent_id,
+            source_table="agent_personas",
+            source_id=persona_id,
+            target_template_code=TEMPLATE_CODES["persona"],
+            name=DEFAULT_AGENT_PERSONA_NAME,
+            lifecycle_state="active",
+            properties={"agent_id": agent_id, "persona_id": persona_id, "is_default": True},
+        )
         _get_db().commit(tx)
     except Exception:
         _get_db().rollback(tx)
@@ -2100,22 +2132,56 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
                 )
                 if rows and rows[0].get("person_id"):
                     resolved_person_id = str(rows[0]["person_id"])
-    _get_db().execute(
-        """INSERT INTO events(event_id, agent_id, space_id, device_id, person_id, type, payload, session_id)
-           VALUES (:event_id::uuid, :agent_id::uuid, :space_id::uuid, :device_id::uuid,
-                   CASE WHEN :person_id = '' THEN NULL ELSE :person_id::uuid END, :type, :payload::jsonb,
-                   NULLIF(CAST(:session_id AS text), '')::uuid)""",
-        {
-            "event_id": event_id,
-            "agent_id": space_agent_id,
-            "space_id": body.space_id,
-            "device_id": device.device_id,
-            "person_id": resolved_person_id or "",
-            "type": body.type,
-            "payload": json.dumps(body.payload),
-            "session_id": str(body.session_id or ""),
-        },
-    )
+    db = _get_db()
+    tx = db.begin()
+    try:
+        db.execute(
+            """INSERT INTO events(event_id, agent_id, space_id, device_id, person_id, type, payload, session_id)
+               VALUES (:event_id::uuid, :agent_id::uuid, :space_id::uuid, :device_id::uuid,
+                       CASE WHEN :person_id = '' THEN NULL ELSE :person_id::uuid END, :type, :payload::jsonb,
+                       NULLIF(CAST(:session_id AS text), '')::uuid)""",
+            {
+                "event_id": event_id,
+                "agent_id": space_agent_id,
+                "space_id": body.space_id,
+                "device_id": device.device_id,
+                "person_id": resolved_person_id or "",
+                "type": body.type,
+                "payload": json.dumps(body.payload),
+                "session_id": str(body.session_id or ""),
+            },
+            transaction_id=tx,
+        )
+        text = body.payload.get("text")
+        enqueue_semantic_record(
+            db,
+            transaction_id=tx,
+            agent_id=space_agent_id,
+            source_table="events",
+            source_id=event_id,
+            target_template_code=(
+                TEMPLATE_CODES["event_transcript"]
+                if body.type == "transcript_chunk"
+                else TEMPLATE_CODES["event_sensor"]
+            ),
+            name=f"event:{event_id}",
+            lifecycle_state="recorded",
+            properties={
+                "agent_id": space_agent_id,
+                "event_id": event_id,
+                "event_type": body.type,
+                "space_id": body.space_id,
+                "device_id": device.device_id,
+                "person_id": resolved_person_id or "",
+                "session_id": str(body.session_id or ""),
+                "text": text if isinstance(text, str) else "",
+            },
+        )
+        db.commit(tx)
+    except Exception as exc:
+        db.rollback(tx)
+        logger.error("Failed to persist event and semantic outbox record: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to persist event") from exc
     queued = False
     if body.type == "transcript_chunk" and _cfg.transcript_queue_url:
         _get_sqs().send_message(
@@ -2855,13 +2921,10 @@ def delete_memory(memory_id: str, device: AuthenticatedDevice = Depends(get_devi
 class MemoryCreateIn(BaseModel):
     """Request body for creating a memory from a device."""
 
-    space_id: str | None = None
-    source_event_id: str | None = Field(
-        default=None, description="Required evidence event; created automatically when omitted"
-    )
+    space_id: str = Field(..., min_length=1)
+    source_event_id: str = Field(..., min_length=1, description="Existing durable source-evidence event")
     session_id: str | None = None
-    tier: str = Field(default="episodic", description="Memory kind from the Marvain memory taxonomy")
-    provenance_class: str = Field(default="external_interaction", description="How this memory was initiated")
+    tier: str = Field(..., description="Memory kind selected by the classifier")
     interacting_agent_id: str | None = Field(default=None, description="Other agent involved in this memory")
     content: str = Field(..., min_length=1, max_length=10000)
     metadata: dict[str, Any] = Field(
@@ -2880,14 +2943,11 @@ class MemoryCreateIn(BaseModel):
 def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
     """Create a memory for the device's agent (requires memories:write scope)."""
     require_scope(device, "memories:write")
-    if not body.space_id:
-        raise HTTPException(status_code=400, detail="space_id is required for memory evidence")
+    device_kind = str((device.capabilities or {}).get("kind") or "").strip().lower()
+    if device_kind != "worker":
+        raise HTTPException(status_code=403, detail="Only an authenticated agent worker can commit agent memory")
     try:
         memory_tier = normalize_memory_kind(body.tier)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    try:
-        provenance_class = normalize_memory_provenance_class(body.provenance_class)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -2902,8 +2962,21 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
 
     memory_id = str(uuid.uuid4())
     memory_candidate_id = str(uuid.uuid4())
-    source_event_id = str(body.source_event_id or "").strip() or str(uuid.uuid4())
-    created_source_event = not bool(body.source_event_id)
+    source_event_id = str(body.source_event_id).strip()
+    classification = body.metadata.get("memory_classification") if isinstance(body.metadata, dict) else None
+    if not isinstance(classification, dict):
+        raise HTTPException(status_code=400, detail="memory_classification metadata is required")
+    try:
+        classifier_result = MemoryClassification(**classification)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid memory classification: {exc}") from exc
+    if classifier_result.source_evidence_id != source_event_id:
+        raise HTTPException(status_code=400, detail="Classifier source evidence does not match source_event_id")
+    if classifier_result.kind != memory_tier:
+        raise HTTPException(status_code=400, detail="Classifier memory kind does not match tier")
+    if classifier_result.evidence_quote.casefold() not in body.content.casefold():
+        raise HTTPException(status_code=400, detail="Classifier evidence quote is not grounded in memory content")
+    provenance_class = classifier_result.provenance_class
     provenance = {
         "source": "device",
         "device_id": device.device_id,
@@ -2911,57 +2984,38 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
         "interacting_agent_id": body.interacting_agent_id,
         **body.metadata,
     }
-    classification = body.metadata.get("memory_classification") if isinstance(body.metadata, dict) else None
-    if not isinstance(classification, dict):
-        classification = {}
-    embedding: str | None = None
-    if _cfg.openai_secret_arn:
-        try:
-            embed_model = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
-            vec = call_embeddings(
-                openai_secret_arn=_cfg.openai_secret_arn,
-                model=embed_model,
-                text=body.content,
-            )
-            embedding = "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
-        except Exception as e:
-            logger.warning("Failed to generate memory embedding (continuing without embedding): %s", e)
+    if not _cfg.openai_secret_arn:
+        raise HTTPException(status_code=503, detail="OPENAI_SECRET_ARN not configured")
+    try:
+        embed_model = _required_embedding_model()
+        vec = call_embeddings(
+            openai_secret_arn=_cfg.openai_secret_arn,
+            model=embed_model,
+            text=body.content,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Memory embedding failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Memory embedding failed; memory was not committed") from exc
+    embedding = "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
 
     db = _get_db()
+    evidence_rows = db.query(
+        """
+        SELECT 1
+        FROM events
+        WHERE event_id = :event_id::uuid
+          AND agent_id = :agent_id::uuid
+          AND space_id = :space_id::uuid
+        LIMIT 1
+        """,
+        {"event_id": source_event_id, "agent_id": target_agent_id, "space_id": body.space_id},
+    )
+    if not evidence_rows:
+        raise HTTPException(status_code=400, detail="Source evidence event was not found for this agent and space")
     tx = db.begin()
     try:
-        if created_source_event:
-            db.execute(
-                """
-                INSERT INTO events(event_id, agent_id, space_id, device_id, person_id, type, payload, session_id)
-                VALUES(
-                    :event_id::uuid,
-                    :agent_id::uuid,
-                    :space_id::uuid,
-                    :device_id::uuid,
-                    NULLIF(CAST(:person_id AS text), '')::uuid,
-                    'memory.evidence',
-                    :payload::jsonb,
-                    NULLIF(CAST(:session_id AS text), '')::uuid
-                )
-                """,
-                {
-                    "event_id": source_event_id,
-                    "agent_id": target_agent_id,
-                    "space_id": body.space_id,
-                    "device_id": device.device_id,
-                    "person_id": body.subject_person_id,
-                    "payload": json.dumps(
-                        {
-                            "source": "device_memory_create_v1",
-                            "content_preview": body.content[:500],
-                            "metadata": body.metadata,
-                        }
-                    ),
-                    "session_id": body.session_id,
-                },
-                transaction_id=tx,
-            )
         db.execute(
             """
             INSERT INTO memory_candidates(memory_candidate_id, agent_id, source_event_id, space_id, session_id,
@@ -2994,7 +3048,7 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
                 "tier": memory_tier,
                 "content": body.content,
                 "participants": json.dumps(body.participants),
-                "confidence": body.confidence,
+                "confidence": classifier_result.confidence,
                 "provenance_class": provenance_class,
                 "interacting_agent_id": body.interacting_agent_id,
                 "classification": json.dumps(classification),
@@ -3044,7 +3098,7 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
                 "tags": "{" + ",".join(body.tags) + "}" if body.tags else "{}",
                 "scene_context": body.scene_context,
                 "modality": body.modality,
-                "confidence": body.confidence,
+                "confidence": classifier_result.confidence,
                 "related_memory_ids": "{" + ",".join(body.related_memory_ids) + "}"
                 if body.related_memory_ids
                 else "{}",
@@ -3066,6 +3120,44 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
                 "interacting_agent_id": body.interacting_agent_id,
             },
             transaction_id=tx,
+        )
+        enqueue_semantic_record(
+            db,
+            transaction_id=tx,
+            agent_id=target_agent_id,
+            source_table="memory_candidates",
+            source_id=memory_candidate_id,
+            target_template_code=TEMPLATE_CODES["memory_candidate"],
+            name=f"memory-candidate:{memory_candidate_id}",
+            lifecycle_state="committed",
+            properties={
+                "agent_id": target_agent_id,
+                "memory_candidate_id": memory_candidate_id,
+                "source_event_id": source_event_id,
+                "space_id": body.space_id,
+                "session_id": body.session_id or "",
+                "tier": memory_tier,
+                "classification": classifier_result.as_metadata(),
+            },
+        )
+        enqueue_semantic_record(
+            db,
+            transaction_id=tx,
+            agent_id=target_agent_id,
+            source_table="memories",
+            source_id=memory_id,
+            target_template_code=TEMPLATE_CODES["memory_committed"],
+            name=f"memory:{memory_id}",
+            lifecycle_state="committed",
+            properties={
+                "agent_id": target_agent_id,
+                "memory_id": memory_id,
+                "memory_candidate_id": memory_candidate_id,
+                "source_event_id": source_event_id,
+                "space_id": body.space_id,
+                "session_id": body.session_id or "",
+                "tier": memory_tier,
+            },
         )
         db.commit(tx)
     except HTTPException:
@@ -3135,6 +3227,13 @@ def _recall_terms(value: str) -> set[str]:
     return {term.lower() for term in re.findall(r"[A-Za-z0-9_]+", value or "")}
 
 
+def _required_embedding_model() -> str:
+    model = str(os.getenv("OPENAI_EMBED_MODEL") or "").strip()
+    if not model:
+        raise HTTPException(status_code=503, detail="OPENAI_EMBED_MODEL not configured")
+    return model
+
+
 @api_app.post("/v1/recall", response_model=RecallOut)
 def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_device)) -> RecallOut:
     """Semantic memory search using pgvector embeddings.
@@ -3164,7 +3263,7 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
 
     # Generate query embedding
     try:
-        embed_model = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+        embed_model = _required_embedding_model()
         query_embedding = call_embeddings(
             openai_secret_arn=_cfg.openai_secret_arn,
             model=embed_model,
@@ -3243,7 +3342,7 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
 
     query_terms = _recall_terms(body.query)
     memories = []
-    for rank, r in enumerate(rows, start=1):
+    for r in rows:
         distance = float(r.get("distance", 0.0))
         content = str(r.get("content") or "")
         content_terms = _recall_terms(content)
@@ -3255,6 +3354,20 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
         space_id = r.get("space_id") or r.get("source_event_space_id")
         session_id = r.get("session_id") or r.get("source_event_session_id")
         person_id = r.get("subject_person_id") or r.get("source_event_person_id")
+        try:
+            policy_decision = evaluate_policy(
+                _get_db(),
+                operation="memory.recall",
+                agent_id=target_agent_id,
+                privacy=PrivacyCheckRequest(space_id=str(space_id)) if space_id else None,
+                consent=(ConsentCheckRequest(person_id=str(person_id), consent_type="memory") if person_id else None),
+            )
+        except PolicyStateError as exc:
+            logger.error("Malformed persisted policy state during recall: %s", exc)
+            raise HTTPException(status_code=500, detail="Persisted policy state is invalid") from exc
+        if not policy_decision.allowed:
+            continue
+        rank = len(memories) + 1
         source_evidence = {
             "event_id": r.get("source_event_id"),
             "event_type": r.get("source_event_type"),
@@ -3267,15 +3380,18 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
             "provenance_class": r.get("provenance_class") or provenance.get("provenance_class"),
             "interacting_agent_id": r.get("interacting_agent_id") or provenance.get("interacting_agent_id"),
         }
+        policy_evidence = [item.as_dict() for item in policy_decision.evidence]
         consent_filters = {
-            "applied": True,
-            "agent_id": target_agent_id,
-            "space_id": body.space_id,
-            "person_id": body.person_id,
-            "tiers": params.get("tiers"),
-            "privacy_mode_checked": True,
-            "committed_only": True,
-            "tombstoned_excluded": True,
+            "applied": any(item["check"] == "active_consent" for item in policy_evidence),
+            "requested_person_id": body.person_id,
+            "source_person_id": person_id,
+            "evidence": [item for item in policy_evidence if item["check"] == "active_consent"],
+        }
+        privacy_filters = {
+            "applied": any(item["check"] == "space_privacy" for item in policy_evidence),
+            "requested_space_id": body.space_id,
+            "source_space_id": space_id,
+            "evidence": [item for item in policy_evidence if item["check"] == "space_privacy"],
         }
         memories.append(
             RecallMemoryOut(
@@ -3302,6 +3418,8 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
                     "provenance_class": r.get("provenance_class") or provenance.get("provenance_class"),
                     "interacting_agent_id": r.get("interacting_agent_id") or provenance.get("interacting_agent_id"),
                     "consent_filters": consent_filters,
+                    "privacy_filters": privacy_filters,
+                    "policy_decision": policy_decision.as_dict(),
                     "tapdb_euid": r.get("tapdb_euid"),
                     "stored": _parse_json_obj(r.get("recall_explanation_json") or "{}"),
                     "provenance": provenance,
@@ -3655,10 +3773,13 @@ def update_space_presence(
 class CreateAgentTokenIn(BaseModel):
     """Request body for creating an agent token."""
 
-    name: str = Field(default="agent-token", description="Human-readable name for the token")
-    target_agent_id: str | None = Field(default=None, description="If set, only this agent can use the token")
-    scopes: list[str] = Field(default_factory=list, description="Permission scopes granted to token holder")
-    allowed_spaces: list[str] | None = Field(default=None, description="If set, token only valid for these spaces")
+    name: str = Field(..., min_length=1, description="Human-readable name for the token")
+    target_agent_id: str = Field(..., min_length=1, description="The only agent allowed to use the token")
+    scopes: list[str] = Field(..., min_length=1, description="Permission scopes granted to the token holder")
+    allowed_spaces: list[str] = Field(
+        ...,
+        description="Explicit issuer-owned spaces; an empty list grants no space access",
+    )
     expires_at: str | None = Field(default=None, description="ISO timestamp when token expires")
 
 
@@ -3675,10 +3796,10 @@ class AgentTokenOut(BaseModel):
     """Agent token metadata (excludes plaintext token)."""
 
     token_id: str
-    target_agent_id: str | None
+    target_agent_id: str
     name: str | None
     scopes: list[str]
-    allowed_spaces: list[str] | None
+    allowed_spaces: list[str]
     expires_at: str | None
     revoked_at: str | None
     last_used_at: str | None
@@ -3700,6 +3821,25 @@ def create_agent_token_endpoint(
 
     if is_agent_disabled(_get_db(), agent_id):
         raise HTTPException(status_code=403, detail="Agent is disabled")
+    try:
+        if is_agent_disabled(_get_db(), body.target_agent_id):
+            raise HTTPException(status_code=403, detail="Target agent is disabled")
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Target agent not found") from exc
+
+    for space_id in body.allowed_spaces:
+        rows = _get_db().query(
+            """
+            SELECT 1
+            FROM spaces
+            WHERE space_id = :space_id::uuid
+              AND agent_id = :agent_id::uuid
+            LIMIT 1
+            """,
+            {"space_id": space_id, "agent_id": agent_id},
+        )
+        if not rows:
+            raise HTTPException(status_code=400, detail=f"Allowed space does not belong to issuer agent: {space_id}")
 
     token_id, plaintext_token = create_agent_token(
         _get_db(),
@@ -3751,10 +3891,10 @@ def list_agent_tokens_endpoint(
     return [
         AgentTokenOut(
             token_id=t["token_id"],
-            target_agent_id=t.get("target_agent_id"),
+            target_agent_id=t["target_agent_id"],
             name=t.get("name"),
             scopes=t.get("scopes", []),
-            allowed_spaces=t.get("allowed_spaces"),
+            allowed_spaces=t["allowed_spaces"],
             expires_at=t.get("expires_at"),
             revoked_at=t.get("revoked_at"),
             last_used_at=t.get("last_used_at"),
@@ -3840,7 +3980,7 @@ def _require_agent_scope(agent: AuthenticatedAgent, scope: str) -> None:
 
 def _check_agent_space(agent: AuthenticatedAgent, space_id: str) -> None:
     """Check that an authenticated agent can access a space."""
-    if agent.allowed_spaces is not None and space_id not in agent.allowed_spaces:
+    if space_id not in agent.allowed_spaces:
         raise HTTPException(
             status_code=403,
             detail=f"Token not authorized for space: {space_id}",
@@ -3855,15 +3995,14 @@ def list_available_scopes() -> dict[str, str]:
 
 @api_app.get("/v1/delegate/memories")
 def delegate_read_memories(
-    space_id: str | None = None,
+    space_id: str,
     limit: int = 100,
     agent: AuthenticatedAgent = Depends(get_agent),
 ) -> list[dict[str, Any]]:
     """Read memories from the issuing agent (requires read_memories scope)."""
     _require_agent_scope(agent, "read_memories")
 
-    if space_id:
-        _check_agent_space(agent, space_id)
+    _check_agent_space(agent, space_id)
 
     query = """
         SELECT
@@ -3882,11 +4021,8 @@ def delegate_read_memories(
         FROM memories
         WHERE agent_id = :agent_id::uuid
     """
-    params: dict[str, Any] = {"agent_id": agent.issuer_agent_id, "limit": limit}
-
-    if space_id:
-        query += " AND space_id = :space_id::uuid"
-        params["space_id"] = space_id
+    params: dict[str, Any] = {"agent_id": agent.issuer_agent_id, "limit": limit, "space_id": space_id}
+    query += " AND space_id = :space_id::uuid"
 
     query += " ORDER BY created_at DESC LIMIT :limit"
 
@@ -3978,7 +4114,7 @@ def delegate_list_spaces(
     # Filter by allowed_spaces if set
     result = []
     for r in rows:
-        if agent.allowed_spaces is None or r["space_id"] in agent.allowed_spaces:
+        if r["space_id"] in agent.allowed_spaces:
             result.append(
                 {
                     "space_id": r["space_id"],

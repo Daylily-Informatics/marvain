@@ -30,6 +30,8 @@ def _load_hub_api_app_module():
     os.environ.setdefault("DB_SECRET_ARN", "arn:aws:secretsmanager:us-west-2:123:secret:dummy")
     os.environ.setdefault("DB_NAME", "dummy")
     os.environ.setdefault("STAGE", "test")
+    os.environ.setdefault("SESSION_SECRET_KEY", "test-only-session-secret")
+    os.environ.setdefault("OPENAI_EMBED_MODEL", "test-embedding-model")
 
     api_app_py = repo_root / "functions" / "hub_api" / "api_app.py"
     spec = importlib.util.spec_from_file_location("hub_api_api_app_for_tests", api_app_py)
@@ -57,12 +59,54 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
             self.mod._cfg,
             audit_bucket=None,
             cognito_user_pool_id="pool",
+            openai_secret_arn="arn:aws:secretsmanager:us-east-1:123:secret:test-openai",
         )
 
         # Default auth: always yields user u1.
         self.mod.authenticate_user_access_token = mock.Mock(
             return_value=self.mod.AuthenticatedUser(user_id="u1", cognito_sub="sub-1", email="u1@example.com")
         )
+        self.mod.enqueue_semantic_record = mock.Mock()
+        self.mod.call_embeddings = mock.Mock(return_value=[0.125, -0.5, 0.25])
+        from agent_hub.policy import PolicyCheckEvidence, PolicyDecision
+
+        self.mod.evaluate_policy = mock.Mock(
+            return_value=PolicyDecision(
+                operation="memory.recall",
+                allowed=True,
+                reason="allowed",
+                evidence=(
+                    PolicyCheckEvidence("agent_enabled", True, {"found": True}),
+                    PolicyCheckEvidence("space_privacy", True, {"privacy_mode": False}),
+                    PolicyCheckEvidence("active_consent", True, {"consent_id": "consent-1"}),
+                ),
+            )
+        )
+
+    @staticmethod
+    def _memory_payload(
+        *,
+        kind: str,
+        content: str,
+        source_event_id: str = "event-1",
+        metadata: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        classification = {
+            "kind": kind,
+            "provenance_class": "external_interaction",
+            "confidence": 0.9,
+            "rationale": "The source explicitly states the durable memory.",
+            "evidence_quote": content,
+            "source_evidence_id": source_event_id,
+            "model_provider_id": "test-classifier",
+        }
+        return {
+            "space_id": "space-1",
+            "source_event_id": source_event_id,
+            "tier": kind,
+            "content": content,
+            "metadata": {**(metadata or {}), "memory_classification": classification},
+        }
 
     def test_claim_owner_success(self) -> None:
         self.mod.claim_first_owner = mock.Mock(return_value=None)
@@ -239,6 +283,13 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.json().get("event_id"))
         fake_db.execute.assert_called_once()
+        fake_db.commit.assert_called_once()
+        self.mod.enqueue_semantic_record.assert_called_once()
+        self.assertEqual(
+            self.mod.enqueue_semantic_record.call_args.kwargs["transaction_id"],
+            fake_db.begin.return_value,
+        )
+        self.assertEqual(self.mod.enqueue_semantic_record.call_args.kwargs["source_table"], "events")
         self.mod.broadcast_event.assert_called_once()
 
     def test_ingest_event_allows_admin_device_across_agents(self) -> None:
@@ -448,11 +499,18 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
             self.assertEqual(explanation["session_id"], "session-1")
             self.assertEqual(explanation["person_id"], "person-1")
             self.assertIs(explanation["consent_filters"]["applied"], True)
-            self.assertEqual(explanation["consent_filters"]["space_id"], "space-1")
-            self.assertEqual(explanation["consent_filters"]["person_id"], "person-1")
-            self.assertEqual(explanation["consent_filters"]["tiers"], list(MEMORY_KIND_VALUES))
-            self.assertIs(explanation["consent_filters"]["committed_only"], True)
-            self.assertIs(explanation["consent_filters"]["tombstoned_excluded"], True)
+            self.assertEqual(explanation["consent_filters"]["requested_person_id"], "person-1")
+            self.assertEqual(explanation["consent_filters"]["source_person_id"], "person-1")
+            self.assertEqual(explanation["consent_filters"]["evidence"][0]["check"], "active_consent")
+            self.assertIs(explanation["privacy_filters"]["applied"], True)
+            self.assertEqual(explanation["privacy_filters"]["source_space_id"], "space-1")
+            self.assertEqual(explanation["policy_decision"]["reason"], "allowed")
+        self.assertEqual(self.mod.evaluate_policy.call_count, len(MEMORY_KIND_VALUES))
+        for call in self.mod.evaluate_policy.call_args_list:
+            self.assertEqual(call.kwargs["operation"], "memory.recall")
+            self.assertEqual(call.kwargs["privacy"].space_id, "space-1")
+            self.assertEqual(call.kwargs["consent"].person_id, "person-1")
+            self.assertEqual(call.kwargs["consent"].consent_type, "memory")
         sql, params = fake_db.query.call_args.args
         self.assertIn("LEFT JOIN events", sql)
         self.assertIn("memories.tier = ANY(:tiers)", sql)
@@ -460,7 +518,12 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
 
     def test_create_memory_generates_embedding_when_openai_configured(self) -> None:
         self.mod.authenticate_device = mock.Mock(
-            return_value=self.mod.AuthenticatedDevice(device_id="d1", agent_id="a1", scopes=["memories:write"])
+            return_value=self.mod.AuthenticatedDevice(
+                device_id="d1",
+                agent_id="a1",
+                scopes=["memories:write"],
+                capabilities={"kind": "worker"},
+            )
         )
         self.mod._cfg = dataclasses.replace(
             self.mod._cfg,
@@ -477,7 +540,7 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         r = self.client.post(
             "/v1/memories",
             headers={"Authorization": "Bearer devtok"},
-            json={"space_id": "space-1", "tier": "episodic", "content": "hello memory"},
+            json=self._memory_payload(kind="episodic", content="hello memory"),
         )
         self.assertEqual(r.status_code, 200)
         self.mod.call_embeddings.assert_called_once()
@@ -490,13 +553,66 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         self.assertIn("NULLIF(CAST(:scene_context AS text), '')", memory_insert_sql)
         self.assertTrue(r.json().get("source_event_id"))
 
+    def test_recall_excludes_memory_denied_by_source_policy(self) -> None:
+        from agent_hub.policy import PolicyCheckEvidence, PolicyDecision
+
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(
+                device_id="device-1", agent_id="agent-1", scopes=["memories:read"]
+            )
+        )
+        self.mod._cfg = dataclasses.replace(
+            self.mod._cfg,
+            openai_secret_arn="arn:aws:secretsmanager:us-east-1:123:secret:oai",
+            audit_bucket=None,
+        )
+        self.mod.call_embeddings = mock.Mock(return_value=[0.25, 0.5])
+        self.mod.evaluate_policy = mock.Mock(
+            return_value=PolicyDecision(
+                operation="memory.recall",
+                allowed=False,
+                reason="privacy_mode_enabled",
+                evidence=(
+                    PolicyCheckEvidence("agent_enabled", True, {"found": True}),
+                    PolicyCheckEvidence("space_privacy", False, {"privacy_mode": True}),
+                ),
+            )
+        )
+        fake_db = mock.Mock()
+        fake_db.query.return_value = [
+            {
+                "memory_id": "memory-private",
+                "tier": "episodic",
+                "content": "private source memory",
+                "created_at": "2026-04-27T10:00:00Z",
+                "space_id": "space-private",
+                "distance": 0.1,
+            }
+        ]
+        self.mod._db = fake_db
+
+        response = self.client.post(
+            "/v1/recall",
+            headers={"Authorization": "Bearer devtok"},
+            json={"agent_id": "agent-1", "query": "private", "k": 3},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"memories": []})
+        self.assertEqual(self.mod.evaluate_policy.call_args.kwargs["privacy"].space_id, "space-private")
+
     def test_create_memory_accepts_every_canonical_memory_kind(self) -> None:
         from agent_hub.memory_taxonomy import MEMORY_KIND_VALUES
 
         self.mod.authenticate_device = mock.Mock(
-            return_value=self.mod.AuthenticatedDevice(device_id="d1", agent_id="a1", scopes=["memories:write"])
+            return_value=self.mod.AuthenticatedDevice(
+                device_id="d1",
+                agent_id="a1",
+                scopes=["memories:write"],
+                capabilities={"kind": "worker"},
+            )
         )
-        self.mod._cfg = dataclasses.replace(self.mod._cfg, openai_secret_arn=None, audit_bucket=None)
+        self.mod._cfg = dataclasses.replace(self.mod._cfg, audit_bucket=None)
 
         fake_db = mock.Mock()
         fake_db.query = mock.Mock(return_value=[{"agent_id": "a1"}])
@@ -509,14 +625,13 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
             r = self.client.post(
                 "/v1/memories",
                 headers={"Authorization": "Bearer devtok"},
-                json={"space_id": "space-1", "tier": kind, "content": f"{kind} memory proof"},
+                json=self._memory_payload(kind=kind, content=f"{kind} memory proof"),
             )
             self.assertEqual(r.status_code, 200, kind)
             self.assertEqual(r.json()["tier"], kind)
 
         executed_sql = "\n".join(call.args[0] for call in fake_db.execute.call_args_list)
-        self.assertIn("INSERT INTO events", executed_sql)
-        self.assertIn("memory.evidence", executed_sql)
+        self.assertNotIn("INSERT INTO events", executed_sql)
         self.assertIn("INSERT INTO memory_candidates", executed_sql)
         self.assertIn("INSERT INTO memories", executed_sql)
         self.assertEqual(fake_db.commit.call_count, len(MEMORY_KIND_VALUES))
@@ -530,7 +645,7 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
                 capabilities={"kind": "worker"},
             )
         )
-        self.mod._cfg = dataclasses.replace(self.mod._cfg, openai_secret_arn=None, audit_bucket=None)
+        self.mod._cfg = dataclasses.replace(self.mod._cfg, audit_bucket=None)
 
         fake_db = mock.Mock()
         fake_db.query = mock.Mock(return_value=[{"agent_id": "a2"}])
@@ -541,12 +656,12 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
             "/v1/memories",
             headers={"Authorization": "Bearer devtok"},
             json={
-                "space_id": "space-1",
-                "source_event_id": "event-1",
+                **self._memory_payload(
+                    kind="episodic",
+                    content="live transcript memory",
+                    metadata={"source": "livekit_agent_worker", "role": "user"},
+                ),
                 "session_id": "session-1",
-                "tier": "episodic",
-                "content": "live transcript memory",
-                "metadata": {"source": "livekit_agent_worker", "role": "user"},
             },
         )
 
@@ -564,9 +679,14 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
 
     def test_create_memory_database_failure_returns_json_error(self) -> None:
         self.mod.authenticate_device = mock.Mock(
-            return_value=self.mod.AuthenticatedDevice(device_id="d1", agent_id="a1", scopes=["memories:write"])
+            return_value=self.mod.AuthenticatedDevice(
+                device_id="d1",
+                agent_id="a1",
+                scopes=["memories:write"],
+                capabilities={"kind": "worker"},
+            )
         )
-        self.mod._cfg = dataclasses.replace(self.mod._cfg, openai_secret_arn=None, audit_bucket=None)
+        self.mod._cfg = dataclasses.replace(self.mod._cfg, audit_bucket=None)
 
         fake_db = mock.Mock()
         fake_db.query = mock.Mock(return_value=[{"agent_id": "a1"}])
@@ -578,7 +698,7 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         r = self.client.post(
             "/v1/memories",
             headers={"Authorization": "Bearer devtok"},
-            json={"space_id": "space-1", "source_event_id": "event-1", "tier": "episodic", "content": "hello"},
+            json=self._memory_payload(kind="episodic", content="hello"),
         )
 
         self.assertEqual(r.status_code, 500)
@@ -586,7 +706,7 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         self.assertEqual(r.json()["detail"], "Failed to create memory")
         fake_db.rollback.assert_called_once_with("tx-1")
 
-    def test_create_memory_allows_admin_device_across_agents(self) -> None:
+    def test_create_memory_rejects_admin_device_direct_commit(self) -> None:
         self.mod.authenticate_device = mock.Mock(
             return_value=self.mod.AuthenticatedDevice(
                 device_id="d1",
@@ -595,7 +715,7 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
                 capabilities={"kind": "admin"},
             )
         )
-        self.mod._cfg = dataclasses.replace(self.mod._cfg, openai_secret_arn=None, audit_bucket=None)
+        self.mod._cfg = dataclasses.replace(self.mod._cfg, audit_bucket=None)
 
         fake_db = mock.Mock()
         fake_db.query = mock.Mock(return_value=[{"agent_id": "a2"}])
@@ -605,12 +725,87 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         r = self.client.post(
             "/v1/memories",
             headers={"Authorization": "Bearer devtok"},
-            json={"space_id": "space-1", "tier": "episodic", "content": "hello memory"},
+            json=self._memory_payload(kind="episodic", content="hello memory"),
         )
-        self.assertEqual(r.status_code, 200)
-        _, params = fake_db.execute.call_args[0]
-        self.assertEqual(params["agent_id"], "a2")
-        self.assertTrue(r.json().get("memory_candidate_id"))
+        self.assertEqual(r.status_code, 403)
+        fake_db.execute.assert_not_called()
+
+    def test_create_memory_rejects_missing_classifier_metadata(self) -> None:
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(
+                device_id="d1",
+                agent_id="a1",
+                scopes=["memories:write"],
+                capabilities={"kind": "worker"},
+            )
+        )
+        fake_db = mock.Mock()
+        fake_db.query.return_value = [{"agent_id": "a1"}]
+        self.mod._db = fake_db
+
+        response = self.client.post(
+            "/v1/memories",
+            headers={"Authorization": "Bearer devtok"},
+            json={
+                "space_id": "space-1",
+                "source_event_id": "event-1",
+                "tier": "episodic",
+                "content": "unclassified memory",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("memory_classification metadata is required", response.text)
+        self.mod.call_embeddings.assert_not_called()
+        fake_db.begin.assert_not_called()
+
+    def test_create_memory_embedding_failure_does_not_commit(self) -> None:
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(
+                device_id="d1",
+                agent_id="a1",
+                scopes=["memories:write"],
+                capabilities={"kind": "worker"},
+            )
+        )
+        self.mod.call_embeddings = mock.Mock(side_effect=RuntimeError("provider unavailable"))
+        fake_db = mock.Mock()
+        fake_db.query.return_value = [{"agent_id": "a1"}]
+        self.mod._db = fake_db
+
+        response = self.client.post(
+            "/v1/memories",
+            headers={"Authorization": "Bearer devtok"},
+            json=self._memory_payload(kind="episodic", content="embedding must succeed"),
+        )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("memory was not committed", response.text)
+        fake_db.begin.assert_not_called()
+        fake_db.execute.assert_not_called()
+
+    def test_create_memory_requires_existing_scoped_source_event(self) -> None:
+        self.mod.authenticate_device = mock.Mock(
+            return_value=self.mod.AuthenticatedDevice(
+                device_id="d1",
+                agent_id="a1",
+                scopes=["memories:write"],
+                capabilities={"kind": "worker"},
+            )
+        )
+        fake_db = mock.Mock()
+        fake_db.query.side_effect = [[{"agent_id": "a1"}], []]
+        self.mod._db = fake_db
+
+        response = self.client.post(
+            "/v1/memories",
+            headers={"Authorization": "Bearer devtok"},
+            json=self._memory_payload(kind="episodic", content="source event required"),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Source evidence event was not found", response.text)
+        fake_db.begin.assert_not_called()
 
     def test_get_space_events_allows_admin_device_across_agents(self) -> None:
         self.mod.authenticate_device = mock.Mock(
@@ -735,6 +930,10 @@ class TestHubApiMembershipEndpoints(unittest.TestCase):
         fake_db.commit.assert_called_once_with("tx123")
         # Agent insert, membership insert, and default persona seed.
         self.assertEqual(fake_db.execute.call_count, 3)
+        self.assertEqual(self.mod.enqueue_semantic_record.call_count, 2)
+        outbox_calls = self.mod.enqueue_semantic_record.call_args_list
+        self.assertEqual([call.kwargs["source_table"] for call in outbox_calls], ["agents", "agent_personas"])
+        self.assertTrue(all(call.kwargs["transaction_id"] == "tx123" for call in outbox_calls))
 
     def test_create_agent_without_relationship_label(self) -> None:
         """Test POST /v1/agents creates an agent without relationship_label."""

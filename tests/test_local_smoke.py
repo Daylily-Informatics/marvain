@@ -426,42 +426,6 @@ def test_deployed_smoke_does_not_promote_rest_probes_to_runtime_evidence(monkeyp
             assert payload is not None
             assert payload["type"] == "smoke.api_source_evidence"
             return {"event_id": "api-source-event-1"}
-        if path == "/v1/memories":
-            assert bearer_token == "device-token-1"
-            assert payload is not None
-            return {"memory_id": f"memory-{payload['tier']}"}
-        if path == "/v1/recall":
-            assert bearer_token == "device-token-1"
-            return {
-                "memories": [
-                    {
-                        "memory_id": "memory-episodic",
-                        "explanation": {
-                            "source_evidence": {
-                                "event_id": "api-source-event-1",
-                                "event_type": "memory.evidence",
-                                "excerpt": "Round 6 deployed smoke",
-                                "device_id": "device-1",
-                                "space_id": "space-1",
-                                "session_id": "session-1",
-                                "person_id": "person-1",
-                            },
-                            "source_excerpt": "Round 6 deployed smoke",
-                            "source_event_id": "api-source-event-1",
-                            "device_id": "device-1",
-                            "space_id": "space-1",
-                            "session_id": "session-1",
-                            "person_id": "person-1",
-                            "consent_filters": {"applied": True},
-                            "ranking": {"embedding_distance": 0.1, "keyword_match": ["round6"], "rank": 1},
-                            "tapdb_euid": "tapdb-owned-reference-1",
-                        },
-                    }
-                ]
-            }
-        if path.startswith("/api/dag/data?"):
-            assert bearer_token == "access-token"
-            return {"nodes": [{"id": "tapdb-owned-reference-1"}], "edges": []}
         if path == "/api_health":
             return {"status": "ok", "service": "marvain"}
         if path.startswith("/endpoint_health?"):
@@ -477,15 +441,15 @@ def test_deployed_smoke_does_not_promote_rest_probes_to_runtime_evidence(monkeyp
     assert report["ok"] is False
     assert report["mode"] == "v1-dev-deployed"
     assert report["proofs"]["api_source_event_id"] == "api-source-event-1"
-    assert report["proofs"]["api_memory_probe"]["memory_ids_by_kind"] == {
-        kind: f"memory-{kind}" for kind in MEMORY_KIND_VALUES
-    }
+    assert report["proofs"]["api_memory_probe"]["performed"] is False
     assert report["proofs"]["speech_transcript"]["ok"] is False
     assert report["proofs"]["recognition"]["ok"] is False
     assert report["proofs"]["two_device"]["ok"] is False
     assert any("worker_join:" in blocker for blocker in exc_info.value.blockers)
     assert any("two_device:" in blocker for blocker in exc_info.value.blockers)
     assert [call[1] for call in calls].count("/v1/events") == 1
+    assert "/v1/memories" not in [call[1] for call in calls]
+    assert "/v1/recall" not in [call[1] for call in calls]
     assert "/v1/admin/devices/register" not in [call[1] for call in calls]
 
 

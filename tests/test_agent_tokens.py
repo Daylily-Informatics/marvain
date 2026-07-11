@@ -34,6 +34,7 @@ def _load_hub_api_app_module():
     os.environ.setdefault("DB_SECRET_ARN", "arn:aws:secretsmanager:us-west-2:123:secret:dummy")
     os.environ.setdefault("DB_NAME", "dummy")
     os.environ.setdefault("STAGE", "test")
+    os.environ.setdefault("SESSION_SECRET_KEY", "test-only-session-secret")
 
     api_app_py = repo_root / "functions" / "hub_api" / "api_app.py"
     spec = importlib.util.spec_from_file_location("hub_api_api_app_for_agent_tokens", api_app_py)
@@ -72,7 +73,12 @@ class TestAgentTokenAuth(unittest.TestCase):
         r = self.client.post(
             "/v1/agents/agent-1/tokens",
             headers={"Authorization": "Bearer test-token"},
-            json={"name": "test-token", "scopes": ["read_memories"]},
+            json={
+                "name": "test-token",
+                "target_agent_id": "agent-2",
+                "scopes": ["read_memories"],
+                "allowed_spaces": [],
+            },
         )
 
         self.assertEqual(r.status_code, 403)
@@ -88,7 +94,12 @@ class TestAgentTokenAuth(unittest.TestCase):
         r = self.client.post(
             "/v1/agents/agent-1/tokens",
             headers={"Authorization": "Bearer test-token"},
-            json={"name": "my-token", "scopes": ["read_memories", "read_events"]},
+            json={
+                "name": "my-token",
+                "target_agent_id": "agent-2",
+                "scopes": ["read_memories", "read_events"],
+                "allowed_spaces": [],
+            },
         )
 
         self.assertEqual(r.status_code, 200)
@@ -105,10 +116,10 @@ class TestAgentTokenAuth(unittest.TestCase):
             return_value=[
                 {
                     "token_id": "t1",
-                    "target_agent_id": None,
+                    "target_agent_id": "agent-2",
                     "name": "token-1",
                     "scopes": ["read_memories"],
-                    "allowed_spaces": None,
+                    "allowed_spaces": [],
                     "expires_at": None,
                     "revoked_at": None,
                     "last_used_at": None,
@@ -177,14 +188,14 @@ class TestAgentDelegation(unittest.TestCase):
             return_value=self.AuthenticatedAgent(
                 token_id="t1",
                 issuer_agent_id="agent-1",
-                target_agent_id=None,
+                target_agent_id="agent-2",
                 scopes=["read_events"],  # Missing read_memories
-                allowed_spaces=None,
+                allowed_spaces=[],
             )
         )
 
         r = self.client.get(
-            "/v1/delegate/memories",
+            "/v1/delegate/memories?space_id=s1",
             headers={"Authorization": "Bearer agent-token"},
         )
 
@@ -197,9 +208,9 @@ class TestAgentDelegation(unittest.TestCase):
             return_value=self.AuthenticatedAgent(
                 token_id="t1",
                 issuer_agent_id="agent-1",
-                target_agent_id=None,
+                target_agent_id="agent-2",
                 scopes=["read_memories"],
-                allowed_spaces=None,
+                allowed_spaces=["s1"],
             )
         )
         self.mock_db.query = mock.Mock(
@@ -216,7 +227,7 @@ class TestAgentDelegation(unittest.TestCase):
         )
 
         r = self.client.get(
-            "/v1/delegate/memories",
+            "/v1/delegate/memories?space_id=s1",
             headers={"Authorization": "Bearer agent-token"},
         )
 
@@ -231,7 +242,7 @@ class TestAgentDelegation(unittest.TestCase):
             return_value=self.AuthenticatedAgent(
                 token_id="t1",
                 issuer_agent_id="agent-1",
-                target_agent_id=None,
+                target_agent_id="agent-2",
                 scopes=["read_events"],
                 allowed_spaces=["space-allowed"],  # Restricted to this space
             )
@@ -251,9 +262,9 @@ class TestAgentDelegation(unittest.TestCase):
             return_value=self.AuthenticatedAgent(
                 token_id="t1",
                 issuer_agent_id="agent-1",
-                target_agent_id=None,
+                target_agent_id="agent-2",
                 scopes=["write_events"],
-                allowed_spaces=None,
+                allowed_spaces=["s1"],
             )
         )
         self.mock_db.execute = mock.Mock()
