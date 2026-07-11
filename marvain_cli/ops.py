@@ -29,6 +29,14 @@ from marvain_cli.config import (
 
 MARVAIN_CONDA_ENV_NAME = "marvain"
 MARVAIN_CONDA_ENV_FILE = "environment.yaml"
+MARVAIN_PYTHON_VERSION = (3, 12)
+MARVAIN_PYTHON_EXECUTABLE = "python3.12"
+REQUIRED_AGENT_WORKER_DEPLOY_PARAMETERS = (
+    "AgentWorkerImageUri",
+    "AgentWorkerVersion",
+    "AgentWorkerHubDeviceTokenSecretArn",
+    "AgentWorkerDesiredCount",
+)
 DEFAULT_AGENT_PERSONA_NAME = "Forge"
 DEFAULT_AGENT_PERSONA_INSTRUCTIONS = (
     "You are Forge, a persistent personal AI agent and companion. "
@@ -183,8 +191,8 @@ def _conda_env_exists(env_name: str) -> bool:
         return False
 
 
-def _python_is_311() -> bool:
-    return sys.version_info[:2] == (3, 11)
+def _python_matches_runtime() -> bool:
+    return sys.version_info[:2] == MARVAIN_PYTHON_VERSION
 
 
 def _conda_preflight(*, enforce: bool) -> int:
@@ -212,16 +220,19 @@ def _conda_preflight(*, enforce: bool) -> int:
         _eprint(f"Conda env '{MARVAIN_CONDA_ENV_NAME}' exists but is not active. Activate with: source ./activate")
         return 2
 
-    if not _python_is_311():
+    if not _python_matches_runtime():
+        required_python = ".".join(str(part) for part in MARVAIN_PYTHON_VERSION)
         _eprint(
-            f"Python {sys.version_info.major}.{sys.version_info.minor} detected; marvain requires Python 3.11 (activate conda env '{MARVAIN_CONDA_ENV_NAME}')."
+            f"Python {sys.version_info.major}.{sys.version_info.minor} detected; "
+            f"marvain requires Python {required_python} "
+            f"(activate conda env '{MARVAIN_CONDA_ENV_NAME}')."
         )
         return 2
 
-    # SAM's Python builder specifically looks for `python3.11` on PATH.
-    if shutil.which("python3.11") is None:
+    if shutil.which(MARVAIN_PYTHON_EXECUTABLE) is None:
         _eprint(
-            "python3.11 not found on PATH (required by `sam build` for runtime python3.11). "
+            f"{MARVAIN_PYTHON_EXECUTABLE} not found on PATH "
+            f"(required by `sam build` for runtime {MARVAIN_PYTHON_EXECUTABLE}). "
             "Activate with: source ./activate."
         )
         return 2
@@ -612,9 +623,10 @@ def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool, no_confirm: bool = Fals
     caps = sam_cfg.get("capabilities") or ["CAPABILITY_IAM"]
     if not isinstance(caps, list):
         caps = ["CAPABILITY_IAM"]
-    param_overrides = sam_cfg.get("parameter_overrides") or {}
-    if not isinstance(param_overrides, dict):
-        param_overrides = {}
+    configured_overrides = sam_cfg.get("parameter_overrides") or {}
+    if not isinstance(configured_overrides, dict):
+        configured_overrides = {}
+    param_overrides = dict(configured_overrides)
 
     # Check for LIVEKIT_URL environment variable and add to parameter overrides
     livekit_url = os.environ.get("LIVEKIT_URL", "").strip()
@@ -627,7 +639,23 @@ def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool, no_confirm: bool = Fals
         _eprint(
             "Hint: export LIVEKIT_URL=<your-livekit-url> or add LiveKitUrl to sam.parameter_overrides in marvain-config.yaml"
         )
-        return 1
+        return 2
+
+    missing_worker_parameters = [
+        name
+        for name in REQUIRED_AGENT_WORKER_DEPLOY_PARAMETERS
+        if name not in param_overrides or str(param_overrides[name]).strip() == ""
+    ]
+    if missing_worker_parameters:
+        _eprint("ERROR: Missing required agent worker SAM parameter overrides: " + ", ".join(missing_worker_parameters))
+        _eprint("Add every value explicitly under sam.parameter_overrides in the selected Marvain config.")
+        return 2
+
+    image_uri = str(param_overrides["AgentWorkerImageUri"]).strip()
+    image_digest = image_uri.rpartition("@sha256:")
+    if not image_digest[0] or len(image_digest[2]) != 64 or any(ch not in "0123456789abcdef" for ch in image_digest[2]):
+        _eprint("ERROR: AgentWorkerImageUri must be an ECR image URI pinned by a 64-character sha256 digest.")
+        return 2
 
     # Always build before deploy so Lambda functions include vendored dependencies.
     # This prevents the common failure mode where deployed Lambdas are missing
@@ -1049,7 +1077,7 @@ def doctor(ctx: Ctx, *, dry_run: bool) -> int:
     if rc != 0:
         return rc
 
-    missing = require_tools(["aws", "sam", "python3.11"])
+    missing = require_tools(["aws", "sam", MARVAIN_PYTHON_EXECUTABLE])
     if missing:
         _eprint(f"Missing required tools on PATH: {', '.join(missing)}")
         return 2

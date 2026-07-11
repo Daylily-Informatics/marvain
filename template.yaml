@@ -25,8 +25,29 @@ Parameters:
 
   LiveKitUrl:
     Type: String
-    Description: LiveKit server URL (e.g. wss://your.livekit.host or https://...). Leave empty to disable LiveKit token minting.
-    Default: ""
+    Description: Required LiveKit WebSocket server URL used by the Hub and agent worker.
+    AllowedPattern: '^wss://.+'
+
+  AgentWorkerImageUri:
+    Type: String
+    Description: Required ECR image URI pinned by sha256 digest for the Marvain agent worker.
+    AllowedPattern: '^.+\.dkr\.ecr\..+\.amazonaws\.com(?:\.cn)?/.+@sha256:[a-f0-9]{64}$'
+
+  AgentWorkerVersion:
+    Type: String
+    Description: Required immutable source/release identity embedded in worker health evidence.
+    MinLength: 1
+
+  AgentWorkerHubDeviceTokenSecretArn:
+    Type: String
+    Description: Required Secrets Manager ARN whose JSON device_token field authenticates worker writes to the Hub.
+    AllowedPattern: '^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$'
+
+  AgentWorkerDesiredCount:
+    Type: Number
+    Description: Explicit number of ECS Fargate agent-worker tasks; use 0 only before the Hub device token is provisioned.
+    MinValue: 0
+    MaxValue: 10
 
   ApiDeploymentVersion:
     Type: String
@@ -62,6 +83,7 @@ Conditions:
   HasCognitoDomainPrefix: !Not [!Equals [!Ref CognitoDomainPrefix, ""]]
   GoogleAuthEnabled: !Equals [!Ref EnableGoogleAuth, "true"]
   GoogleAuthDisabled: !Equals [!Ref EnableGoogleAuth, "false"]
+  AgentWorkerEnabled: !Not [!Equals [!Ref AgentWorkerDesiredCount, 0]]
 
 Globals:
   Function:
@@ -126,6 +148,62 @@ Resources:
       SubnetId: !Ref PrivateSubnetB
       RouteTableId: !Ref PrivateRouteTable
 
+  HubInternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  HubVpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref HubVpc
+      InternetGatewayId: !Ref HubInternetGateway
+
+  AgentWorkerPublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref HubVpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.20.10.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-agent-worker-a
+
+  AgentWorkerPublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref HubVpc
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.20.11.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-agent-worker-b
+
+  AgentWorkerPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref HubVpc
+
+  AgentWorkerInternetRoute:
+    Type: AWS::EC2::Route
+    DependsOn: HubVpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref AgentWorkerPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref HubInternetGateway
+
+  AgentWorkerPublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AgentWorkerPublicSubnetA
+      RouteTableId: !Ref AgentWorkerPublicRouteTable
+
+  AgentWorkerPublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AgentWorkerPublicSubnetB
+      RouteTableId: !Ref AgentWorkerPublicRouteTable
+
   DbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -137,6 +215,16 @@ Resources:
     Properties:
       GroupDescription: !Sub ${AWS::StackName} TapDB writer SG
       VpcId: !Ref HubVpc
+
+  AgentWorkerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${AWS::StackName} agent worker egress-only SG
+      VpcId: !Ref HubVpc
+      SecurityGroupEgress:
+        - Description: Outbound LiveKit, OpenAI, and Hub traffic
+          IpProtocol: -1
+          CidrIp: 0.0.0.0/0
 
   DbIngressFromTapdbWriter:
     Type: AWS::EC2::SecurityGroupIngress
@@ -204,22 +292,19 @@ Resources:
     Type: AWS::SecretsManager::Secret
     Properties:
       Name: !Sub ${AWS::StackName}/openai
-      Description: Store your OpenAI API key as {"api_key":"..."}
-      SecretString: '{"api_key":"REPLACE_ME"}'
+      Description: Populate explicitly with OpenAI credentials as {"api_key":"..."} before starting workers.
 
   LiveKitSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
       Name: !Sub ${AWS::StackName}/livekit
-      Description: Store your LiveKit credentials as {"api_key":"...","api_secret":"..."}
-      SecretString: '{"api_key":"REPLACE_ME","api_secret":"REPLACE_ME"}'
+      Description: Populate explicitly with LiveKit credentials as {"api_key":"...","api_secret":"..."} before starting workers.
 
   GoogleOAuthSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
       Name: !Sub ${AWS::StackName}/google-oauth
-      Description: Store your Google OAuth credentials as {"client_id":"...","client_secret":"..."} for Cognito federation
-      SecretString: '{"client_id":"REPLACE_ME","client_secret":"REPLACE_ME"}'
+      Description: Populate explicitly with Google OAuth credentials as {"client_id":"...","client_secret":"..."} before enabling federation.
 
   # -----------------------------
   # Aurora PostgreSQL Serverless v2 + Data API
@@ -623,6 +708,169 @@ Resources:
           ResourcePath: "/*"
           ThrottlingBurstLimit: 50
           ThrottlingRateLimit: 100
+
+  # -----------------------------
+  # LiveKit agent worker (ECS Fargate, outbound only)
+  # -----------------------------
+  AgentWorkerCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${AWS::StackName}-agent-worker
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+
+  AgentWorkerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ReadAgentWorkerSecrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref OpenAISecret
+                  - !Ref LiveKitSecret
+                  - !Ref AgentWorkerHubDeviceTokenSecretArn
+
+  AgentWorkerTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+  AgentWorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/ecs/${AWS::StackName}/agent-worker
+      RetentionInDays: 30
+
+  AgentWorkerTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${AWS::StackName}-agent-worker
+      Cpu: '1024'
+      Memory: '2048'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt AgentWorkerExecutionRole.Arn
+      TaskRoleArn: !GetAtt AgentWorkerTaskRole.Arn
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ContainerDefinitions:
+        - Name: agent-worker
+          Image: !Ref AgentWorkerImageUri
+          Essential: true
+          Environment:
+            - Name: ENV_FILE
+              Value: /dev/null
+            - Name: LIVEKIT_URL
+              Value: !Ref LiveKitUrl
+            - Name: HUB_API_BASE
+              Value: !Sub https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
+            - Name: MARVAIN_WORKER_VERSION
+              Value: !Ref AgentWorkerVersion
+          Secrets:
+            - Name: OPENAI_API_KEY
+              ValueFrom: !Sub '${OpenAISecret}:api_key::'
+            - Name: LIVEKIT_API_KEY
+              ValueFrom: !Sub '${LiveKitSecret}:api_key::'
+            - Name: LIVEKIT_API_SECRET
+              ValueFrom: !Sub '${LiveKitSecret}:api_secret::'
+            - Name: HUB_DEVICE_TOKEN
+              ValueFrom: !Sub '${AgentWorkerHubDeviceTokenSecretArn}:device_token::'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref AgentWorkerLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: worker
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - >-
+                python -c "import pathlib,sys; sys.exit(0 if b'worker.py' in pathlib.Path('/proc/1/cmdline').read_bytes() else 1)"
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+          StopTimeout: 30
+
+  AgentWorkerService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - HubApiStage
+      - AgentWorkerInternetRoute
+    Properties:
+      ServiceName: !Sub ${AWS::StackName}-agent-worker
+      Cluster: !Ref AgentWorkerCluster
+      TaskDefinition: !Ref AgentWorkerTaskDefinition
+      LaunchType: FARGATE
+      PlatformVersion: 1.4.0
+      DesiredCount: !Ref AgentWorkerDesiredCount
+      EnableECSManagedTags: true
+      EnableExecuteCommand: false
+      PropagateTags: SERVICE
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref AgentWorkerSecurityGroup
+          Subnets:
+            - !Ref AgentWorkerPublicSubnetA
+            - !Ref AgentWorkerPublicSubnetB
+
+  AgentWorkerRunningTaskAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: AgentWorkerEnabled
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-agent-worker-running-task
+      AlarmDescription: Agent worker running task count is below the explicitly configured desired count.
+      Namespace: ECS/ContainerInsights
+      MetricName: RunningTaskCount
+      Dimensions:
+        - Name: ClusterName
+          Value: !Ref AgentWorkerCluster
+        - Name: ServiceName
+          Value: !GetAtt AgentWorkerService.Name
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: !Ref AgentWorkerDesiredCount
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
 
   # -----------------------------
   # Planner (deliberative loop)
@@ -1406,6 +1654,27 @@ Outputs:
   SessionSecretArn:
     Description: Secrets Manager ARN containing session secret key
     Value: !Ref SessionSecret
+  AgentWorkerClusterName:
+    Description: ECS cluster running the Marvain LiveKit agent worker.
+    Value: !Ref AgentWorkerCluster
+  AgentWorkerServiceName:
+    Description: ECS service maintaining the explicitly configured agent worker task count.
+    Value: !GetAtt AgentWorkerService.Name
+  AgentWorkerTaskDefinitionArn:
+    Description: Pinned ECS task definition used by the agent worker service.
+    Value: !Ref AgentWorkerTaskDefinition
+  AgentWorkerLogGroupName:
+    Description: CloudWatch Logs group for agent worker stdout and stderr.
+    Value: !Ref AgentWorkerLogGroup
+  AgentWorkerImageUri:
+    Description: ECR image digest deployed for the agent worker.
+    Value: !Ref AgentWorkerImageUri
+  AgentWorkerVersion:
+    Description: Worker release identity emitted in health and session evidence.
+    Value: !Ref AgentWorkerVersion
+  AgentWorkerHubDeviceTokenSecretArn:
+    Description: Secrets Manager ARN supplying the agent worker Hub device token.
+    Value: !Ref AgentWorkerHubDeviceTokenSecretArn
   GoogleOAuthSecretArn:
     Description: Secrets Manager ARN containing Google OAuth client_id/client_secret JSON
     Value: !Ref GoogleOAuthSecret

@@ -36,11 +36,97 @@ from marvain_cli.ops import (
     gui_stop,
     hub_claim_first_owner,
     init_db,
+    sam_deploy,
     sam_logs,
 )
 
 
 class TestOps(unittest.TestCase):
+    @staticmethod
+    def _deploy_ctx(parameter_overrides: dict[str, object]) -> Ctx:
+        raw = {
+            "sam": {
+                "template": "template.yaml",
+                "capabilities": ["CAPABILITY_IAM"],
+                "parameter_overrides": parameter_overrides,
+            }
+        }
+        return Ctx(
+            config_path=Path("/tmp/marvain.yaml"),
+            cfg={"envs": {"dev": raw}},
+            env=ResolvedEnv(env="dev", aws_profile="p", aws_region="r", stack_name="s", raw=raw),
+        )
+
+    def test_sam_deploy_requires_explicit_agent_worker_parameters(self) -> None:
+        ctx = self._deploy_ctx({"LiveKitUrl": "wss://livekit.example.test"})
+
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch("marvain_cli.ops.run_cmd") as run_cmd,
+            mock.patch("marvain_cli.ops._eprint") as eprint,
+        ):
+            rc = sam_deploy(ctx, dry_run=True, guided=False)
+
+        self.assertEqual(rc, 2)
+        run_cmd.assert_not_called()
+        errors = "\n".join(str(call.args[0]) for call in eprint.call_args_list)
+        self.assertIn("AgentWorkerImageUri", errors)
+        self.assertIn("AgentWorkerVersion", errors)
+        self.assertIn("AgentWorkerHubDeviceTokenSecretArn", errors)
+        self.assertIn("AgentWorkerDesiredCount", errors)
+
+    def test_sam_deploy_rejects_an_unpinned_agent_worker_image(self) -> None:
+        ctx = self._deploy_ctx(
+            {
+                "LiveKitUrl": "wss://livekit.example.test",
+                "AgentWorkerImageUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/marvain-agent:latest",
+                "AgentWorkerVersion": "test-release",
+                "AgentWorkerHubDeviceTokenSecretArn": (
+                    "arn:aws:secretsmanager:us-east-1:123456789012:secret:worker-token"
+                ),
+                "AgentWorkerDesiredCount": 0,
+            }
+        )
+
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch("marvain_cli.ops.run_cmd") as run_cmd,
+            mock.patch("marvain_cli.ops._eprint") as eprint,
+        ):
+            rc = sam_deploy(ctx, dry_run=True, guided=False)
+
+        self.assertEqual(rc, 2)
+        run_cmd.assert_not_called()
+        errors = "\n".join(str(call.args[0]) for call in eprint.call_args_list)
+        self.assertIn("pinned by a 64-character sha256 digest", errors)
+
+    def test_sam_deploy_passes_explicit_agent_worker_parameters(self) -> None:
+        image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/marvain-agent@sha256:" + "a" * 64
+        ctx = self._deploy_ctx(
+            {
+                "LiveKitUrl": "wss://livekit.example.test",
+                "AgentWorkerImageUri": image_uri,
+                "AgentWorkerVersion": "test-release",
+                "AgentWorkerHubDeviceTokenSecretArn": (
+                    "arn:aws:secretsmanager:us-east-1:123456789012:secret:worker-token"
+                ),
+                "AgentWorkerDesiredCount": 0,
+            }
+        )
+
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch("marvain_cli.ops.run_cmd", return_value=0) as run_cmd,
+        ):
+            rc = sam_deploy(ctx, dry_run=True, guided=False)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(run_cmd.call_count, 2)
+        deploy_cmd = run_cmd.call_args_list[1].args[0]
+        self.assertIn(f"AgentWorkerImageUri={image_uri}", deploy_cmd)
+        self.assertIn("AgentWorkerVersion=test-release", deploy_cmd)
+        self.assertIn("AgentWorkerDesiredCount=0", deploy_cmd)
+
     def test_split_sql_ignores_comment_lines_and_splits(self) -> None:
         sql = """-- comment\nCREATE TABLE a(x int);\n\n-- another\nCREATE TABLE b(y int);"""
         stmts = _split_sql(sql)

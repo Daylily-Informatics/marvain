@@ -8,6 +8,8 @@ from typing import Any
 
 import yaml
 
+from marvain_cli import ops
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 
@@ -121,6 +123,106 @@ def test_deployment_runtime_contract_is_python_312() -> None:
     dockerfile = (REPO_ROOT / "apps" / "agent_worker" / "Dockerfile").read_text(encoding="utf-8")
     base_images = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
     assert base_images == ["FROM python:3.12-slim"]
+
+
+def test_cli_runtime_preflight_uses_the_python_312_contract() -> None:
+    ops_text = (REPO_ROOT / "marvain_cli" / "ops.py").read_text(encoding="utf-8")
+
+    assert ops.MARVAIN_PYTHON_VERSION == (3, 12)
+    assert ops.MARVAIN_PYTHON_EXECUTABLE == "python3.12"
+    assert ops._python_matches_runtime()
+    assert "python3.11" not in ops_text
+    assert "Python 3.11" not in ops_text
+
+
+def test_agent_worker_is_an_explicit_egress_only_fargate_service() -> None:
+    template = yaml.load(
+        (REPO_ROOT / "template.yaml").read_text(encoding="utf-8"),
+        Loader=_CloudFormationLoader,
+    )
+    parameters = template["Parameters"]
+    resources = template["Resources"]
+    outputs = template["Outputs"]
+
+    for name in (
+        "LiveKitUrl",
+        "AgentWorkerImageUri",
+        "AgentWorkerVersion",
+        "AgentWorkerHubDeviceTokenSecretArn",
+        "AgentWorkerDesiredCount",
+    ):
+        assert "Default" not in parameters[name], name
+
+    assert "@sha256:" in parameters["AgentWorkerImageUri"]["AllowedPattern"]
+    assert resources["OpenAISecret"]["Properties"].get("SecretString") is None
+    assert resources["LiveKitSecret"]["Properties"].get("SecretString") is None
+    assert resources["GoogleOAuthSecret"]["Properties"].get("SecretString") is None
+
+    service = resources["AgentWorkerService"]["Properties"]
+    assert service["LaunchType"] == "FARGATE"
+    assert service["PlatformVersion"] == "1.4.0"
+    assert service["DesiredCount"] == "AgentWorkerDesiredCount"
+    assert service["EnableExecuteCommand"] is False
+    assert service["DeploymentConfiguration"]["DeploymentCircuitBreaker"] == {
+        "Enable": True,
+        "Rollback": True,
+    }
+    network = service["NetworkConfiguration"]["AwsvpcConfiguration"]
+    assert network["AssignPublicIp"] == "ENABLED"
+    assert network["SecurityGroups"] == ["AgentWorkerSecurityGroup"]
+    assert network["Subnets"] == ["AgentWorkerPublicSubnetA", "AgentWorkerPublicSubnetB"]
+
+    security_group = resources["AgentWorkerSecurityGroup"]["Properties"]
+    assert "SecurityGroupIngress" not in security_group
+    assert security_group["SecurityGroupEgress"] == [
+        {
+            "Description": "Outbound LiveKit, OpenAI, and Hub traffic",
+            "IpProtocol": -1,
+            "CidrIp": "0.0.0.0/0",
+        }
+    ]
+
+    task = resources["AgentWorkerTaskDefinition"]["Properties"]
+    assert task["RequiresCompatibilities"] == ["FARGATE"]
+    assert task["RuntimePlatform"] == {
+        "CpuArchitecture": "X86_64",
+        "OperatingSystemFamily": "LINUX",
+    }
+    container = task["ContainerDefinitions"][0]
+    assert container["Image"] == "AgentWorkerImageUri"
+    assert "PortMappings" not in container
+    assert {entry["Name"] for entry in container["Secrets"]} == {
+        "OPENAI_API_KEY",
+        "LIVEKIT_API_KEY",
+        "LIVEKIT_API_SECRET",
+        "HUB_DEVICE_TOKEN",
+    }
+    environment = {entry["Name"]: entry["Value"] for entry in container["Environment"]}
+    assert environment == {
+        "ENV_FILE": "/dev/null",
+        "LIVEKIT_URL": "LiveKitUrl",
+        "HUB_API_BASE": "https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}",
+        "MARVAIN_WORKER_VERSION": "AgentWorkerVersion",
+    }
+    assert container["HealthCheck"]["Retries"] == 3
+    assert container["LogConfiguration"]["LogDriver"] == "awslogs"
+
+    execution_policy = resources["AgentWorkerExecutionRole"]["Properties"]["Policies"][0]["PolicyDocument"]
+    secret_resources = execution_policy["Statement"][0]["Resource"]
+    assert secret_resources == ["OpenAISecret", "LiveKitSecret", "AgentWorkerHubDeviceTokenSecretArn"]
+    assert "Policies" not in resources["AgentWorkerTaskRole"]["Properties"]
+    assert resources["AgentWorkerRunningTaskAlarm"]["Condition"] == "AgentWorkerEnabled"
+
+    for name in (
+        "AgentWorkerClusterName",
+        "AgentWorkerServiceName",
+        "AgentWorkerTaskDefinitionArn",
+        "AgentWorkerLogGroupName",
+        "AgentWorkerImageUri",
+        "AgentWorkerVersion",
+        "AgentWorkerHubDeviceTokenSecretArn",
+    ):
+        assert name in outputs
 
 
 def test_ci_workflows_are_python_312_gates() -> None:
