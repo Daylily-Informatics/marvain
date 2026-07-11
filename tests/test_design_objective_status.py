@@ -37,12 +37,13 @@ def test_each_design_objective_maps_to_code_gui_test_or_deployed_evidence() -> N
         assert len(objective.evidence) >= 4, objective.objective_id
 
 
-def test_minimum_score_gate_passes_at_90() -> None:
+def test_repository_evidence_score_and_operational_score_are_separate() -> None:
     generator = _load_generator()
 
     status = generator.build_status(REPO_ROOT)
 
     assert status["score"] >= 90
+    assert status["operational_score"] == 47
 
 
 def test_deployed_smoke_placeholder_cannot_satisfy_completion(tmp_path) -> None:
@@ -77,6 +78,28 @@ def test_check_command_supports_min_score_gate() -> None:
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_check_command_can_gate_operational_score_independently() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "generate_design_objective_status.py"),
+            "--check",
+            "--min-score",
+            "90",
+            "--min-operational-score",
+            "85",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Operational completion score 47% is below required 85%" in result.stderr
 
 
 def test_generated_design_objective_status_doc_is_current() -> None:
