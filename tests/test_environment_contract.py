@@ -127,12 +127,17 @@ def test_deployment_runtime_contract_is_python_312() -> None:
 
 def test_cli_runtime_preflight_uses_the_python_312_contract() -> None:
     ops_text = (REPO_ROOT / "marvain_cli" / "ops.py").read_text(encoding="utf-8")
+    device_guide = (REPO_ROOT / "functions" / "hub_api" / "templates" / "device_detail.html").read_text(
+        encoding="utf-8"
+    )
 
     assert ops.MARVAIN_PYTHON_VERSION == (3, 12)
     assert ops.MARVAIN_PYTHON_EXECUTABLE == "python3.12"
     assert ops._python_matches_runtime()
     assert "python3.11" not in ops_text
     assert "Python 3.11" not in ops_text
+    assert "Python 3.12+" in device_guide
+    assert "Python 3.11" not in device_guide
 
 
 def test_agent_worker_is_an_explicit_egress_only_fargate_service() -> None:
