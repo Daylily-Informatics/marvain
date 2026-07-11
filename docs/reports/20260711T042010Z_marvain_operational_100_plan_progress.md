@@ -1,20 +1,20 @@
 # Marvain Operational 100% Plan Progress Review
 
-Reviewed: 2026-07-11 04:20 UTC  
-Branch: `codex/marvain-operational-100-closure`  
-Committed revision reviewed: `61df14e`  
+Reviewed: 2026-07-11 05:19 UTC
+Branch: `codex/marvain-operational-100-closure`
+Committed revision reviewed: `fab315b`
 Controlling ledger: `docs/plans/20260711T011234Z_marvain_operational_100_percent_ledger.md`
 
 ## Executive Result
 
 - Official generated operational score: **49%**. This remains internally consistent but is stale relative to the latest implementation commits.
-- Evidence-adjusted operational estimate: **59%** weighted, **57%** simple average across all 85 capabilities.
-- Committed-only estimate: approximately **58%**. The extra point reflects the current uncommitted shared observability route integration.
+- Evidence-adjusted operational estimate: **59%** weighted, approximately **58%** simple average across all 85 capabilities.
+- Committed-only estimate: **59%**. Shared observability, cold-start browser auth, canonical space CRUD, and the expanded behavior suites are committed.
 - Operating-well target: **85%**. Current gap: approximately **26 weighted points**, plus mandatory clean-room proof.
 - 100% target: **0 of 85** capabilities currently qualify. No capability has all deployed, failure-recovery, observability, documentation, and regression evidence.
-- Latest broad local evidence reported by the schema consolidation run: **1050 passed, 36 skipped, 7 failed**. The suite is not green.
-- Last valid same-commit behavioral receipt before later commits: **API 27%, GUI 26%, Playwright 0%**. That receipt is now stale and cannot satisfy a gate.
-- Deployed acceptance remains unproven. The observed external blockers were invalid AWS credentials, no default clean-room config, and unset smoke Cognito credentials.
+- Latest full local gate: **1126 passed, 37 skipped, 3 failed**. All three failures are the intentional design-score coverage gate at 89%; no functional test failed.
+- Current same-commit behavioral receipt: **API 53%, GUI 22%, Playwright 0%** at `fab315b`; API proof improved from 32% during this closure pass.
+- Deployed acceptance remains unproven. `AWS_PROFILE=daylily` currently returns `InvalidClientTokenId`, no Marvain config exists, and smoke Cognito credentials are not configured.
 
 The current code is materially stronger than the original 47% assessment, especially in greenfield schema construction, auth boundaries, artifacts, recognition lifecycle, semantic outbox dispatch, and LiveKit session lifecycle. It is not yet operating well because the product workflows still split between canonical `/v1` services and local `/api` business logic, and no fresh real-runtime receipt exists.
 
@@ -26,22 +26,22 @@ The current code is materially stronger than the original 47% assessment, especi
 - `85-94`: excellent local/integration implementation with fresh deployed proof still incomplete.
 - `95-100`: deployed and recovery-proven. No capability currently qualifies.
 
-No score exceeds 84 because no fresh clean-room deployed receipt exists. Uncommitted observability work is identified explicitly and is not treated as release evidence.
+No score exceeds 84 because no fresh clean-room deployed receipt exists. Ignored local receipts are accepted only when their source commit matches the tested code.
 
 ## Category Summary
 
 | Category | Score | Assessment | Primary remaining blocker |
 |---|---:|---|---|
-| Foundations (`FND`) | 66% | well | canonical API convergence, tenancy, and deployed auth proof |
+| Foundations (`FND`) | 67% | well | remaining API convergence, tenancy, and deployed auth proof |
 | Agent identity/lifecycle (`AGT`) | 52% | well | persistence/API wiring, complete export, real restore, upgrade continuity |
 | Memory (`MEM`) | 63% | well | one canonical capture path, durable embedding retry, live cross-context proof |
 | Identity/recognition (`IDN`) | 54% | well | deployed recognition service, canonical GUI enrollment, quality evaluation |
 | Live session (`LIV`) | 60% | well | real ECS worker, speech/audio/camera receipt, media telemetry |
-| Topology (`TOP`) | 57% | well | supervised satellites and deployed two-location WebSocket proof |
+| Topology (`TOP`) | 59% | well | supervised satellites and deployed two-location WebSocket proof |
 | Actions (`ACT`) | 60% | well | deployed policy/execution receipts and executor isolation |
 | Integrations (`INT`) | 59% | well | four live test tenants, replay proof, cross-channel continuity |
 | Data/TapDB (`DAT`) | 62% | well | real TapDB drain/idempotency, projection rebuild, GUI artifact convergence |
-| Operations/GUI (`OPS`) | 48% | weak | green suite, executed Playwright receipt, clean-room smoke, recovery/cost controls |
+| Operations/GUI (`OPS`) | 52% | well | executed real-service Playwright receipt, clean-room smoke, recovery/cost controls |
 
 ## Capability Ledger Recalculation
 
@@ -51,7 +51,7 @@ No score exceeds 84 because no fresh clean-room deployed receipt exists. Uncommi
 | FND-02 | No-fallback/no-legacy architecture | 58 | well | Canonical schema and several defaults removed; local duplicate APIs and additional substitutions remain. |
 | FND-03 | Python and dependency contract | 68 | well | Python 3.12/SAM/container contracts and builds exist; broad suite is not green. |
 | FND-04 | CLI and explicit configuration | 72 | well | Strict config and deploy parameter checks improved; clean-room CLI execution is unproven. |
-| FND-05 | Cognito browser and runtime auth | 80 | well | Strict signed-session/bearer mode selection and 65 focused tests; Hosted UI deployed proof absent. |
+| FND-05 | Cognito browser and runtime auth | 82 | well | Strict signed-session/bearer mode selection and cold-start session registration pass locally; Hosted UI deployed proof absent. |
 | FND-06 | Memberships and human roles | 70 | well | Core role services tested; full object-level authorization matrix remains incomplete. |
 | FND-07 | Agent-to-agent authentication | 65 | well | Explicit targets/spaces/scopes and wildcard rejection; presenting agent identity is not cryptographically attested. |
 | FND-08 | Multi-tenant isolation | 40 | weak | SQL filters exist; TapDB/admin/worker cross-agent boundaries are incomplete. |
@@ -96,7 +96,7 @@ No score exceeds 84 because no fresh clean-room deployed receipt exists. Uncommi
 | LIV-07 | Session lifecycle and recovery | 72 | well | Six-state durable worker/API projection and 37 focused tests; owning reconciliation job/deployed proof absent. |
 | LIV-08 | Worker packaging and supervision | 60 | well | Explicit egress-only Fargate service contract exists; image/service has not been deployed and observed. |
 | LIV-09 | Media telemetry | 35 | weak | Some correlated lifecycle evidence exists; stage-level media measurements are incomplete. |
-| TOP-01 | Locations, spaces, devices, sessions | 66 | well | Local schema/routes/GUI exist; semantic ownership and deployed topology proof remain. |
+| TOP-01 | Locations, spaces, devices, sessions | 72 | well | Canonical space CRUD now uses role checks, soft deletion, and transactional semantic outbox writes; deployed topology proof remains. |
 | TOP-02 | Device token auth and scopes | 76 | well | Explicit route scopes, malformed-state rejection, and wildcard removal are tested; deployed denial proof absent. |
 | TOP-03 | Heartbeat and online state | 60 | well | Heartbeat/disconnect receipts exist; liveness reconciliation is not deployed. |
 | TOP-04 | Remote satellite/location node | 47 | weak | Daemon and local tests exist; no supervised satellite service proof. |
@@ -120,13 +120,13 @@ No score exceeds 84 because no fresh clean-room deployed receipt exists. Uncommi
 | OPS-01 | GUI page inventory | 80 | well | Required pages exist; page presence still exceeds workflow depth. |
 | OPS-02 | GUI workflow operability | 50 | well | Many controls work locally; duplicate APIs and old artifact/recognition paths remain. |
 | OPS-03 | GUI accessibility/responsiveness | 28 | weak | Partial responsive CSS exists; no accessibility acceptance suite. |
-| OPS-04 | Marvain-native discovery and health | 72 | well | Shared measured routes are implemented in the worktree; commit/full-regression proof is pending. |
+| OPS-04 | Marvain-native discovery and health | 78 | well | Shared measured routes are committed for local and Lambda apps with request, database, and auth evidence. |
 | OPS-05 | Operational observability | 50 | well | Request/database/auth measurements now exist in the worktree; worker/media/queue/provider metrics remain. |
 | OPS-06 | Queue failure handling | 55 | well | Semantic dispatcher/DLQ/alarms exist; transcript/action/recognition/provider queues remain incomplete. |
 | OPS-07 | Static and unit regression suite | 80 | well | More than 1000 tests pass, but seven failures and extensive mocks prevent a green gate. |
-| OPS-08 | API/GUI route coverage measurement | 50 | well | Same-commit receipt framework is honest; last receipt was only 27% API and 26% GUI. |
-| OPS-09 | Playwright workflow coverage | 40 | weak | Tests/manifests exist; executed same-commit workflow receipt is 0%. |
-| OPS-10 | GUI smoke guide | 55 | well | 22 evidence-first screenshot workflows exist; no complete executed guide receipt. |
+| OPS-08 | API/GUI route coverage measurement | 60 | well | Same-commit receipt framework reports 53% API and 22% GUI behavior without reachability credit. |
+| OPS-09 | Playwright workflow coverage | 45 | weak | A same-commit real-service receipt runner now exists; execution remains 0% because no configured service can run it. |
+| OPS-10 | GUI smoke guide | 60 | well | The guide now has strict screenshot, workflow, owning-service, and commit validation; no complete real-service receipt exists. |
 | OPS-11 | Deployed v1-dev smoke | 38 | weak | Validator rejects synthetic evidence; owning-service collectors and real run are absent. |
 | OPS-12 | Fresh clean-room deployment | 10 | not at all | Plan only; no accepted clean-room stack receipt. |
 | OPS-13 | Worker/service supervision | 45 | weak | ECS/systemd contracts exist; neither service has supervised deployed evidence. |
@@ -149,10 +149,10 @@ No score exceeds 84 because no fresh clean-room deployed receipt exists. Uncommi
 
 ## Fastest Path To Operating Well
 
-1. Finish and commit the current shared observability integration; regenerate generated docs and a same-commit route receipt.
-2. Converge GUI artifact, recognition, memory, and lifecycle workflows on canonical `/v1` services; delete duplicate local business mutations.
-3. Make the full local suite green and raise executed API/GUI/Playwright behavioral coverage above 75%.
-4. Restore valid AWS/Cognito smoke credentials and create one explicit clean-room config.
+1. Restore valid AWS credentials, explicit Cognito smoke credentials, and one clean-room Marvain config.
+2. Continue the started GUI convergence: agent and space creation now use `/v1`; artifact, recognition, memory, and lifecycle workflows still need conversion and duplicate-route removal.
+3. Raise same-commit behavior proof from API 53%, GUI 22%, and Playwright 0% to at least 75% on every surface.
+4. Run the committed real-service Playwright receipt runner against the configured clean-room GUI.
 5. Deploy the clean-room stack, ECS agent worker, and recognition host; run the real vertical slice.
 6. Run two-device routing, four provider tenants, failure injection, and TapDB projection-rebuild checks.
 7. Implement real agent restore into a second blank environment and compare behavior.

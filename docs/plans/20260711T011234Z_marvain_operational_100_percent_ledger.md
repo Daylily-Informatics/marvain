@@ -179,3 +179,13 @@ The compact evidence fields below are initialized from the assessment. Agents re
 ## Reporting Cadence
 
 At every gate transition record status counts, rows completed, bugfix attempts, blocked credentials/approvals, commands run, evidence paths, residual risks, and next owners. Raw test/screenshot output belongs under `output/acceptance/<run-id>/`; sanitized receipts and summaries belong under `docs/reports/`.
+
+## Execution Update 2026-07-11T05:19:29Z
+
+- Commits `3d07797`, `b4b61bb`, and `fab315b` converged measured observability, cold-start browser-session authentication, canonical space CRUD, GUI agent/space creation, and behavior-receipt infrastructure.
+- Canonical space creation, update, and soft deletion now enforce user roles and enqueue TapDB semantic records in the source transaction.
+- Canonical behavior proof now covers memory commit/recall provenance, user/device LiveKit session creation, event persistence, device heartbeat, verified artifacts, and recognition observation/hypothesis/review/worker heartbeat paths.
+- Same-commit route receipt `route-behavior` at `fab315b`: API `53%`, GUI `22%`, Playwright `0%`; reachability remains `100%` for API and GUI but receives no behavioral credit.
+- A strict real-service Playwright runner now requires the exact service Git SHA, all 22 workflows, owning-service postconditions, and before/before-submit/after-submit PNG evidence.
+- External blockers were rechecked: AWS STS with `AWS_PROFILE=daylily` fails with `InvalidClientTokenId`; `marvain config show` reports no config. No AWS mutation or synthetic deployed evidence was attempted.
+- Gate 1 remains `IN_PROGRESS`; Gate 6 remains `IN_PROGRESS`; clean-room Gates 4, 5, and 8 cannot execute until credentials and explicit config are restored.
