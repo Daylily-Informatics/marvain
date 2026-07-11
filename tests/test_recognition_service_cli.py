@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from cli_core_yo.conformance import invoke
 
 from marvain_cli.recognition_service import (
     RecognitionInstallSpec,
@@ -121,3 +122,17 @@ def test_systemd_unit_is_outbound_only_and_supervised() -> None:
     assert "ListenStream" not in text
     assert "Environment=" not in text
     assert "HUB_DEVICE_TOKEN" not in text
+
+
+def test_root_cli_registers_recognition_controls(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MARVAIN_ACTIVE", "1")
+    monkeypatch.setenv("CONDA_DEFAULT_ENV", "marvain")
+    monkeypatch.setenv("CONDA_PREFIX", "/tmp/marvain")
+    from marvain_cli import cli
+
+    result = invoke(cli.build_app(), ["--dry-run", "recognition", "start"], prog_name="marvain")
+
+    assert result.exit_code == 0, result.output
+    assert '"action": "start"' not in result.output
+    assert '"command"' in result.output
+    assert "marvain-recognition.service" in result.output

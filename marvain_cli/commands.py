@@ -656,6 +656,102 @@ def test_cmd() -> None:
     _exit(int(subprocess.call(cmd, cwd=str(repo_root), env=env)))
 
 
+def recognition_install_service_cmd(
+    python_executable: str = Option(..., "--python-executable", help="Absolute Python 3.12 executable path"),
+    worker_source: str = Option(..., "--worker-source", help="Absolute recognition worker.py path"),
+    wheelhouse: str = Option(..., "--wheelhouse", help="Absolute offline wheelhouse directory"),
+    package_version: str = Option(..., "--package-version", help="Exact Marvain package version"),
+    environment_source: str = Option(..., "--environment-source", help="Absolute populated environment file"),
+    model_manifest_source: str = Option(..., "--model-manifest-source", help="Absolute pinned model manifest"),
+    unit_source: str = Option(..., "--unit-source", help="Absolute checked-in systemd unit path"),
+) -> None:
+    """Install the recognition worker service on an Amazon Linux 2023 host."""
+    from marvain_cli.recognition_service import RecognitionInstallSpec, install_command_plan, run_install
+
+    spec = RecognitionInstallSpec(
+        service_user="marvain-recognition",
+        service_group="marvain-recognition",
+        unit_name="marvain-recognition.service",
+        python_executable=Path(python_executable),
+        install_root=Path("/opt/marvain-recognition"),
+        worker_source=Path(worker_source),
+        wheelhouse=Path(wheelhouse),
+        package_version=package_version,
+        environment_source=Path(environment_source),
+        environment_destination=Path("/etc/marvain/recognition.env"),
+        model_manifest_source=Path(model_manifest_source),
+        model_manifest_destination=Path("/etc/marvain/recognition-models.json"),
+        unit_source=Path(unit_source),
+        unit_destination=Path("/etc/systemd/system/marvain-recognition.service"),
+        health_path=Path("/var/lib/marvain-recognition/health.json"),
+    ).validate()
+    if _dry_run():
+        _json({"dry_run": True, "commands": install_command_plan(spec, create_user=True, create_group=True)})
+        return
+    results = run_install(spec)
+    _json({"installed": True, "commands_completed": len(results), "unit_name": spec.unit_name})
+
+
+def _recognition_control(action: str) -> None:
+    from marvain_cli.recognition_service import control_command
+
+    command = control_command(action=action, unit_name="marvain-recognition.service")
+    if _dry_run():
+        _json({"dry_run": True, "command": command})
+        return
+    subprocess.run(command, check=True)
+    _json({"ok": True, "action": action, "unit_name": "marvain-recognition.service"})
+
+
+def recognition_start_cmd() -> None:
+    """Start the recognition service."""
+    _recognition_control("start")
+
+
+def recognition_stop_cmd() -> None:
+    """Stop the recognition service."""
+    _recognition_control("stop")
+
+
+def recognition_restart_cmd() -> None:
+    """Restart the recognition service."""
+    _recognition_control("restart")
+
+
+def recognition_status_cmd() -> None:
+    """Report systemd and worker-health state."""
+    from marvain_cli.recognition_service import run_commands, status_commands
+
+    commands = status_commands(
+        unit_name="marvain-recognition.service",
+        health_path=Path("/var/lib/marvain-recognition/health.json"),
+    )
+    if _dry_run():
+        _json({"dry_run": True, "commands": commands})
+        return
+    results = run_commands(commands)
+    _json(
+        {
+            "unit": results[0].stdout,
+            "health": json.loads(results[1].stdout),
+        }
+    )
+
+
+def recognition_logs_cmd(
+    lines: int = Option(200, "--lines", min=1, help="Journal lines to return"),
+    follow: bool = Option(False, "--follow", help="Follow the journal"),
+) -> None:
+    """Read recognition service logs."""
+    from marvain_cli.recognition_service import logs_command
+
+    command = logs_command(unit_name="marvain-recognition.service", lines=lines, follow=follow)
+    if _dry_run():
+        _json({"dry_run": True, "command": command})
+        return
+    _exit(subprocess.call(command))
+
+
 def register(registry: CommandRegistry, spec: CliSpec) -> None:
     _ = spec
     register_group_commands(
@@ -809,6 +905,27 @@ def register(registry: CommandRegistry, spec: CliSpec) -> None:
             ("logs", agent_logs_cmd, required_policy(mutates_state=True, supports_dry_run=True, long_running=True)),
             ("export", agent_export_cmd, required_policy(supports_json=True, prereq_tags={MARVAIN_AWS_TAG})),
             ("backup", agent_export_cmd, required_policy(supports_json=True, prereq_tags={MARVAIN_AWS_TAG})),
+        ],
+    )
+    register_group_commands(
+        registry,
+        "recognition",
+        "Recognition worker service management.",
+        [
+            (
+                "install-service",
+                recognition_install_service_cmd,
+                required_policy(mutates_state=True, supports_dry_run=True, interactive=True),
+            ),
+            ("start", recognition_start_cmd, required_policy(mutates_state=True, supports_dry_run=True)),
+            ("stop", recognition_stop_cmd, required_policy(mutates_state=True, supports_dry_run=True)),
+            ("restart", recognition_restart_cmd, required_policy(mutates_state=True, supports_dry_run=True)),
+            ("status", recognition_status_cmd, required_policy(supports_json=True)),
+            (
+                "logs",
+                recognition_logs_cmd,
+                required_policy(long_running=True),
+            ),
         ],
     )
     register_group_commands(
