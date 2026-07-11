@@ -1,0 +1,686 @@
+{
+  "schema": "marvain.route-behavior-manifest.v1",
+  "routes": [
+    {
+      "surface": "api",
+      "method": "GET",
+      "path": "/health",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "The service health route is intentionally public."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The health read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The health read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_health_success"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "GET",
+      "path": "/v1/delegate/scopes",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "The delegation scope catalog is intentionally public."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The scope catalog read has no user input to validate."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The scope catalog read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_delegate_scopes_success"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "GET",
+      "path": "/v1/me",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The current-user read has no user input to validate."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The current-user read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_me_success",
+        "denial": "tests/test_route_behavior_api.py::test_api_me_denial"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "GET",
+      "path": "/v1/agents",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The agent list read has no user input to validate."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The agent list read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_agents_success",
+        "denial": "tests/test_route_behavior_api.py::test_api_agents_denial"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "POST",
+      "path": "/v1/agents",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": "required",
+        "postcondition": "required"
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_create_agent_success_and_readback",
+        "denial": "tests/test_route_behavior_api.py::test_api_create_agent_denial",
+        "validation": "tests/test_route_behavior_api.py::test_api_create_agent_validation",
+        "postcondition": "tests/test_route_behavior_api.py::test_api_create_agent_success_and_readback"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "PATCH",
+      "path": "/v1/agents/{agent_id}",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": "required",
+        "postcondition": "required"
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_patch_agent_success_and_readback",
+        "denial": "tests/test_route_behavior_api.py::test_api_patch_agent_denial",
+        "validation": "tests/test_route_behavior_api.py::test_api_patch_agent_validation",
+        "postcondition": "tests/test_route_behavior_api.py::test_api_patch_agent_success_and_readback"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "GET",
+      "path": "/v1/agents/{agent_id}/memberships",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "A syntactically valid agent identifier fully defines this read."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The membership list read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_memberships_success",
+        "denial": "tests/test_route_behavior_api.py::test_api_memberships_denial"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "GET",
+      "path": "/v1/agents/{agent_id}/people",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "A syntactically valid agent identifier fully defines this read."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The people list read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_people_success",
+        "denial": "tests/test_route_behavior_api.py::test_api_people_denial"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "POST",
+      "path": "/v1/agents/{agent_id}/people",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": "required",
+        "postcondition": "required"
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_create_person_success_and_readback",
+        "denial": "tests/test_route_behavior_api.py::test_api_create_person_denial",
+        "validation": "tests/test_route_behavior_api.py::test_api_create_person_validation",
+        "postcondition": "tests/test_route_behavior_api.py::test_api_create_person_success_and_readback"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "GET",
+      "path": "/v1/people/{person_id}",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "A syntactically valid person identifier fully defines this read."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The person read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_create_person_success_and_readback",
+        "denial": "tests/test_route_behavior_api.py::test_api_person_denial"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "GET",
+      "path": "/v1/people/{person_id}/consent",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "A syntactically valid person identifier fully defines this read."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The consent list read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_consent_success",
+        "denial": "tests/test_route_behavior_api.py::test_api_consent_denial"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "GET",
+      "path": "/v1/agents/{agent_id}/tokens",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "A syntactically valid agent identifier fully defines this read."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The token list read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_agent_tokens_success",
+        "denial": "tests/test_route_behavior_api.py::test_api_agent_tokens_denial"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "Browser authentication denial is an external login redirect rather than a 401 or 403 response."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The dashboard page read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The dashboard page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_dashboard_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/agents",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "Browser authentication denial is an external login redirect rather than a 401 or 403 response."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The agents page read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The agents page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_agents_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/people",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "Browser authentication denial is an external login redirect rather than a 401 or 403 response."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The people page read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The people page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_people_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/locations",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "Browser authentication denial is an external login redirect rather than a 401 or 403 response."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The locations page read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The locations page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_locations_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/spaces",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "Browser authentication denial is an external login redirect rather than a 401 or 403 response."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The spaces page read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The spaces page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_spaces_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/devices",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "Browser authentication denial is an external login redirect rather than a 401 or 403 response."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The devices page read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The devices page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_devices_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/sessions",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "Browser authentication denial is an external login redirect rather than a 401 or 403 response."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The sessions page read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The sessions page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_sessions_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/live-session",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "Browser authentication denial is an external login redirect rather than a 401 or 403 response."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The live-session page read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The live-session page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_live_session_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/memories",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "Browser authentication denial is an external login redirect rather than a 401 or 403 response."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The memories page read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The memories page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_memories_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/recognition",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "Browser authentication denial is an external login redirect rather than a 401 or 403 response."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The recognition page read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The recognition page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_recognition_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/actions",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "Browser authentication denial is an external login redirect rather than a 401 or 403 response."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The actions page read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The actions page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_actions_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/actions/guide",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "Browser authentication denial is an external login redirect rather than a 401 or 403 response."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The action-guide page read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The action-guide page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_action_guide_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/tools",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "Browser authentication denial is an external login redirect rather than a 401 or 403 response."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The tools page read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The tools page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_tools_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/personas",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "Browser authentication denial is an external login redirect rather than a 401 or 403 response."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The personas page read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The personas page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_personas_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/audit",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "Browser authentication denial is an external login redirect rather than a 401 or 403 response."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The audit page read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The audit page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_audit_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/observability",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "Browser authentication denial is an external login redirect rather than a 401 or 403 response."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The observability page read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The observability page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_observability_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/capabilities",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "Browser authentication denial is an external login redirect rather than a 401 or 403 response."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The capability page read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The capability page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_capabilities_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/artifacts",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "Browser authentication denial is an external login redirect rather than a 401 or 403 response."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The artifacts page read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The artifacts page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_artifacts_success"
+      }
+    },
+    {
+      "surface": "gui",
+      "method": "GET",
+      "path": "/profile",
+      "requirements": {
+        "success": "required",
+        "denial": {
+          "status": "not_applicable",
+          "reason": "Browser authentication denial is an external login redirect rather than a 401 or 403 response."
+        },
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The profile page read has no request body or route parameter."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The profile page render performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_gui.py::test_gui_profile_success"
+      }
+    }
+  ]
+}
