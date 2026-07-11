@@ -1,10 +1,47 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tomllib
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
+
+
+class _CloudFormationLoader(yaml.SafeLoader):
+    pass
+
+
+def _construct_cloudformation_tag(
+    loader: _CloudFormationLoader,
+    _tag_suffix: str,
+    node: yaml.Node,
+) -> Any:
+    if isinstance(node, yaml.ScalarNode):
+        return loader.construct_scalar(node)
+    if isinstance(node, yaml.SequenceNode):
+        return loader.construct_sequence(node, deep=True)
+    return loader.construct_mapping(node, deep=True)
+
+
+_CloudFormationLoader.add_multi_constructor("!", _construct_cloudformation_tag)
+
+
+def _values_for_key(node: Any, key: str) -> list[Any]:
+    values: list[Any] = []
+    if isinstance(node, dict):
+        for candidate, value in node.items():
+            if candidate == key:
+                values.append(value)
+            values.extend(_values_for_key(value, key))
+    elif isinstance(node, list):
+        for value in node:
+            values.extend(_values_for_key(value, key))
+    return values
 
 
 def test_root_activation_contract_replaces_old_wrapper_files() -> None:
@@ -18,9 +55,12 @@ def test_root_activation_contract_replaces_old_wrapper_files() -> None:
     assert not (REPO_ROOT / "bin" / "marvain").exists()
 
 
-def test_activate_stays_minimal_and_environment_owns_only_conda_dependencies() -> None:
+def test_activate_stays_minimal_and_environment_declares_sam_cli() -> None:
     activate_text = (REPO_ROOT / "activate").read_text(encoding="utf-8")
     env_text = (REPO_ROOT / "environment.yaml").read_text(encoding="utf-8")
+    environment = yaml.safe_load(env_text)
+    dependencies = environment["dependencies"]
+    pip_sections = [dependency["pip"] for dependency in dependencies if isinstance(dependency, dict)]
 
     assert "Usage: source ./activate" in activate_text
     assert "MARVAIN_REPO_ROOT" in activate_text
@@ -28,8 +68,8 @@ def test_activate_stays_minimal_and_environment_owns_only_conda_dependencies() -
     assert "MARVAIN_REPO_CFG" not in activate_text
     assert "COMPLETE" not in activate_text
     assert "PATH=" not in activate_text
-    assert "pip:" not in env_text
-    assert "python=3.12" in env_text
+    assert "python=3.12" in dependencies
+    assert pip_sections == [["aws-sam-cli==1.147.1"]]
     assert "awscli" not in env_text
     assert "aws-session-manager-plugin" not in env_text
     assert "daylily-auth-cognito" not in env_text
@@ -51,6 +91,81 @@ def test_pyproject_owns_python_dependencies_and_console_script() -> None:
     assert pyproject["tool"]["marvain"]["python"] == "3.12"
     assert pyproject["project"]["scripts"]["marvain"] == "marvain_cli.__main__:main"
     assert pyproject["tool"]["marvain"]["conda_file"] == "environment.yaml"
+
+
+def test_deployment_runtime_contract_is_python_312() -> None:
+    template = yaml.load(
+        (REPO_ROOT / "template.yaml").read_text(encoding="utf-8"),
+        Loader=_CloudFormationLoader,
+    )
+    runtime = template["Globals"]["Function"]["Runtime"]
+    resources = template["Resources"]
+
+    functions = {
+        name: resource for name, resource in resources.items() if resource.get("Type") == "AWS::Serverless::Function"
+    }
+    layers = {
+        name: resource
+        for name, resource in resources.items()
+        if resource.get("Type") == "AWS::Serverless::LayerVersion"
+    }
+
+    assert runtime == "python3.12"
+    assert functions
+    assert layers
+    for name, function in functions.items():
+        assert function.get("Properties", {}).get("Runtime", runtime) == runtime, name
+    for name, layer in layers.items():
+        assert layer["Properties"]["CompatibleRuntimes"] == [runtime], name
+
+    dockerfile = (REPO_ROOT / "apps" / "agent_worker" / "Dockerfile").read_text(encoding="utf-8")
+    base_images = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
+    assert base_images == ["FROM python:3.12-slim"]
+
+
+def test_ci_workflows_are_python_312_gates() -> None:
+    workflows = {
+        path.name: yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+        for path in sorted(WORKFLOW_DIR.glob("*.yml"))
+    }
+    setup_python_versions: list[str] = []
+
+    assert workflows
+    for name, workflow in workflows.items():
+        assert workflow.get("jobs"), name
+        assert not _values_for_key(workflow, "continue-on-error"), name
+        for condition in _values_for_key(workflow, "if"):
+            assert "secrets." not in str(condition), name
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                if str(step.get("uses", "")).startswith("actions/setup-python@"):
+                    setup_python_versions.append(step["with"]["python-version"])
+
+    assert setup_python_versions
+    assert set(setup_python_versions) == {"3.12"}
+
+    ci_jobs = workflows["ci.yml"]["jobs"]
+    sam_job = ci_jobs["sam-build"]
+    sam_commands = "\n".join(str(step.get("run", "")) for step in sam_job["steps"])
+    assert sam_job["env"]["AWS_SAM_CLI_VERSION"] == "1.147.1"
+    assert "aws-sam-cli==${AWS_SAM_CLI_VERSION}" in sam_commands
+    assert "sam validate --template-file template.yaml" in sam_commands
+    assert "sam build --template-file template.yaml" in sam_commands
+
+    e2e_jobs = workflows["e2e-contracts.yml"]["jobs"]
+    assert e2e_jobs["e2e"]["needs"] == "preflight"
+    preflight_commands = "\n".join(str(step.get("run", "")) for step in e2e_jobs["preflight"]["steps"])
+    subprocess.run(["bash", "-n"], input=preflight_commands, text=True, check=True)
+    for secret_name in (
+        "MARVAIN_AWS_ROLE_TO_ASSUME",
+        "MARVAIN_HUB_REST_API_BASE",
+        "MARVAIN_HUB_WS_URL",
+        "MARVAIN_ADMIN_API_KEY",
+        "MARVAIN_COGNITO_USER_POOL_CLIENT_ID",
+        "MARVAIN_COGNITO_TEST_USERNAME",
+        "MARVAIN_COGNITO_TEST_PASSWORD",
+    ):
+        assert secret_name in preflight_commands
 
 
 def test_lambda_requirements_use_current_runtime_pins() -> None:

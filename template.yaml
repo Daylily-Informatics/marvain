@@ -65,7 +65,7 @@ Conditions:
 
 Globals:
   Function:
-    Runtime: python3.11
+    Runtime: python3.12
     Timeout: 30
     MemorySize: 512
     Tracing: Active
@@ -390,7 +390,7 @@ Resources:
       LayerName: !Sub ${AWS::StackName}-shared
       ContentUri: layers/shared/
       CompatibleRuntimes:
-        - python3.11
+        - python3.12
 
   # -----------------------------
   # REST API (Hub)

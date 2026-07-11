@@ -3,15 +3,18 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  # Python packages come from the editable pip install defined in pyproject.toml.
+  # Application packages come from the editable install defined in pyproject.toml.
+  # SAM CLI is the only Python tool owned directly by this environment spec.
   - python=3.12
   - pip
 
   # System and command-line tools used by local development.
-  # AWS command-line tooling and Session Manager Plugin are expected from the
-  # host install, not conda packages, because amazon-transcribe requires a
-  # conflicting awscrt pin.
+  # AWS CLI and Session Manager Plugin remain explicit host prerequisites.
   - bash
   - jq
   - yq
   - libsndfile
+
+  - pip:
+      # 1.148+ requires boto3[crt], which conflicts with amazon-transcribe's awscrt pin.
+      - aws-sam-cli==1.147.1

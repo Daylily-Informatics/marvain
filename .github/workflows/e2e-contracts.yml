@@ -10,12 +10,50 @@ permissions:
   id-token: write
 
 jobs:
+  preflight:
+    name: Deployed E2E Configuration
+    runs-on: ubuntu-latest
+    env:
+      MARVAIN_AWS_ROLE_TO_ASSUME: ${{ secrets.MARVAIN_AWS_ROLE_TO_ASSUME }}
+      MARVAIN_HUB_REST_API_BASE: ${{ secrets.MARVAIN_HUB_REST_API_BASE }}
+      MARVAIN_HUB_WS_URL: ${{ secrets.MARVAIN_HUB_WS_URL }}
+      MARVAIN_ADMIN_API_KEY: ${{ secrets.MARVAIN_ADMIN_API_KEY }}
+      MARVAIN_COGNITO_USER_POOL_CLIENT_ID: ${{ secrets.MARVAIN_COGNITO_USER_POOL_CLIENT_ID }}
+      MARVAIN_COGNITO_TEST_USERNAME: ${{ secrets.MARVAIN_COGNITO_TEST_USERNAME }}
+      MARVAIN_COGNITO_TEST_PASSWORD: ${{ secrets.MARVAIN_COGNITO_TEST_PASSWORD }}
+
+    steps:
+      - name: Require deployed E2E secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            MARVAIN_AWS_ROLE_TO_ASSUME
+            MARVAIN_HUB_REST_API_BASE
+            MARVAIN_HUB_WS_URL
+            MARVAIN_ADMIN_API_KEY
+            MARVAIN_COGNITO_USER_POOL_CLIENT_ID
+            MARVAIN_COGNITO_TEST_USERNAME
+            MARVAIN_COGNITO_TEST_PASSWORD
+          )
+          missing=()
+          for name in "${required[@]}"; do
+            if [[ -z "${!name}" ]]; then
+              missing+=("${name}")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            printf '::error title=Missing deployed E2E secret::%s\n' "${missing[@]}"
+            exit 1
+          fi
+
   e2e:
     name: Deployed Stack Contracts
+    needs: preflight
     runs-on: ubuntu-latest
-    continue-on-error: true
     env:
       MARVAIN_E2E_ENABLED: "1"
+      MARVAIN_AWS_ROLE_TO_ASSUME: ${{ secrets.MARVAIN_AWS_ROLE_TO_ASSUME }}
       MARVAIN_HUB_REST_API_BASE: ${{ secrets.MARVAIN_HUB_REST_API_BASE }}
       MARVAIN_HUB_WS_URL: ${{ secrets.MARVAIN_HUB_WS_URL }}
       MARVAIN_ADMIN_API_KEY: ${{ secrets.MARVAIN_ADMIN_API_KEY }}
@@ -30,19 +68,18 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Configure AWS credentials
-        if: ${{ secrets.MARVAIN_AWS_ROLE_TO_ASSUME != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.MARVAIN_AWS_ROLE_TO_ASSUME }}
+          role-to-assume: ${{ env.MARVAIN_AWS_ROLE_TO_ASSUME }}
           aws-region: us-east-1
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install \
+          python -m pip install --upgrade pip
+          python -m pip install \
             boto3 \
             fastapi \
             mangum \
@@ -52,6 +89,7 @@ jobs:
             httpx \
             python-multipart \
             python-dateutil \
+            daylily-auth-cognito==2.1.5 \
             python-jose[cryptography] \
             jsonschema \
             itsdangerous \
