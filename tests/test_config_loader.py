@@ -5,11 +5,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from marvain_cli.config import ConfigError, dump_simple_yaml, load_config_dict, render_config_yaml, resolve_env
+from marvain_cli.config import ConfigError, load_config_dict, render_config_yaml, resolve_env, save_config_dict
 
 
 class TestConfigLoader(unittest.TestCase):
-    def test_simple_yaml_parser_roundtrip(self) -> None:
+    def test_yaml_parser_roundtrip(self) -> None:
         txt = "version: 1\ndefault_env: dev\nenvs:\n  dev:\n    aws_region: us-west-2\n    stack_name: marvain-u-dev\n"
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "marvain-config.yaml"
@@ -21,7 +21,7 @@ class TestConfigLoader(unittest.TestCase):
             self.assertEqual(resolved.aws_region, "us-west-2")
             self.assertEqual(resolved.stack_name, "marvain-u-dev")
 
-    def test_simple_yaml_dump_roundtrip_subset(self) -> None:
+    def test_yaml_dump_roundtrip_subset(self) -> None:
         cfg = {
             "version": 1,
             "default_env": "dev",
@@ -35,10 +35,9 @@ class TestConfigLoader(unittest.TestCase):
                 }
             },
         }
-        txt = dump_simple_yaml(cfg)
         with tempfile.TemporaryDirectory() as td:
             p = Path(td) / "marvain-config.yaml"
-            p.write_text(txt, encoding="utf-8")
+            save_config_dict(p, cfg)
             cfg2 = load_config_dict(p)
             self.assertEqual(cfg2["version"], 1)
             self.assertNotIn("aws_profile", cfg2["envs"]["dev"])
@@ -59,6 +58,16 @@ class TestConfigLoader(unittest.TestCase):
         }
         with self.assertRaises(ConfigError):
             resolve_env(cfg, env="dev", profile_override=None, region_override=None, stack_override=None)
+
+    def test_environment_identity_is_required(self) -> None:
+        cfg = {"envs": {"dev": {"aws_region": "us-west-2", "stack_name": "x"}}}
+        old = os.environ.pop("MARVAIN_ENV", None)
+        try:
+            with self.assertRaisesRegex(ConfigError, "Environment is required"):
+                resolve_env(cfg, env=None, profile_override="p1", region_override=None, stack_override=None)
+        finally:
+            if old is not None:
+                os.environ["MARVAIN_ENV"] = old
 
     def test_allow_profile_override(self) -> None:
         cfg = {
