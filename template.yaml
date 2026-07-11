@@ -77,6 +77,10 @@ Parameters:
     Description: Allowed Cognito logout URLs for the (local) GUI OAuth flow
     Default: "http://localhost:8084/logged-out,https://localhost:8084/logged-out"
 
+  ArtifactCorsAllowedOrigins:
+    Type: CommaDelimitedList
+    Description: Explicit browser origins allowed to upload verified artifacts directly to S3.
+
 Conditions:
   IsDeploymentV1: !Equals [!Ref ApiDeploymentVersion, "1"]
   IsDeploymentV2: !Equals [!Ref ApiDeploymentVersion, "2"]
@@ -342,6 +346,23 @@ Resources:
     Properties:
       VersioningConfiguration:
         Status: Enabled
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - Content-Type
+              - x-amz-checksum-sha256
+              - x-amz-meta-sha256
+              - x-amz-sdk-checksum-algorithm
+            AllowedMethods:
+              - GET
+              - HEAD
+              - PUT
+            AllowedOrigins: !Ref ArtifactCorsAllowedOrigins
+            ExposedHeaders:
+              - ETag
+              - x-amz-checksum-sha256
+              - x-amz-version-id
+            MaxAge: 300
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
