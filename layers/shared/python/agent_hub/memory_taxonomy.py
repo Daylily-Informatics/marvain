@@ -3,7 +3,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, Literal, TypeAlias
+
+MemoryKindName: TypeAlias = Literal[
+    "episodic",
+    "semantic",
+    "procedural",
+    "preference",
+    "relationship",
+    "location",
+    "device",
+    "policy",
+]
+MemoryProvenanceClassName: TypeAlias = Literal[
+    "external_interaction",
+    "self_reflection",
+    "cross_agent_interaction",
+    "system_observation",
+]
 
 
 @dataclass(frozen=True)

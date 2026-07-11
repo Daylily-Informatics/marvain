@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import get_args
+
 import pytest
 from agent_hub.memory_classifier import (
     DeterministicMemoryClassifier,
@@ -16,6 +18,8 @@ from agent_hub.memory_taxonomy import (
     MEMORY_PROVENANCE_DESCRIPTIONS,
     MEMORY_PROVENANCE_LABELS,
     MEMORY_PROVENANCE_VALUES,
+    MemoryKindName,
+    MemoryProvenanceClassName,
     classify_memory_kinds,
     classify_memory_provenance_class,
     memory_kind_options,
@@ -45,6 +49,7 @@ EXPECTED_PROVENANCE_CLASSES = (
 
 def test_memory_kind_taxonomy_keeps_existing_kinds() -> None:
     assert MEMORY_KIND_VALUES == EXPECTED_MEMORY_KINDS
+    assert get_args(MemoryKindName) == EXPECTED_MEMORY_KINDS
     assert set(MEMORY_KIND_LABELS) == set(EXPECTED_MEMORY_KINDS)
     assert set(MEMORY_KIND_DESCRIPTIONS) == set(EXPECTED_MEMORY_KINDS)
     assert [item["value"] for item in memory_kind_options()] == list(EXPECTED_MEMORY_KINDS)
@@ -65,6 +70,7 @@ def test_memory_kind_classifier_covers_every_kind() -> None:
 
 def test_memory_provenance_taxonomy_covers_required_classes() -> None:
     assert MEMORY_PROVENANCE_VALUES == EXPECTED_PROVENANCE_CLASSES
+    assert get_args(MemoryProvenanceClassName) == EXPECTED_PROVENANCE_CLASSES
     assert set(MEMORY_PROVENANCE_LABELS) == set(EXPECTED_PROVENANCE_CLASSES)
     assert set(MEMORY_PROVENANCE_DESCRIPTIONS) == set(EXPECTED_PROVENANCE_CLASSES)
     assert [item["value"] for item in memory_provenance_options()] == list(EXPECTED_PROVENANCE_CLASSES)
@@ -111,6 +117,9 @@ def test_deterministic_memory_classifier_is_explicit_test_provider() -> None:
         "policy",
     }
     assert {item.source_evidence_id for item in classifications} == {"event-1"}
+    assert {item.evidence_quote for item in classifications} == {
+        "Remember that the office camera policy means I prefer privacy."
+    }
     assert {item.provenance_class for item in classifications} == {"external_interaction"}
     assert all(item.model_provider_id == "deterministic-test" for item in classifications)
 
