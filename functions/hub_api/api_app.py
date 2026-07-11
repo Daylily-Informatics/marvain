@@ -12,12 +12,14 @@ Architecture:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
 import uuid
 from dataclasses import asdict
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import boto3
@@ -85,11 +87,28 @@ from agent_hub.policy import (
     is_privacy_mode,
 )
 from agent_hub.rds_data import RdsData, RdsDataEnv
+from agent_hub.recognition_service import (
+    ActorType,
+    AuthenticatedReviewer,
+    HypothesisKind,
+    RecognitionLifecycleService,
+    RecognitionModality,
+    RecognitionServiceError,
+    RecognitionWorkerHeartbeat,
+    ReviewDecision,
+)
 from agent_hub.secrets import get_secret_json
 from agent_hub.semantic_outbox import enqueue_semantic_record
 from agent_hub.semantic_tapdb import TEMPLATE_CODES
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
+from recognition_repository import (
+    RdsRecognitionRepository,
+    RecognitionConflictError,
+    RecognitionNotFoundError,
+    RecognitionPersistenceError,
+    get_recognition_hypothesis_detail,
+)
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import PlainTextResponse
 
@@ -414,6 +433,73 @@ class PresignIn(BaseModel):
     filename: str
     content_type: str = Field(default="application/octet-stream")
     purpose: str | None = Field(default="general", description="general|recognition")
+
+
+class RecognitionArtifactEvidenceIn(BaseModel):
+    bucket: str = Field(min_length=1, max_length=255)
+    object_key: str = Field(min_length=1, max_length=1024)
+    uri: str = Field(min_length=6, max_length=1536)
+    media_type: str = Field(min_length=3, max_length=255)
+    sha256: str = Field(min_length=64, max_length=64)
+
+
+class RecognitionObservationCreateIn(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=255)
+    source_event_id: str = Field(min_length=1, max_length=64)
+    agent_id: str = Field(min_length=1, max_length=64)
+    space_id: str | None = Field(default=None, max_length=64)
+    location_id: str | None = Field(default=None, max_length=64)
+    session_id: str | None = Field(default=None, max_length=64)
+    device_id: str = Field(min_length=1, max_length=64)
+    artifact: RecognitionArtifactEvidenceIn
+    modality: str = Field(min_length=1, max_length=16)
+    model_id: str = Field(min_length=1, max_length=255)
+    model_version: str = Field(min_length=1, max_length=255)
+    embedding: list[float] = Field(min_length=1, max_length=4096)
+
+
+class RecognitionHypothesisCreateIn(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=255)
+    kind: str = Field(min_length=1, max_length=32)
+    candidate_person_id: str | None = Field(default=None, max_length=64)
+    confidence: float = Field(ge=0.0, le=1.0)
+    distance: float | None = Field(default=None, ge=0.0)
+    rationale: str = Field(min_length=1, max_length=4096)
+    requested_projection: bool = False
+
+
+class RecognitionWorkerModelIn(BaseModel):
+    id: str = Field(min_length=1, max_length=255)
+    version: str = Field(min_length=1, max_length=255)
+
+
+class RecognitionWorkerModelsIn(BaseModel):
+    voice: RecognitionWorkerModelIn
+    face: RecognitionWorkerModelIn
+
+
+class RecognitionWorkerHeartbeatIn(BaseModel):
+    schema_name: str = Field(alias="schema", min_length=1, max_length=128)
+    evidence_kind: str = Field(min_length=1, max_length=128)
+    worker_id: str = Field(min_length=1, max_length=255)
+    worker_version: str = Field(min_length=1, max_length=255)
+    host_id: str = Field(min_length=1, max_length=255)
+    models: RecognitionWorkerModelsIn
+    state: str = Field(min_length=1, max_length=32)
+    started_at: datetime
+    observed_at: datetime
+    processed_messages: int = Field(ge=0)
+    failed_messages: int = Field(ge=0)
+    last_event_id: str | None = Field(default=None, max_length=64)
+    last_error: str | None = Field(default=None, max_length=4096)
+
+
+class RecognitionReviewIn(BaseModel):
+    decision: str = Field(min_length=1, max_length=32)
+    reason: str = Field(min_length=1, max_length=4096)
+    create_biometric_projection: bool = False
+    assert_presence: bool = False
+    no_match_retention_until: datetime | None = None
 
 
 class IntegrationAccountCreateIn(BaseModel):
@@ -1839,6 +1925,80 @@ def _require_device_agent_access(*, device: AuthenticatedDevice, agent_id: str) 
     if _device_is_admin(device):
         return
     raise HTTPException(status_code=403, detail="Forbidden")
+
+
+def _require_recognition_worker_access(
+    *,
+    device: AuthenticatedDevice,
+    target_agent_id: str | None = None,
+    worker_key: str | None = None,
+) -> list[str]:
+    """Require an explicitly provisioned recognition-worker device identity."""
+    require_scope(device, "biometrics:write")
+    require_scope(device, "events:read")
+    capabilities = device.capabilities
+    if not isinstance(capabilities, dict) or capabilities.get("kind") != "recognition_worker":
+        raise HTTPException(status_code=403, detail="Recognition worker capability is required")
+    allowed_raw = capabilities.get("allowed_agent_ids")
+    if not isinstance(allowed_raw, list) or not allowed_raw:
+        raise HTTPException(status_code=403, detail="Recognition worker agent allowlist is required")
+    allowed: list[str] = []
+    for value in allowed_raw:
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise HTTPException(status_code=403, detail="Recognition worker agent allowlist is invalid")
+        try:
+            canonical_value = str(uuid.UUID(value))
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail="Recognition worker agent allowlist is invalid") from exc
+        if canonical_value in allowed:
+            raise HTTPException(status_code=403, detail="Recognition worker agent allowlist is invalid")
+        allowed.append(canonical_value)
+    if str(device.agent_id) not in allowed:
+        raise HTTPException(status_code=403, detail="Recognition worker token agent is not allowlisted")
+    if target_agent_id is not None and str(target_agent_id) not in allowed:
+        raise HTTPException(status_code=403, detail="Recognition worker is not authorized for this agent")
+    if worker_key is not None:
+        configured_key = capabilities.get("worker_key")
+        if not isinstance(configured_key, str) or configured_key != worker_key:
+            raise HTTPException(status_code=403, detail="Recognition worker key does not match device capability")
+    return allowed
+
+
+def _recognition_embedding_sha256(embedding: list[float]) -> str:
+    try:
+        encoded = json.dumps(
+            [float(value) for value in embedding],
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Recognition embedding values must be finite numbers") from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _recognition_uuid(value: str | None, field: str, *, required: bool = True) -> str | None:
+    normalized = str(value or "").strip()
+    if not normalized:
+        if required:
+            raise HTTPException(status_code=400, detail=f"{field} is required")
+        return None
+    try:
+        return str(uuid.UUID(normalized))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"{field} must be a UUID") from exc
+
+
+def _raise_recognition_http_error(exc: Exception) -> None:
+    if isinstance(exc, RecognitionNotFoundError):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, RecognitionConflictError):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if isinstance(exc, RecognitionServiceError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if isinstance(exc, RecognitionPersistenceError):
+        logger.error("Recognition persistence failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Recognition persistence failed") from exc
+    raise exc
 
 
 class VoiceprintCreateIn(BaseModel):
@@ -3510,6 +3670,314 @@ def get_space_events(
         )
 
     return SpaceEventsOut(events=events)
+
+
+# -----------------------------------------------------------------------------
+# Canonical Recognition Lifecycle
+# -----------------------------------------------------------------------------
+
+
+@api_app.post("/v1/recognition/observations")
+def create_recognition_observation(
+    body: RecognitionObservationCreateIn,
+    device: AuthenticatedDevice = Depends(get_device),
+) -> dict[str, Any]:
+    agent_id = str(_recognition_uuid(body.agent_id, "agent_id"))
+    source_event_id = str(_recognition_uuid(body.source_event_id, "source_event_id"))
+    source_device_id = str(_recognition_uuid(body.device_id, "device_id"))
+    space_id = _recognition_uuid(body.space_id, "space_id", required=False)
+    location_id = _recognition_uuid(body.location_id, "location_id", required=False)
+    session_id = _recognition_uuid(body.session_id, "session_id", required=False)
+    _require_recognition_worker_access(device=device, target_agent_id=agent_id)
+    expected_idempotency_key = f"recognition-observation:{source_event_id}"
+    if body.idempotency_key != expected_idempotency_key:
+        raise HTTPException(
+            status_code=400,
+            detail="observation idempotency_key must be derived from source_event_id",
+        )
+    try:
+        modality = RecognitionModality(body.modality)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="modality must be voice or face") from exc
+    configured_bucket = str(_cfg.artifact_bucket or "").strip()
+    if not configured_bucket:
+        raise HTTPException(status_code=500, detail="Artifact bucket is not configured")
+    if body.artifact.bucket != configured_bucket:
+        raise HTTPException(status_code=400, detail="Artifact bucket does not match configured artifact storage")
+    embedding_sha256 = _recognition_embedding_sha256(body.embedding)
+    repository: RdsRecognitionRepository | None = None
+    try:
+        repository = RdsRecognitionRepository(_get_db(), agent_id=agent_id)
+        prepared = repository.prepare_observation(
+            source_event_id=source_event_id,
+            claimed_agent_id=agent_id,
+            claimed_space_id=space_id,
+            claimed_location_id=location_id,
+            claimed_session_id=session_id,
+            source_device_id=source_device_id,
+            artifact_payload=body.artifact.model_dump(),
+            modality=modality,
+            model_id=body.model_id,
+            model_version=body.model_version,
+            embedding_sha256=embedding_sha256,
+        )
+        replayed = prepared.existing is not None
+        observation = prepared.existing
+        if observation is None:
+            observation = RecognitionLifecycleService(repository).record_observation(
+                artifact=prepared.artifact,
+                modality=modality,
+                model_id=body.model_id,
+                model_version=body.model_version,
+                embedding=body.embedding,
+            )
+        repository.commit()
+    except Exception as exc:
+        if repository is not None:
+            repository.rollback()
+        _raise_recognition_http_error(exc)
+        raise AssertionError("unreachable")
+    return {
+        "observation_id": observation.observation_id,
+        "agent_id": observation.agent_id,
+        "artifact_id": observation.artifact_id,
+        "source_event_id": observation.source_event_id,
+        "state": observation.state.value,
+        "modality": observation.modality.value,
+        "model_id": observation.model_id,
+        "model_version": observation.model_version,
+        "embedding_sha256": observation.embedding_sha256,
+        "replayed": replayed,
+    }
+
+
+@api_app.post("/v1/recognition/observations/{observation_id}/hypotheses")
+def create_recognition_hypothesis(
+    observation_id: str,
+    body: RecognitionHypothesisCreateIn,
+    device: AuthenticatedDevice = Depends(get_device),
+) -> dict[str, Any]:
+    _require_recognition_worker_access(device=device)
+    observation_id = str(_recognition_uuid(observation_id, "observation_id"))
+    candidate_person_id = _recognition_uuid(body.candidate_person_id, "candidate_person_id", required=False)
+    try:
+        kind = HypothesisKind(body.kind)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="kind must be candidate or no_match") from exc
+    if kind == HypothesisKind.CANDIDATE and candidate_person_id is None:
+        raise HTTPException(status_code=400, detail="candidate hypotheses require candidate_person_id")
+    if kind == HypothesisKind.CANDIDATE and body.distance is None:
+        raise HTTPException(status_code=400, detail="candidate hypotheses require distance")
+    if kind == HypothesisKind.NO_MATCH and candidate_person_id is not None:
+        raise HTTPException(status_code=400, detail="no_match hypotheses cannot include candidate_person_id")
+    agent_rows = _get_db().query(
+        """
+        SELECT agent_id::text AS agent_id
+        FROM recognition_observations
+        WHERE recognition_observation_id = :observation_id::uuid
+        LIMIT 1
+        """,
+        {"observation_id": observation_id},
+    )
+    if not agent_rows:
+        raise HTTPException(status_code=404, detail="recognition observation was not found")
+    agent_id = str(agent_rows[0].get("agent_id") or "")
+    _require_recognition_worker_access(device=device, target_agent_id=agent_id)
+
+    repository: RdsRecognitionRepository | None = None
+    try:
+        repository = RdsRecognitionRepository(_get_db(), agent_id=agent_id)
+        prepared = repository.prepare_hypothesis(
+            observation_id=observation_id,
+            kind=kind,
+            candidate_person_id=candidate_person_id,
+            confidence=body.confidence,
+            distance=body.distance,
+            rationale=body.rationale,
+            requested_projection=body.requested_projection,
+        )
+        source_event_id = str(prepared.observation.source_event_id or "")
+        if body.idempotency_key != f"recognition-hypothesis:{source_event_id}":
+            raise RecognitionConflictError(
+                "hypothesis idempotency_key must be derived from the observation source event"
+            )
+        replayed = prepared.existing is not None
+        hypothesis = prepared.existing
+        if hypothesis is None:
+            service = RecognitionLifecycleService(repository)
+            if kind == HypothesisKind.CANDIDATE:
+                hypothesis = service.propose_candidate(
+                    observation_id=observation_id,
+                    candidate_person_id=str(candidate_person_id),
+                    confidence=body.confidence,
+                    distance=float(body.distance),
+                    rationale=body.rationale,
+                )
+            else:
+                hypothesis = service.propose_no_match(
+                    observation_id=observation_id,
+                    confidence=body.confidence,
+                    rationale=body.rationale,
+                )
+        repository.commit()
+    except Exception as exc:
+        if repository is not None:
+            repository.rollback()
+        _raise_recognition_http_error(exc)
+        raise AssertionError("unreachable")
+    return {
+        "hypothesis_id": hypothesis.hypothesis_id,
+        "observation_id": hypothesis.observation_id,
+        "kind": hypothesis.kind.value,
+        "candidate_person_id": hypothesis.candidate_person_id,
+        "confidence": hypothesis.confidence,
+        "distance": hypothesis.distance,
+        "decision": hypothesis.decision,
+        "requested_projection": body.requested_projection,
+        "consent_id": prepared.consent_id,
+        "replayed": replayed,
+    }
+
+
+@api_app.post("/v1/recognition/workers/{worker_key}/heartbeat")
+def recognition_worker_heartbeat(
+    worker_key: str,
+    body: RecognitionWorkerHeartbeatIn,
+    device: AuthenticatedDevice = Depends(get_device),
+) -> dict[str, Any]:
+    if body.schema_name != "marvain.recognition.worker.v1":
+        raise HTTPException(status_code=400, detail="Unsupported recognition worker heartbeat schema")
+    if body.evidence_kind != "recognition_worker_heartbeat":
+        raise HTTPException(status_code=400, detail="Invalid recognition worker evidence_kind")
+    if body.worker_id != worker_key:
+        raise HTTPException(status_code=400, detail="worker_id does not match the heartbeat route")
+    if body.state not in {"ready", "degraded", "stopped"}:
+        raise HTTPException(status_code=400, detail="state must be ready, degraded, or stopped")
+    if body.started_at.tzinfo is None or body.observed_at.tzinfo is None:
+        raise HTTPException(status_code=400, detail="worker heartbeat timestamps must be timezone-aware")
+    if body.observed_at < body.started_at:
+        raise HTTPException(status_code=400, detail="observed_at cannot precede started_at")
+    last_event_id = _recognition_uuid(body.last_event_id, "last_event_id", required=False)
+    allowed_agent_ids = _require_recognition_worker_access(device=device, worker_key=worker_key)
+    heartbeat = RecognitionWorkerHeartbeat(
+        worker_id=body.worker_id,
+        worker_version=body.worker_version,
+        host_id=body.host_id,
+        voice_model_id=body.models.voice.id,
+        voice_model_version=body.models.voice.version,
+        face_model_id=body.models.face.id,
+        face_model_version=body.models.face.version,
+        state=body.state,
+        started_at=body.started_at,
+        observed_at=body.observed_at,
+        processed_messages=body.processed_messages,
+        failed_messages=body.failed_messages,
+        last_event_id=last_event_id,
+        last_error=body.last_error,
+    )
+    repository: RdsRecognitionRepository | None = None
+    try:
+        repository = RdsRecognitionRepository(_get_db(), agent_id=device.agent_id)
+        receipt = repository.persist_worker_heartbeat(
+            heartbeat,
+            authenticated_device_id=device.device_id,
+            allowed_agent_ids=allowed_agent_ids,
+        )
+        repository.commit()
+    except Exception as exc:
+        if repository is not None:
+            repository.rollback()
+        _raise_recognition_http_error(exc)
+        raise AssertionError("unreachable")
+    return {
+        "ok": True,
+        "worker_id": receipt.worker_id,
+        "heartbeat_id": receipt.heartbeat_id,
+        "received_at": receipt.received_at,
+        "replayed": receipt.replayed,
+    }
+
+
+@api_app.get("/v1/recognition/hypotheses/{hypothesis_id}")
+def get_recognition_hypothesis(
+    hypothesis_id: str,
+    user: AuthenticatedUser = Depends(get_user),
+) -> dict[str, Any]:
+    hypothesis_id = str(_recognition_uuid(hypothesis_id, "hypothesis_id"))
+    detail = get_recognition_hypothesis_detail(_get_db(), hypothesis_id=hypothesis_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="recognition hypothesis was not found")
+    _require_agent_role(user=user, agent_id=str(detail["agent_id"]), required_role="admin")
+    return detail
+
+
+@api_app.post("/v1/recognition/hypotheses/{hypothesis_id}/review")
+def review_recognition_hypothesis(
+    hypothesis_id: str,
+    body: RecognitionReviewIn,
+    user: AuthenticatedUser = Depends(get_user),
+) -> dict[str, Any]:
+    hypothesis_id = str(_recognition_uuid(hypothesis_id, "hypothesis_id"))
+    try:
+        decision = ReviewDecision(body.decision)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="decision must be accepted, rejected, or no_match") from exc
+    if body.no_match_retention_until is not None and body.no_match_retention_until.tzinfo is None:
+        raise HTTPException(status_code=400, detail="no_match_retention_until must be timezone-aware")
+    if decision == ReviewDecision.NO_MATCH:
+        if body.no_match_retention_until is None:
+            raise HTTPException(status_code=400, detail="no_match requires an explicit retention deadline")
+        if body.no_match_retention_until <= datetime.now(timezone.utc):
+            raise HTTPException(status_code=400, detail="no_match retention deadline must be in the future")
+    elif body.no_match_retention_until is not None:
+        raise HTTPException(status_code=400, detail="no_match_retention_until is only valid for no_match decisions")
+
+    existing = get_recognition_hypothesis_detail(_get_db(), hypothesis_id=hypothesis_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="recognition hypothesis was not found")
+    agent_id = str(existing["agent_id"])
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+    repository: RdsRecognitionRepository | None = None
+    try:
+        repository = RdsRecognitionRepository(_get_db(), agent_id=agent_id)
+        hypothesis = repository.get_hypothesis(hypothesis_id)
+        observation = repository.get_observation(hypothesis.observation_id)
+        consent = None
+        if decision == ReviewDecision.ACCEPTED and hypothesis.candidate_person_id:
+            consent = repository.load_active_consent(
+                observation=observation,
+                person_id=hypothesis.candidate_person_id,
+            )
+        repository.configure_review(
+            reviewer_auth_subject=user.cognito_sub,
+            no_match_retention_until=body.no_match_retention_until,
+        )
+        application = RecognitionLifecycleService(repository).review(
+            hypothesis_id=hypothesis_id,
+            decision=decision,
+            reviewer=AuthenticatedReviewer(actor_id=user.user_id, actor_type=ActorType.USER),
+            reason=body.reason,
+            consent=consent,
+            create_biometric_projection=body.create_biometric_projection,
+            assert_presence=body.assert_presence,
+        )
+        repository.commit()
+    except Exception as exc:
+        if repository is not None:
+            repository.rollback()
+        _raise_recognition_http_error(exc)
+        raise AssertionError("unreachable")
+    return {
+        "hypothesis_id": application.hypothesis.hypothesis_id,
+        "observation_id": application.observation.observation_id,
+        "decision_id": application.decision.decision_id,
+        "decision": application.decision.decision.value,
+        "consent_id": application.decision.consent_id,
+        "reviewer_actor_type": application.decision.reviewer.actor_type.value,
+        "reviewer_actor_id": application.decision.reviewer.actor_id,
+        "projection_id": application.projection.projection_id if application.projection else None,
+        "presence_assertion_id": (application.presence.presence_assertion_id if application.presence else None),
+    }
 
 
 @api_app.post("/v1/artifacts/presign")
