@@ -3960,7 +3960,6 @@ def get_agent(request: Request) -> AuthenticatedAgent:
 # Standard scopes for agent-to-agent delegation
 AGENT_SCOPES = {
     "read_memories": "Read memories from the issuing agent",
-    "write_memories": "Create memories for the issuing agent",
     "read_events": "Read events from the issuing agent",
     "write_events": "Create events for the issuing agent",
     "read_spaces": "List spaces belonging to the issuing agent",
@@ -4146,213 +4145,60 @@ def delegate_write_event(
     _check_agent_space(agent, body.space_id)
 
     event_id = str(uuid.uuid4())
-
-    _get_db().execute(
-        """
-        INSERT INTO events (event_id, agent_id, space_id, person_id, type, payload)
-        VALUES (
-            :event_id::uuid,
-            :agent_id::uuid,
-            :space_id::uuid,
-            CASE WHEN :person_id IS NULL THEN NULL ELSE :person_id::uuid END,
-            :type,
-            :payload::jsonb
-        )
-        """,
-        {
-            "event_id": event_id,
-            "agent_id": agent.issuer_agent_id,
-            "space_id": body.space_id,
-            "person_id": body.person_id,
-            "type": body.type,
-            "payload": json.dumps(body.payload),
-        },
-    )
-
-    return {"event_id": event_id, "created": True}
-
-
-class DelegateMemoryIn(BaseModel):
-    """Request body for creating a memory via delegation."""
-
-    space_id: str | None = None
-    source_event_id: str | None = None
-    session_id: str | None = None
-    tier: str = "episodic"
-    content: str
-    participants: list[str] = Field(default_factory=list)
-    subject_person_id: str | None = None
-    tags: list[str] = Field(default_factory=list)
-    scene_context: str | None = None
-    modality: str = "text"
-    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
-    related_memory_ids: list[str] = Field(default_factory=list)
-
-
-@api_app.post("/v1/delegate/memories")
-def delegate_write_memory(
-    body: DelegateMemoryIn,
-    agent: AuthenticatedAgent = Depends(get_agent),
-) -> dict[str, Any]:
-    """Create a memory for the issuing agent (requires write_memories scope)."""
-    _require_agent_scope(agent, "write_memories")
-
-    if not body.space_id:
-        raise HTTPException(status_code=400, detail="space_id is required for memory evidence")
-    _check_agent_space(agent, body.space_id)
-    try:
-        memory_tier = normalize_memory_kind(body.tier)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    memory_id = str(uuid.uuid4())
-    memory_candidate_id = str(uuid.uuid4())
-    source_event_id = str(body.source_event_id or "").strip() or str(uuid.uuid4())
-    created_source_event = not bool(body.source_event_id)
-    embedding: str | None = None
-    if _cfg.openai_secret_arn:
-        try:
-            embed_model = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
-            vec = call_embeddings(
-                openai_secret_arn=_cfg.openai_secret_arn,
-                model=embed_model,
-                text=body.content,
-            )
-            embedding = "[" + ",".join(f"{x:.6f}" for x in vec) + "]"
-        except Exception as e:
-            logger.warning("Failed to generate delegate memory embedding (continuing): %s", e)
-
     db = _get_db()
     tx = db.begin()
     try:
-        if created_source_event:
-            db.execute(
-                """
-                INSERT INTO events(event_id, agent_id, space_id, device_id, type, payload, session_id)
-                VALUES(
-                    :event_id::uuid,
-                    :agent_id::uuid,
-                    :space_id::uuid,
-                    NULL,
-                    'memory.evidence',
-                    :payload::jsonb,
-                    NULLIF(CAST(:session_id AS text), '')::uuid
-                )
-                """,
-                {
-                    "event_id": source_event_id,
-                    "agent_id": agent.issuer_agent_id,
-                    "space_id": body.space_id,
-                    "payload": json.dumps(
-                        {
-                            "source": "delegate_memory_create_v1",
-                            "content_preview": body.content[:500],
-                            "token_id": agent.token_id,
-                        }
-                    ),
-                    "session_id": body.session_id,
-                },
-                transaction_id=tx,
-            )
         db.execute(
             """
-            INSERT INTO memory_candidates(memory_candidate_id, agent_id, source_event_id, space_id, session_id,
-                                          subject_person_id, tier, content, participants, confidence, lifecycle_state)
-            VALUES(
-                :memory_candidate_id::uuid,
+            INSERT INTO events (event_id, agent_id, space_id, person_id, type, payload)
+            VALUES (
+                :event_id::uuid,
                 :agent_id::uuid,
-                :source_event_id::uuid,
                 :space_id::uuid,
-                NULLIF(CAST(:session_id AS text), '')::uuid,
-                NULLIF(CAST(:subject_person_id AS text), '')::uuid,
-                CAST(:tier AS text),
-                CAST(:content AS text),
-                :participants::jsonb,
-                CAST(:confidence AS real),
-                'committed'
+                CASE WHEN :person_id IS NULL THEN NULL ELSE :person_id::uuid END,
+                :type,
+                :payload::jsonb
             )
             """,
             {
-                "memory_candidate_id": memory_candidate_id,
+                "event_id": event_id,
                 "agent_id": agent.issuer_agent_id,
-                "source_event_id": source_event_id,
                 "space_id": body.space_id,
-                "session_id": body.session_id,
-                "subject_person_id": body.subject_person_id,
-                "tier": memory_tier,
-                "content": body.content,
-                "participants": json.dumps(body.participants),
-                "confidence": body.confidence,
+                "person_id": body.person_id,
+                "type": body.type,
+                "payload": json.dumps(body.payload),
             },
             transaction_id=tx,
         )
-        db.execute(
-            """
-            INSERT INTO memories (memory_id, agent_id, space_id, tier, content, participants, provenance, embedding,
-                                  subject_person_id, tags, scene_context, modality, confidence, related_memory_ids,
-                                  memory_candidate_id, source_event_id, session_id, lifecycle_state, recall_explanation)
-            VALUES (
-                :memory_id::uuid,
-                :agent_id::uuid,
-                :space_id::uuid,
-                CAST(:tier AS text),
-                CAST(:content AS text),
-                :participants::jsonb,
-                :provenance::jsonb,
-                NULLIF(CAST(:embedding AS text), '')::vector,
-                NULLIF(CAST(:subject_person_id AS text), '')::uuid,
-                :tags::text[],
-                NULLIF(CAST(:scene_context AS text), ''),
-                CAST(:modality AS text),
-                CAST(:confidence AS real),
-                :related_memory_ids::uuid[],
-                :memory_candidate_id::uuid,
-                :source_event_id::uuid,
-                NULLIF(CAST(:session_id AS text), '')::uuid,
-                'committed',
-                :recall_explanation::jsonb
-            )
-            """,
-            {
-                "memory_id": memory_id,
-                "agent_id": agent.issuer_agent_id,
-                "space_id": body.space_id,
-                "tier": memory_tier,
-                "content": body.content,
-                "participants": json.dumps(body.participants),
-                "provenance": json.dumps({"source": "delegate_agent", "token_id": agent.token_id}),
-                "embedding": embedding,
-                "subject_person_id": body.subject_person_id,
-                "tags": "{" + ",".join(body.tags) + "}" if body.tags else "{}",
-                "scene_context": body.scene_context,
-                "modality": body.modality,
-                "confidence": body.confidence,
-                "related_memory_ids": "{" + ",".join(body.related_memory_ids) + "}"
-                if body.related_memory_ids
-                else "{}",
-                "memory_candidate_id": memory_candidate_id,
-                "source_event_id": source_event_id,
-                "session_id": body.session_id,
-                "recall_explanation": json.dumps(
-                    {
-                        "source": "delegate_agent",
-                        "token_id": agent.token_id,
-                        "source_event_id": source_event_id,
-                        "memory_candidate_id": memory_candidate_id,
-                        "commit_policy": "delegate_memory_create_v1",
-                    }
-                ),
-            },
+        event_text = body.payload.get("text")
+        enqueue_semantic_record(
+            db,
             transaction_id=tx,
+            agent_id=agent.issuer_agent_id,
+            source_table="events",
+            source_id=event_id,
+            target_template_code=(
+                TEMPLATE_CODES["event_transcript"]
+                if body.type == "transcript_chunk"
+                else TEMPLATE_CODES["event_sensor"]
+            ),
+            name=f"event:{event_id}",
+            lifecycle_state="recorded",
+            properties={
+                "agent_id": agent.issuer_agent_id,
+                "event_id": event_id,
+                "event_type": body.type,
+                "space_id": body.space_id,
+                "person_id": body.person_id or "",
+                "interacting_agent_id": agent.target_agent_id,
+                "delegation_token_id": agent.token_id,
+                "text": event_text if isinstance(event_text, str) else "",
+            },
         )
         db.commit(tx)
-    except Exception:
+    except Exception as exc:
         db.rollback(tx)
-        raise
+        logger.error("Failed to persist delegated event and semantic outbox record: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to persist delegated event") from exc
 
-    return {
-        "memory_id": memory_id,
-        "memory_candidate_id": memory_candidate_id,
-        "source_event_id": source_event_id,
-        "created": True,
-    }
+    return {"event_id": event_id, "created": True}

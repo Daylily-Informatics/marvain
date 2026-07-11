@@ -172,6 +172,7 @@ class TestAgentDelegation(unittest.TestCase):
     def setUp(self) -> None:
         self.mock_db = mock.Mock()
         self.mod._db = self.mock_db
+        self.mod.enqueue_semantic_record = mock.Mock()
 
     def test_list_scopes_no_auth_required(self) -> None:
         """Listing available scopes doesn't require auth."""
@@ -279,6 +280,28 @@ class TestAgentDelegation(unittest.TestCase):
         body = r.json()
         self.assertTrue(body["created"])
         self.assertIn("event_id", body)
+        self.mock_db.commit.assert_called_once_with(self.mock_db.begin.return_value)
+        self.mod.enqueue_semantic_record.assert_called_once()
+        self.assertEqual(self.mod.enqueue_semantic_record.call_args.kwargs["source_table"], "events")
+
+    def test_delegate_cannot_write_agent_owned_memory_directly(self) -> None:
+        self.mod.authenticate_agent_token = mock.Mock(
+            return_value=self.AuthenticatedAgent(
+                token_id="t1",
+                issuer_agent_id="agent-1",
+                target_agent_id="agent-2",
+                scopes=["write_events"],
+                allowed_spaces=["s1"],
+            )
+        )
+
+        response = self.client.post(
+            "/v1/delegate/memories",
+            headers={"Authorization": "Bearer agent-token"},
+            json={"space_id": "s1", "content": "attempted direct memory"},
+        )
+
+        self.assertEqual(response.status_code, 405)
 
 
 if __name__ == "__main__":
