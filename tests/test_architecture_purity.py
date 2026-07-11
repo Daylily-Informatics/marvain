@@ -29,3 +29,24 @@ def test_tapdb_schema_is_not_copied_into_marvain() -> None:
 
 def test_obsolete_archive_tree_is_absent() -> None:
     assert not (REPO_ROOT / "archive").exists()
+
+
+def test_active_runtime_has_no_external_observability_contract() -> None:
+    forbidden = "kah" + "lo"
+    roots = ("apps", "functions", "layers", "marvain_cli", "scripts")
+    offenders: list[str] = []
+    for root_name in roots:
+        for path in (REPO_ROOT / root_name).rglob("*"):
+            if not path.is_file() or path.suffix not in {".py", ".html", ".js", ".css", ".yaml", ".yml"}:
+                continue
+            if forbidden in path.read_text(encoding="utf-8", errors="ignore").lower():
+                offenders.append(str(path.relative_to(REPO_ROOT)))
+
+    assert offenders == []
+
+
+def test_session_secret_has_no_generated_runtime_substitute() -> None:
+    api_source = (REPO_ROOT / "functions" / "hub_api" / "api_app.py").read_text(encoding="utf-8")
+
+    assert "using random key" not in api_source
+    assert "token_urlsafe(32)" not in api_source
