@@ -104,7 +104,7 @@ Capabilities at 100/SUCCESS: **0/85**.
 | `OPS-08` | API/GUI route coverage measurement | 35% | 49% | `OPEN` | `A1` | 6 |
 | `OPS-09` | Playwright workflow coverage | 40% | 49% | `OPEN` | `A10` | 6 |
 | `OPS-10` | GUI smoke guide | 34% | 49% | `OPEN` | `A10` | 6 |
-| `OPS-11` | Deployed v1-dev smoke | 20% | 49% | `OPEN` | `A2` | 8 |
+| `OPS-11` | Deployed v1-dev smoke | 20% | 49% | `IN_PROGRESS` | `A2` | 8 |
 | `OPS-12` | Fresh clean-room deployment | 10% | 49% | `OPEN` | `A2` | 8 |
 | `OPS-13` | Worker/service supervision | 27% | 49% | `OPEN` | `A2` | 4 |
 | `OPS-14` | Failure injection and recovery | 32% | 49% | `OPEN` | `A10` | 8 |
