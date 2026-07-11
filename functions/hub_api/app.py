@@ -98,6 +98,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
@@ -213,6 +214,41 @@ app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 # Setup Jinja2 templates
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+
+
+def _browser_error_response(request: Request) -> bool:
+    if request.url.path.startswith(("/v1/", "/api/")):
+        return False
+    return "text/html" in str(request.headers.get("accept") or "").lower()
+
+
+@app.exception_handler(StarletteHTTPException)
+async def marvain_http_exception_handler(request: Request, exc: StarletteHTTPException) -> Response:
+    if exc.status_code == 404 and _browser_error_response(request):
+        return templates.TemplateResponse(
+            request=request,
+            name="404.html",
+            context={},
+            status_code=404,
+        )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+@app.exception_handler(Exception)
+async def marvain_unhandled_exception_handler(request: Request, exc: Exception) -> Response:
+    request_id = str(uuid.uuid4())
+    logger.exception("Unhandled GUI/API error request_id=%s path=%s", request_id, request.url.path, exc_info=exc)
+    if _browser_error_response(request):
+        return templates.TemplateResponse(
+            request=request,
+            name="500.html",
+            context={"request_id": request_id},
+            status_code=500,
+        )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error", "request_id": request_id},
+    )
 
 
 @dataclass(frozen=True)

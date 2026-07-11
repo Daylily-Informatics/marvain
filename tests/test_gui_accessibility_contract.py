@@ -83,6 +83,14 @@ def test_branded_error_templates_are_present_and_recoverable() -> None:
     assert "Service Error - Marvain" in server_error
     assert "Retry" in server_error
     assert "Observability" in server_error
+    assert "does not assert whether upstream work committed" in server_error
+
+    app_source = (ROOT / "functions" / "hub_api" / "app.py").read_text(encoding="utf-8")
+    assert "marvain_http_exception_handler" in app_source
+    assert "marvain_unhandled_exception_handler" in app_source
+    assert 'name="404.html"' in app_source
+    assert 'name="500.html"' in app_source
+    assert 'request.url.path.startswith(("/v1/", "/api/"))' in app_source
 
 
 def test_gui_does_not_offer_permanent_delete_controls() -> None:

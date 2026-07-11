@@ -6,7 +6,7 @@
 <section class="error-page" aria-labelledby="error-title">
   <p class="error-code" aria-hidden="true">500</p>
   <h1 id="error-title">Marvain Could Not Complete This Request</h1>
-  <p class="text-muted">The request failed without changing the intended workflow state.</p>
+  <p class="text-muted">Review observability before retrying; this page does not assert whether upstream work committed.</p>
   {% if request_id %}
   <p class="error-reference">Reference <code>{{ request_id }}</code></p>
   {% endif %}
