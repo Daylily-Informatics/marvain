@@ -221,16 +221,77 @@ ALTER TABLE actions ADD COLUMN IF NOT EXISTS location_id uuid REFERENCES locatio
 
 CREATE TABLE IF NOT EXISTS semantic_sync_status (
   semantic_sync_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
+  source_system text NOT NULL,
   source_table text NOT NULL,
   source_id uuid NOT NULL,
+  source_external_reference jsonb NOT NULL,
   target_template_code text NOT NULL,
+  idempotency_key uuid NOT NULL,
   tapdb_euid text,
   status text NOT NULL DEFAULT 'pending',
   attempts int NOT NULL DEFAULT 0,
   last_error text,
+  last_attempt_at timestamptz,
+  written_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT semantic_sync_status_status_chk CHECK (status IN ('pending', 'written', 'failed', 'dead_lettered'))
+  CONSTRAINT semantic_sync_status_status_chk CHECK (status IN ('pending', 'written', 'failed', 'dead_lettered')),
+  CONSTRAINT semantic_sync_status_attempts_chk CHECK (attempts >= 0),
+  CONSTRAINT semantic_sync_status_source_table_chk CHECK (source_table ~ '^[a-z][a-z0-9_]*$'),
+  CONSTRAINT semantic_sync_status_source_reference_chk CHECK (
+    source_external_reference ?& ARRAY['system', 'foreign_uid', 'agent_id', 'source_table', 'source_id']
+    AND source_external_reference ->> 'system' = source_system
+    AND source_external_reference ->> 'agent_id' = agent_id::text
+    AND source_external_reference ->> 'source_table' = source_table
+    AND source_external_reference ->> 'source_id' = source_id::text
+    AND source_external_reference ->> 'foreign_uid' =
+      'agent/' || agent_id::text || '/' || source_table || '/' || source_id::text
+  ),
+  CONSTRAINT semantic_sync_status_source_uniq UNIQUE (
+    agent_id,
+    source_system,
+    source_table,
+    source_id,
+    target_template_code
+  ),
+  CONSTRAINT semantic_sync_status_idempotency_uniq UNIQUE (agent_id, idempotency_key)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS semantic_sync_status_source_idx ON semantic_sync_status(source_table, source_id, target_template_code);
+CREATE INDEX IF NOT EXISTS semantic_sync_status_agent_state_idx
+  ON semantic_sync_status(agent_id, status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS semantic_outbox (
+  semantic_outbox_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  semantic_sync_id uuid NOT NULL REFERENCES semantic_sync_status(semantic_sync_id) ON DELETE RESTRICT,
+  agent_id uuid NOT NULL REFERENCES agents(agent_id) ON DELETE RESTRICT,
+  idempotency_key uuid NOT NULL,
+  payload jsonb NOT NULL,
+  payload_sha256 text NOT NULL,
+  status text NOT NULL DEFAULT 'pending',
+  attempt_count int NOT NULL DEFAULT 0,
+  next_attempt_at timestamptz NOT NULL DEFAULT now(),
+  claim_token uuid,
+  claimed_by text,
+  claimed_at timestamptz,
+  lease_expires_at timestamptz,
+  published_at timestamptz,
+  dead_lettered_at timestamptz,
+  last_error text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT semantic_outbox_status_chk CHECK (
+    status IN ('pending', 'dispatching', 'published', 'failed', 'dead_lettered')
+  ),
+  CONSTRAINT semantic_outbox_attempt_count_chk CHECK (attempt_count >= 0),
+  CONSTRAINT semantic_outbox_payload_sha256_chk CHECK (payload_sha256 ~ '^[0-9a-f]{64}$'),
+  CONSTRAINT semantic_outbox_idempotency_uniq UNIQUE (agent_id, idempotency_key),
+  CONSTRAINT semantic_outbox_sync_uniq UNIQUE (semantic_sync_id)
+);
+
+CREATE INDEX IF NOT EXISTS semantic_outbox_dispatch_idx
+  ON semantic_outbox(status, next_attempt_at, created_at)
+  WHERE status IN ('pending', 'failed');
+
+CREATE INDEX IF NOT EXISTS semantic_outbox_agent_state_idx
+  ON semantic_outbox(agent_id, status, updated_at DESC);
