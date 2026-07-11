@@ -32,6 +32,8 @@ def _auth_string_list(value: Any, *, field_name: str, state_name: str) -> list[s
     for item in value:
         if not isinstance(item, str) or not item or item != item.strip():
             raise AuthStateError(f"Malformed {state_name}: {field_name} entries must be non-empty strings")
+        if item == "*":
+            raise AuthStateError(f"Malformed {state_name}: {field_name} must contain explicit values")
         if item in seen:
             raise AuthStateError(f"Malformed {state_name}: {field_name} entries must be unique")
         seen.add(item)
@@ -251,23 +253,14 @@ def require_scopes(device: AuthenticatedDevice, required: list[str]) -> None:
 
 
 def has_scope(device: AuthenticatedDevice, scope: str) -> bool:
-    """Check if a device has a specific scope.
-
-    Supports wildcard matching: '*' in device.scopes grants all scopes.
-    """
+    """Check if a device has a specific explicitly granted scope."""
     granted = _auth_string_list(device.scopes, field_name="scopes", state_name="authenticated device")
     required_scope = _input_text(scope, field_name="scope")
-    if "*" in granted:
-        return True
     return required_scope in granted
 
 
 def require_scope(device: AuthenticatedDevice, scope: str) -> None:
-    """Require that a device has a specific scope.
-
-    Raises HTTPException with 403 if the scope is missing.
-    Supports wildcard matching: '*' in device.scopes grants all scopes.
-    """
+    """Require that a device has a specific explicitly granted scope."""
     if not has_scope(device, scope):
         from fastapi import HTTPException
 

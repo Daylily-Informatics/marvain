@@ -71,6 +71,21 @@ def test_route_scope_check_is_explicit() -> None:
     assert exc_info.value.code == "target_device_missing_scopes"
 
 
+@pytest.mark.parametrize("scopes_json", ['["*"]', '["device:command", "device:command"]'])
+def test_route_rejects_wildcard_or_duplicate_persisted_scopes(scopes_json: str) -> None:
+    row = {
+        **_route().receipt(),
+        "space_location_id": "location-1",
+        "scopes_json": scopes_json,
+        "capabilities_json": '{"kind":"satellite"}',
+    }
+
+    with pytest.raises(DeviceRoutingError) as exc_info:
+        DeviceRoute.from_row(row)
+
+    assert exc_info.value.code == "device_route_invalid"
+
+
 def test_two_devices_in_two_locations_select_only_intended_route() -> None:
     items = [
         {

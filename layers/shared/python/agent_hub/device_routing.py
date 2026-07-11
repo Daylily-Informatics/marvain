@@ -27,9 +27,23 @@ def _json_list(value: Any, field_name: str) -> tuple[str, ...]:
             value = json.loads(value)
         except json.JSONDecodeError as exc:
             raise DeviceRoutingError("device_route_invalid", detail=f"{field_name} is invalid JSON") from exc
-    if not isinstance(value, list) or any(not isinstance(item, str) or not item.strip() for item in value):
+    if not isinstance(value, list):
         raise DeviceRoutingError("device_route_invalid", detail=f"{field_name} must be a string list")
-    return tuple(dict.fromkeys(item.strip() for item in value))
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str) or not item or item != item.strip():
+            raise DeviceRoutingError(
+                "device_route_invalid",
+                detail=f"{field_name} entries must be non-empty strings without surrounding whitespace",
+            )
+        if item == "*":
+            raise DeviceRoutingError("device_route_invalid", detail=f"{field_name} must contain explicit values")
+        if item in seen:
+            raise DeviceRoutingError("device_route_invalid", detail=f"{field_name} entries must be unique")
+        seen.add(item)
+        normalized.append(item)
+    return tuple(normalized)
 
 
 def _json_object(value: Any, field_name: str) -> dict[str, Any]:
@@ -124,7 +138,7 @@ def load_device_route(db: RdsData, *, device_id: str, expected_agent_id: str | N
 
 def require_route_scopes(route: DeviceRoute, required_scopes: list[str] | tuple[str, ...]) -> None:
     normalized = tuple(dict.fromkeys(_required_text(scope, "required_scope") for scope in required_scopes))
-    missing = [scope for scope in normalized if scope not in route.scopes and "*" not in route.scopes]
+    missing = [scope for scope in normalized if scope not in route.scopes]
     if missing:
         raise DeviceRoutingError(
             "target_device_missing_scopes",
