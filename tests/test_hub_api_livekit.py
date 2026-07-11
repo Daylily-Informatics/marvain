@@ -28,6 +28,7 @@ def _load_hub_api_app_module():
     os.environ.setdefault("DB_SECRET_ARN", "arn:aws:secretsmanager:us-west-2:123:secret:dummy")
     os.environ.setdefault("DB_NAME", "dummy")
     os.environ.setdefault("STAGE", "test")
+    os.environ.setdefault("SESSION_SECRET_KEY", "test-session-secret")
 
     api_app_py = repo_root / "functions" / "hub_api" / "api_app.py"
     spec = importlib.util.spec_from_file_location("hub_api_api_app_for_tests_livekit", api_app_py)

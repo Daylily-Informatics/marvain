@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -108,6 +109,7 @@ def test_openai_response_text_extractor_handles_output_content() -> None:
 
 def test_context_block_includes_current_session_visual_observation_text() -> None:
     worker = _load_agent_worker_module()
+    captured_at = datetime.now(timezone.utc).isoformat()
 
     context = worker._build_context_block(
         [
@@ -117,6 +119,7 @@ def test_context_block_includes_current_session_visual_observation_text() -> Non
                 "payload": {
                     "description": "A user is standing by the kitchen counter.",
                     "artifact_key": "recognition/frame.jpg",
+                    "captured_at": captured_at,
                 },
             }
         ],
@@ -145,3 +148,51 @@ def test_context_block_ignores_visual_observation_from_prior_session() -> None:
 
     assert "Current Session Visual Observations" not in context
     assert "laptop screen" not in context
+
+
+def test_context_block_ignores_expired_visual_observation() -> None:
+    worker = _load_agent_worker_module()
+    now = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
+
+    context = worker._build_current_visual_observation_block(
+        [
+            {
+                "type": "visual.observation",
+                "session_id": "session-1",
+                "payload": {
+                    "description": "A stale frame shows a laptop.",
+                    "captured_at": (now - timedelta(seconds=30)).isoformat(),
+                },
+            }
+        ],
+        current_session_id="session-1",
+        now=now,
+    )
+
+    assert context == ""
+
+
+def test_context_block_stops_at_latest_camera_invalidation() -> None:
+    worker = _load_agent_worker_module()
+    now = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
+
+    context = worker._build_current_visual_observation_block(
+        [
+            {
+                "type": "visual.observation_invalidated",
+                "payload": {"session_id": "session-1", "reason": "camera_off"},
+            },
+            {
+                "type": "visual.observation",
+                "payload": {
+                    "session_id": "session-1",
+                    "description": "A frame captured before camera-off.",
+                    "captured_at": (now - timedelta(seconds=1)).isoformat(),
+                },
+            },
+        ],
+        current_session_id="session-1",
+        now=now,
+    )
+
+    assert context == ""

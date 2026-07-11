@@ -15,12 +15,20 @@ Based on LiveKit's Voice AI quickstart (realtime model).
 from __future__ import annotations
 
 import asyncio
+import inspect
+import json
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 import requests
+from agent_hub.livekit_tokens import (
+    LiveKitMessageValidationError,
+    validate_livekit_message_freshness,
+    validate_livekit_sender_session,
+)
 from agent_hub.memory_classifier import MemoryClassifierUnavailable, classify_memory_event
 from agent_hub.personas import DEFAULT_AGENT_PERSONA_NAME
 from dotenv import load_dotenv
@@ -134,6 +142,211 @@ GENERIC_MEMORY_WEIGHT = 0.05
 HUB_API_BASE = os.getenv("HUB_API_BASE", "").rstrip("/")
 HUB_DEVICE_TOKEN = os.getenv("HUB_DEVICE_TOKEN", "")
 
+EVENT_CONTRACT_VERSION = 1
+SESSION_STATES = frozenset({"open", "paused", "closed", "failed"})
+SESSION_STATE_TRANSITIONS = {
+    "open": frozenset({"paused", "closed", "failed"}),
+    "paused": frozenset({"open", "closed", "failed"}),
+    "closed": frozenset(),
+    "failed": frozenset(),
+}
+VISUAL_OBSERVATION_MAX_AGE_SECONDS = 15.0
+
+
+class WorkerContractError(RuntimeError):
+    """Raised when required worker/session configuration is absent or invalid."""
+
+
+class HubWriteError(RuntimeError):
+    """Raised when a Hub write was not durably accepted."""
+
+    def __init__(self, operation: str, message: str) -> None:
+        super().__init__(f"{operation}: {message}")
+        self.operation = operation
+
+
+@dataclass(frozen=True)
+class DispatchMetadata:
+    space_id: str
+    agent_id: str
+    session_id: str
+    room_session_id: str
+    participant_identity: str
+
+
+@dataclass
+class SessionStateMachine:
+    session_id: str
+    state: str = "open"
+
+    def __post_init__(self) -> None:
+        self.session_id = _require_runtime_text(self.session_id, "session_id")
+        if self.state not in SESSION_STATES:
+            raise WorkerContractError(f"invalid initial session state: {self.state}")
+
+    def transition_payload(
+        self,
+        *,
+        to_state: str,
+        reason: str,
+        room_name: str,
+        worker_version: str,
+        occurred_at: datetime | None = None,
+    ) -> dict[str, object]:
+        normalized_to_state = str(to_state or "").strip().lower()
+        if normalized_to_state not in SESSION_STATES:
+            raise WorkerContractError(f"invalid target session state: {normalized_to_state}")
+        if normalized_to_state not in SESSION_STATE_TRANSITIONS[self.state]:
+            raise WorkerContractError(f"invalid session transition: {self.state} -> {normalized_to_state}")
+        return {
+            "contract_version": EVENT_CONTRACT_VERSION,
+            "session_id": self.session_id,
+            "from_state": self.state,
+            "to_state": normalized_to_state,
+            "reason": _require_runtime_text(reason, "transition reason"),
+            "room_name": _require_runtime_text(room_name, "room_name"),
+            "worker_version": _require_runtime_text(worker_version, "worker_version"),
+            "occurred_at": _isoformat_utc(occurred_at),
+        }
+
+    def apply(self, to_state: str) -> None:
+        normalized_to_state = str(to_state or "").strip().lower()
+        if normalized_to_state not in SESSION_STATE_TRANSITIONS[self.state]:
+            raise WorkerContractError(f"invalid session transition: {self.state} -> {normalized_to_state}")
+        self.state = normalized_to_state
+
+
+@dataclass(frozen=True)
+class CurrentVisualObservation:
+    description: str
+    sender_identity: str
+    session_id: str
+    captured_at: datetime
+
+
+def _require_runtime_text(value: object, field_name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise WorkerContractError(f"{field_name} is required")
+    return text
+
+
+def _isoformat_utc(value: datetime | None = None) -> str:
+    timestamp = value or datetime.now(timezone.utc)
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        raise WorkerContractError("event timestamp must include a timezone")
+    return timestamp.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _require_worker_version() -> str:
+    return _require_runtime_text(os.getenv("MARVAIN_WORKER_VERSION"), "MARVAIN_WORKER_VERSION")
+
+
+def _parse_dispatch_metadata(raw_metadata: object) -> DispatchMetadata:
+    try:
+        payload = json.loads(str(raw_metadata or ""))
+    except (TypeError, ValueError) as exc:
+        raise WorkerContractError("LiveKit dispatch metadata must be valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise WorkerContractError("LiveKit dispatch metadata must be a JSON object")
+    return DispatchMetadata(
+        space_id=_require_runtime_text(payload.get("space_id"), "dispatch space_id"),
+        agent_id=_require_runtime_text(payload.get("agent_id"), "dispatch agent_id"),
+        session_id=_require_runtime_text(payload.get("session_id"), "dispatch session_id"),
+        room_session_id=_require_runtime_text(payload.get("room_session_id"), "dispatch room_session_id"),
+        participant_identity=_require_runtime_text(
+            payload.get("participant_identity"), "dispatch participant_identity"
+        ),
+    )
+
+
+def _fresh_visual_observations(
+    observations: list[CurrentVisualObservation],
+    *,
+    current_session_id: str,
+    now: datetime | None = None,
+) -> list[CurrentVisualObservation]:
+    reference = now or datetime.now(timezone.utc)
+    fresh = []
+    for observation in observations:
+        if observation.session_id != current_session_id:
+            continue
+        age_seconds = (reference - observation.captured_at).total_seconds()
+        if 0 <= age_seconds <= VISUAL_OBSERVATION_MAX_AGE_SECONDS:
+            fresh.append(observation)
+    return fresh
+
+
+def _invalidate_visual_observations(
+    observations: list[CurrentVisualObservation], *, sender_identity: str | None = None
+) -> int:
+    before = len(observations)
+    if sender_identity is None:
+        observations.clear()
+    else:
+        observations[:] = [item for item in observations if item.sender_identity != sender_identity]
+    return before - len(observations)
+
+
+def build_worker_health_payload(
+    *,
+    worker_version: str,
+    space_id: str,
+    session_id: str,
+    room_name: str,
+    state: str,
+    observed_at: datetime | None = None,
+) -> dict[str, object]:
+    if state not in {"starting", "ready", "closing", "failed"}:
+        raise WorkerContractError(f"invalid worker health state: {state}")
+    return {
+        "type": "worker_health",
+        "contract_version": EVENT_CONTRACT_VERSION,
+        "ok": state in {"starting", "ready", "closing"},
+        "service": "marvain-agent-worker",
+        "worker_version": _require_runtime_text(worker_version, "worker_version"),
+        "agent_name": AGENT_NAME,
+        "space_id": _require_runtime_text(space_id, "space_id"),
+        "session_id": _require_runtime_text(session_id, "session_id"),
+        "room_name": _require_runtime_text(room_name, "room_name"),
+        "state": state,
+        "observed_at": _isoformat_utc(observed_at),
+    }
+
+
+def build_worker_error_payload(
+    *,
+    worker_version: str,
+    space_id: str,
+    session_id: str,
+    room_name: str,
+    operation: str,
+    code: str,
+    error: BaseException,
+    retryable: bool,
+    details: dict[str, object] | None = None,
+    occurred_at: datetime | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "type": "worker_error",
+        "contract_version": EVENT_CONTRACT_VERSION,
+        "severity": "error",
+        "service": "marvain-agent-worker",
+        "worker_version": _require_runtime_text(worker_version, "worker_version"),
+        "space_id": _require_runtime_text(space_id, "space_id"),
+        "session_id": _require_runtime_text(session_id, "session_id"),
+        "room_name": _require_runtime_text(room_name, "room_name"),
+        "operation": _require_runtime_text(operation, "operation"),
+        "code": _require_runtime_text(code, "error code"),
+        "message": str(error)[:500],
+        "exception_type": error.__class__.__name__,
+        "retryable": bool(retryable),
+        "occurred_at": _isoformat_utc(occurred_at),
+    }
+    if details:
+        payload["details"] = details
+    return payload
+
 
 def hub_ingest_transcript(
     *,
@@ -143,7 +356,7 @@ def hub_ingest_transcript(
     participant_identity: str | None = None,
     input_modality: str = "voice",
     session_id: str | None = None,
-) -> str | None:
+) -> str:
     """Send a transcript chunk to the Hub for persistence.
 
     Args:
@@ -153,39 +366,21 @@ def hub_ingest_transcript(
         participant_identity: The LiveKit participant identity
         input_modality: Either "voice" or "text"
     """
-    hub_api_base = str(os.getenv("HUB_API_BASE") or HUB_API_BASE or "").rstrip("/")
-    hub_device_token = str(os.getenv("HUB_DEVICE_TOKEN") or HUB_DEVICE_TOKEN or "").strip()
-    if not hub_api_base or not hub_device_token or not space_id:
-        logger.debug("Skipping transcript ingest: missing HUB_API_BASE, HUB_DEVICE_TOKEN, or space_id")
-        return None
-
-    try:
-        resp = requests.post(
-            f"{hub_api_base}/v1/events",
-            headers={"Authorization": f"Bearer {hub_device_token}"},
-            json={
-                "space_id": space_id,
-                "type": "transcript_chunk",
-                "payload": {
-                    "text": text,
-                    "role": role,
-                    "participant_identity": participant_identity,
-                    "source": "livekit_agent_worker",
-                    "input_modality": input_modality,
-                },
-                "session_id": session_id,
-            },
-            timeout=3,
-        )
-        if resp.ok:
-            logger.debug(f"Ingested transcript ({role}): {text[:50]}...")
-            return str(resp.json().get("event_id") or "").strip() or None
-        else:
-            logger.warning("Failed to ingest transcript: status=%s body=%s", resp.status_code, resp.text[:300])
-    except Exception as e:
-        # Don't crash the realtime loop
-        logger.warning(f"Failed to ingest transcript: {e}")
-    return None
+    event_id = hub_ingest_event(
+        space_id=space_id,
+        event_type="transcript_chunk",
+        payload={
+            "text": text,
+            "role": role,
+            "participant_identity": participant_identity,
+            "source": "livekit_agent_worker",
+            "input_modality": input_modality,
+            "session_id": session_id,
+        },
+        session_id=session_id,
+    )
+    logger.debug("Ingested transcript (%s): %s...", role, text[:50])
+    return event_id
 
 
 def hub_create_memory(
@@ -196,7 +391,7 @@ def hub_create_memory(
     metadata: dict | None = None,
     source_event_id: str,
     session_id: str | None = None,
-) -> None:
+) -> str | None:
     """Create a memory in the Hub's memory system.
 
     Args:
@@ -205,32 +400,20 @@ def hub_create_memory(
         tier: Memory tier (episodic, semantic, procedural)
         metadata: Additional metadata (input_modality, role, room_name, etc.)
     """
-    hub_api_base = str(os.getenv("HUB_API_BASE") or HUB_API_BASE or "").rstrip("/")
-    hub_device_token = str(os.getenv("HUB_DEVICE_TOKEN") or HUB_DEVICE_TOKEN or "").strip()
-    if not hub_api_base or not hub_device_token or not space_id:
-        logger.debug("Skipping memory creation: missing HUB_API_BASE, HUB_DEVICE_TOKEN, or space_id")
-        return
-
-    try:
-        resp = requests.post(
-            f"{hub_api_base}/v1/memories",
-            headers={"Authorization": f"Bearer {hub_device_token}"},
-            json={
-                "space_id": space_id,
-                "tier": tier,
-                "content": content,
-                "metadata": metadata or {},
-                "source_event_id": source_event_id,
-                "session_id": session_id,
-            },
-            timeout=3,
-        )
-        if resp.ok:
-            logger.debug(f"Created memory ({tier}): {content[:50]}...")
-        else:
-            logger.warning("Failed to create memory: status=%s body=%s", resp.status_code, resp.text[:300])
-    except Exception as e:
-        logger.warning(f"Failed to create memory: {e}")
+    body = _post_hub_json(
+        path="/v1/memories",
+        operation="memory.create",
+        payload={
+            "space_id": _require_runtime_text(space_id, "space_id"),
+            "tier": tier,
+            "content": content,
+            "metadata": metadata or {},
+            "source_event_id": _require_runtime_text(source_event_id, "source_event_id"),
+            "session_id": session_id,
+        },
+    )
+    logger.debug("Created memory (%s): %s...", tier, content[:50])
+    return str(body.get("memory_id") or "").strip() or None
 
 
 def classify_memory_for_capture(
@@ -240,6 +423,10 @@ def classify_memory_for_capture(
     source_event_id: str,
     actor_type: str,
     source: str,
+    space_id: str,
+    session_id: str,
+    room_name: str,
+    worker_version: str,
     interacting_agent_id: str | None = None,
 ) -> list:
     """Classify auto-captured memory through the configured provider."""
@@ -254,8 +441,53 @@ def classify_memory_for_capture(
             interacting_agent_id=interacting_agent_id,
         )
     except MemoryClassifierUnavailable as exc:
-        logger.error("Memory auto-capture classification unavailable: %s", exc)
+        error_event_id = hub_record_worker_error(
+            worker_version=worker_version,
+            space_id=space_id,
+            session_id=session_id,
+            room_name=room_name,
+            operation="memory.classify",
+            code="memory_classifier_unavailable",
+            error=exc,
+            retryable=True,
+            details={"classifier_failure": exc.failure.as_record()},
+        )
+        logger.error(
+            "Memory auto-capture classification unavailable; worker_error_event_id=%s: %s",
+            error_event_id,
+            exc,
+        )
         return []
+
+
+def _hub_connection() -> tuple[str, str]:
+    hub_api_base = str(os.getenv("HUB_API_BASE") or HUB_API_BASE or "").rstrip("/")
+    hub_device_token = str(os.getenv("HUB_DEVICE_TOKEN") or HUB_DEVICE_TOKEN or "").strip()
+    if not hub_api_base or not hub_device_token:
+        raise HubWriteError("hub.configure", "HUB_API_BASE and HUB_DEVICE_TOKEN are required")
+    return hub_api_base, hub_device_token
+
+
+def _post_hub_json(*, path: str, operation: str, payload: dict[str, object]) -> dict[str, object]:
+    hub_api_base, hub_device_token = _hub_connection()
+    try:
+        response = requests.post(
+            f"{hub_api_base}{path}",
+            headers={"Authorization": f"Bearer {hub_device_token}"},
+            json=payload,
+            timeout=3,
+        )
+    except Exception as exc:
+        raise HubWriteError(operation, f"request failed with {exc.__class__.__name__}: {exc}") from exc
+    if not response.ok:
+        raise HubWriteError(operation, f"status={response.status_code} body={response.text[:300]}")
+    try:
+        body = response.json()
+    except Exception as exc:
+        raise HubWriteError(operation, "response body was not valid JSON") from exc
+    if not isinstance(body, dict):
+        raise HubWriteError(operation, "response body must be a JSON object")
+    return body
 
 
 def hub_ingest_event(
@@ -264,31 +496,84 @@ def hub_ingest_event(
     event_type: str,
     payload: dict,
     session_id: str | None = None,
-) -> str | None:
+) -> str:
     """Persist a non-transcript session event to the Hub."""
-    hub_api_base = str(os.getenv("HUB_API_BASE") or HUB_API_BASE or "").rstrip("/")
-    hub_device_token = str(os.getenv("HUB_DEVICE_TOKEN") or HUB_DEVICE_TOKEN or "").strip()
-    if not hub_api_base or not hub_device_token or not space_id:
-        logger.debug("Skipping event ingest: missing HUB_API_BASE, HUB_DEVICE_TOKEN, or space_id")
-        return None
-    try:
-        resp = requests.post(
-            f"{hub_api_base}/v1/events",
-            headers={"Authorization": f"Bearer {hub_device_token}"},
-            json={
-                "space_id": space_id,
-                "type": event_type,
-                "payload": payload,
-                "session_id": session_id,
-            },
-            timeout=3,
-        )
-        if resp.ok:
-            return str(resp.json().get("event_id") or "").strip() or None
-        logger.warning("Failed to ingest event %s: status=%s body=%s", event_type, resp.status_code, resp.text[:300])
-    except Exception as e:
-        logger.warning("Failed to ingest event %s: %s", event_type, e)
-    return None
+    body = _post_hub_json(
+        path="/v1/events",
+        operation=f"event.ingest:{event_type}",
+        payload={
+            "space_id": _require_runtime_text(space_id, "space_id"),
+            "type": _require_runtime_text(event_type, "event_type"),
+            "payload": payload,
+            "session_id": session_id,
+        },
+    )
+    event_id = str(body.get("event_id") or "").strip()
+    if not event_id:
+        raise HubWriteError(f"event.ingest:{event_type}", "response omitted event_id")
+    return event_id
+
+
+def hub_record_worker_error(
+    *,
+    worker_version: str,
+    space_id: str,
+    session_id: str,
+    room_name: str,
+    operation: str,
+    code: str,
+    error: BaseException,
+    retryable: bool,
+    details: dict[str, object] | None = None,
+) -> str:
+    payload = build_worker_error_payload(
+        worker_version=worker_version,
+        space_id=space_id,
+        session_id=session_id,
+        room_name=room_name,
+        operation=operation,
+        code=code,
+        error=error,
+        retryable=retryable,
+        details=details,
+    )
+    return _require_runtime_text(
+        hub_ingest_event(
+            space_id=space_id,
+            event_type="worker.error",
+            payload=payload,
+            session_id=session_id,
+        ),
+        "worker error event_id",
+    )
+
+
+def hub_transition_session_state(
+    *,
+    state_machine: SessionStateMachine,
+    space_id: str,
+    to_state: str,
+    reason: str,
+    room_name: str,
+    worker_version: str,
+) -> str:
+    payload = state_machine.transition_payload(
+        to_state=to_state,
+        reason=reason,
+        room_name=room_name,
+        worker_version=worker_version,
+    )
+    event_id = _require_runtime_text(
+        hub_ingest_event(
+            space_id=space_id,
+            event_type="session.state_transition",
+            payload=payload,
+            session_id=state_machine.session_id,
+        ),
+        "session transition event_id",
+    )
+    state_machine.apply(to_state)
+    return event_id
 
 
 def _fetch_space_events(space_id: str, limit: int = 50) -> list[dict]:
@@ -733,7 +1018,9 @@ def _describe_visual_artifact(artifact_uri: str) -> str | None:
         return None
 
 
-def _build_current_visual_observation_block(events: list[dict], *, current_session_id: str | None) -> str:
+def _build_current_visual_observation_block(
+    events: list[dict], *, current_session_id: str | None, now: datetime | None = None
+) -> str:
     """Build same-session textual visual observations for the model prompt.
 
     Artifact-only events are intentionally ignored here. A screenshot/image/video
@@ -744,7 +1031,20 @@ def _build_current_visual_observation_block(events: list[dict], *, current_sessi
     for ev in events or []:
         if not _event_matches_session(ev, current_session_id):
             continue
+        normalized_type = str(ev.get("type") or "").strip().lower().replace("_", ".")
+        if normalized_type == "visual.observation.invalidated":
+            break
         if not _event_type_is_visual_observation(str(ev.get("type") or "")):
+            continue
+        payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+        try:
+            validate_livekit_message_freshness(
+                payload.get("captured_at") or ev.get("created_at"),
+                field_name="captured_at",
+                max_age_seconds=VISUAL_OBSERVATION_MAX_AGE_SECONDS,
+                now=now,
+            )
+        except LiveKitMessageValidationError:
             continue
         text = _extract_visual_observation_text(ev)
         if not text:
@@ -874,23 +1174,18 @@ async def forge_agent(ctx: agents.JobContext):
     When the last human participant leaves, the agent disconnects from the room.
     Since each join creates a unique room name, agent dispatch is reliable.
     """
-    # Connect to LiveKit room
+    metadata = _parse_dispatch_metadata(ctx.job.metadata)
+    space_id = metadata.space_id
+    agent_id = metadata.agent_id
+    session_id = metadata.session_id
+    room_session_id = metadata.room_session_id
+    expected_participant_identity = metadata.participant_identity
+    worker_version = _require_worker_version()
+    session_state = SessionStateMachine(session_id=session_id)
+
+    # Connect only after the durable dispatch/session identity has been validated.
     await ctx.connect()
 
-    # Extract space_id from agent metadata (passed via RoomAgentDispatch in token)
-    # Metadata is a JSON string in ctx.job.metadata
-    import json as _json
-
-    metadata = _json.loads(ctx.job.metadata or "{}")
-    space_id = metadata.get("space_id")
-    room_session_id = metadata.get("room_session_id", "unknown")
-    session_id = metadata.get("session_id")
-
-    if not space_id:
-        logger.error(f"No space_id in agent metadata; room={ctx.room.name}, metadata={ctx.job.metadata}")
-        return
-
-    agent_id = metadata.get("agent_id")
     logger.info(f"Agent dispatched to space: {space_id} (room: {ctx.room.name}, session: {room_session_id})")
     persona = _resolve_persona(agent_id=agent_id, space_id=space_id, session_id=session_id)
     logger.info(
@@ -937,6 +1232,14 @@ async def forge_agent(ctx: agents.JobContext):
             return
 
         logger.info(f"Human participant disconnected: {participant.identity}")
+        if participant.identity == expected_participant_identity:
+            _create_background_task(
+                _invalidate_camera_observations(
+                    sender=participant.identity,
+                    reason="participant_disconnected",
+                ),
+                operation="visual.invalidate.participant_disconnect",
+            )
 
         # Check if any human participants remain
         human_count = count_human_participants()
@@ -944,18 +1247,43 @@ async def forge_agent(ctx: agents.JobContext):
 
         if human_count == 0:
             logger.info(f"No human participants remain in room {space_id}, agent disconnecting...")
-            # Schedule disconnect - don't block the event handler
-            asyncio.create_task(_disconnect_agent())
+            _create_background_task(_disconnect_agent(), operation="session.disconnect")
 
     async def _disconnect_agent() -> None:
         """Disconnect the agent from the room."""
+        # Small delay to allow any final cleanup.
+        await asyncio.sleep(AGENT_DISCONNECT_DELAY_SECONDS)
+        failures: list[Exception] = []
         try:
-            # Small delay to allow any final cleanup
-            await asyncio.sleep(AGENT_DISCONNECT_DELAY_SECONDS)
+            await _emit_worker_health("closing")
+        except Exception as exc:
+            failures.append(exc)
+            logger.error("Failed to emit closing worker health: %s", exc, exc_info=True)
+        try:
+            if session_state.state in {"open", "paused"}:
+                transition_event_id = hub_transition_session_state(
+                    state_machine=session_state,
+                    space_id=space_id,
+                    to_state="closed",
+                    reason="last_human_disconnected",
+                    room_name=ctx.room.name,
+                    worker_version=worker_version,
+                )
+                logger.info(
+                    "Recorded session close transition %s for session %s",
+                    transition_event_id,
+                    session_id,
+                )
+        except Exception as exc:
+            failures.append(exc)
+            logger.error("Failed to persist session close transition: %s", exc, exc_info=True)
+        try:
             await ctx.room.disconnect()
             logger.info(f"Agent disconnected from room {space_id}")
-        except Exception as e:
-            logger.warning(f"Error disconnecting agent from room {space_id}: {e}")
+        except Exception as exc:
+            failures.append(exc)
+        if failures:
+            raise ExceptionGroup("agent disconnect failures", failures)
 
     # Subscribe to participant disconnection events
     ctx.room.on("participant_disconnected", on_participant_disconnected)
@@ -990,14 +1318,26 @@ async def forge_agent(ctx: agents.JobContext):
             return
 
         logger.debug(f"Conversation item ({role}): {text[:50]}...")
-        source_event_id = hub_ingest_transcript(
-            space_id=space_id,
-            text=text,
-            role=role,
-            participant_identity=None,
-            input_modality="voice",
-            session_id=session_id,
-        )
+        try:
+            source_event_id = hub_ingest_transcript(
+                space_id=space_id,
+                text=text,
+                role=role,
+                participant_identity=None,
+                input_modality="voice",
+                session_id=session_id,
+            )
+        except Exception as exc:
+            _create_background_task(
+                _report_worker_error(
+                    operation="transcript.ingest.assistant_voice",
+                    code="transcript_ingest_failed",
+                    error=exc,
+                    retryable=True,
+                ),
+                operation="worker.error.transcript_ingest",
+            )
+            raise
         if AUTOSAVE_EPISODIC_MEMORIES:
             # Auto-save as episodic memory
             if source_event_id and source_event_id != "privacy_mode":
@@ -1007,8 +1347,12 @@ async def forge_agent(ctx: agents.JobContext):
                     source_event_id=source_event_id,
                     actor_type="agent",
                     source="livekit_assistant_voice",
+                    space_id=space_id,
+                    session_id=session_id,
+                    room_name=ctx.room.name,
+                    worker_version=worker_version,
                 ):
-                    hub_create_memory(
+                    _create_memory_with_error_event(
                         space_id=space_id,
                         content=text,
                         tier=classification.kind,
@@ -1034,14 +1378,26 @@ async def forge_agent(ctx: agents.JobContext):
             return
 
         participant_identity = str(event.speaker_id or "").strip() or None
-        source_event_id = hub_ingest_transcript(
-            space_id=space_id,
-            text=text,
-            role="user",
-            participant_identity=participant_identity,
-            input_modality="voice",
-            session_id=session_id,
-        )
+        try:
+            source_event_id = hub_ingest_transcript(
+                space_id=space_id,
+                text=text,
+                role="user",
+                participant_identity=participant_identity,
+                input_modality="voice",
+                session_id=session_id,
+            )
+        except Exception as exc:
+            _create_background_task(
+                _report_worker_error(
+                    operation="transcript.ingest.user_voice",
+                    code="transcript_ingest_failed",
+                    error=exc,
+                    retryable=True,
+                ),
+                operation="worker.error.transcript_ingest",
+            )
+            raise
         if AUTOSAVE_EPISODIC_MEMORIES:
             if source_event_id and source_event_id != "privacy_mode":
                 for classification in classify_memory_for_capture(
@@ -1050,8 +1406,12 @@ async def forge_agent(ctx: agents.JobContext):
                     source_event_id=source_event_id,
                     actor_type="user",
                     source="livekit_user_voice",
+                    space_id=space_id,
+                    session_id=session_id,
+                    room_name=ctx.room.name,
+                    worker_version=worker_version,
                 ):
-                    hub_create_memory(
+                    _create_memory_with_error_event(
                         space_id=space_id,
                         content=text,
                         tier=classification.kind,
@@ -1069,33 +1429,201 @@ async def forge_agent(ctx: agents.JobContext):
 
     session.on("user_input_transcribed", on_user_input_transcribed)
 
-    # Handle typed chat messages from data channel
-    import json as _json_dc
-
-    current_visual_observations: list[str] = []
+    # Handle typed chat messages from data channel.
+    current_visual_observations: list[CurrentVisualObservation] = []
 
     def _current_visual_prompt() -> str:
-        if not current_visual_observations:
+        fresh = _fresh_visual_observations(
+            current_visual_observations,
+            current_session_id=session_id,
+        )
+        current_visual_observations[:] = fresh
+        if not fresh:
             return ""
         lines = ["Current Session Visual Observations:"]
-        lines.extend(f"- {text}" for text in current_visual_observations[-3:])
+        lines.extend(f"- {item.description}" for item in fresh[-3:])
         return "\n".join(lines)
 
-    async def _publish_visual_observation_ack(payload: dict[str, object]) -> None:
+    def _worker_participant_identity() -> str:
+        participant = getattr(ctx.room, "local_participant", None)
+        return _require_runtime_text(getattr(participant, "identity", None), "worker participant identity")
+
+    async def _publish_room_payload(payload: dict[str, object]) -> None:
         participant = getattr(ctx.room, "local_participant", None)
         publish_data = getattr(participant, "publish_data", None)
         if publish_data is None:
-            return
+            raise WorkerContractError("LiveKit local participant cannot publish data")
+        result = publish_data(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"), reliable=True)
+        if inspect.isawaitable(result):
+            await result
+
+    async def _publish_visual_observation_ack(payload: dict[str, object]) -> None:
+        await _publish_room_payload(
+            {
+                **payload,
+                "type": "visual_observation_ack",
+                "contract_version": EVENT_CONTRACT_VERSION,
+                "session_id": session_id,
+                "sender_identity": _worker_participant_identity(),
+                "worker_version": worker_version,
+                "acknowledged_at": _isoformat_utc(),
+            }
+        )
+
+    async def _report_worker_error(*, operation: str, code: str, error: BaseException, retryable: bool) -> None:
+        payload = build_worker_error_payload(
+            worker_version=worker_version,
+            space_id=space_id,
+            session_id=session_id,
+            room_name=ctx.room.name,
+            operation=operation,
+            code=code,
+            error=error,
+            retryable=retryable,
+        )
         try:
-            result = publish_data(_json_dc.dumps(payload).encode("utf-8"), reliable=True)
-            if asyncio.iscoroutine(result):
-                await result
+            event_id = await asyncio.to_thread(
+                hub_ingest_event,
+                space_id=space_id,
+                event_type="worker.error",
+                payload=payload,
+                session_id=session_id,
+            )
+        except Exception as persistence_error:
+            await _publish_room_payload(
+                {
+                    **payload,
+                    "durable": False,
+                    "durability_error": persistence_error.__class__.__name__,
+                }
+            )
+            raise
+        await _publish_room_payload({**payload, "durable": True, "event_id": event_id})
+
+    async def _emit_worker_health(state: str) -> str:
+        payload = build_worker_health_payload(
+            worker_version=worker_version,
+            space_id=space_id,
+            session_id=session_id,
+            room_name=ctx.room.name,
+            state=state,
+        )
+        event_id = _require_runtime_text(
+            hub_ingest_event(
+                space_id=space_id,
+                event_type="worker.health",
+                payload=payload,
+                session_id=session_id,
+            ),
+            "worker health event_id",
+        )
+        await _publish_room_payload({**payload, "event_id": event_id})
+        return event_id
+
+    def _create_background_task(coro: Any, *, operation: str) -> None:
+        task = asyncio.create_task(coro)
+
+        def _log_task_failure(completed: asyncio.Task) -> None:
+            try:
+                completed.result()
+            except Exception as exc:
+                logger.error("Background worker operation %s failed: %s", operation, exc, exc_info=exc)
+
+        task.add_done_callback(_log_task_failure)
+
+    def _create_memory_with_error_event(**kwargs: Any) -> str | None:
+        try:
+            return hub_create_memory(**kwargs)
         except Exception as exc:
-            logger.warning("Failed to publish visual observation acknowledgement: %s", exc)
+            _create_background_task(
+                _report_worker_error(
+                    operation="memory.ingest",
+                    code="memory_ingest_failed",
+                    error=exc,
+                    retryable=True,
+                ),
+                operation="worker.error.memory_ingest",
+            )
+            raise
+
+    async def _invalidate_camera_observations(*, sender: str, reason: str) -> None:
+        invalidated_count = _invalidate_visual_observations(
+            current_visual_observations,
+            sender_identity=sender,
+        )
+        payload = {
+            "contract_version": EVENT_CONTRACT_VERSION,
+            "session_id": session_id,
+            "participant_identity": sender,
+            "reason": reason,
+            "invalidated_count": invalidated_count,
+            "invalidated_at": _isoformat_utc(),
+        }
+        event_id = hub_ingest_event(
+            space_id=space_id,
+            event_type="visual.observation_invalidated",
+            payload=payload,
+            session_id=session_id,
+        )
+        await _publish_room_payload(
+            {
+                "type": "visual_observation_invalidated",
+                **payload,
+                "event_id": event_id,
+                "sender_identity": _worker_participant_identity(),
+            }
+        )
 
     async def _process_visual_observation_message(
-        *, sender: str, artifact_uri: str, captured_at: str, visual_request_id: str
+        *,
+        sender: str,
+        message_session_id: str,
+        artifact_uri: str,
+        captured_at: str,
+        visual_request_id: str,
     ) -> None:
+        visual_request_id = _require_runtime_text(visual_request_id, "visual_request_id")
+        try:
+            validate_livekit_sender_session(
+                sender_identity=sender,
+                expected_sender_identity=expected_participant_identity,
+                message_session_id=message_session_id,
+                expected_session_id=session_id,
+            )
+            captured_at_timestamp = validate_livekit_message_freshness(
+                captured_at,
+                field_name="captured_at",
+                max_age_seconds=VISUAL_OBSERVATION_MAX_AGE_SECONDS,
+            )
+        except LiveKitMessageValidationError as exc:
+            if exc.code in {"stale_session", "stale_message"}:
+                await _invalidate_camera_observations(sender=sender, reason=f"rejected_{exc.code}")
+            rejection_payload = {
+                "contract_version": EVENT_CONTRACT_VERSION,
+                "session_id": session_id,
+                "message_session_id": message_session_id,
+                "participant_identity": sender,
+                "visual_request_id": visual_request_id,
+                "captured_at": captured_at,
+                "error": exc.code,
+                "rejected_at": _isoformat_utc(),
+            }
+            hub_ingest_event(
+                space_id=space_id,
+                event_type="visual.observation_rejected",
+                payload=rejection_payload,
+                session_id=session_id,
+            )
+            await _publish_visual_observation_ack(
+                {
+                    "ok": False,
+                    "error": exc.code,
+                    "visual_request_id": visual_request_id,
+                    "request_sender_identity": sender,
+                }
+            )
+            return
+
         observation = ""
         if not observation and artifact_uri:
             described = await asyncio.to_thread(_describe_visual_artifact, artifact_uri)
@@ -1112,16 +1640,17 @@ async def forge_agent(ctx: agents.JobContext):
                     "captured_at": captured_at,
                     "visual_request_id": visual_request_id,
                     "participant_identity": sender,
+                    "session_id": session_id,
                     "truthfulness_note": "artifact reference only; no visual observation text",
                 },
                 session_id=session_id,
             )
             await _publish_visual_observation_ack(
                 {
-                    "type": "visual_observation_ack",
                     "ok": False,
                     "error": "camera_enabled_but_visual_analysis_unavailable",
                     "visual_request_id": visual_request_id,
+                    "request_sender_identity": sender,
                     "artifact_uri": artifact_uri,
                     "captured_at": captured_at,
                 }
@@ -1129,7 +1658,14 @@ async def forge_agent(ctx: agents.JobContext):
             return
 
         observation = observation[:800]
-        current_visual_observations.append(observation)
+        current_visual_observations.append(
+            CurrentVisualObservation(
+                description=observation,
+                sender_identity=sender,
+                session_id=session_id,
+                captured_at=captured_at_timestamp,
+            )
+        )
         del current_visual_observations[:-5]
         hub_ingest_event(
             space_id=space_id,
@@ -1141,6 +1677,7 @@ async def forge_agent(ctx: agents.JobContext):
                 "captured_at": captured_at,
                 "visual_request_id": visual_request_id,
                 "participant_identity": sender,
+                "session_id": session_id,
                 "model": os.getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini") if artifact_uri else None,
             },
             session_id=session_id,
@@ -1148,14 +1685,60 @@ async def forge_agent(ctx: agents.JobContext):
         logger.info("Recorded visual observation from %s", sender)
         await _publish_visual_observation_ack(
             {
-                "type": "visual_observation_ack",
                 "ok": True,
                 "visual_request_id": visual_request_id,
+                "request_sender_identity": sender,
                 "description": observation,
                 "artifact_uri": artifact_uri,
                 "captured_at": captured_at,
             }
         )
+
+    async def _process_camera_off_message(*, sender: str, message_session_id: str, sent_at: str) -> None:
+        try:
+            validate_livekit_sender_session(
+                sender_identity=sender,
+                expected_sender_identity=expected_participant_identity,
+                message_session_id=message_session_id,
+                expected_session_id=session_id,
+            )
+            validate_livekit_message_freshness(
+                sent_at,
+                field_name="sent_at",
+                max_age_seconds=VISUAL_OBSERVATION_MAX_AGE_SECONDS,
+            )
+        except LiveKitMessageValidationError as exc:
+            if exc.code in {"stale_session", "stale_message"}:
+                await _invalidate_camera_observations(sender=sender, reason=f"rejected_{exc.code}")
+            hub_ingest_event(
+                space_id=space_id,
+                event_type="visual.camera_state_rejected",
+                payload={
+                    "contract_version": EVENT_CONTRACT_VERSION,
+                    "session_id": session_id,
+                    "message_session_id": message_session_id,
+                    "participant_identity": sender,
+                    "error": exc.code,
+                    "rejected_at": _isoformat_utc(),
+                },
+                session_id=session_id,
+            )
+            return
+        await _invalidate_camera_observations(sender=sender, reason="camera_off_message")
+
+    def _on_camera_track_removed(publication: object, participant: object) -> None:
+        if getattr(publication, "kind", None) != rtc.TrackKind.KIND_VIDEO:
+            return
+        sender = str(getattr(participant, "identity", "") or "").strip()
+        if sender != expected_participant_identity:
+            return
+        _create_background_task(
+            _invalidate_camera_observations(sender=sender, reason="camera_track_unpublished_or_muted"),
+            operation="visual.invalidate.camera_track",
+        )
+
+    ctx.room.on("track_unpublished", _on_camera_track_removed)
+    ctx.room.on("track_muted", lambda participant, publication: _on_camera_track_removed(publication, participant))
 
     @ctx.room.on("data_received")
     def on_data_received(data: rtc.DataPacket) -> None:
@@ -1167,27 +1750,52 @@ async def forge_agent(ctx: agents.JobContext):
         """
         try:
             payload = data.data.decode("utf-8")
-            msg = _json_dc.loads(payload)
+            msg = json.loads(payload)
+            if not isinstance(msg, dict):
+                raise WorkerContractError("LiveKit data message must be a JSON object")
             msg_type = str(msg.get("type") or "").strip()
-            sender = data.participant.identity if data.participant else "user"
+            sender = _require_runtime_text(
+                getattr(data.participant, "identity", None),
+                "LiveKit data sender identity",
+            )
 
             if msg_type == "visual_observation":
                 artifact_uri = str(msg.get("artifact_uri") or "").strip()
                 captured_at = str(msg.get("captured_at") or msg.get("ts") or "").strip()
                 visual_request_id = str(msg.get("visual_request_id") or "").strip()
-                asyncio.create_task(
+                _create_background_task(
                     _process_visual_observation_message(
                         sender=sender,
+                        message_session_id=str(msg.get("session_id") or "").strip(),
                         artifact_uri=artifact_uri,
                         captured_at=captured_at,
                         visual_request_id=visual_request_id,
-                    )
+                    ),
+                    operation="visual.observe",
+                )
+                return
+
+            if msg_type in {"camera_off", "camera_state"} and not bool(msg.get("enabled", False)):
+                _create_background_task(
+                    _process_camera_off_message(
+                        sender=sender,
+                        message_session_id=str(msg.get("session_id") or "").strip(),
+                        sent_at=str(msg.get("sent_at") or msg.get("ts") or "").strip(),
+                    ),
+                    operation="visual.invalidate.camera_off",
                 )
                 return
 
             # Only handle chat messages
             if msg_type != "chat":
                 return
+
+            validate_livekit_sender_session(
+                sender_identity=sender,
+                expected_sender_identity=expected_participant_identity,
+                message_session_id=msg.get("session_id"),
+                expected_session_id=session_id,
+            )
 
             text = msg.get("text", "").strip()
             if not text:
@@ -1213,8 +1821,12 @@ async def forge_agent(ctx: agents.JobContext):
                         source_event_id=source_event_id,
                         actor_type="user",
                         source="livekit_typed_chat",
+                        space_id=space_id,
+                        session_id=session_id,
+                        room_name=ctx.room.name,
+                        worker_version=worker_version,
                     ):
-                        hub_create_memory(
+                        _create_memory_with_error_event(
                             space_id=space_id,
                             content=text,
                             tier=classification.kind,
@@ -1232,10 +1844,22 @@ async def forge_agent(ctx: agents.JobContext):
 
             # Inject the typed message into the agent's conversation
             # Use generate_reply with the user's text as instructions
-            asyncio.create_task(_handle_typed_message(text, sender))
+            _create_background_task(
+                _handle_typed_message(text, sender),
+                operation="chat.generate_reply",
+            )
 
-        except Exception as e:
-            logger.warning(f"Failed to process data channel message: {e}")
+        except Exception as exc:
+            logger.error("Failed to process data channel message: %s", exc, exc_info=True)
+            _create_background_task(
+                _report_worker_error(
+                    operation="livekit.data_received",
+                    code="data_channel_message_failed",
+                    error=exc,
+                    retryable=False,
+                ),
+                operation="worker.error.data_received",
+            )
 
     async def _handle_typed_message(text: str, sender: str) -> None:
         """Process a typed chat message and generate a response.
@@ -1257,31 +1881,69 @@ async def forge_agent(ctx: agents.JobContext):
             visual_prompt = _current_visual_prompt()
             user_input = f"{visual_prompt}\n\nUser message: {text}" if visual_prompt else text
             await session.generate_reply(user_input=user_input)
-        except Exception as e:
-            logger.warning(f"Failed to generate reply for typed message: {e}")
+        except Exception as exc:
+            await _report_worker_error(
+                operation="chat.generate_reply",
+                code="typed_reply_failed",
+                error=exc,
+                retryable=True,
+            )
+            raise
 
-    await session.start(
-        room=ctx.room,
-        agent=ForgeAssistant(persona=persona, context_block=context_block),
-        room_options=room_io.RoomOptions(
-            audio_input=room_io.AudioInputOptions(
-                noise_cancellation=lambda params: (
-                    noise_cancellation.BVCTelephony()
-                    if params.participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
-                    else noise_cancellation.BVC()
+    try:
+        await _emit_worker_health("starting")
+        await session.start(
+            room=ctx.room,
+            agent=ForgeAssistant(persona=persona, context_block=context_block),
+            room_options=room_io.RoomOptions(
+                audio_input=room_io.AudioInputOptions(
+                    noise_cancellation=lambda params: (
+                        noise_cancellation.BVCTelephony()
+                        if params.participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_SIP
+                        else noise_cancellation.BVC()
+                    ),
                 ),
+                # Disable auto-close so our disconnect handler fires properly
+                close_on_disconnect=False,
+                # Do NOT delete room on close - the Hub API handles room deletion
+                # before minting tokens. This ensures a single deletion point and
+                # avoids race conditions with LiveKit Cloud's dispatch logic.
+                delete_room_on_close=False,
             ),
-            # Disable auto-close so our disconnect handler fires properly
-            close_on_disconnect=False,
-            # Do NOT delete room on close - the Hub API handles room deletion
-            # before minting tokens. This ensures a single deletion point and
-            # avoids race conditions with LiveKit Cloud's dispatch logic.
-            delete_room_on_close=False,
-        ),
-    )
+        )
+        await _emit_worker_health("ready")
 
-    # Initial greeting
-    await session.generate_reply(instructions="Greet the user and offer your assistance. Start by speaking in English.")
+        # Initial greeting
+        await session.generate_reply(
+            instructions="Greet the user and offer your assistance. Start by speaking in English."
+        )
+    except Exception as exc:
+        transition_error: Exception | None = None
+        if session_state.state in {"open", "paused"}:
+            try:
+                hub_transition_session_state(
+                    state_machine=session_state,
+                    space_id=space_id,
+                    to_state="failed",
+                    reason="worker_session_runtime_failed",
+                    room_name=ctx.room.name,
+                    worker_version=worker_version,
+                )
+            except Exception as state_exc:
+                transition_error = state_exc
+                logger.error("Failed to persist failed session transition: %s", state_exc, exc_info=True)
+        try:
+            await _report_worker_error(
+                operation="worker.session",
+                code="worker_session_failed",
+                error=exc,
+                retryable=True,
+            )
+        except Exception as report_exc:
+            logger.error("Failed to report worker session error: %s", report_exc, exc_info=True)
+        if transition_error is not None:
+            raise ExceptionGroup("worker session and transition failures", [exc, transition_error])
+        raise
 
 
 if __name__ == "__main__":

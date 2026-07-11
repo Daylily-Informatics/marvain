@@ -38,6 +38,7 @@ def _load_hub_api_app_module():
     os.environ.setdefault("DB_SECRET_ARN", "arn:aws:secretsmanager:us-west-2:123:secret:dummy")
     os.environ.setdefault("DB_NAME", "dummy")
     os.environ.setdefault("STAGE", "test")
+    os.environ.setdefault("SESSION_SECRET_KEY", "test-session-secret")
 
     api_app_py = repo_root / "functions" / "hub_api" / "api_app.py"
     spec = importlib.util.spec_from_file_location("hub_api_api_app_for_tests_rejoin", api_app_py)
@@ -57,6 +58,7 @@ def _load_agent_worker_module():
     # Speed up disconnect tests.
     os.environ["AGENT_DISCONNECT_DELAY_SECONDS"] = "0"
     os.environ["MARVAIN_AGENT_PERSONA_INSTRUCTIONS"] = "Test persona instructions."
+    os.environ["MARVAIN_WORKER_VERSION"] = "test-worker-1"
 
     spec = importlib.util.spec_from_file_location("agent_worker_for_tests_rejoin", worker_py)
     assert spec and spec.loader
@@ -168,6 +170,8 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
                 self.disconnected = False
                 self._start_blocker = asyncio.Event()
                 self._disconnected_event = asyncio.Event()
+                self.local_participant = mock.Mock(identity="agent:forge")
+                self.local_participant.publish_data = mock.Mock(return_value=None)
 
             def on(self, event: str, cb=None):
                 """Support both decorator-style and callback-style registration."""
@@ -193,7 +197,15 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
                 self.connect = mock.AsyncMock()
                 # Worker extracts space_id from ctx.job.metadata
                 self.job = mock.Mock()
-                self.job.metadata = json.dumps({"space_id": "space-1"})
+                self.job.metadata = json.dumps(
+                    {
+                        "space_id": "space-1",
+                        "agent_id": "agent-1",
+                        "session_id": "session-1",
+                        "room_session_id": "session1",
+                        "participant_identity": "user:u1",
+                    }
+                )
 
         class FakeSession:
             def __init__(self, **kwargs):
@@ -226,6 +238,7 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
         with (
             mock.patch.object(worker, "AgentSession", FakeSession),
             mock.patch.object(worker.openai.realtime, "RealtimeModel", lambda **kwargs: object()),
+            mock.patch.object(worker, "hub_ingest_event", return_value="event-1") as ingest_event,
         ):
 
             async def _run():
@@ -234,11 +247,18 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
                 # Let forge_agent register the participant_disconnected handler.
                 await asyncio.sleep(0)
                 self.assertIn("participant_disconnected", room._handlers)
+                self.assertIn("track_unpublished", room._handlers)
 
                 # Simulate that a human disconnect event fires after the participant is removed.
                 class FakeParticipant:
                     kind = worker.rtc.ParticipantKind.PARTICIPANT_KIND_STANDARD
                     identity = "user:u1"
+
+                class FakeVideoPublication:
+                    kind = worker.rtc.TrackKind.KIND_VIDEO
+
+                room._handlers["track_unpublished"](FakeVideoPublication(), FakeParticipant())
+                await asyncio.sleep(0)
 
                 room.remote_participants = {}  # no humans remain
                 room._handlers["participant_disconnected"](FakeParticipant())
@@ -250,6 +270,11 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
                 # Let forge_agent proceed/exit cleanly.
                 room._start_blocker.set()
                 await task
+
+                event_types = [call.kwargs["event_type"] for call in ingest_event.call_args_list]
+                self.assertIn("visual.observation_invalidated", event_types)
+                self.assertIn("session.state_transition", event_types)
+                self.assertIn("worker.health", event_types)
 
             asyncio.run(_run())
 
@@ -263,6 +288,8 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
                 self.remote_participants = {}
                 self._handlers = {}
                 self._start_blocker = asyncio.Event()
+                self.local_participant = mock.Mock(identity="agent:forge")
+                self.local_participant.publish_data = mock.Mock(return_value=None)
 
             def on(self, event: str, cb=None):
                 """Support both decorator-style and callback-style registration."""
@@ -287,7 +314,15 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
                 self.connect = mock.AsyncMock()
                 # Worker extracts space_id from ctx.job.metadata
                 self.job = mock.Mock()
-                self.job.metadata = json.dumps({"space_id": "space-1"})
+                self.job.metadata = json.dumps(
+                    {
+                        "space_id": "space-1",
+                        "agent_id": "agent-1",
+                        "session_id": "session-1",
+                        "room_session_id": "session1",
+                        "participant_identity": "user:u1",
+                    }
+                )
 
         class FakeSession:
             def __init__(self, **kwargs):
@@ -315,6 +350,7 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
         with (
             mock.patch.object(worker, "AgentSession", FakeSession),
             mock.patch.object(worker.openai.realtime, "RealtimeModel", lambda **kwargs: object()),
+            mock.patch.object(worker, "hub_ingest_event", return_value="event-1"),
         ):
 
             async def _run_two():
