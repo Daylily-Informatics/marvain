@@ -18,6 +18,7 @@ import asyncio
 import inspect
 import json
 import logging
+import math
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -735,7 +736,7 @@ def _format_memory_source_note(mem: dict) -> str:
     return f" (source: {', '.join(source_bits)})" if source_bits else ""
 
 
-def _memory_recall_distance(mem: dict, fallback_rank: int) -> float:
+def _memory_recall_distance(mem: dict) -> float:
     explanation = _dict_or_empty(mem.get("explanation"))
     ranking = _dict_or_empty(explanation.get("ranking"))
     for value in (
@@ -745,10 +746,13 @@ def _memory_recall_distance(mem: dict, fallback_rank: int) -> float:
         mem.get("distance"),
     ):
         try:
-            return float(value)
+            distance = float(value)
         except (TypeError, ValueError):
             continue
-    return float(fallback_rank)
+        if math.isfinite(distance) and distance >= 0:
+            return distance
+    memory_id = str(mem.get("memory_id") or "<unknown>")
+    raise WorkerContractError(f"recall result {memory_id} is missing a valid ranking distance")
 
 
 def _dedupe_memories(memories: list[dict]) -> list[dict]:
@@ -778,7 +782,7 @@ def _rank_contextual_memories(
     ranked = []
     for index, mem in enumerate(_dedupe_memories(memories)):
         source = _memory_source_context(mem)
-        distance = _memory_recall_distance(mem, index + 1)
+        distance = _memory_recall_distance(mem)
         context_weight = 0.0
         if current_session_id and source.session_id == current_session_id:
             context_weight += CURRENT_SESSION_MEMORY_WEIGHT

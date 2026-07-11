@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -73,6 +75,21 @@ def test_contextual_rank_weights_current_space_without_excluding_other_spaces() 
     )
 
     assert [m["memory_id"] for m in ranked[:3]] == ["current-space", "other-close", "other-next"]
+
+
+def test_contextual_rank_rejects_missing_owning_service_distance() -> None:
+    worker = _load_agent_worker_module()
+    memory = _memory("missing-distance", distance=0.2)
+    memory.pop("distance")
+    memory["explanation"]["ranking"] = {}
+
+    with pytest.raises(worker.WorkerContractError, match="missing a valid ranking distance"):
+        worker._rank_contextual_memories(
+            [memory],
+            current_space_id=None,
+            current_session_id=None,
+            active_person_id=None,
+        )
 
 
 def test_contextual_recall_uses_current_space_as_query_context_not_filter() -> None:
