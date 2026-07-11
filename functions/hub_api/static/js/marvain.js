@@ -8,15 +8,32 @@
   const Marvain = {
     // Toast notification system
     toastContainer: null,
+    activeModal: null,
+    modalReturnFocus: new WeakMap(),
 
     init: function() {
       // Create toast container if not exists
       if (!this.toastContainer) {
         this.toastContainer = document.createElement('div');
         this.toastContainer.className = 'toast-container';
+        this.toastContainer.setAttribute('aria-label', 'Notifications');
         document.body.appendChild(this.toastContainer);
       }
+      this._initializeNavigation();
+      this._initializeModals();
+      document.querySelectorAll('.nav-link.active, .nav-dropdown-menu a.active').forEach(link => {
+        link.setAttribute('aria-current', 'page');
+      });
       console.log('[Marvain] Initialized');
+    },
+
+    announce: function(message) {
+      const region = document.getElementById('marvain-announcer');
+      if (!region) return;
+      region.textContent = '';
+      window.setTimeout(() => {
+        region.textContent = String(message || '');
+      }, 10);
     },
 
     /**
@@ -31,14 +48,30 @@
 
       const toast = document.createElement('div');
       toast.className = 'toast toast-' + type;
-      toast.innerHTML = 
-        '<div style="flex:1;">' +
-          '<strong style="display:block;">' + this.escapeHtml(title) + '</strong>' +
-          '<span style="font-size:0.875rem;">' + this.escapeHtml(message) + '</span>' +
-        '</div>' +
-        '<button onclick="this.parentElement.remove()" style="background:none;border:none;color:inherit;cursor:pointer;font-size:1.25rem;line-height:1;">&times;</button>';
+      toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+      toast.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
+      toast.setAttribute('aria-atomic', 'true');
+
+      const content = document.createElement('div');
+      content.className = 'toast-content';
+      const heading = document.createElement('strong');
+      heading.className = 'toast-title';
+      heading.textContent = String(title || 'Notification');
+      const body = document.createElement('span');
+      body.className = 'toast-message';
+      body.textContent = String(message || '');
+      content.append(heading, body);
+
+      const closeButton = document.createElement('button');
+      closeButton.type = 'button';
+      closeButton.className = 'toast-close';
+      closeButton.setAttribute('aria-label', 'Dismiss notification');
+      closeButton.textContent = '\u00d7';
+      closeButton.addEventListener('click', () => toast.remove());
+      toast.append(content, closeButton);
 
       this.toastContainer.appendChild(toast);
+      this.announce((title || 'Notification') + ': ' + (message || ''));
 
       setTimeout(function() {
         toast.style.opacity = '0';
@@ -57,12 +90,18 @@
         overlay = document.createElement('div');
         overlay.id = 'marvain-loading';
         overlay.className = 'loading-overlay';
+        overlay.setAttribute('role', 'status');
+        overlay.setAttribute('aria-live', 'polite');
+        overlay.setAttribute('aria-atomic', 'true');
         document.body.appendChild(overlay);
       }
       overlay.innerHTML = 
-        '<div class="loading-spinner"></div>' +
-        '<div style="color:var(--color-gray-200);">' + this.escapeHtml(message || 'Loading...') + '</div>';
+        '<div class="loading-spinner" aria-hidden="true"></div>' +
+        '<div class="loading-message">' + this.escapeHtml(message || 'Loading...') + '</div>';
       overlay.style.display = 'flex';
+      const main = document.getElementById('main-content');
+      if (main) main.setAttribute('aria-busy', 'true');
+      this.announce(message || 'Loading');
     },
 
     /**
@@ -72,6 +111,160 @@
       const overlay = document.getElementById('marvain-loading');
       if (overlay) {
         overlay.style.display = 'none';
+      }
+      const main = document.getElementById('main-content');
+      if (main) main.setAttribute('aria-busy', 'false');
+    },
+
+    _initializeNavigation: function() {
+      const toggle = document.getElementById('mobile-nav-toggle');
+      const nav = document.getElementById('primary-navigation');
+      if (toggle && nav) {
+        toggle.addEventListener('click', () => {
+          this._setMobileNavigation(toggle.getAttribute('aria-expanded') !== 'true');
+        });
+        nav.querySelectorAll('a').forEach(link => {
+          link.addEventListener('click', () => this._setMobileNavigation(false));
+        });
+      }
+
+      document.querySelectorAll('.nav-dropdown-toggle').forEach((button, index) => {
+        button.setAttribute('aria-expanded', 'false');
+        const menu = button.nextElementSibling;
+        if (menu && !menu.id) {
+          menu.id = 'nav-menu-' + String(index + 1);
+        }
+        if (menu && menu.id) button.setAttribute('aria-controls', menu.id);
+        button.addEventListener('click', event => {
+          event.stopPropagation();
+          const dropdown = button.closest('.nav-dropdown');
+          const opening = !dropdown.classList.contains('is-open');
+          this._closeNavigationDropdowns(dropdown);
+          dropdown.classList.toggle('is-open', opening);
+          button.setAttribute('aria-expanded', String(opening));
+          if (opening && menu) {
+            const firstLink = menu.querySelector('a');
+            if (firstLink) firstLink.focus();
+          }
+        });
+        button.addEventListener('keydown', event => {
+          if (event.key === 'ArrowDown') {
+            event.preventDefault();
+            button.click();
+          }
+        });
+      });
+
+      document.addEventListener('click', event => {
+        if (!event.target.closest('.nav-dropdown')) this._closeNavigationDropdowns();
+      });
+      window.addEventListener('resize', () => {
+        if (window.innerWidth > 900) this._setMobileNavigation(false);
+      });
+    },
+
+    _setMobileNavigation: function(open) {
+      const toggle = document.getElementById('mobile-nav-toggle');
+      const nav = document.getElementById('primary-navigation');
+      if (!toggle || !nav) return;
+      nav.classList.toggle('is-open', open);
+      document.body.classList.toggle('nav-open', open);
+      toggle.setAttribute('aria-expanded', String(open));
+      toggle.setAttribute('aria-label', open ? 'Close navigation' : 'Open navigation');
+      const icon = toggle.querySelector('i');
+      if (icon) icon.className = open ? 'fas fa-times' : 'fas fa-bars';
+      if (open) {
+        const firstItem = nav.querySelector('a, button');
+        if (firstItem) firstItem.focus();
+      }
+    },
+
+    _closeNavigationDropdowns: function(except) {
+      document.querySelectorAll('.nav-dropdown.is-open').forEach(dropdown => {
+        if (dropdown === except) return;
+        dropdown.classList.remove('is-open');
+        const button = dropdown.querySelector('.nav-dropdown-toggle');
+        if (button) button.setAttribute('aria-expanded', 'false');
+      });
+    },
+
+    _initializeModals: function() {
+      document.querySelectorAll('.modal[id], .modal-overlay[id]').forEach(modal => {
+        this._prepareModal(modal);
+      });
+      document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+          if (this.activeModal && this._isVisible(this.activeModal)) {
+            event.preventDefault();
+            this.hideModal(this.activeModal.id);
+            return;
+          }
+          this._setMobileNavigation(false);
+          this._closeNavigationDropdowns();
+          const toggle = document.getElementById('mobile-nav-toggle');
+          if (toggle && window.innerWidth <= 900) toggle.focus();
+        }
+        if (event.key === 'Tab' && this.activeModal && this._isVisible(this.activeModal)) {
+          this._trapModalFocus(event, this.activeModal);
+        }
+      });
+    },
+
+    _prepareModal: function(modal) {
+      modal.setAttribute('aria-hidden', this._isVisible(modal) ? 'false' : 'true');
+      const surface = this._modalSurface(modal);
+      surface.setAttribute('role', 'dialog');
+      surface.setAttribute('aria-modal', 'true');
+      const heading = surface.querySelector('.modal-title, .modal-header h2, .modal-header h3');
+      if (heading) {
+        if (!heading.id) heading.id = modal.id + '-title';
+        surface.setAttribute('aria-labelledby', heading.id);
+      } else {
+        surface.setAttribute('aria-label', 'Dialog');
+      }
+      surface.querySelectorAll('.modal-close, .modal-header button').forEach(button => {
+        if (!button.getAttribute('aria-label')) button.setAttribute('aria-label', 'Close dialog');
+      });
+    },
+
+    _modalSurface: function(modal) {
+      if (modal.classList.contains('modal-overlay')) {
+        return modal.querySelector('.modal') || modal;
+      }
+      return modal.querySelector('.modal-content') || modal;
+    },
+
+    _isVisible: function(element) {
+      return Boolean(element && (element.offsetWidth || element.offsetHeight || element.getClientRects().length));
+    },
+
+    _focusableElements: function(container) {
+      const selector = [
+        'a[href]',
+        'button:not([disabled])',
+        'input:not([disabled]):not([type="hidden"])',
+        'select:not([disabled])',
+        'textarea:not([disabled])',
+        '[tabindex]:not([tabindex="-1"])'
+      ].join(',');
+      return Array.from(container.querySelectorAll(selector)).filter(element => this._isVisible(element));
+    },
+
+    _trapModalFocus: function(event, modal) {
+      const focusable = this._focusableElements(this._modalSurface(modal));
+      if (!focusable.length) {
+        event.preventDefault();
+        this._modalSurface(modal).focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
       }
     },
 
@@ -149,13 +342,20 @@
     showModal: function(modalId) {
       const modal = document.getElementById(modalId);
       if (modal) {
+        this._prepareModal(modal);
+        this.modalReturnFocus.set(modal, document.activeElement);
         modal.style.display = 'flex';
-        document.body.style.overflow = 'hidden';
-        // Focus the first input in the modal
-        const firstInput = modal.querySelector('input, select, textarea');
-        if (firstInput) {
-          setTimeout(() => firstInput.focus(), 100);
-        }
+        modal.classList.add('active');
+        modal.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('modal-open');
+        this.activeModal = modal;
+        const surface = this._modalSurface(modal);
+        if (!surface.hasAttribute('tabindex')) surface.setAttribute('tabindex', '-1');
+        const focusable = this._focusableElements(surface);
+        const preferred = Array.from(
+          surface.querySelectorAll('[autofocus], input:not([type="hidden"]), select, textarea')
+        ).find(element => this._isVisible(element) && !element.disabled);
+        (preferred || focusable[0] || surface).focus();
       } else {
         console.warn('[Marvain] Modal not found:', modalId);
       }
@@ -169,12 +369,20 @@
       const modal = document.getElementById(modalId);
       if (modal) {
         modal.style.display = 'none';
-        document.body.style.overflow = '';
+        modal.classList.remove('active');
+        modal.setAttribute('aria-hidden', 'true');
+        this.activeModal = null;
+        const anotherModal = Array.from(document.querySelectorAll('.modal[id], .modal-overlay[id]'))
+          .find(candidate => candidate !== modal && this._isVisible(candidate));
+        document.body.classList.toggle('modal-open', Boolean(anotherModal));
         // Reset form if there's one in the modal
         const form = modal.querySelector('form');
         if (form) {
           form.reset();
         }
+        const returnFocus = this.modalReturnFocus.get(modal);
+        this.modalReturnFocus.delete(modal);
+        if (returnFocus && document.contains(returnFocus)) returnFocus.focus();
       }
     },
 

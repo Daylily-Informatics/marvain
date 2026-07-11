@@ -26,17 +26,31 @@
   {% block head %}{% endblock %}
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <div id="marvain-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
   <!-- Zebra stripe accent bar -->
   <div class="zebra-stripe-bar"></div>
   
   <!-- Header -->
   <header class="header">
     <a href="{{ url_for('gui_home') }}" class="header-logo">
-      <img src="{{ url_for('static', path='favicon.svg') }}" alt="Marvain" class="header-logo-icon">
+      <img src="{{ url_for('static', path='favicon.svg') }}" alt="" class="header-logo-icon">
       <span>Marvain</span>
     </a>
+
+    <button
+      type="button"
+      id="mobile-nav-toggle"
+      class="mobile-nav-toggle"
+      aria-controls="primary-navigation"
+      aria-expanded="false"
+      aria-label="Open navigation"
+      title="Navigation"
+    >
+      <i class="fas fa-bars" aria-hidden="true"></i>
+    </button>
     
-    <nav class="header-nav" aria-label="Primary navigation">
+    <nav id="primary-navigation" class="header-nav" aria-label="Primary navigation">
       <a href="{{ url_for('gui_home') }}" class="nav-link {% if active_page in ('home', 'dashboard') %}active{% endif %}">
         <i class="fas fa-gauge-high"></i> Dashboard
       </a>
@@ -130,21 +144,21 @@
       {% if user %}
         <!-- Browser real-time update indicator -->
         {% if ws_url %}
-        <div id="ws-indicator" class="ws-indicator connecting" title="Connecting to browser real-time updates">
+        <div id="ws-indicator" class="ws-indicator connecting" title="Connecting to browser real-time updates" role="status" aria-live="polite" aria-atomic="true">
           <span class="ws-dot"></span>
           <span id="ws-status-text" class="ws-status-text">Realtime connecting</span>
         </div>
         {% else %}
-        <div id="ws-indicator" class="ws-indicator unavailable" title="Browser real-time updates are not configured">
+        <div id="ws-indicator" class="ws-indicator unavailable" title="Browser real-time updates are not configured" role="status" aria-live="polite" aria-atomic="true">
           <span class="ws-dot"></span>
           <span id="ws-status-text" class="ws-status-text">Realtime unavailable</span>
         </div>
         {% endif %}
         <span class="text-muted text-sm">{{ user.email }}</span>
-        <a href="{{ url_for('profile') }}" class="btn btn-outline btn-sm">
+        <a href="{{ url_for('profile') }}" class="btn btn-outline btn-sm header-profile-link">
           <i class="fas fa-user"></i> Profile
         </a>
-        <a href="{{ url_for('logout') }}" class="btn btn-outline btn-sm">
+        <a href="{{ url_for('logout') }}" class="btn btn-outline btn-sm header-logout-link">
           <i class="fas fa-sign-out-alt"></i> Logout
         </a>
       {% else %}
@@ -156,7 +170,7 @@
   </header>
   
   <!-- Main Content -->
-  <main class="main-content">
+  <main id="main-content" class="main-content" tabindex="-1">
     <div class="container">
       {% block content %}{% endblock %}
     </div>

@@ -16,11 +16,6 @@
       <i class="fas fa-edit"></i> Edit
     </button>
     {% endif %}
-    {% if agent.role == 'owner' %}
-    <button type="button" class="btn btn-outline btn-danger-outline" onclick="confirmDeleteAgent()">
-      <i class="fas fa-trash-alt"></i> Delete Agent
-    </button>
-    {% endif %}
   </div>
 </div>
 
@@ -433,41 +428,6 @@
   </div>
 </div>
 
-<!-- Delete Agent Confirmation Modal -->
-{% if agent.role == 'owner' %}
-<div class="modal" id="delete-agent-modal" style="display: none;">
-  <div class="modal-backdrop" onclick="Marvain.hideModal('delete-agent-modal')"></div>
-  <div class="modal-content">
-    <div class="modal-header modal-header-danger">
-      <h3 class="modal-title modal-title-danger"><i class="fas fa-exclamation-triangle"></i> Delete Agent</h3>
-      <button type="button" class="modal-close" onclick="Marvain.hideModal('delete-agent-modal')">&times;</button>
-    </div>
-    <div class="modal-body">
-      <p class="mb-md">You are about to move <strong>{{ agent.name }}</strong> through the agent lifecycle endpoint.</p>
-      <div class="delete-warning-box">
-        <p class="warning-title"><i class="fas fa-exclamation-circle"></i> Current backend behavior:</p>
-        <ul>
-          <li>Mature agents enter <strong>stasis</strong></li>
-          <li>Immature agents are marked <strong>soft_deleted</strong></li>
-          <li>Related devices, spaces, memories, events, people, actions, and audit records are not hard-deleted by this GUI call</li>
-        </ul>
-      </div>
-      <div class="form-group">
-        <label for="delete-confirm-name">Type the agent name to confirm:</label>
-        <input type="text" id="delete-confirm-name" placeholder="{{ agent.name }}" autocomplete="off" class="mt-sm">
-      </div>
-    </div>
-    <div class="modal-footer">
-      <button type="button" class="btn btn-outline" onclick="Marvain.hideModal('delete-agent-modal')">Cancel</button>
-      <button type="button" class="btn btn-delete-disabled" id="delete-agent-submit" disabled
-              onclick="executeDeleteAgent()">
-        <i class="fas fa-trash-alt"></i> Apply Lifecycle Delete
-      </button>
-    </div>
-  </div>
-</div>
-{% endif %}
-
 {# Styles moved to marvain.css: agent-overview, quick-actions, section-divider, role-options, grid-4, info-grid #}
 {% endblock %}
 
@@ -732,7 +692,7 @@ async function changeMemberRole(userId) {
 }
 
 async function removeMember(userId) {
-  if (!confirm('Remove this member from the agent? This action cannot be undone.')) return;
+  if (!confirm('Remove this member from the agent? They can be invited again later.')) return;
   try {
     var resp = await fetch('/api/agents/' + AGENT_ID + '/memberships/' + encodeURIComponent(userId), {
       method: 'DELETE'
@@ -879,50 +839,6 @@ async function awRestart() {
     var data = await resp.json();
     Marvain.showToast('success', 'Agent Worker', 'Restarted (PID ' + data.pid + ')');
     awUpdateUI(data);
-  } catch (e) {
-    Marvain.hideLoading();
-    Marvain.showToast('error', 'Error', e.message);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Delete Agent
-// ---------------------------------------------------------------------------
-function confirmDeleteAgent() {
-  var input = document.getElementById('delete-confirm-name');
-  var btn = document.getElementById('delete-agent-submit');
-  if (input) { input.value = ''; }
-  if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; btn.style.cursor = 'not-allowed'; }
-  Marvain.showModal('delete-agent-modal');
-}
-
-// Enable submit only when name matches
-(function() {
-  var input = document.getElementById('delete-confirm-name');
-  var btn = document.getElementById('delete-agent-submit');
-  if (input && btn) {
-    input.addEventListener('input', function() {
-      var matches = input.value.trim() === '{{ agent.name }}';
-      btn.disabled = !matches;
-      btn.style.opacity = matches ? '1' : '0.5';
-      btn.style.cursor = matches ? 'pointer' : 'not-allowed';
-    });
-  }
-})();
-
-async function executeDeleteAgent() {
-  try {
-    Marvain.showLoading('Applying agent lifecycle change…');
-    var resp = await fetch('/api/agents/' + AGENT_ID + '/delete', {method: 'POST'});
-    Marvain.hideLoading();
-    if (!resp.ok) {
-      var err = await resp.json().catch(function() { return {detail: resp.statusText}; });
-      throw new Error(err.detail || 'Failed to delete agent');
-    }
-    var data = await resp.json();
-    Marvain.showToast('success', 'Agent Lifecycle', 'Agent moved to ' + (data.lifecycle_state || 'updated'));
-    Marvain.hideModal('delete-agent-modal');
-    setTimeout(function() { window.location.href = '/agents'; }, 1500);
   } catch (e) {
     Marvain.hideLoading();
     Marvain.showToast('error', 'Error', e.message);

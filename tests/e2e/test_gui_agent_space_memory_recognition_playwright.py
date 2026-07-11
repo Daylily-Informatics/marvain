@@ -242,7 +242,7 @@ class _WorkflowState:
             "model": "round4-gui-worker",
             "confidence": 1.0,
             "lifecycle_state": "candidate",
-            "tapdb_euid": "MVN-MEMORY-CANDIDATE-ROUND4",
+            "tapdb_euid": "tapdb-fixture-memory-candidate",
             "created_at": "2026-04-27T12:00:03+00:00",
             "reviewed_at": None,
             "agent_name": self.active_session["agent_name"] if self.active_session else "Round 4 Agent",
@@ -276,7 +276,7 @@ class _WorkflowState:
                     "modality": "text",
                     "confidence": 1.0,
                     "related_memory_ids": [],
-                    "tapdb_euid": f"MVN-MEMORY-ROUND4-{tier.upper()}",
+                    "tapdb_euid": f"tapdb-fixture-memory-{tier}",
                     "source_event_id": params["event_id"],
                 }
             )
@@ -458,7 +458,6 @@ def gui_module(workflow_state):
     mod = helpers._load_hub_app_module()
     fake_db = _WorkflowDb(helpers, workflow_state)
     fake_s3 = helpers._FakeS3()
-    helpers._install_semantic_tapdb_fake()
     mod.validate_configuration_or_fail = lambda: None
     mod._cfg = dataclasses.replace(
         mod._cfg,

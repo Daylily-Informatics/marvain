@@ -21,9 +21,6 @@
       <i class="fas fa-ban"></i> Revoke Device
     </button>
     {% endif %}
-    <button type="button" class="btn btn-outline btn-danger" onclick="deleteDevice('{{ device.device_id }}', '{{ device.name }}')">
-      <i class="fas fa-trash"></i> Delete Device
-    </button>
   </div>
 </div>
 
@@ -348,7 +345,7 @@ function pingDevice(deviceId) {
 }
 
 async function revokeDevice(deviceId) {
-  if (!confirm('Are you sure you want to revoke this device? This action cannot be undone.')) {
+  if (!confirm('Revoke this device token now? Historical device records will remain available.')) {
     return;
   }
 
@@ -367,38 +364,6 @@ async function revokeDevice(deviceId) {
     Marvain.hideLoading();
     Marvain.showToast('success', 'Success', 'Device revoked successfully');
     setTimeout(() => location.reload(), 1000);
-  } catch (error) {
-    Marvain.hideLoading();
-    Marvain.showToast('error', 'Error', error.message);
-  }
-}
-
-async function deleteDevice(deviceId, deviceName) {
-  if (!confirm(`Are you sure you want to PERMANENTLY DELETE the device "${deviceName}"?\n\nThis will remove all records of this device. This action cannot be undone.`)) {
-    return;
-  }
-
-  // Double confirmation for destructive action
-  if (!confirm('This is a permanent deletion. Are you absolutely sure?')) {
-    return;
-  }
-
-  try {
-    Marvain.showLoading('Deleting device...');
-    const response = await fetch(`/api/devices/${deviceId}/delete`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    });
-
-    if (!response.ok) {
-      const err = await response.json();
-      throw new Error(err.detail || 'Failed to delete device');
-    }
-
-    Marvain.hideLoading();
-    Marvain.showToast('success', 'Deleted', 'Device permanently deleted');
-    // Redirect to devices list since this device no longer exists
-    setTimeout(() => window.location.href = '/devices', 1000);
   } catch (error) {
     Marvain.hideLoading();
     Marvain.showToast('error', 'Error', error.message);

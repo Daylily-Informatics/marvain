@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+
+{% block title %}Page Not Found - Marvain{% endblock %}
+
+{% block content %}
+<section class="error-page" aria-labelledby="error-title">
+  <p class="error-code" aria-hidden="true">404</p>
+  <h1 id="error-title">Page Not Found</h1>
+  <p class="text-muted">The requested Marvain page does not exist or is not available to this account.</p>
+  <div class="error-actions">
+    <a class="btn btn-primary" href="{{ url_for('gui_home') }}">
+      <i class="fas fa-gauge-high" aria-hidden="true"></i> Dashboard
+    </a>
+    <button type="button" class="btn btn-outline" onclick="history.back()">
+      <i class="fas fa-arrow-left" aria-hidden="true"></i> Back
+    </button>
+  </div>
+</section>
+{% endblock %}

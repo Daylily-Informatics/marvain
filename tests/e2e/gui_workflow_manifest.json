@@ -1,0 +1,279 @@
+{
+  "schema": "marvain.gui-workflows.v1",
+  "screenshot_phases": ["before", "before_submit", "after_submit"],
+  "workflows": [
+    {
+      "id": "dashboard-agent-summary",
+      "page": "dashboard",
+      "path": "/",
+      "heading": "Dashboard",
+      "command": "select an agent summary and open its detail view",
+      "browser_steps": ["focus the first agent summary", "activate the agent summary link"],
+      "persisted_postcondition": {
+        "owner": "hub-api",
+        "request": "GET /v1/agents/{selected_agent_id}",
+        "assert": ["agent_id equals selected_agent_id", "summary counts are sourced from persisted records"]
+      }
+    },
+    {
+      "id": "agents-create",
+      "page": "agents",
+      "path": "/agents",
+      "heading": "Agents",
+      "command": "create an agent",
+      "browser_steps": ["open Create Agent", "enter name and relationship", "submit Create Agent"],
+      "persisted_postcondition": {
+        "owner": "hub-api",
+        "request": "GET /v1/agents/{created_agent_id}",
+        "assert": ["agent_id equals created_agent_id", "name and relationship equal submitted values"]
+      }
+    },
+    {
+      "id": "people-consent",
+      "page": "people",
+      "path": "/people",
+      "heading": "People",
+      "command": "create a person and record consent",
+      "browser_steps": ["open Add Person", "enter identity fields", "submit person", "open Manage Consent", "submit consent"],
+      "persisted_postcondition": {
+        "owner": "hub-api",
+        "request": "GET /v1/people/{created_person_id}/consents",
+        "assert": ["person_id equals created_person_id", "grant status and expiry equal submitted values"]
+      }
+    },
+    {
+      "id": "locations-create",
+      "page": "locations",
+      "path": "/locations",
+      "heading": "Locations",
+      "command": "create a physical location",
+      "browser_steps": ["open Create Location", "enter location fields", "submit Create Location"],
+      "persisted_postcondition": {
+        "owner": "hub-api",
+        "request": "GET /v1/locations/{created_location_id}",
+        "assert": ["location_id equals created_location_id", "name and owning agent equal submitted values"]
+      }
+    },
+    {
+      "id": "spaces-create",
+      "page": "spaces",
+      "path": "/spaces",
+      "heading": "Spaces",
+      "command": "create a space",
+      "browser_steps": ["open Create Space", "select agent", "enter name and privacy mode", "submit Create Space"],
+      "persisted_postcondition": {
+        "owner": "hub-api",
+        "request": "GET /v1/spaces/{created_space_id}",
+        "assert": ["space_id equals created_space_id", "agent, name, privacy, and room mode equal submitted values"]
+      }
+    },
+    {
+      "id": "devices-register",
+      "page": "devices",
+      "path": "/devices",
+      "heading": "Devices",
+      "command": "register a scoped device",
+      "browser_steps": ["open Register Device", "enter name and agent", "select location and scopes", "confirm registration"],
+      "persisted_postcondition": {
+        "owner": "hub-api",
+        "request": "GET /v1/devices/{created_device_id}",
+        "assert": ["device_id equals created_device_id", "agent, location, capabilities, and scopes equal submitted values"]
+      }
+    },
+    {
+      "id": "sessions-inspect",
+      "page": "sessions",
+      "path": "/sessions",
+      "heading": "Sessions",
+      "command": "filter sessions and open one session receipt",
+      "browser_steps": ["apply agent and state filters", "open the matching session"],
+      "persisted_postcondition": {
+        "owner": "hub-api",
+        "request": "GET /v1/sessions/{selected_session_id}",
+        "assert": ["session_id equals selected_session_id", "space, device, people, and lifecycle state are present"]
+      }
+    },
+    {
+      "id": "live-session-chat",
+      "page": "live-session",
+      "path": "/live-session",
+      "heading": "Live Session",
+      "command": "join a space and submit a typed turn",
+      "browser_steps": ["select a space", "start the session", "enter a typed turn", "submit the turn", "wait for agent response"],
+      "persisted_postcondition": {
+        "owner": "livekit-worker-and-hub-api",
+        "request": "GET /v1/live-sessions/{session_id}/events",
+        "assert": ["user transcript event_id is present", "agent response event_id is present", "session and space attribution match"]
+      }
+    },
+    {
+      "id": "memories-annotate",
+      "page": "memories",
+      "path": "/memories",
+      "heading": "Memories",
+      "command": "annotate an immutable memory",
+      "browser_steps": ["filter to a committed memory", "open memory detail", "enter annotation", "submit annotation"],
+      "persisted_postcondition": {
+        "owner": "memory-service",
+        "request": "GET /v1/memories/{memory_id}",
+        "assert": ["canonical content and kind are unchanged", "new annotation id, author, type, comment, and weight are present"]
+      }
+    },
+    {
+      "id": "recognition-decide",
+      "page": "recognition",
+      "path": "/recognition",
+      "heading": "Recognition",
+      "command": "review a recognition hypothesis",
+      "browser_steps": ["filter observations", "open a pending hypothesis", "submit accept, reject, or no-match decision"],
+      "persisted_postcondition": {
+        "owner": "recognition-service",
+        "request": "GET /v1/recognition/hypotheses/{hypothesis_id}",
+        "assert": ["decision equals submitted decision", "observation, artifact, model, consent, reviewer, and audit ids are present"]
+      }
+    },
+    {
+      "id": "actions-create",
+      "page": "actions",
+      "path": "/actions",
+      "heading": "Actions",
+      "command": "create a targeted action proposal",
+      "browser_steps": ["open Create Action", "select agent, space, and device", "enter kind and payload", "submit action proposal"],
+      "persisted_postcondition": {
+        "owner": "action-service",
+        "request": "GET /v1/actions/{created_action_id}",
+        "assert": ["action_id equals created_action_id", "target, policy state, approval state, and idempotency key are present"]
+      }
+    },
+    {
+      "id": "actions-guide-propose",
+      "page": "actions-guide",
+      "path": "/actions/guide",
+      "heading": "Actions Guide",
+      "command": "choose an action kind and create a validated proposal",
+      "browser_steps": ["select an action kind", "populate its required fields", "submit proposal"],
+      "persisted_postcondition": {
+        "owner": "action-service",
+        "request": "GET /v1/actions/{created_action_id}",
+        "assert": ["kind and validated payload equal submitted values", "required scopes are persisted"]
+      }
+    },
+    {
+      "id": "tools-inspect",
+      "page": "tools",
+      "path": "/tools",
+      "heading": "Tool Catalog",
+      "command": "filter the catalog and inspect one tool contract",
+      "browser_steps": ["search for a tool", "open its schema and policy detail"],
+      "persisted_postcondition": {
+        "owner": "planner-tool-registry",
+        "request": "GET /v1/tools/{selected_tool_name}",
+        "assert": ["name, input schema, and provider are present", "required scopes and approval policy are present"]
+      }
+    },
+    {
+      "id": "personas-create",
+      "page": "personas",
+      "path": "/personas",
+      "heading": "Personas",
+      "command": "create and activate a persona revision",
+      "browser_steps": ["open Create Persona", "enter persona fields", "submit persona", "make it active"],
+      "persisted_postcondition": {
+        "owner": "agent-lifecycle-service",
+        "request": "GET /v1/personas/{created_persona_id}",
+        "assert": ["persona_id equals created_persona_id", "revision, instructions, author, and active state are present"]
+      }
+    },
+    {
+      "id": "tapdb-graph-traverse",
+      "page": "tapdb-graph",
+      "path": "/tapdb/graph",
+      "heading": "Graph",
+      "command": "traverse from an owning-service TapDB object",
+      "browser_steps": ["obtain tapdb_euid from a persisted Marvain response", "submit it as graph start", "expand one neighbor"],
+      "persisted_postcondition": {
+        "owner": "tapdb",
+        "request": "GET /api/dag/data?start_euid={tapdb_euid_from_owner}",
+        "assert": ["root id equals the owner-provided EUID", "typed lineage edges and neighbor depth are present"]
+      }
+    },
+    {
+      "id": "tapdb-query-filter",
+      "page": "tapdb-query",
+      "path": "/tapdb/query?kind=instance&limit=50",
+      "heading": "Query",
+      "command": "query TapDB by typed instance fields",
+      "browser_steps": ["select category, type, subtype, and version", "enter name filter", "submit query"],
+      "persisted_postcondition": {
+        "owner": "tapdb",
+        "request": "GET /tapdb/query?kind=instance&category={category}&type={type}&subtype={subtype}&version={version}&name_like={name}",
+        "assert": ["results satisfy every submitted filter", "returned EUIDs are emitted by TapDB"]
+      }
+    },
+    {
+      "id": "audit-verify",
+      "page": "audit",
+      "path": "/audit",
+      "heading": "Audit",
+      "command": "verify the audit chain and inspect an entry",
+      "browser_steps": ["submit Verify Chain", "open the receipt entry created by a prior workflow"],
+      "persisted_postcondition": {
+        "owner": "audit-service",
+        "request": "GET /v1/audit/{selected_entry_id}",
+        "assert": ["entry id, actor, operation, and object reference are present", "prior hash, hash, and timestamp are present"]
+      }
+    },
+    {
+      "id": "observability-correlate",
+      "page": "observability",
+      "path": "/observability",
+      "heading": "Observability",
+      "command": "filter measured runtime state by run id",
+      "browser_steps": ["enter a prior workflow run id", "apply component and severity filters", "open the correlated record"],
+      "persisted_postcondition": {
+        "owner": "marvain-observability",
+        "request": "GET /my_health?run_id={run_id}",
+        "assert": ["schema is marvain.observability.v1", "measured worker, queue, database, TapDB, and dependency states are correlated to run_id"]
+      }
+    },
+    {
+      "id": "capability-matrix-evidence",
+      "page": "capability-matrix",
+      "path": "/capabilities",
+      "heading": "Capability Matrix",
+      "command": "filter capabilities and inspect accepted evidence",
+      "browser_steps": ["filter by capability status", "open one capability evidence record"],
+      "persisted_postcondition": {
+        "owner": "operational-status-generator",
+        "request": "GET /v1/capabilities/{capability_id}",
+        "assert": ["score is derived from receipt evidence", "implementation, local, browser, deployed, failure, observability, docs, and regression states are explicit"]
+      }
+    },
+    {
+      "id": "artifacts-upload",
+      "page": "artifacts",
+      "path": "/artifacts",
+      "heading": "Artifacts",
+      "command": "upload and verify an artifact",
+      "browser_steps": ["open Upload", "select agent and file", "submit upload", "wait for completion verification"],
+      "persisted_postcondition": {
+        "owner": "artifact-service",
+        "request": "GET /v1/artifacts/{created_artifact_id}",
+        "assert": ["artifact id, checksum, size, media type, and storage URI are present", "TapDB reference, lineage, retention, and audit ids are present"]
+      }
+    },
+    {
+      "id": "settings-profile-auth",
+      "page": "settings-profile",
+      "path": "/profile",
+      "heading": "Profile",
+      "command": "verify the authenticated profile and membership view",
+      "browser_steps": ["open profile", "inspect authenticated identity and memberships"],
+      "persisted_postcondition": {
+        "owner": "auth-service",
+        "request": "GET /v1/me",
+        "assert": ["authenticated subject and email match the browser session", "agent memberships and roles are server-derived"]
+      }
+    }
+  ]
+}

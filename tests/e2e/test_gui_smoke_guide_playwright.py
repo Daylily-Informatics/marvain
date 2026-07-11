@@ -38,7 +38,6 @@ def gui_module():
     mod = helpers._load_hub_app_module()
     fake_db = helpers._FakeDb()
     fake_s3 = helpers._FakeS3()
-    helpers._install_semantic_tapdb_fake()
 
     def fake_tapdb_web_app(*, config_path, env_name, host_bridge):  # noqa: ARG001
         tapdb = FastAPI()
@@ -50,7 +49,7 @@ def gui_module():
         @tapdb.get("/query")
         async def query() -> HTMLResponse:
             return HTMLResponse(
-                "<html><body><h1>Query</h1><table><tr><td>MVN-MEMORY-QA</td></tr></table></body></html>"
+                "<html><body><h1>Query</h1><table><tr><td>tapdb-fixture-memory</td></tr></table></body></html>"
             )
 
         @tapdb.get("/")

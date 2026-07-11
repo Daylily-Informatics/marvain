@@ -177,12 +177,11 @@ function filterArtifacts() {
 }
 
 function showUploadModal() {
-  document.getElementById('upload-modal').classList.add('active');
+  Marvain.showModal('upload-modal');
 }
 
 function closeUploadModal() {
-  document.getElementById('upload-modal').classList.remove('active');
-  document.getElementById('upload-form').reset();
+  Marvain.hideModal('upload-modal');
   document.getElementById('upload-progress').style.display = 'none';
 }
 

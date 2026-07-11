@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block title %}Service Error - Marvain{% endblock %}
+
+{% block content %}
+<section class="error-page" aria-labelledby="error-title">
+  <p class="error-code" aria-hidden="true">500</p>
+  <h1 id="error-title">Marvain Could Not Complete This Request</h1>
+  <p class="text-muted">The request failed without changing the intended workflow state.</p>
+  {% if request_id %}
+  <p class="error-reference">Reference <code>{{ request_id }}</code></p>
+  {% endif %}
+  <div class="error-actions">
+    <button type="button" class="btn btn-primary" onclick="location.reload()">
+      <i class="fas fa-rotate-right" aria-hidden="true"></i> Retry
+    </button>
+    <a class="btn btn-outline" href="{{ url_for('gui_observability') }}">
+      <i class="fas fa-chart-line" aria-hidden="true"></i> Observability
+    </a>
+  </div>
+</section>
+{% endblock %}

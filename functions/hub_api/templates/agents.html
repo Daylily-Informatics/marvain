@@ -220,11 +220,7 @@ function submitCreateAgent(event) {
 }
 
 Marvain.showCreateAgentModal = function() {
-  document.getElementById('create-agent-modal').style.display = 'flex';
-};
-
-Marvain.hideModal = function(id) {
-  document.getElementById(id).style.display = 'none';
+  Marvain.showModal('create-agent-modal');
 };
 </script>
 {% endblock %}

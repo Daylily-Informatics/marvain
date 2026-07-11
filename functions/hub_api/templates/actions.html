@@ -421,13 +421,13 @@ async function rejectAction(actionId) {
 const agentSpaces = {{ spaces_by_agent|tojson|safe if spaces_by_agent else '{}' }};
 
 function showCreateActionModal() {
-  document.getElementById('create-action-modal').style.display = 'flex';
   document.getElementById('create-action-form').reset();
   document.getElementById('action-space').innerHTML = '<option value="">No space</option>';
+  Marvain.showModal('create-action-modal');
 }
 
 function hideCreateActionModal() {
-  document.getElementById('create-action-modal').style.display = 'none';
+  Marvain.hideModal('create-action-modal');
 }
 
 // Update spaces dropdown when agent changes

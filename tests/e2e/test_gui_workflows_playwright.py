@@ -29,6 +29,8 @@ MEMORY_ID = "77777777-7777-7777-7777-777777777777"
 EVENT_ID = "88888888-8888-8888-8888-888888888888"
 LOCATION_ID = "99999999-9999-9999-9999-999999999999"
 PERSONA_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+TAPDB_MEMORY_REF = "tapdb-fixture-memory"
+TAPDB_LOCATION_REF = "tapdb-fixture-location"
 
 
 class _FakeDb:
@@ -208,7 +210,7 @@ class _FakeDb:
             "description": "Deterministic location",
             "address": "Local test",
             "metadata": json.dumps({"kind": "home"}),
-            "tapdb_euid": "MVN-LOCATION-QA",
+            "tapdb_euid": TAPDB_LOCATION_REF,
             "space_count": 1,
             "device_count": 1,
         }
@@ -308,7 +310,7 @@ class _FakeDb:
             "source_table": "memories",
             "source_id": MEMORY_ID,
             "target_template_code": "marvain.memory.v1",
-            "tapdb_euid": "MVN-MEMORY-QA",
+            "tapdb_euid": TAPDB_MEMORY_REF,
             "status": "synced",
             "last_error": None,
             "updated_at": "2026-04-27T12:00:00+00:00",
@@ -392,30 +394,11 @@ def _load_hub_app_module():
     return mod
 
 
-def _install_semantic_tapdb_fake() -> None:
-    class _Store:
-        @classmethod
-        def from_environment(cls):
-            return cls()
-
-        def graph_for(self, semantic_id: str) -> dict:
-            return {
-                "semantic_id": semantic_id,
-                "nodes": [{"semantic_id": semantic_id, "template": "memory", "name": "QA Memory", "depth": 0}],
-                "edges": [],
-            }
-
-    module = types.ModuleType("agent_hub.semantic_tapdb")
-    module.DaylilyTapdbSemanticStore = _Store
-    sys.modules["agent_hub.semantic_tapdb"] = module
-
-
 @pytest.fixture(scope="module")
 def gui_module():
     mod = _load_hub_app_module()
     fake_db = _FakeDb()
     fake_s3 = _FakeS3()
-    _install_semantic_tapdb_fake()
     tapdb_web = mod._FastAPI()
     tapdb_dag = mod._FastAPI()
 
@@ -433,7 +416,7 @@ def gui_module():
 
     @tapdb_dag.get("/api/dag/data")
     def _tapdb_dag_data():
-        return {"dag": {"nodes": [{"id": "MVN-MEMORY-QA", "name": "QA Memory"}], "edges": []}}
+        return {"dag": {"nodes": [{"id": TAPDB_MEMORY_REF, "name": "QA Memory"}], "edges": []}}
 
     mod._tapdb_web_asgi_app = tapdb_web
     mod._tapdb_dag_asgi_app = tapdb_dag
@@ -554,7 +537,7 @@ def _assert_page(page, path: str, heading: str, expected_text: str | None = None
         ("/actions/guide", "Actions Guide", "Action Kinds"),
         ("/tools", "Tool Catalog", "twilio_send_sms"),
         ("/personas", "Personas", "Create Persona"),
-        ("/tapdb/graph?start_euid=MVN-MEMORY-QA", "Graph", "Semantic"),
+        (f"/tapdb/graph?start_euid={TAPDB_MEMORY_REF}", "Graph", "Semantic"),
         ("/audit", "Audit", "qa.audit"),
         ("/observability", "Observability", "openai-outage"),
         ("/capabilities", "Capability Matrix", "TapDB semantic graph"),
@@ -601,12 +584,63 @@ def test_core_gui_browser_workflows_are_interactive(browser_page) -> None:
     assert page.locator("#remote-media").is_visible()
 
 
+def test_gui_keyboard_mobile_and_live_region_contracts(browser_page) -> None:
+    page = browser_page
+    page.set_viewport_size({"width": 390, "height": 844})
+    _assert_page(page, "/agents", "Agents", "QA Agent")
+
+    toggle = page.locator("#mobile-nav-toggle")
+    assert toggle.is_visible()
+    assert toggle.get_attribute("aria-label") == "Open navigation"
+    toggle.click()
+    assert toggle.get_attribute("aria-expanded") == "true"
+    assert page.locator("#primary-navigation").is_visible()
+    page.keyboard.press("Escape")
+    assert toggle.get_attribute("aria-expanded") == "false"
+    assert toggle.evaluate("element => document.activeElement === element")
+
+    page.set_viewport_size({"width": 1440, "height": 1100})
+    _assert_page(page, "/agents", "Agents", "QA Agent")
+    opener = page.get_by_role("button", name="Create Agent").first
+    opener.click()
+    modal = page.locator("#create-agent-modal")
+    dialog = modal.get_by_role("dialog")
+    dialog.wait_for(state="visible")
+    assert dialog.get_attribute("aria-modal") == "true"
+    page.wait_for_function("() => document.activeElement && document.activeElement.id === 'agent-name'")
+    assert page.locator("#agent-name").evaluate("element => document.activeElement === element")
+
+    dialog.get_by_role("button", name="Create Agent").focus()
+    page.keyboard.press("Tab")
+    assert page.evaluate("document.activeElement.getAttribute('aria-label')") == "Close dialog"
+    page.keyboard.press("Escape")
+    modal.wait_for(state="hidden")
+    assert opener.evaluate("element => document.activeElement === element")
+
+    page.evaluate("Marvain.showToast('error', 'Request failed', 'The action was not saved', 60000)")
+    alert = page.get_by_role("alert")
+    assert "The action was not saved" in alert.inner_text()
+    assert alert.get_by_role("button", name="Dismiss notification").is_visible()
+    page.wait_for_function("() => document.getElementById('marvain-announcer').textContent.includes('Request failed')")
+    assert "Request failed" in page.locator("#marvain-announcer").inner_text()
+
+    page.emulate_media(reduced_motion="reduce")
+    transition_seconds = page.locator(".agent-card").first.evaluate(
+        "element => parseFloat(getComputedStyle(element).transitionDuration)"
+    )
+    assert transition_seconds <= 0.001
+
+    skip_link = page.locator(".skip-link")
+    skip_link.focus()
+    assert skip_link.bounding_box()["y"] >= 0
+
+
 def test_tapdb_dag_query_api_is_available_to_browser(browser_page) -> None:
     page = browser_page
-    page.goto("/tapdb/graph?start_euid=MVN-MEMORY-QA", wait_until="domcontentloaded")
+    page.goto(f"/tapdb/graph?start_euid={TAPDB_MEMORY_REF}", wait_until="domcontentloaded")
     result = page.evaluate(
         """async () => {
-            const response = await fetch('/api/dag/data?start_euid=MVN-MEMORY-QA');
+            const response = await fetch('/api/dag/data?start_euid=tapdb-fixture-memory');
             return {status: response.status, body: await response.json()};
         }"""
     )
