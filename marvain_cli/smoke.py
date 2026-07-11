@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -108,6 +110,32 @@ class GuiSmokePage:
     expected_text: str | None = None
 
 
+@dataclass(frozen=True)
+class GuiSmokePostcondition:
+    owner: str
+    request: str
+    assertions: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class GuiSmokeWorkflow:
+    workflow_id: str
+    page: str
+    path: str
+    heading: str
+    command: str
+    browser_steps: tuple[str, ...]
+    persisted_postcondition: GuiSmokePostcondition
+
+
+GUI_WORKFLOW_MANIFEST_PATH = Path(__file__).resolve().parents[1] / "tests" / "e2e" / "gui_workflow_manifest.json"
+GUI_WORKFLOW_MANIFEST_SCHEMA = "marvain.gui-workflows.v1"
+GUI_WORKFLOW_PROOF_SCHEMA = "marvain.gui-workflow-proof.v1"
+GUI_WORKFLOW_SCREENSHOT_PHASES = ("before", "before_submit", "after_submit")
+_GUI_WORKFLOW_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+_GUI_WORKFLOW_BINDING_RE = re.compile(r"\{([a-z][a-z0-9_]*)\}")
+
+
 GUI_SMOKE_PAGES: tuple[GuiSmokePage, ...] = (
     GuiSmokePage("dashboard", "/", "Dashboard"),
     GuiSmokePage("agents", "/agents", "Agents"),
@@ -131,6 +159,130 @@ GUI_SMOKE_PAGES: tuple[GuiSmokePage, ...] = (
     GuiSmokePage("artifacts", "/artifacts", "Artifacts"),
     GuiSmokePage("settings-profile", "/profile", "Profile"),
 )
+
+
+def _require_manifest_keys(value: dict[str, Any], *, expected: set[str], context: str) -> None:
+    actual = set(value)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        unexpected = sorted(actual - expected)
+        raise SmokeError(f"{context} has invalid keys; missing={missing}, unexpected={unexpected}")
+
+
+def _require_manifest_string(value: object, *, context: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise SmokeError(f"{context} must be a non-empty string")
+    return value
+
+
+def _require_manifest_strings(value: object, *, context: str, minimum: int = 1) -> tuple[str, ...]:
+    if not isinstance(value, list) or len(value) < minimum:
+        raise SmokeError(f"{context} must contain at least {minimum} strings")
+    strings = tuple(_require_manifest_string(item, context=f"{context}[{index}]") for index, item in enumerate(value))
+    if len(strings) != len(set(strings)):
+        raise SmokeError(f"{context} contains duplicate entries")
+    return strings
+
+
+def load_gui_workflow_manifest(
+    manifest_path: Path = GUI_WORKFLOW_MANIFEST_PATH,
+) -> tuple[GuiSmokeWorkflow, ...]:
+    """Load the one explicit GUI workflow inventory; missing or malformed data fails hard."""
+    path = manifest_path.expanduser().resolve()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise SmokeError(f"GUI workflow manifest does not exist: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise SmokeError(f"GUI workflow manifest is not valid JSON: {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise SmokeError("GUI workflow manifest root must be an object")
+    _require_manifest_keys(
+        payload,
+        expected={"schema", "screenshot_phases", "workflows"},
+        context="GUI workflow manifest",
+    )
+    if payload["schema"] != GUI_WORKFLOW_MANIFEST_SCHEMA:
+        raise SmokeError(
+            f"GUI workflow manifest schema must be {GUI_WORKFLOW_MANIFEST_SCHEMA!r}, got {payload['schema']!r}"
+        )
+    phases = _require_manifest_strings(payload["screenshot_phases"], context="screenshot_phases")
+    if phases != GUI_WORKFLOW_SCREENSHOT_PHASES:
+        raise SmokeError(f"screenshot_phases must be {list(GUI_WORKFLOW_SCREENSHOT_PHASES)!r}, got {list(phases)!r}")
+    raw_workflows = payload["workflows"]
+    if not isinstance(raw_workflows, list) or not raw_workflows:
+        raise SmokeError("GUI workflow manifest workflows must be a non-empty list")
+
+    workflows: list[GuiSmokeWorkflow] = []
+    seen_ids: set[str] = set()
+    seen_pages: set[str] = set()
+    for index, raw_workflow in enumerate(raw_workflows):
+        context = f"workflows[{index}]"
+        if not isinstance(raw_workflow, dict):
+            raise SmokeError(f"{context} must be an object")
+        _require_manifest_keys(
+            raw_workflow,
+            expected={
+                "id",
+                "page",
+                "path",
+                "heading",
+                "command",
+                "browser_steps",
+                "persisted_postcondition",
+            },
+            context=context,
+        )
+        workflow_id = _require_manifest_string(raw_workflow["id"], context=f"{context}.id")
+        if _GUI_WORKFLOW_ID_RE.fullmatch(workflow_id) is None:
+            raise SmokeError(f"{context}.id must be a lowercase hyphenated identifier")
+        page = _require_manifest_string(raw_workflow["page"], context=f"{context}.page")
+        path_value = _require_manifest_string(raw_workflow["path"], context=f"{context}.path")
+        if not path_value.startswith("/") or path_value.startswith("//"):
+            raise SmokeError(f"{context}.path must be an absolute application path")
+        if workflow_id in seen_ids:
+            raise SmokeError(f"duplicate GUI workflow id: {workflow_id}")
+        if page in seen_pages:
+            raise SmokeError(f"duplicate GUI workflow page: {page}")
+
+        raw_postcondition = raw_workflow["persisted_postcondition"]
+        if not isinstance(raw_postcondition, dict):
+            raise SmokeError(f"{context}.persisted_postcondition must be an object")
+        _require_manifest_keys(
+            raw_postcondition,
+            expected={"owner", "request", "assert"},
+            context=f"{context}.persisted_postcondition",
+        )
+        request = _require_manifest_string(
+            raw_postcondition["request"], context=f"{context}.persisted_postcondition.request"
+        )
+        if not request.startswith("GET /") or request.startswith("GET //"):
+            raise SmokeError(f"{context}.persisted_postcondition.request must be an application-relative GET")
+        workflow = GuiSmokeWorkflow(
+            workflow_id=workflow_id,
+            page=page,
+            path=path_value,
+            heading=_require_manifest_string(raw_workflow["heading"], context=f"{context}.heading"),
+            command=_require_manifest_string(raw_workflow["command"], context=f"{context}.command"),
+            browser_steps=_require_manifest_strings(
+                raw_workflow["browser_steps"], context=f"{context}.browser_steps", minimum=2
+            ),
+            persisted_postcondition=GuiSmokePostcondition(
+                owner=_require_manifest_string(
+                    raw_postcondition["owner"], context=f"{context}.persisted_postcondition.owner"
+                ),
+                request=request,
+                assertions=_require_manifest_strings(
+                    raw_postcondition["assert"],
+                    context=f"{context}.persisted_postcondition.assert",
+                    minimum=2,
+                ),
+            ),
+        )
+        workflows.append(workflow)
+        seen_ids.add(workflow_id)
+        seen_pages.add(page)
+    return tuple(workflows)
 
 
 class SmokeRuntime(Protocol):
@@ -917,81 +1069,222 @@ def _slug(value: str) -> str:
     return "".join(ch if ch.isalnum() else "-" for ch in value.lower()).strip("-")
 
 
-def _fill_visible_form(page: Any) -> bool:
-    return bool(
-        page.evaluate(
-            """() => {
-                const visible = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                const forms = Array.from(document.querySelectorAll('form')).filter(visible);
-                if (!forms.length) return false;
-                const form = forms[0];
-                for (const input of form.querySelectorAll('input, textarea, select')) {
-                    if (!visible(input) || input.type === 'hidden' || input.disabled || input.readOnly) continue;
-                    if (input.tagName === 'SELECT') {
-                        const option = Array.from(input.options).find((item) => item.value);
-                        if (option) input.value = option.value;
-                    } else if (input.type === 'checkbox') {
-                        input.checked = input.required || input.name.includes('consent');
-                    } else if (input.type === 'file') {
-                        continue;
-                    } else if (!input.value) {
-                        input.value = input.type === 'email' ? 'gui-smoke@example.test' : `gui-smoke-${input.name || input.id || 'value'}`;
-                    }
-                    input.dispatchEvent(new Event('input', {bubbles: true}));
-                    input.dispatchEvent(new Event('change', {bubbles: true}));
-                }
-                return true;
-            }"""
-        )
+class GuiWorkflowBlocked(SmokeError):
+    """Raised when an explicit workflow contract or owning service is unavailable."""
+
+
+class GuiWorkflowFailed(SmokeError):
+    """Raised when a workflow runs but its command or persisted proof is invalid."""
+
+
+def _workflow_locator(page: Any, *, attribute: str, workflow_id: str) -> Any:
+    return page.locator(f'[{attribute}="{workflow_id}"]')
+
+
+def _require_single_visible_workflow_control(locator: Any, *, selector: str, workflow_id: str) -> None:
+    count = locator.count()
+    if count == 0:
+        raise GuiWorkflowBlocked(f"{workflow_id}: required page-specific control is absent: {selector}")
+    if count != 1:
+        raise GuiWorkflowFailed(f"{workflow_id}: expected one page-specific control for {selector}, found {count}")
+    if not locator.is_visible(timeout=500):
+        raise GuiWorkflowBlocked(f"{workflow_id}: page-specific control is not visible: {selector}")
+
+
+def _prepare_manifest_workflow(page: Any, workflow: GuiSmokeWorkflow) -> None:
+    prepare_selector = f'data-marvain-smoke-prepare="{workflow.workflow_id}"'
+    prepare = _workflow_locator(
+        page,
+        attribute="data-marvain-smoke-prepare",
+        workflow_id=workflow.workflow_id,
+    )
+    _require_single_visible_workflow_control(
+        prepare,
+        selector=f"[{prepare_selector}]",
+        workflow_id=workflow.workflow_id,
+    )
+    prepare.click(timeout=5_000)
+    submit_selector = f'data-marvain-smoke-submit="{workflow.workflow_id}"'
+    submit = _workflow_locator(
+        page,
+        attribute="data-marvain-smoke-submit",
+        workflow_id=workflow.workflow_id,
+    )
+    _require_single_visible_workflow_control(
+        submit,
+        selector=f"[{submit_selector}]",
+        workflow_id=workflow.workflow_id,
     )
 
 
-def _open_first_workflow_control(page: Any) -> str:
-    labels = (
-        "Create Action",
-        "Register Device",
-        "Create Space",
-        "Add Person",
-        "Create Person",
-        "Upload",
-        "Enroll",
-        "Start Session",
-        "Join",
-        "Save Consent",
-        "Accept",
-        "Reject",
-        "Revoke",
+def _load_workflow_receipt(page: Any, workflow: GuiSmokeWorkflow) -> dict[str, Any]:
+    receipt = _workflow_locator(
+        page,
+        attribute="data-marvain-smoke-receipt",
+        workflow_id=workflow.workflow_id,
     )
-    for label in labels:
-        locator = page.get_by_role("button", name=label).first
-        try:
-            if locator.count() and locator.is_visible(timeout=300):
-                locator.click(timeout=1_000)
-                page.wait_for_timeout(250)
-                return f"opened control: {label}"
-        except Exception:
-            continue
-    return "no visible workflow control; captured read-only state"
-
-
-def _submit_first_visible_form(page: Any) -> str:
     try:
-        clicked = page.evaluate(
-            """() => {
-                const visible = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-                const buttons = Array.from(document.querySelectorAll('button[type="submit"], input[type="submit"]'));
-                const button = buttons.find((item) => visible(item) && !item.disabled);
-                if (!button) return false;
-                button.click();
-                return true;
-            }"""
-        )
-        if clicked:
-            page.wait_for_timeout(600)
-            return "submitted first visible form"
+        receipt.wait_for(state="attached", timeout=10_000)
     except Exception as exc:
-        return f"submit failed: {exc}"
-    return "no visible submit button; after screenshot captured without submit"
+        raise GuiWorkflowFailed(
+            f"{workflow.workflow_id}: command produced no workflow receipt within 10 seconds"
+        ) from exc
+    if receipt.count() != 1:
+        raise GuiWorkflowFailed(f"{workflow.workflow_id}: expected one command receipt, found {receipt.count()}")
+    raw_receipt = receipt.text_content(timeout=2_000)
+    try:
+        payload = json.loads(raw_receipt or "")
+    except json.JSONDecodeError as exc:
+        raise GuiWorkflowFailed(f"{workflow.workflow_id}: command receipt is not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise GuiWorkflowFailed(f"{workflow.workflow_id}: command receipt must be an object")
+    _require_manifest_keys(
+        payload,
+        expected={"workflow_id", "command", "completed_browser_steps", "bindings"},
+        context=f"{workflow.workflow_id} command receipt",
+    )
+    if payload["workflow_id"] != workflow.workflow_id:
+        raise GuiWorkflowFailed(f"{workflow.workflow_id}: command receipt names a different workflow")
+    if payload["command"] != workflow.command:
+        raise GuiWorkflowFailed(f"{workflow.workflow_id}: command receipt does not match the manifest command")
+    completed_steps = payload["completed_browser_steps"]
+    if completed_steps != list(workflow.browser_steps):
+        raise GuiWorkflowFailed(f"{workflow.workflow_id}: completed browser steps do not exactly match the manifest")
+    bindings = payload["bindings"]
+    if not isinstance(bindings, dict) or any(
+        not isinstance(key, str) or not isinstance(value, (str, int, float)) or isinstance(value, bool)
+        for key, value in bindings.items()
+    ):
+        raise GuiWorkflowFailed(f"{workflow.workflow_id}: receipt bindings must be scalar identifier values")
+    return payload
+
+
+def _resolve_workflow_request(workflow: GuiSmokeWorkflow, bindings: dict[str, Any]) -> str:
+    method, request_path = workflow.persisted_postcondition.request.split(" ", 1)
+    if method != "GET":
+        raise GuiWorkflowFailed(f"{workflow.workflow_id}: only GET owner postconditions are supported")
+    required = set(_GUI_WORKFLOW_BINDING_RE.findall(request_path))
+    missing = sorted(required - set(bindings))
+    if missing:
+        raise GuiWorkflowFailed(
+            f"{workflow.workflow_id}: command receipt is missing postcondition bindings: {', '.join(missing)}"
+        )
+
+    def replace(match: re.Match[str]) -> str:
+        return urllib.parse.quote(str(bindings[match.group(1)]), safe="")
+
+    resolved_path = _GUI_WORKFLOW_BINDING_RE.sub(replace, request_path)
+    if "{" in resolved_path or "}" in resolved_path:
+        raise GuiWorkflowFailed(f"{workflow.workflow_id}: owner postcondition request remains unresolved")
+    return f"GET {resolved_path}"
+
+
+def _verify_owner_postcondition(
+    *,
+    page: Any,
+    base_url: str,
+    run_id: str,
+    workflow: GuiSmokeWorkflow,
+    resolved_request: str,
+) -> list[str]:
+    _method, request_path = resolved_request.split(" ", 1)
+    request_url = urllib.parse.urljoin(f"{base_url.rstrip('/')}/", request_path.lstrip("/"))
+    response = page.context.request.get(
+        request_url,
+        headers={
+            "X-Marvain-Gui-Smoke-Run-Id": run_id,
+            "X-Marvain-Gui-Smoke-Workflow-Id": workflow.workflow_id,
+            "X-Marvain-Gui-Smoke-Evidence-Owner": workflow.persisted_postcondition.owner,
+        },
+        timeout=10_000,
+    )
+    if response.status in {401, 403, 404, 405}:
+        raise GuiWorkflowBlocked(
+            f"{workflow.workflow_id}: owner postcondition {resolved_request} returned HTTP {response.status}"
+        )
+    if response.status < 200 or response.status >= 300:
+        raise GuiWorkflowFailed(
+            f"{workflow.workflow_id}: owner postcondition {resolved_request} returned HTTP {response.status}"
+        )
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise GuiWorkflowFailed(
+            f"{workflow.workflow_id}: owner postcondition {resolved_request} did not return JSON proof"
+        ) from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("workflow_proof"), dict):
+        raise GuiWorkflowFailed(
+            f"{workflow.workflow_id}: owner response lacks workflow_proof from {workflow.persisted_postcondition.owner}"
+        )
+    proof = payload["workflow_proof"]
+    _require_manifest_keys(
+        proof,
+        expected={"schema", "workflow_id", "owner", "request", "assertions"},
+        context=f"{workflow.workflow_id} owner proof",
+    )
+    expected_header = {
+        "schema": GUI_WORKFLOW_PROOF_SCHEMA,
+        "workflow_id": workflow.workflow_id,
+        "owner": workflow.persisted_postcondition.owner,
+        "request": resolved_request,
+    }
+    for key, expected in expected_header.items():
+        if proof[key] != expected:
+            raise GuiWorkflowFailed(
+                f"{workflow.workflow_id}: owner proof {key} does not match the manifest-derived value"
+            )
+    assertion_proofs = proof["assertions"]
+    if not isinstance(assertion_proofs, list) or len(assertion_proofs) != len(
+        workflow.persisted_postcondition.assertions
+    ):
+        raise GuiWorkflowFailed(f"{workflow.workflow_id}: owner proof does not cover every manifest assertion")
+    evidence: list[str] = []
+    for expected, assertion_proof in zip(
+        workflow.persisted_postcondition.assertions,
+        assertion_proofs,
+        strict=True,
+    ):
+        if not isinstance(assertion_proof, dict):
+            raise GuiWorkflowFailed(f"{workflow.workflow_id}: owner assertion proof must be an object")
+        _require_manifest_keys(
+            assertion_proof,
+            expected={"assert", "passed", "evidence"},
+            context=f"{workflow.workflow_id} owner assertion proof",
+        )
+        proof_evidence = assertion_proof["evidence"]
+        if assertion_proof["assert"] != expected:
+            raise GuiWorkflowFailed(f"{workflow.workflow_id}: owner proof assertion text differs from the manifest")
+        if assertion_proof["passed"] is not True:
+            raise GuiWorkflowFailed(f"{workflow.workflow_id}: owner did not verify assertion: {expected}")
+        if not isinstance(proof_evidence, str) or not proof_evidence.strip():
+            raise GuiWorkflowFailed(f"{workflow.workflow_id}: owner assertion has no concrete evidence: {expected}")
+        evidence.append(f"{expected}: {proof_evidence}")
+    return evidence
+
+
+def _submit_and_verify_manifest_workflow(
+    *,
+    page: Any,
+    base_url: str,
+    run_id: str,
+    workflow: GuiSmokeWorkflow,
+) -> tuple[str, list[str]]:
+    submit = _workflow_locator(
+        page,
+        attribute="data-marvain-smoke-submit",
+        workflow_id=workflow.workflow_id,
+    )
+    submit.click(timeout=5_000)
+    receipt = _load_workflow_receipt(page, workflow)
+    resolved_request = _resolve_workflow_request(workflow, receipt["bindings"])
+    evidence = _verify_owner_postcondition(
+        page=page,
+        base_url=base_url,
+        run_id=run_id,
+        workflow=workflow,
+        resolved_request=resolved_request,
+    )
+    return resolved_request, evidence
 
 
 def run_gui_smoke_guide(
@@ -999,18 +1292,20 @@ def run_gui_smoke_guide(
     base_url: str,
     output_dir: Path,
     headless: bool = True,
-    pages: tuple[GuiSmokePage, ...] = GUI_SMOKE_PAGES,
+    manifest_path: Path = GUI_WORKFLOW_MANIFEST_PATH,
 ) -> dict[str, Any]:
-    """Exercise GUI routes with Playwright and write a screenshot-backed report."""
+    """Execute the explicit GUI manifest and require owning-service postcondition proof."""
     try:
         from playwright.sync_api import sync_playwright
     except Exception as exc:  # pragma: no cover - depends on optional browser install
         raise SmokeError(f"Playwright is unavailable: {exc}") from exc
 
+    workflows = load_gui_workflow_manifest(manifest_path)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = output_dir.expanduser().resolve() / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     failures: list[str] = []
+    blockers: list[str] = []
     rows: list[dict[str, Any]] = []
     console_errors: list[str] = []
     http_failures: list[str] = []
@@ -1035,44 +1330,88 @@ def run_gui_smoke_guide(
             ),
         )
         try:
-            for item in pages:
-                page_dir = run_dir / _slug(item.name)
+            for workflow in workflows:
+                page_dir = run_dir / _slug(workflow.page)
                 page_dir.mkdir(parents=True, exist_ok=True)
                 before = page_dir / "before.png"
                 before_submit = page_dir / "before_submit.png"
                 after = page_dir / "after_submit.png"
-                step_notes: list[str] = []
+                row_failures: list[str] = []
+                block_reason: str | None = None
+                resolved_request: str | None = None
+                verification_evidence: list[str] = []
+                prepared = False
                 try:
-                    page.goto(item.path, wait_until="domcontentloaded", timeout=15_000)
+                    page.goto(workflow.path, wait_until="domcontentloaded", timeout=15_000)
                     page.locator("body").wait_for(timeout=10_000)
                     body = page.locator("body").inner_text(timeout=10_000)
                     if "Authentication Error" in body or "Not authenticated" in body:
-                        raise SmokeError(
+                        raise GuiWorkflowBlocked(
                             "page failed closed to authentication instead of rendering authenticated smoke state"
                         )
-                    if item.heading not in body:
-                        raise SmokeError(f"heading {item.heading!r} not found in body text")
-                    if item.expected_text and item.expected_text not in body:
-                        raise SmokeError(f"expected text {item.expected_text!r} not found")
+                    if workflow.heading not in body:
+                        raise GuiWorkflowFailed(f"heading {workflow.heading!r} not found in body text")
                     page.screenshot(path=str(before), full_page=True)
-                    step_notes.append(_open_first_workflow_control(page))
-                    if _fill_visible_form(page):
-                        step_notes.append("filled first visible form controls")
+                    _prepare_manifest_workflow(page, workflow)
+                    prepared = True
+                except GuiWorkflowBlocked as exc:
+                    block_reason = str(exc)
+                except Exception as exc:
+                    row_failures.append(str(exc))
+                if not before.exists():
+                    try:
+                        page.screenshot(path=str(before), full_page=True)
+                    except Exception as exc:
+                        row_failures.append(f"before screenshot failed: {exc}")
+                try:
                     page.screenshot(path=str(before_submit), full_page=True)
-                    step_notes.append(_submit_first_visible_form(page))
+                except Exception as exc:
+                    row_failures.append(f"before_submit screenshot failed: {exc}")
+                if prepared and not row_failures and block_reason is None:
+                    try:
+                        resolved_request, verification_evidence = _submit_and_verify_manifest_workflow(
+                            page=page,
+                            base_url=base_url,
+                            run_id=run_id,
+                            workflow=workflow,
+                        )
+                    except GuiWorkflowBlocked as exc:
+                        block_reason = str(exc)
+                    except Exception as exc:
+                        row_failures.append(str(exc))
+                try:
                     page.screenshot(path=str(after), full_page=True)
                 except Exception as exc:
-                    failures.append(f"{item.name}: {exc}")
-                    step_notes.append(f"failure: {exc}")
-                    try:
-                        page.screenshot(path=str(after), full_page=True)
-                    except Exception:
-                        pass
+                    row_failures.append(f"after_submit screenshot failed: {exc}")
+
+                if row_failures:
+                    status = "FAIL"
+                    reason = "; ".join(row_failures)
+                    failures.append(f"{workflow.workflow_id}: {reason}")
+                elif block_reason is not None:
+                    status = "BLOCKED"
+                    reason = block_reason
+                    blockers.append(f"{workflow.workflow_id}: {reason}")
+                else:
+                    status = "PASS"
+                    reason = "command completed and every owner postcondition assertion was verified"
                 rows.append(
                     {
-                        "name": item.name,
-                        "path": item.path,
-                        "notes": step_notes,
+                        "workflow_id": workflow.workflow_id,
+                        "name": workflow.page,
+                        "path": workflow.path,
+                        "heading": workflow.heading,
+                        "command": workflow.command,
+                        "browser_steps": list(workflow.browser_steps),
+                        "persisted_postcondition": {
+                            "owner": workflow.persisted_postcondition.owner,
+                            "request": workflow.persisted_postcondition.request,
+                            "assert": list(workflow.persisted_postcondition.assertions),
+                        },
+                        "status": status,
+                        "reason": reason,
+                        "resolved_request": resolved_request,
+                        "verification_evidence": verification_evidence,
                         "before": before.relative_to(run_dir).as_posix(),
                         "before_submit": before_submit.relative_to(run_dir).as_posix(),
                         "after": after.relative_to(run_dir).as_posix(),
@@ -1084,27 +1423,52 @@ def run_gui_smoke_guide(
 
     failures.extend(f"console error: {item}" for item in console_errors)
     failures.extend(f"http failure: {item}" for item in http_failures)
+    overall_status = "FAIL" if failures else "BLOCKED" if blockers else "PASS"
     report_path = run_dir / "GUI_SMOKE_REPORT.md"
     report_path.write_text(
-        _render_gui_smoke_report(base_url=base_url, run_id=run_id, rows=rows, failures=failures), encoding="utf-8"
+        _render_gui_smoke_report(
+            base_url=base_url,
+            run_id=run_id,
+            rows=rows,
+            failures=failures,
+            blockers=blockers,
+        ),
+        encoding="utf-8",
     )
     return {
         "run_id": run_id,
         "report_path": str(report_path),
         "output_dir": str(run_dir),
         "pages": len(rows),
+        "status": overall_status,
+        "passed": sum(row["status"] == "PASS" for row in rows),
+        "blocked": sum(row["status"] == "BLOCKED" for row in rows),
+        "failed": sum(row["status"] == "FAIL" for row in rows),
         "failures": failures,
-        "ok": not failures,
+        "blockers": blockers,
+        "ok": overall_status == "PASS",
     }
 
 
-def _render_gui_smoke_report(*, base_url: str, run_id: str, rows: list[dict[str, Any]], failures: list[str]) -> str:
+def _render_gui_smoke_report(
+    *,
+    base_url: str,
+    run_id: str,
+    rows: list[dict[str, Any]],
+    failures: list[str],
+    blockers: list[str],
+) -> str:
+    overall_status = "FAIL" if failures else "BLOCKED" if blockers else "PASS"
     lines = [
         "# Marvain GUI Smoke Guide",
         "",
         f"- Run ID: `{run_id}`",
         f"- Base URL: `{base_url}`",
-        f"- Result: `{'PASS' if not failures else 'FAIL'}`",
+        f"- Result: `{overall_status}`",
+        f"- Workflows: `{len(rows)}`",
+        f"- Passed: `{sum(row['status'] == 'PASS' for row in rows)}`",
+        f"- Blocked: `{sum(row['status'] == 'BLOCKED' for row in rows)}`",
+        f"- Failed: `{sum(row['status'] == 'FAIL' for row in rows)}`",
         "",
     ]
     if failures:
@@ -1112,15 +1476,34 @@ def _render_gui_smoke_report(*, base_url: str, run_id: str, rows: list[dict[str,
         lines.append("")
         lines.extend(f"- {item}" for item in failures)
         lines.append("")
+    if blockers:
+        lines.append("## Blockers")
+        lines.append("")
+        lines.extend(f"- {item}" for item in blockers)
+        lines.append("")
     lines.append("## Page Walkthrough")
     lines.append("")
     for index, row in enumerate(rows, start=1):
         lines.extend(
             [
-                f"### {index}. {row['name']} `{row['path']}`",
+                f"### {index}. {row['workflow_id']} on {row['name']} `{row['path']}`",
                 "",
-                "Steps:",
-                *[f"- {note}" for note in row["notes"]],
+                f"Status: `{row['status']}`",
+                "",
+                f"Command: {row['command']}",
+                "",
+                "Browser steps:",
+                *[f"{step_index}. {step}" for step_index, step in enumerate(row["browser_steps"], start=1)],
+                "",
+                "Persisted postcondition:",
+                f"- Owner: `{row['persisted_postcondition']['owner']}`",
+                f"- Request: `{row['persisted_postcondition']['request']}`",
+                *[f"- Assert: {assertion}" for assertion in row["persisted_postcondition"]["assert"]],
+                "",
+                "Execution:",
+                f"- Result: {row['reason']}",
+                f"- Resolved owner request: `{row['resolved_request'] or 'not resolved'}`",
+                *[f"- Owner evidence: {evidence}" for evidence in row["verification_evidence"]],
                 "",
                 f"Before: ![before]({row['before']})",
                 "",

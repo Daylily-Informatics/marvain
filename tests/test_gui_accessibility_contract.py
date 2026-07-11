@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TEMPLATES = ROOT / "functions" / "hub_api" / "templates"
 STATIC = ROOT / "functions" / "hub_api" / "static"
 WORKFLOW_MANIFEST = ROOT / "tests" / "e2e" / "gui_workflow_manifest.json"
+SMOKE_RUNNER = ROOT / "marvain_cli" / "smoke.py"
 
 PRIMARY_GUI_PAGES = {
     "dashboard",
@@ -136,3 +137,16 @@ def test_gui_workflow_manifest_requires_page_specific_persisted_proof() -> None:
     raw = WORKFLOW_MANIFEST.read_text(encoding="utf-8")
     assert "MVN-" not in raw
     assert "M-" not in raw
+
+
+def test_gui_smoke_runner_requires_manifest_and_owner_postcondition_proof() -> None:
+    source = SMOKE_RUNNER.read_text(encoding="utf-8")
+
+    assert "load_gui_workflow_manifest" in source
+    assert "GUI_WORKFLOW_PROOF_SCHEMA" in source
+    assert "X-Marvain-Gui-Smoke-Evidence-Owner" in source
+    assert "completed browser steps do not exactly match the manifest" in source
+    assert "owner did not verify assertion" in source
+    assert "_fill_visible_form" not in source
+    assert "_submit_first_visible_form" not in source
+    assert "first visible form" not in source
