@@ -162,7 +162,17 @@ def _source_row() -> dict[str, object]:
         "source_device_location_id": LOCATION_ID,
         "session_agent_id": AGENT_ID,
         "session_space_id": SPACE_ID,
-        "artifact_id": None,
+        "artifact_id": ARTIFACT_ID,
+        "artifact_agent_id": AGENT_ID,
+        "artifact_space_id": SPACE_ID,
+        "artifact_device_id": SOURCE_DEVICE_ID,
+        "artifact_session_id": SESSION_ID,
+        "artifact_bucket": "recognition-test",
+        "artifact_object_key": "recognition/sample.wav",
+        "artifact_uri": "s3://recognition-test/recognition/sample.wav",
+        "artifact_media_type": "audio/wav",
+        "artifact_sha256": "a" * 64,
+        "artifact_lifecycle_state": "available",
     }
 
 
@@ -268,7 +278,7 @@ def _worker_device(*, kind: str = "recognition_worker") -> AuthenticatedDevice:
     )
 
 
-def test_repository_persists_observation_artifact_and_outbox_in_one_transaction(monkeypatch) -> None:
+def test_repository_requires_verified_artifact_and_persists_observation_in_one_transaction(monkeypatch) -> None:
     import recognition_repository as repository_module
 
     db = RecordingDb()
@@ -299,17 +309,49 @@ def test_repository_persists_observation_artifact_and_outbox_in_one_transaction(
     repository.commit()
 
     executed = "\n".join(sql for sql, _params, _tx in db.execute_calls)
-    assert "INSERT INTO artifact_references" in executed
-    assert "UPDATE events" in executed
+    assert "INSERT INTO artifact_references" not in executed
+    assert "UPDATE events" not in executed
     assert "INSERT INTO recognition_observations" in executed
     outbox_sources = [
         params["source_table"] for sql, params, _tx in db.query_calls if "INSERT INTO semantic_sync_status" in sql
     ]
-    assert outbox_sources == ["artifact_references", "recognition_observations"]
+    assert outbox_sources == ["recognition_observations"]
     assert all(tx == db.transaction_id for _sql, _params, tx in db.execute_calls)
     assert all(tx == db.transaction_id for _sql, _params, tx in db.query_calls)
     assert db.commits == [db.transaction_id]
     assert db.rollbacks == []
+
+
+def test_repository_rejects_source_event_without_verified_artifact_reference() -> None:
+    import recognition_repository as repository_module
+
+    db = RecordingDb()
+    db.source_row = _source_row()
+    db.source_row["artifact_id"] = None
+    repository = repository_module.RdsRecognitionRepository(db, agent_id=AGENT_ID)
+
+    with pytest.raises(repository_module.RecognitionConflictError, match="verified artifact reference"):
+        repository.prepare_observation(
+            source_event_id=EVENT_ID,
+            claimed_agent_id=AGENT_ID,
+            claimed_space_id=SPACE_ID,
+            claimed_location_id=LOCATION_ID,
+            claimed_session_id=SESSION_ID,
+            source_device_id=SOURCE_DEVICE_ID,
+            artifact_payload={
+                "bucket": "recognition-test",
+                "object_key": "recognition/sample.wav",
+                "uri": "s3://recognition-test/recognition/sample.wav",
+                "media_type": "audio/wav",
+                "sha256": "a" * 64,
+            },
+            modality=RecognitionModality.VOICE,
+            model_id="voice-model",
+            model_version="1.0.0",
+            embedding_sha256="f" * 64,
+        )
+
+    repository.rollback()
 
 
 def test_repository_rejects_artifact_claim_that_differs_from_source_event() -> None:

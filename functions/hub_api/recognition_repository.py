@@ -162,7 +162,6 @@ class RdsRecognitionRepository:
             raise RecognitionPersistenceError("agent_id is required")
         self.transaction_id = db.begin()
         self._closed = False
-        self._artifact_is_new = False
         self._hypothesis_requested_projection = False
         self._hypothesis_consent_id: str | None = None
         self._review_auth_subject: str | None = None
@@ -220,13 +219,13 @@ class RdsRecognitionRepository:
                    ar.object_key AS artifact_object_key,
                    ar.uri AS artifact_uri,
                    ar.media_type AS artifact_media_type,
-                   ar.sha256 AS artifact_sha256,
+                   ar.actual_sha256 AS artifact_sha256,
                    ar.lifecycle_state AS artifact_lifecycle_state
             FROM events e
             JOIN spaces s ON s.space_id = e.space_id
             JOIN devices d ON d.device_id = e.device_id
             LEFT JOIN sessions sess ON sess.session_id = e.session_id
-            LEFT JOIN artifact_references ar ON ar.artifact_id = e.artifact_id
+            JOIN artifact_references ar ON ar.artifact_id = e.artifact_id
             WHERE e.event_id = :source_event_id::uuid
             FOR UPDATE OF e
             """,
@@ -292,34 +291,32 @@ class RdsRecognitionRepository:
             raise RecognitionConflictError("face observations require an image or video artifact")
 
         artifact_id = _optional_text(row.get("artifact_id"))
-        self._artifact_is_new = artifact_id is None
-        if artifact_id:
-            persisted = {
-                "agent_id": _text(row.get("artifact_agent_id")),
-                "space_id": _optional_text(row.get("artifact_space_id")),
-                "device_id": _text(row.get("artifact_device_id")),
-                "session_id": _optional_text(row.get("artifact_session_id")),
-                "bucket": _text(row.get("artifact_bucket")),
-                "object_key": _text(row.get("artifact_object_key")),
-                "uri": _text(row.get("artifact_uri")),
-                "media_type": _text(row.get("artifact_media_type")),
-                "sha256": _text(row.get("artifact_sha256")).lower(),
-            }
-            expected = {
-                "agent_id": event_agent_id,
-                "space_id": event_space_id,
-                "device_id": event_device_id,
-                "session_id": event_session_id,
-                "bucket": expected_bucket,
-                "object_key": expected_key,
-                "uri": expected_uri,
-                "media_type": expected_media_type,
-                "sha256": expected_sha256,
-            }
-            if persisted != expected or _text(row.get("artifact_lifecycle_state")) != "available":
-                raise RecognitionConflictError("persisted artifact reference conflicts with source evidence")
-        else:
-            artifact_id = str(uuid.uuid4())
+        if artifact_id is None:
+            raise RecognitionConflictError("recognition requires a verified artifact reference")
+        persisted = {
+            "agent_id": _text(row.get("artifact_agent_id")),
+            "space_id": _optional_text(row.get("artifact_space_id")),
+            "device_id": _text(row.get("artifact_device_id")),
+            "session_id": _optional_text(row.get("artifact_session_id")),
+            "bucket": _text(row.get("artifact_bucket")),
+            "object_key": _text(row.get("artifact_object_key")),
+            "uri": _text(row.get("artifact_uri")),
+            "media_type": _text(row.get("artifact_media_type")),
+            "sha256": _text(row.get("artifact_sha256")).lower(),
+        }
+        expected = {
+            "agent_id": event_agent_id,
+            "space_id": event_space_id,
+            "device_id": event_device_id,
+            "session_id": event_session_id,
+            "bucket": expected_bucket,
+            "object_key": expected_key,
+            "uri": expected_uri,
+            "media_type": expected_media_type,
+            "sha256": expected_sha256,
+        }
+        if persisted != expected or _text(row.get("artifact_lifecycle_state")) != "available":
+            raise RecognitionConflictError("persisted artifact reference conflicts with source evidence")
 
         artifact = ArtifactEvidence(
             artifact_id=artifact_id,
@@ -386,69 +383,6 @@ class RdsRecognitionRepository:
     def persist_observation(self, *, artifact: ArtifactEvidence, observation: RecognitionObservation) -> None:
         if observation.agent_id != self.agent_id:
             raise RecognitionConflictError("observation agent scope does not match repository scope")
-        if self._artifact_is_new:
-            self.db.execute(
-                """
-                INSERT INTO artifact_references(
-                    artifact_id, agent_id, space_id, device_id, session_id, bucket, object_key, uri,
-                    media_type, sha256, lifecycle_state, created_at
-                ) VALUES(
-                    :artifact_id::uuid, :agent_id::uuid, :space_id::uuid, :device_id::uuid,
-                    NULLIF(CAST(:session_id AS text), '')::uuid, :bucket, :object_key, :uri,
-                    :media_type, :sha256, 'available', :created_at::timestamptz
-                )
-                """,
-                {
-                    "artifact_id": artifact.artifact_id,
-                    "agent_id": artifact.agent_id,
-                    "space_id": artifact.space_id,
-                    "device_id": artifact.device_id,
-                    "session_id": artifact.session_id or "",
-                    "bucket": artifact.bucket,
-                    "object_key": artifact.object_key,
-                    "uri": artifact.uri,
-                    "media_type": artifact.media_type,
-                    "sha256": artifact.sha256,
-                    "created_at": artifact.captured_at.isoformat(),
-                },
-                transaction_id=self.transaction_id,
-            )
-            self.db.execute(
-                """
-                UPDATE events
-                SET artifact_id = :artifact_id::uuid,
-                    location_id = COALESCE(location_id, NULLIF(CAST(:location_id AS text), '')::uuid)
-                WHERE event_id = :source_event_id::uuid
-                  AND artifact_id IS NULL
-                """,
-                {
-                    "artifact_id": artifact.artifact_id,
-                    "location_id": artifact.location_id or "",
-                    "source_event_id": artifact.source_event_id,
-                },
-                transaction_id=self.transaction_id,
-            )
-            enqueue_semantic_record(
-                self.db,
-                transaction_id=self.transaction_id,
-                agent_id=artifact.agent_id,
-                source_table="artifact_references",
-                source_id=artifact.artifact_id,
-                target_template_code=TEMPLATE_CODES["artifact_reference"],
-                name=f"recognition-artifact:{artifact.artifact_id}",
-                lifecycle_state="available",
-                properties={
-                    "agent_id": artifact.agent_id,
-                    "artifact_id": artifact.artifact_id,
-                    "source_event_id": artifact.source_event_id,
-                    "space_id": artifact.space_id or "",
-                    "location_id": artifact.location_id or "",
-                    "session_id": artifact.session_id or "",
-                    "device_id": artifact.device_id,
-                    "media_type": artifact.media_type,
-                    "sha256": artifact.sha256,
-                },
-            )
         self.db.execute(
             """
             INSERT INTO recognition_observations(
