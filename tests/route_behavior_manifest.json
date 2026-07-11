@@ -3,6 +3,233 @@
   "routes": [
     {
       "surface": "api",
+      "method": "POST",
+      "path": "/v1/artifacts/upload-intents",
+      "requirements": {"success": "required", "denial": "required", "validation": "required", "postcondition": "required"},
+      "tests": {
+        "success": "tests/test_route_behavior_api_artifacts_recognition.py::test_artifact_upload_completion_and_get_have_persisted_postconditions",
+        "denial": "tests/test_route_behavior_api_artifacts_recognition.py::test_artifact_routes_enforce_scope_validation_and_device_ownership",
+        "validation": "tests/test_route_behavior_api_artifacts_recognition.py::test_artifact_routes_enforce_scope_validation_and_device_ownership",
+        "postcondition": "tests/test_route_behavior_api_artifacts_recognition.py::test_artifact_upload_completion_and_get_have_persisted_postconditions"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "POST",
+      "path": "/v1/artifacts/{artifact_id}/complete",
+      "requirements": {"success": "required", "denial": "required", "validation": "required", "postcondition": "required"},
+      "tests": {
+        "success": "tests/test_route_behavior_api_artifacts_recognition.py::test_artifact_upload_completion_and_get_have_persisted_postconditions",
+        "denial": "tests/test_route_behavior_api_artifacts_recognition.py::test_artifact_routes_enforce_scope_validation_and_device_ownership",
+        "validation": "tests/test_route_behavior_api_artifacts_recognition.py::test_artifact_routes_enforce_scope_validation_and_device_ownership",
+        "postcondition": "tests/test_route_behavior_api_artifacts_recognition.py::test_artifact_upload_completion_and_get_have_persisted_postconditions"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "GET",
+      "path": "/v1/artifacts/{artifact_id}",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": "required",
+        "postcondition": {"status": "not_applicable", "reason": "The artifact detail read performs no durable mutation."}
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api_artifacts_recognition.py::test_artifact_upload_completion_and_get_have_persisted_postconditions",
+        "denial": "tests/test_route_behavior_api_artifacts_recognition.py::test_artifact_routes_enforce_scope_validation_and_device_ownership",
+        "validation": "tests/test_route_behavior_api_artifacts_recognition.py::test_artifact_routes_enforce_scope_validation_and_device_ownership"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "POST",
+      "path": "/v1/recognition/observations",
+      "requirements": {"success": "required", "denial": "required", "validation": "required", "postcondition": "required"},
+      "tests": {
+        "success": "tests/test_route_behavior_api_artifacts_recognition.py::test_recognition_observation_hypothesis_get_and_review_persist_lifecycle",
+        "denial": "tests/test_route_behavior_api_artifacts_recognition.py::test_recognition_observation_denial_and_validation_leave_no_state",
+        "validation": "tests/test_route_behavior_api_artifacts_recognition.py::test_recognition_observation_denial_and_validation_leave_no_state",
+        "postcondition": "tests/test_route_behavior_api_artifacts_recognition.py::test_recognition_observation_hypothesis_get_and_review_persist_lifecycle"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "POST",
+      "path": "/v1/recognition/observations/{observation_id}/hypotheses",
+      "requirements": {"success": "required", "denial": "required", "validation": "required", "postcondition": "required"},
+      "tests": {
+        "success": "tests/test_route_behavior_api_artifacts_recognition.py::test_recognition_observation_hypothesis_get_and_review_persist_lifecycle",
+        "denial": "tests/test_route_behavior_api_artifacts_recognition.py::test_recognition_hypothesis_validation_has_no_persisted_side_effect",
+        "validation": "tests/test_route_behavior_api_artifacts_recognition.py::test_recognition_hypothesis_validation_has_no_persisted_side_effect",
+        "postcondition": "tests/test_route_behavior_api_artifacts_recognition.py::test_recognition_observation_hypothesis_get_and_review_persist_lifecycle"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "GET",
+      "path": "/v1/recognition/hypotheses/{hypothesis_id}",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": "required",
+        "postcondition": {"status": "not_applicable", "reason": "The hypothesis detail read performs no durable mutation."}
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api_artifacts_recognition.py::test_recognition_observation_hypothesis_get_and_review_persist_lifecycle",
+        "denial": "tests/test_route_behavior_api_artifacts_recognition.py::test_recognition_hypothesis_get_and_review_require_admin_authorization",
+        "validation": "tests/test_route_behavior_api_artifacts_recognition.py::test_recognition_hypothesis_get_and_review_require_admin_authorization"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "POST",
+      "path": "/v1/recognition/hypotheses/{hypothesis_id}/review",
+      "requirements": {"success": "required", "denial": "required", "validation": "required", "postcondition": "required"},
+      "tests": {
+        "success": "tests/test_route_behavior_api_artifacts_recognition.py::test_recognition_observation_hypothesis_get_and_review_persist_lifecycle",
+        "denial": "tests/test_route_behavior_api_artifacts_recognition.py::test_recognition_hypothesis_get_and_review_require_admin_authorization",
+        "validation": "tests/test_route_behavior_api_artifacts_recognition.py::test_recognition_no_match_review_requires_explicit_retention",
+        "postcondition": "tests/test_route_behavior_api_artifacts_recognition.py::test_recognition_observation_hypothesis_get_and_review_persist_lifecycle"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "POST",
+      "path": "/v1/recognition/workers/{worker_key}/heartbeat",
+      "requirements": {"success": "required", "denial": "required", "validation": "required", "postcondition": "required"},
+      "tests": {
+        "success": "tests/test_route_behavior_api_artifacts_recognition.py::test_recognition_worker_heartbeat_persists_owning_evidence",
+        "denial": "tests/test_route_behavior_api_artifacts_recognition.py::test_recognition_worker_heartbeat_rejects_unbound_or_invalid_evidence",
+        "validation": "tests/test_route_behavior_api_artifacts_recognition.py::test_recognition_worker_heartbeat_rejects_unbound_or_invalid_evidence",
+        "postcondition": "tests/test_route_behavior_api_artifacts_recognition.py::test_recognition_worker_heartbeat_persists_owning_evidence"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "POST",
+      "path": "/v1/memories",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": "required",
+        "postcondition": "required"
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api_memory_live.py::test_v1_memory_create_success_and_persisted_readback",
+        "denial": "tests/test_route_behavior_api_memory_live.py::test_v1_memory_create_denies_non_worker_device",
+        "validation": "tests/test_route_behavior_api_memory_live.py::test_v1_memory_create_rejects_unclassified_content",
+        "postcondition": "tests/test_route_behavior_api_memory_live.py::test_v1_memory_create_success_and_persisted_readback"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "POST",
+      "path": "/v1/recall",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": "required",
+        "postcondition": "required"
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api_memory_live.py::test_v1_recall_success_returns_ranked_persisted_provenance",
+        "denial": "tests/test_route_behavior_api_memory_live.py::test_v1_recall_denies_cross_agent_device",
+        "validation": "tests/test_route_behavior_api_memory_live.py::test_v1_recall_rejects_empty_query",
+        "postcondition": "tests/test_route_behavior_api_memory_live.py::test_v1_recall_success_returns_ranked_persisted_provenance"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "POST",
+      "path": "/v1/livekit/token",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": "required",
+        "postcondition": "required"
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api_memory_live.py::test_v1_livekit_user_token_success_persists_session",
+        "denial": "tests/test_route_behavior_api_memory_live.py::test_v1_livekit_user_token_denies_non_member",
+        "validation": "tests/test_route_behavior_api_memory_live.py::test_v1_livekit_user_token_rejects_missing_space",
+        "postcondition": "tests/test_route_behavior_api_memory_live.py::test_v1_livekit_user_token_success_persists_session"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "POST",
+      "path": "/v1/livekit/device-token",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": "required",
+        "postcondition": "required"
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api_memory_live.py::test_v1_livekit_device_token_success_persists_stable_session",
+        "denial": "tests/test_route_behavior_api_memory_live.py::test_v1_livekit_device_token_denies_missing_scope",
+        "validation": "tests/test_route_behavior_api_memory_live.py::test_v1_livekit_device_token_rejects_ephemeral_mode",
+        "postcondition": "tests/test_route_behavior_api_memory_live.py::test_v1_livekit_device_token_success_persists_stable_session"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "POST",
+      "path": "/v1/events",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": "required",
+        "postcondition": "required"
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api_memory_live.py::test_v1_event_ingest_success_and_space_readback",
+        "denial": "tests/test_route_behavior_api_memory_live.py::test_v1_event_ingest_denies_missing_scope",
+        "validation": "tests/test_route_behavior_api_memory_live.py::test_v1_event_ingest_rejects_missing_type",
+        "postcondition": "tests/test_route_behavior_api_memory_live.py::test_v1_event_ingest_success_and_space_readback"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "GET",
+      "path": "/v1/spaces/{space_id}/events",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The limit is normalized to the supported range and does not reject valid requests."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The space event list performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api_memory_live.py::test_v1_event_ingest_success_and_space_readback",
+        "denial": "tests/test_route_behavior_api_memory_live.py::test_v1_space_events_denies_cross_agent_device"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "POST",
+      "path": "/v1/devices/heartbeat",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": "required",
+        "postcondition": "required"
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api_memory_live.py::test_v1_device_heartbeat_success_persists_metadata",
+        "denial": "tests/test_route_behavior_api_memory_live.py::test_v1_device_heartbeat_denies_missing_scope",
+        "validation": "tests/test_route_behavior_api_memory_live.py::test_v1_device_heartbeat_rejects_non_object_metadata",
+        "postcondition": "tests/test_route_behavior_api_memory_live.py::test_v1_device_heartbeat_success_persists_metadata"
+      }
+    },
+    {
+      "surface": "api",
       "method": "GET",
       "path": "/health",
       "requirements": {
@@ -22,6 +249,80 @@
       },
       "tests": {
         "success": "tests/test_route_behavior_api.py::test_api_health_success"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "POST",
+      "path": "/v1/spaces",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": "required",
+        "postcondition": "required"
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_create_space_success_and_readback",
+        "denial": "tests/test_route_behavior_api.py::test_api_create_space_denial",
+        "validation": "tests/test_route_behavior_api.py::test_api_create_space_validation",
+        "postcondition": "tests/test_route_behavior_api.py::test_api_create_space_success_and_readback"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "GET",
+      "path": "/v1/spaces/{space_id}",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "A syntactically valid space identifier fully defines this read."
+        },
+        "postcondition": {
+          "status": "not_applicable",
+          "reason": "The space detail read performs no durable mutation."
+        }
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_create_space_success_and_readback",
+        "denial": "tests/test_route_behavior_api.py::test_api_get_space_denial"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "PATCH",
+      "path": "/v1/spaces/{space_id}",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": "required",
+        "postcondition": "required"
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_update_space_success_and_readback",
+        "denial": "tests/test_route_behavior_api.py::test_api_update_space_denial",
+        "validation": "tests/test_route_behavior_api.py::test_api_update_space_validation",
+        "postcondition": "tests/test_route_behavior_api.py::test_api_update_space_success_and_readback"
+      }
+    },
+    {
+      "surface": "api",
+      "method": "DELETE",
+      "path": "/v1/spaces/{space_id}",
+      "requirements": {
+        "success": "required",
+        "denial": "required",
+        "validation": {
+          "status": "not_applicable",
+          "reason": "The soft-delete command has no request body to validate."
+        },
+        "postcondition": "required"
+      },
+      "tests": {
+        "success": "tests/test_route_behavior_api.py::test_api_delete_space_success_and_readback",
+        "denial": "tests/test_route_behavior_api.py::test_api_delete_space_denial",
+        "postcondition": "tests/test_route_behavior_api.py::test_api_delete_space_success_and_readback"
       }
     },
     {

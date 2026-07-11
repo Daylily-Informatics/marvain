@@ -640,8 +640,8 @@ def test_gui_creates_agent_space_and_conversation_stores_all_memory_tiers(browse
         space = workflow_state.create_space(payload)
         _json_response(route, {"ok": True, "space_id": space["space_id"], "space": space})
 
-    page.route("**/api/agents", create_agent)
-    page.route("**/api/spaces", create_space)
+    page.route("**/v1/agents", create_agent)
+    page.route("**/v1/spaces", create_space)
 
     page.goto("/agents", wait_until="domcontentloaded")
     page.get_by_role("button", name="Create Agent").first.click()

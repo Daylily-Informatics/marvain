@@ -529,6 +529,28 @@ class AgentOut(BaseModel):
     disabled: bool
 
 
+class CreateSpaceIn(BaseModel):
+    agent_id: str = Field(..., min_length=1)
+    name: str = Field(..., min_length=1, max_length=255)
+    privacy_mode: bool = False
+    livekit_room_mode: str = Field(default="ephemeral", pattern="^(ephemeral|stable)$")
+
+
+class UpdateSpaceIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    privacy_mode: bool | None = None
+
+
+class SpaceOut(BaseModel):
+    space_id: str
+    agent_id: str
+    name: str
+    privacy_mode: bool
+    livekit_room_mode: str
+    lifecycle_state: str = "active"
+    created_at: str | None = None
+
+
 class AgentMemberOut(BaseModel):
     user_id: str
     cognito_sub: str | None = None
@@ -1128,6 +1150,227 @@ def update_agent(agent_id: str, body: UpdateAgentIn, user: AuthenticatedUser = D
         role=r["role"],
         relationship_label=r.get("relationship_label"),
         disabled=r["disabled"],
+    )
+
+
+def _space_out(row: dict[str, Any]) -> SpaceOut:
+    return SpaceOut(
+        space_id=str(row["space_id"]),
+        agent_id=str(row["agent_id"]),
+        name=str(row["name"]),
+        privacy_mode=bool(row.get("privacy_mode")),
+        livekit_room_mode=str(row.get("livekit_room_mode") or "ephemeral"),
+        lifecycle_state=str(row.get("lifecycle_state") or "active"),
+        created_at=str(row["created_at"]) if row.get("created_at") is not None else None,
+    )
+
+
+@api_app.post("/v1/spaces", response_model=SpaceOut)
+def create_space(body: CreateSpaceIn, user: AuthenticatedUser = Depends(get_user)) -> SpaceOut:
+    """Create a space and its semantic outbox record in one transaction."""
+
+    _require_agent_role(user=user, agent_id=body.agent_id, required_role="admin")
+    count_rows = _get_db().query(
+        """
+        SELECT count(*)::INT AS count
+        FROM spaces
+        WHERE agent_id = :agent_id::uuid
+          AND lifecycle_state = 'active'
+        """,
+        {"agent_id": body.agent_id},
+    )
+    existing_count = int((count_rows[0].get("count") if count_rows else 0) or 0)
+    if existing_count >= _cfg.max_spaces_per_agent:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Space limit reached ({_cfg.max_spaces_per_agent}) for this agent",
+        )
+
+    space_id = str(uuid.uuid4())
+    name = body.name.strip()
+    tx = _get_db().begin()
+    try:
+        _get_db().execute(
+            """
+            INSERT INTO spaces(
+              space_id, agent_id, name, privacy_mode, livekit_room_mode, lifecycle_state
+            ) VALUES(
+              :space_id::uuid, :agent_id::uuid, :name, :privacy_mode, :livekit_room_mode, 'active'
+            )
+            """,
+            {
+                "space_id": space_id,
+                "agent_id": body.agent_id,
+                "name": name,
+                "privacy_mode": body.privacy_mode,
+                "livekit_room_mode": body.livekit_room_mode,
+            },
+            transaction_id=tx,
+        )
+        enqueue_semantic_record(
+            _get_db(),
+            transaction_id=tx,
+            agent_id=body.agent_id,
+            source_table="spaces",
+            source_id=space_id,
+            target_template_code=TEMPLATE_CODES["space"],
+            name=name,
+            lifecycle_state="active",
+            properties={
+                "agent_id": body.agent_id,
+                "space_id": space_id,
+                "privacy_mode": body.privacy_mode,
+                "livekit_room_mode": body.livekit_room_mode,
+            },
+        )
+        _get_db().commit(tx)
+    except Exception:
+        _get_db().rollback(tx)
+        raise
+    return SpaceOut(
+        space_id=space_id,
+        agent_id=body.agent_id,
+        name=name,
+        privacy_mode=body.privacy_mode,
+        livekit_room_mode=body.livekit_room_mode,
+    )
+
+
+@api_app.get("/v1/spaces/{space_id}", response_model=SpaceOut)
+def get_space(space_id: str, user: AuthenticatedUser = Depends(get_user)) -> SpaceOut:
+    rows = _get_db().query(
+        """
+        SELECT space_id::TEXT AS space_id, agent_id::TEXT AS agent_id, name, privacy_mode,
+               livekit_room_mode, lifecycle_state, created_at::TEXT AS created_at
+        FROM spaces
+        WHERE space_id = :space_id::uuid
+        """,
+        {"space_id": space_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Space not found")
+    _require_agent_role(user=user, agent_id=str(rows[0]["agent_id"]), required_role="member")
+    return _space_out(rows[0])
+
+
+@api_app.patch("/v1/spaces/{space_id}", response_model=SpaceOut)
+def update_space(space_id: str, body: UpdateSpaceIn, user: AuthenticatedUser = Depends(get_user)) -> SpaceOut:
+    rows = _get_db().query(
+        """
+        SELECT space_id::TEXT AS space_id, agent_id::TEXT AS agent_id, name, privacy_mode,
+               livekit_room_mode, lifecycle_state, created_at::TEXT AS created_at
+        FROM spaces
+        WHERE space_id = :space_id::uuid
+          AND lifecycle_state = 'active'
+        """,
+        {"space_id": space_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Space not found")
+    current = rows[0]
+    agent_id = str(current["agent_id"])
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+    if body.name is None and body.privacy_mode is None:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    name = body.name.strip() if body.name is not None else str(current["name"])
+    privacy_mode = body.privacy_mode if body.privacy_mode is not None else bool(current.get("privacy_mode"))
+    tx = _get_db().begin()
+    try:
+        _get_db().execute(
+            """
+            UPDATE spaces
+            SET name = :name, privacy_mode = :privacy_mode
+            WHERE space_id = :space_id::uuid
+              AND lifecycle_state = 'active'
+            """,
+            {"space_id": space_id, "name": name, "privacy_mode": privacy_mode},
+            transaction_id=tx,
+        )
+        enqueue_semantic_record(
+            _get_db(),
+            transaction_id=tx,
+            agent_id=agent_id,
+            source_table="spaces",
+            source_id=space_id,
+            target_template_code=TEMPLATE_CODES["space"],
+            name=name,
+            lifecycle_state="active",
+            properties={
+                "agent_id": agent_id,
+                "space_id": space_id,
+                "privacy_mode": privacy_mode,
+                "livekit_room_mode": str(current.get("livekit_room_mode") or "ephemeral"),
+            },
+        )
+        _get_db().commit(tx)
+    except Exception:
+        _get_db().rollback(tx)
+        raise
+    return SpaceOut(
+        space_id=space_id,
+        agent_id=agent_id,
+        name=name,
+        privacy_mode=privacy_mode,
+        livekit_room_mode=str(current.get("livekit_room_mode") or "ephemeral"),
+        lifecycle_state="active",
+        created_at=str(current["created_at"]) if current.get("created_at") is not None else None,
+    )
+
+
+@api_app.delete("/v1/spaces/{space_id}", response_model=SpaceOut)
+def delete_space(space_id: str, user: AuthenticatedUser = Depends(get_user)) -> SpaceOut:
+    rows = _get_db().query(
+        """
+        SELECT space_id::TEXT AS space_id, agent_id::TEXT AS agent_id, name, privacy_mode,
+               livekit_room_mode, lifecycle_state, created_at::TEXT AS created_at
+        FROM spaces
+        WHERE space_id = :space_id::uuid
+          AND lifecycle_state = 'active'
+        """,
+        {"space_id": space_id},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Space not found")
+    current = rows[0]
+    agent_id = str(current["agent_id"])
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+    tx = _get_db().begin()
+    try:
+        _get_db().execute(
+            """
+            UPDATE spaces
+            SET lifecycle_state = 'soft_deleted',
+                disabled_at = COALESCE(disabled_at, now()),
+                lifecycle_reason = 'user_requested'
+            WHERE space_id = :space_id::uuid
+              AND lifecycle_state = 'active'
+            """,
+            {"space_id": space_id},
+            transaction_id=tx,
+        )
+        enqueue_semantic_record(
+            _get_db(),
+            transaction_id=tx,
+            agent_id=agent_id,
+            source_table="spaces",
+            source_id=space_id,
+            target_template_code=TEMPLATE_CODES["space"],
+            name=str(current["name"]),
+            lifecycle_state="soft_deleted",
+            properties={"agent_id": agent_id, "space_id": space_id},
+        )
+        _get_db().commit(tx)
+    except Exception:
+        _get_db().rollback(tx)
+        raise
+    return SpaceOut(
+        space_id=space_id,
+        agent_id=agent_id,
+        name=str(current["name"]),
+        privacy_mode=bool(current.get("privacy_mode")),
+        livekit_room_mode=str(current.get("livekit_room_mode") or "ephemeral"),
+        lifecycle_state="soft_deleted",
+        created_at=str(current["created_at"]) if current.get("created_at") is not None else None,
     )
 
 

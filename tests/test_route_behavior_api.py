@@ -392,6 +392,253 @@ def test_api_patch_agent_validation(
     )
 
 
+def test_api_create_space_success_and_readback(
+    request: pytest.FixtureRequest,
+    api_harness: ApiHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _authenticate_user(api_harness)
+    monkeypatch.setattr(api_harness.mod, "_require_agent_role", lambda **_kwargs: None)
+    api_harness.db.query_responses = [[{"count": 0}]]
+
+    response = api_harness.client.post(
+        "/v1/spaces",
+        json={
+            "agent_id": AGENT_ID,
+            "name": "Receipt Space",
+            "privacy_mode": True,
+            "livekit_room_mode": "stable",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    space_id = body["space_id"]
+    assert body["lifecycle_state"] == "active"
+    assert api_harness.db.commits == ["route-behavior-tx-1"]
+    assert any("INSERT INTO spaces" in sql for sql, _params, _tx in api_harness.db.execute_calls)
+    record_http_evidence(
+        request,
+        surface="api",
+        method="POST",
+        path="/v1/spaces",
+        kind="success",
+        response=response,
+    )
+
+    api_harness.db.query_responses = [
+        [
+            {
+                "space_id": space_id,
+                "agent_id": AGENT_ID,
+                "name": "Receipt Space",
+                "privacy_mode": True,
+                "livekit_room_mode": "stable",
+                "lifecycle_state": "active",
+                "created_at": "2026-07-11T00:00:00Z",
+            }
+        ]
+    ]
+    readback = api_harness.client.get(f"/v1/spaces/{space_id}")
+    assert readback.status_code == 200
+    assert readback.json()["space_id"] == space_id
+    assert readback.json()["name"] == "Receipt Space"
+    record_http_evidence(
+        request,
+        surface="api",
+        method="GET",
+        path="/v1/spaces/{space_id}",
+        kind="success",
+        response=readback,
+    )
+    record_postcondition_evidence(
+        request,
+        surface="api",
+        method="POST",
+        path="/v1/spaces",
+        owner="space-service",
+        query=f"GET /v1/spaces/{space_id}",
+        record_ids={"space_id": space_id, "agent_id": AGENT_ID},
+        assertions=["created space is returned with submitted ownership, privacy, and room mode"],
+    )
+
+
+def test_api_create_space_denial(request: pytest.FixtureRequest, api_harness: ApiHarness) -> None:
+    response = api_harness.client.post(
+        "/v1/spaces",
+        json={"agent_id": AGENT_ID, "name": "Denied Space"},
+    )
+
+    assert response.status_code == 401
+    record_http_evidence(request, surface="api", method="POST", path="/v1/spaces", kind="denial", response=response)
+
+
+def test_api_create_space_validation(request: pytest.FixtureRequest, api_harness: ApiHarness) -> None:
+    _authenticate_user(api_harness)
+    response = api_harness.client.post("/v1/spaces", json={"agent_id": AGENT_ID})
+
+    assert response.status_code == 422
+    record_http_evidence(
+        request,
+        surface="api",
+        method="POST",
+        path="/v1/spaces",
+        kind="validation",
+        response=response,
+    )
+
+
+def test_api_get_space_denial(request: pytest.FixtureRequest, api_harness: ApiHarness) -> None:
+    response = api_harness.client.get(f"/v1/spaces/{SPACE_ID}")
+
+    assert response.status_code == 401
+    record_http_evidence(
+        request,
+        surface="api",
+        method="GET",
+        path="/v1/spaces/{space_id}",
+        kind="denial",
+        response=response,
+    )
+
+
+def _space_row(*, name: str = "Receipt Space", lifecycle_state: str = "active") -> dict[str, object]:
+    return {
+        "space_id": SPACE_ID,
+        "agent_id": AGENT_ID,
+        "name": name,
+        "privacy_mode": False,
+        "livekit_room_mode": "stable",
+        "lifecycle_state": lifecycle_state,
+        "created_at": "2026-07-11T00:00:00Z",
+    }
+
+
+def test_api_update_space_success_and_readback(
+    request: pytest.FixtureRequest,
+    api_harness: ApiHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _authenticate_user(api_harness)
+    monkeypatch.setattr(api_harness.mod, "_require_agent_role", lambda **_kwargs: None)
+    api_harness.db.query_responses = [[_space_row()]]
+
+    response = api_harness.client.patch(
+        f"/v1/spaces/{SPACE_ID}",
+        json={"name": "Renamed Space", "privacy_mode": True},
+    )
+    assert response.status_code == 200
+    assert response.json()["name"] == "Renamed Space"
+    assert response.json()["privacy_mode"] is True
+    assert api_harness.db.commits == ["route-behavior-tx-1"]
+    record_http_evidence(
+        request,
+        surface="api",
+        method="PATCH",
+        path="/v1/spaces/{space_id}",
+        kind="success",
+        response=response,
+    )
+
+    api_harness.db.query_responses = [[{**_space_row(name="Renamed Space"), "privacy_mode": True}]]
+    readback = api_harness.client.get(f"/v1/spaces/{SPACE_ID}")
+    assert readback.status_code == 200
+    assert readback.json()["name"] == "Renamed Space"
+    assert readback.json()["privacy_mode"] is True
+    record_postcondition_evidence(
+        request,
+        surface="api",
+        method="PATCH",
+        path="/v1/spaces/{space_id}",
+        owner="space-service",
+        query=f"GET /v1/spaces/{SPACE_ID}",
+        record_ids={"space_id": SPACE_ID},
+        assertions=["updated space name and privacy state are returned by the owning service"],
+    )
+
+
+def test_api_update_space_denial(request: pytest.FixtureRequest, api_harness: ApiHarness) -> None:
+    response = api_harness.client.patch(f"/v1/spaces/{SPACE_ID}", json={"name": "Denied Rename"})
+
+    assert response.status_code == 401
+    record_http_evidence(
+        request,
+        surface="api",
+        method="PATCH",
+        path="/v1/spaces/{space_id}",
+        kind="denial",
+        response=response,
+    )
+
+
+def test_api_update_space_validation(
+    request: pytest.FixtureRequest,
+    api_harness: ApiHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _authenticate_user(api_harness)
+    monkeypatch.setattr(api_harness.mod, "_require_agent_role", lambda **_kwargs: None)
+    api_harness.db.query_responses = [[_space_row()]]
+    response = api_harness.client.patch(f"/v1/spaces/{SPACE_ID}", json={})
+
+    assert response.status_code == 400
+    record_http_evidence(
+        request,
+        surface="api",
+        method="PATCH",
+        path="/v1/spaces/{space_id}",
+        kind="validation",
+        response=response,
+    )
+
+
+def test_api_delete_space_success_and_readback(
+    request: pytest.FixtureRequest,
+    api_harness: ApiHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _authenticate_user(api_harness)
+    monkeypatch.setattr(api_harness.mod, "_require_agent_role", lambda **_kwargs: None)
+    api_harness.db.query_responses = [[_space_row()]]
+
+    response = api_harness.client.delete(f"/v1/spaces/{SPACE_ID}")
+    assert response.status_code == 200
+    assert response.json()["lifecycle_state"] == "soft_deleted"
+    assert api_harness.db.commits == ["route-behavior-tx-1"]
+    assert any("lifecycle_state = 'soft_deleted'" in sql for sql, _params, _tx in api_harness.db.execute_calls)
+    record_http_evidence(
+        request,
+        surface="api",
+        method="DELETE",
+        path="/v1/spaces/{space_id}",
+        kind="success",
+        response=response,
+    )
+    record_postcondition_evidence(
+        request,
+        surface="api",
+        method="DELETE",
+        path="/v1/spaces/{space_id}",
+        owner="space-service",
+        query=f"DELETE /v1/spaces/{SPACE_ID}",
+        record_ids={"space_id": SPACE_ID},
+        assertions=["space lifecycle is soft_deleted and the projection row remains present"],
+    )
+
+
+def test_api_delete_space_denial(request: pytest.FixtureRequest, api_harness: ApiHarness) -> None:
+    response = api_harness.client.delete(f"/v1/spaces/{SPACE_ID}")
+
+    assert response.status_code == 401
+    record_http_evidence(
+        request,
+        surface="api",
+        method="DELETE",
+        path="/v1/spaces/{space_id}",
+        kind="denial",
+        response=response,
+    )
+
+
 def test_api_memberships_success(
     request: pytest.FixtureRequest,
     api_harness: ApiHarness,
