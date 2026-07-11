@@ -222,6 +222,23 @@ def test_cli_smoke_v1_dev_fails_without_deployed_smoke_requirements(monkeypatch)
     assert "Missing required deployed smoke environment variables" in result.output
 
 
+def test_deployed_smoke_stack_outputs_never_fall_back_to_cached_config(monkeypatch) -> None:
+    from marvain_cli import smoke as smoke_mod
+
+    ctx = SimpleNamespace(
+        cfg={"envs": {"dev": {"resources": {"HubRestApiBase": "https://stale.example.test"}}}},
+        env=SimpleNamespace(env="dev", stack_name="marvain-cleanroom"),
+    )
+    monkeypatch.setattr(
+        smoke_mod,
+        "aws_stack_outputs",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("CloudFormation unavailable")),
+    )
+
+    with pytest.raises(smoke_mod.SmokeError, match="live CloudFormation outputs"):
+        smoke_mod._stack_outputs(ctx)
+
+
 def test_cli_smoke_v1_dev_surfaces_deployed_blockers(monkeypatch) -> None:
     monkeypatch.setenv("MARVAIN_ACTIVE", "1")
     monkeypatch.setenv("CONDA_DEFAULT_ENV", "marvain")

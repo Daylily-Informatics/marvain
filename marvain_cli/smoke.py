@@ -586,16 +586,11 @@ def _load_smoke_ctx(*, stack: str | None):
 
 
 def _stack_outputs(ctx) -> dict[str, str]:
-    configured = ctx.cfg.get("envs", {}).get(ctx.env.env, {}).get("resources", {})
-    outputs = {key: str(value) for key, value in configured.items() if isinstance(value, str) and value}
     try:
         live_outputs = aws_stack_outputs(ctx, dry_run=False)
     except Exception as exc:
-        if not outputs:
-            raise SmokeError(f"Could not resolve CloudFormation outputs for {ctx.env.stack_name}: {exc}") from exc
-        live_outputs = {}
-    outputs.update({key: str(value) for key, value in live_outputs.items() if value})
-    return outputs
+        raise SmokeError(f"Could not resolve live CloudFormation outputs for {ctx.env.stack_name}: {exc}") from exc
+    return {key: str(value) for key, value in live_outputs.items() if value}
 
 
 def _require_outputs(outputs: dict[str, str]) -> None:
