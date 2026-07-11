@@ -49,9 +49,14 @@ DEPLOYED_SMOKE_REQUIRED_ENV = (
     "MARVAIN_SMOKE_COGNITO_PASSWORD",
 )
 DEPLOYED_SMOKE_REQUIRED_RUNTIME_EVIDENCE = {
+    "cognito_hosted_ui": "Cognito Hosted UI browser-session evidence",
     "worker_join": "LiveKit room join evidence from the deployed worker",
+    "typed_chat": "typed chat turn handled by the deployed LiveKit worker",
     "speech_transcript": "speech transcript event created through the deployed LiveKit worker",
+    "agent_audio": "agent audio publication and browser playback evidence",
+    "memory_lifecycle": "classifier-backed memory candidate, commit, recall, and TapDB evidence",
     "recognition": "recognition observation or hypothesis created by the deployed recognition worker",
+    "tapdb_graph": "TapDB graph response rooted at a persisted TapDB EUID",
     "observability": "deployed observability evidence for this smoke run",
 }
 
@@ -596,9 +601,160 @@ def _assert_recall_proof(recall: dict[str, Any]) -> dict[str, Any]:
     return first
 
 
-def _runtime_evidence_blockers(proofs: dict[str, Any]) -> list[str]:
+def _required_text_fields(evidence: dict[str, Any], fields: tuple[str, ...]) -> list[str]:
+    return [field for field in fields if not str(evidence.get(field) or "").strip()]
+
+
+def _runtime_evidence_contract_errors(
+    key: str,
+    evidence: dict[str, Any],
+    *,
+    run_id: str | None,
+) -> list[str]:
+    required_fields: dict[str, tuple[str, ...]] = {
+        "cognito_hosted_ui": (
+            "evidence_kind",
+            "user_sub",
+            "browser_session_id",
+            "observed_at",
+        ),
+        "worker_join": (
+            "evidence_kind",
+            "room_name",
+            "participant_identity",
+            "session_id",
+            "worker_version",
+            "observed_at",
+        ),
+        "typed_chat": (
+            "evidence_kind",
+            "session_id",
+            "user_event_id",
+            "agent_event_id",
+            "agent_response_text",
+        ),
+        "speech_transcript": (
+            "evidence_kind",
+            "session_id",
+            "event_id",
+            "audio_track_sid",
+            "transcript_text",
+        ),
+        "agent_audio": (
+            "evidence_kind",
+            "session_id",
+            "track_sid",
+            "participant_identity",
+            "playback_started_at",
+        ),
+        "memory_lifecycle": (
+            "evidence_kind",
+            "source_event_id",
+            "candidate_id",
+            "memory_id",
+            "recall_id",
+            "tapdb_euid",
+        ),
+        "recognition": (
+            "evidence_kind",
+            "observation_id",
+            "worker_id",
+            "model_version",
+        ),
+        "tapdb_graph": (
+            "evidence_kind",
+            "start_euid",
+        ),
+        "observability": (
+            "evidence_kind",
+            "run_id",
+        ),
+    }
+    expected_kinds = {
+        "cognito_hosted_ui": "hosted_ui_browser_session",
+        "worker_join": "livekit_worker_participant",
+        "typed_chat": "livekit_typed_chat_turn",
+        "speech_transcript": "livekit_audio_transcript",
+        "agent_audio": "livekit_agent_audio_playback",
+        "memory_lifecycle": "memory_lifecycle",
+        "recognition": "recognition_lifecycle",
+        "tapdb_graph": "tapdb_graph",
+        "observability": "correlated_runtime_state",
+    }
+    errors = [f"missing {field}" for field in _required_text_fields(evidence, required_fields[key])]
+    expected_kind = expected_kinds[key]
+    if evidence.get("evidence_kind") and evidence.get("evidence_kind") != expected_kind:
+        errors.append(f"evidence_kind must be {expected_kind!r}")
+
+    if key == "speech_transcript":
+        input_modality = str(evidence.get("input_modality") or "")
+        if input_modality not in {"microphone", "browser_audio"}:
+            errors.append("input_modality must be real browser audio or microphone capture")
+        if evidence.get("deterministic_fixture") is True:
+            errors.append("deterministic fixture evidence is not deployed proof")
+    elif key == "recognition":
+        if not evidence.get("hypothesis_id") and not evidence.get("no_match_id"):
+            errors.append("missing hypothesis_id or no_match_id")
+        if evidence.get("fixture") is True:
+            errors.append("fixture evidence is not deployed proof")
+    elif key == "tapdb_graph":
+        if not isinstance(evidence.get("node_count"), int) or int(evidence.get("node_count") or 0) < 1:
+            errors.append("node_count must prove a persisted graph root")
+        if not isinstance(evidence.get("edge_count"), int):
+            errors.append("missing integer edge_count")
+    elif key == "observability":
+        states = evidence.get("states")
+        if not isinstance(states, dict):
+            errors.append("missing correlated states")
+        else:
+            for state in ("worker", "memory", "recognition", "device", "tapdb"):
+                if state not in states:
+                    errors.append(f"missing states.{state}")
+        if run_id and evidence.get("run_id") != run_id:
+            errors.append("run_id does not match the smoke run")
+    return errors
+
+
+def _two_device_evidence_errors(evidence: dict[str, Any]) -> list[str]:
+    fields = (
+        "evidence_kind",
+        "left_device_id",
+        "right_device_id",
+        "left_location_id",
+        "right_location_id",
+        "left_space_id",
+        "right_space_id",
+        "left_action_id",
+        "right_action_id",
+        "left_ack_id",
+        "right_ack_id",
+        "left_result_id",
+        "right_result_id",
+    )
+    errors = [f"missing {field}" for field in _required_text_fields(evidence, fields)]
+    if evidence.get("evidence_kind") and evidence.get("evidence_kind") != "deployed_device_routing":
+        errors.append("evidence_kind must be 'deployed_device_routing'")
+    for left, right in (
+        ("left_device_id", "right_device_id"),
+        ("left_location_id", "right_location_id"),
+        ("left_space_id", "right_space_id"),
+    ):
+        if evidence.get(left) and evidence.get(left) == evidence.get(right):
+            errors.append(f"{left} and {right} must be distinct")
+    return errors
+
+
+def _runtime_evidence_blockers(
+    proofs: dict[str, Any],
+    *,
+    run_id: str | None = None,
+    include_two_device_proof: bool = False,
+) -> list[str]:
     blockers: list[str] = []
-    for key, required in DEPLOYED_SMOKE_REQUIRED_RUNTIME_EVIDENCE.items():
+    requirements = dict(DEPLOYED_SMOKE_REQUIRED_RUNTIME_EVIDENCE)
+    if include_two_device_proof:
+        requirements["two_device"] = "two distinct deployed devices routed through owning WebSocket/action services"
+    for key, required in requirements.items():
         if key not in proofs:
             blockers.append(f"{key}: missing proof field; required evidence: {required}")
             continue
@@ -610,6 +766,13 @@ def _runtime_evidence_blockers(proofs: dict[str, Any]) -> list[str]:
             blockers.append(f"{key}: malformed proof field {type(evidence).__name__}; required evidence: {required}")
             continue
         if evidence.get("ok") is True:
+            errors = (
+                _two_device_evidence_errors(evidence)
+                if key == "two_device"
+                else _runtime_evidence_contract_errors(key, evidence, run_id=run_id)
+            )
+            if errors:
+                blockers.append(f"{key}: invalid owning-service evidence: " + "; ".join(errors))
             continue
         detail = str(evidence.get("blocker") or "").strip()
         if detail:
@@ -617,71 +780,6 @@ def _runtime_evidence_blockers(proofs: dict[str, Any]) -> list[str]:
         else:
             blockers.append(f"{key}: proof did not report ok=true; required evidence: {required}")
     return blockers
-
-
-def _run_two_device_rest_proof(
-    *,
-    rest_base: str,
-    admin_key: str,
-    agent_id: str,
-    space_id: str,
-    run_id: str,
-) -> dict[str, Any]:
-    scopes = ["events:write", "events:read", "memories:write", "memories:read", "presence:write"]
-    left = _http_json(
-        method="POST",
-        url=_rest_url(rest_base, "/v1/admin/devices/register"),
-        payload={
-            "agent_id": agent_id,
-            "name": f"round5-left-{run_id}",
-            "scopes": scopes,
-            "capabilities": {"kind": "satellite", "round5_probe": True},
-            "location_label": f"round5-left-location-{run_id}",
-        },
-        admin_key=admin_key,
-    )
-    right = _http_json(
-        method="POST",
-        url=_rest_url(rest_base, "/v1/admin/devices/register"),
-        payload={
-            "agent_id": agent_id,
-            "name": f"round5-right-{run_id}",
-            "scopes": scopes,
-            "capabilities": {"kind": "satellite", "round5_probe": True},
-            "location_label": f"round5-right-location-{run_id}",
-        },
-        admin_key=admin_key,
-    )
-    for label, device in (("left", left), ("right", right)):
-        if not device.get("device_id") or not device.get("device_token"):
-            raise SmokeError(f"Deployed {label} device registration did not return id and token")
-    left_event = _http_json(
-        method="POST",
-        url=_rest_url(rest_base, "/v1/events"),
-        payload={
-            "space_id": space_id,
-            "type": "round5.device.proof",
-            "payload": {"target": "left", "run_id": run_id},
-        },
-        bearer_token=str(left["device_token"]),
-    )
-    right_event = _http_json(
-        method="POST",
-        url=_rest_url(rest_base, "/v1/events"),
-        payload={
-            "space_id": space_id,
-            "type": "round5.device.proof",
-            "payload": {"target": "right", "run_id": run_id},
-        },
-        bearer_token=str(right["device_token"]),
-    )
-    return {
-        "left_device_id": left["device_id"],
-        "right_device_id": right["device_id"],
-        "left_event_id": left_event.get("event_id"),
-        "right_event_id": right_event.get("event_id"),
-        "routing_transport": "deployed-rest-device-token",
-    }
 
 
 def run_deployed_smoke(*, stack: str | None = None, include_two_device_proof: bool = False) -> dict[str, Any]:
@@ -715,62 +813,22 @@ def run_deployed_smoke(*, stack: str | None = None, include_two_device_proof: bo
     if not agent_id or not space_id or not device_token:
         raise SmokeError("Bootstrap did not return agent_id, space_id, and device_token")
 
-    transcript = _http_json(
+    source_evidence = _http_json(
         method="POST",
         url=_rest_url(rest_base, "/v1/events"),
         payload={
             "space_id": space_id,
-            "type": "transcript_chunk",
+            "type": "smoke.api_source_evidence",
             "payload": {
-                "text": f"Round 6 deployed smoke remembers taxonomy, recall, recognition, TapDB graph, and topology. {run_id}",
-                "speaker": "smoke",
+                "text": f"Round 6 deployed API probe source evidence. {run_id}",
+                "producer": "marvain-cli",
             },
         },
         bearer_token=device_token,
     )
-    source_event_id = str(transcript.get("event_id") or "")
+    source_event_id = str(source_evidence.get("event_id") or "")
     if not source_event_id:
-        raise SmokeError("Transcript event did not return event_id")
-    speech_transcript = _http_json(
-        method="POST",
-        url=_rest_url(rest_base, "/v1/events"),
-        payload={
-            "space_id": space_id,
-            "type": "speech_transcript",
-            "payload": {
-                "text": f"Round 6 fake-audio speech transcript proof for {run_id}",
-                "speaker": "smoke-audio-fixture",
-                "input_modality": "fake_audio",
-            },
-        },
-        bearer_token=device_token,
-    )
-    speech_event_id = str(speech_transcript.get("event_id") or "")
-    if not speech_event_id:
-        raise SmokeError("Speech transcript proof event did not return event_id")
-    recognition_probe = _http_json(
-        method="POST",
-        url=_rest_url(rest_base, "/v1/events"),
-        payload={
-            "space_id": space_id,
-            "type": "recognition.smoke_observation",
-            "payload": {
-                "run_id": run_id,
-                "modality": "voice",
-                "fixture": "explicit-smoke",
-                "status": "observation_recorded",
-            },
-        },
-        bearer_token=device_token,
-    )
-    recognition_event_id = str(recognition_probe.get("event_id") or "")
-    if not recognition_event_id:
-        raise SmokeError("Recognition proof event did not return event_id")
-    space_events = _http_json(
-        method="GET",
-        url=_rest_url(rest_base, f"/v1/spaces/{space_id}/events?limit=20"),
-        bearer_token=device_token,
-    )
+        raise SmokeError("API source-evidence probe did not return event_id")
 
     memory_ids: dict[str, str] = {}
     for kind in MEMORY_KIND_VALUES:
@@ -806,64 +864,83 @@ def run_deployed_smoke(*, stack: str | None = None, include_two_device_proof: bo
     )
     recalled = _assert_recall_proof(recall)
 
-    graph_probe = _http_json(
-        method="GET",
-        url=_rest_url(
-            rest_base,
-            f"/api/dag/data?start_euid={recalled.get('explanation', {}).get('tapdb_euid') or memory_ids['episodic']}&depth=3",
-        ),
-        bearer_token=access_token,
-    )
+    tapdb_euid = str(recalled.get("explanation", {}).get("tapdb_euid") or "").strip()
+    graph_probe: dict[str, Any] | None = None
+    if tapdb_euid:
+        graph_probe = _http_json(
+            method="GET",
+            url=_rest_url(rest_base, f"/api/dag/data?start_euid={tapdb_euid}&depth=3"),
+            bearer_token=access_token,
+        )
     api_health = _http_json(method="GET", url=_rest_url(rest_base, "/api_health"))
     endpoint_health = _http_json(method="GET", url=_rest_url(rest_base, "/endpoint_health?limit=200"))
-    two_device = (
-        _run_two_device_rest_proof(
-            rest_base=rest_base,
-            admin_key=admin_key,
-            agent_id=agent_id,
-            space_id=space_id,
-            run_id=run_id,
-        )
-        if include_two_device_proof
-        else None
-    )
     proofs: dict[str, Any] = {
-        "cognito_login": {
-            "ok": True,
+        "cognito_api_auth_probe": {
             "user_pool_id": outputs["CognitoUserPoolId"],
             "app_client_id": outputs["CognitoAppClientId"],
         },
+        "cognito_hosted_ui": {
+            "ok": False,
+            "blocker": "Hosted UI browser-session receipt collection is not implemented.",
+        },
         "worker_join": {
-            "ok": True,
-            "evidence_kind": "deployed_stack_livekit_and_space_event_probe",
-            "livekit_url_present": bool(outputs.get("LiveKitUrl")),
-            "space_events_observed": bool(space_events),
-            "space_id": space_id,
+            "ok": False,
+            "blocker": "No participant receipt from the deployed LiveKit worker was collected.",
         },
         "livekit_url_present": bool(outputs.get("LiveKitUrl")),
-        "chat_transcript_event_id": source_event_id,
+        "api_source_event_id": source_event_id,
+        "typed_chat": {
+            "ok": False,
+            "blocker": "No typed-chat turn receipt from the deployed LiveKit worker was collected.",
+        },
         "speech_transcript": {
-            "ok": True,
-            "event_id": speech_event_id,
-            "input_modality": "fake_audio",
-            "deterministic_fixture": True,
+            "ok": False,
+            "blocker": "No transcript receipt from real browser audio or microphone capture was collected.",
         },
-        "memory_ids_by_kind": memory_ids,
-        "recall_memory_id": recalled.get("memory_id"),
-        "recall_explanation": recalled.get("explanation"),
+        "agent_audio": {
+            "ok": False,
+            "blocker": "No agent audio publication and browser playback receipt was collected.",
+        },
+        "api_memory_probe": {
+            "memory_ids_by_kind": memory_ids,
+            "recall_memory_id": recalled.get("memory_id"),
+            "recall_explanation": recalled.get("explanation"),
+        },
+        "memory_lifecycle": {
+            "ok": False,
+            "blocker": "No classifier-backed candidate, commit, and recall receipt from a live turn was collected.",
+        },
         "recognition": {
-            "ok": True,
-            "event_id": recognition_event_id,
-            "path": "deployed_event_observation_fixture",
-            "modality": "voice",
+            "ok": False,
+            "blocker": "No observation lifecycle receipt from the deployed recognition worker was collected.",
         },
-        "tapdb_graph_probe": graph_probe,
+        "tapdb_graph": (
+            {
+                "ok": False,
+                "blocker": "Recall did not return a persisted TapDB EUID for the graph probe.",
+            }
+            if not tapdb_euid
+            else {
+                "ok": False,
+                "blocker": "Graph HTTP response was collected, but owning TapDB graph receipt validation is not implemented.",
+                "start_euid": tapdb_euid,
+                "response": graph_probe,
+            }
+        ),
         "observability": {
-            "ok": True,
-            "api_health": api_health,
-            "endpoint_health": endpoint_health,
+            "ok": False,
+            "blocker": "Health responses were collected, but no run-correlated runtime state receipt was available.",
+            "api_health_probe": api_health,
+            "endpoint_health_probe": endpoint_health,
         },
-        "two_device": two_device,
+        "two_device": (
+            {
+                "ok": False,
+                "blocker": "No two-location WebSocket dispatch, acknowledgement, and result receipt was collected.",
+            }
+            if include_two_device_proof
+            else None
+        ),
         "hub_websocket_url_present": bool(outputs.get("HubWebSocketUrl")),
     }
     report: dict[str, Any] = {
@@ -874,7 +951,11 @@ def run_deployed_smoke(*, stack: str | None = None, include_two_device_proof: bo
         "health": health,
         "proofs": proofs,
     }
-    blockers = _runtime_evidence_blockers(proofs)
+    blockers = _runtime_evidence_blockers(
+        proofs,
+        run_id=run_id,
+        include_two_device_proof=include_two_device_proof,
+    )
     if blockers:
         report["ok"] = False
         report["blockers"] = blockers

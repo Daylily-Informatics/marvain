@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 from uuid import UUID
 
+import pytest
 from agent_hub.memory_taxonomy import MEMORY_KIND_VALUES
 from cli_core_yo.conformance import assert_exit_code, invoke
 
@@ -256,13 +257,122 @@ def test_deployed_smoke_rejects_placeholder_runtime_evidence() -> None:
 
     blockers = smoke_mod._runtime_evidence_blockers(proofs)
 
-    assert blockers == [
-        "worker_join: placeholder string is not accepted; required evidence: "
-        "LiveKit room join evidence from the deployed worker"
-    ]
+    assert any("worker_join: placeholder string is not accepted" in blocker for blocker in blockers)
+    assert any("cognito_hosted_ui: invalid owning-service evidence" in blocker for blocker in blockers)
+    assert any("speech_transcript: invalid owning-service evidence" in blocker for blocker in blockers)
 
 
-def test_deployed_smoke_collects_required_runtime_evidence_after_rest_proofs(monkeypatch) -> None:
+def test_deployed_smoke_accepts_complete_owning_service_receipts() -> None:
+    from marvain_cli import smoke as smoke_mod
+
+    run_id = "smoke-run-1"
+    proofs = {
+        "cognito_hosted_ui": {
+            "ok": True,
+            "evidence_kind": "hosted_ui_browser_session",
+            "user_sub": "user-sub-1",
+            "browser_session_id": "browser-session-1",
+            "observed_at": "2026-07-11T00:00:00Z",
+        },
+        "worker_join": {
+            "ok": True,
+            "evidence_kind": "livekit_worker_participant",
+            "room_name": "room-1",
+            "participant_identity": "agent-worker-1",
+            "session_id": "session-1",
+            "worker_version": "release-1",
+            "observed_at": "2026-07-11T00:00:01Z",
+        },
+        "typed_chat": {
+            "ok": True,
+            "evidence_kind": "livekit_typed_chat_turn",
+            "session_id": "session-1",
+            "user_event_id": "event-user-1",
+            "agent_event_id": "event-agent-1",
+            "agent_response_text": "Acknowledged.",
+        },
+        "speech_transcript": {
+            "ok": True,
+            "evidence_kind": "livekit_audio_transcript",
+            "session_id": "session-1",
+            "event_id": "event-speech-1",
+            "audio_track_sid": "track-user-audio-1",
+            "transcript_text": "Remember this.",
+            "input_modality": "browser_audio",
+        },
+        "agent_audio": {
+            "ok": True,
+            "evidence_kind": "livekit_agent_audio_playback",
+            "session_id": "session-1",
+            "track_sid": "track-agent-audio-1",
+            "participant_identity": "agent-worker-1",
+            "playback_started_at": "2026-07-11T00:00:02Z",
+        },
+        "memory_lifecycle": {
+            "ok": True,
+            "evidence_kind": "memory_lifecycle",
+            "source_event_id": "event-user-1",
+            "candidate_id": "candidate-1",
+            "memory_id": "memory-1",
+            "recall_id": "recall-1",
+            "tapdb_euid": "tapdb-owned-reference-1",
+        },
+        "recognition": {
+            "ok": True,
+            "evidence_kind": "recognition_lifecycle",
+            "observation_id": "observation-1",
+            "hypothesis_id": "hypothesis-1",
+            "worker_id": "recognition-worker-1",
+            "model_version": "recognizer-1",
+        },
+        "tapdb_graph": {
+            "ok": True,
+            "evidence_kind": "tapdb_graph",
+            "start_euid": "tapdb-owned-reference-1",
+            "node_count": 2,
+            "edge_count": 1,
+        },
+        "observability": {
+            "ok": True,
+            "evidence_kind": "correlated_runtime_state",
+            "run_id": run_id,
+            "states": {
+                "worker": "healthy",
+                "memory": "committed",
+                "recognition": "observed",
+                "device": "connected",
+                "tapdb": "synced",
+            },
+        },
+        "two_device": {
+            "ok": True,
+            "evidence_kind": "deployed_device_routing",
+            "left_device_id": "device-left",
+            "right_device_id": "device-right",
+            "left_location_id": "location-left",
+            "right_location_id": "location-right",
+            "left_space_id": "space-left",
+            "right_space_id": "space-right",
+            "left_action_id": "action-left",
+            "right_action_id": "action-right",
+            "left_ack_id": "ack-left",
+            "right_ack_id": "ack-right",
+            "left_result_id": "result-left",
+            "right_result_id": "result-right",
+        },
+    }
+
+    assert (
+        smoke_mod._runtime_evidence_blockers(
+            proofs,
+            run_id=run_id,
+            include_two_device_proof=True,
+        )
+        == []
+    )
+
+
+def test_deployed_smoke_does_not_promote_rest_probes_to_runtime_evidence(monkeypatch) -> None:
     from marvain_cli import smoke as smoke_mod
 
     ctx = SimpleNamespace(
@@ -311,17 +421,11 @@ def test_deployed_smoke_collects_required_runtime_evidence_after_rest_proofs(mon
         if path == "/v1/admin/bootstrap":
             assert admin_key == "admin-key"
             return {"agent_id": "agent-1", "space_id": "space-1", "device_token": "device-token-1"}
-        if path == "/v1/admin/devices/register":
-            assert admin_key == "admin-key"
-            assert payload is not None
-            name = str(payload["name"])
-            return {"device_id": f"device-{name}", "device_token": f"token-{name}"}
         if path == "/v1/events":
-            assert bearer_token is not None
-            return {"event_id": f"event-{len([call for call in calls if call[1] == '/v1/events'])}"}
-        if path.startswith("/v1/spaces/space-1/events"):
             assert bearer_token == "device-token-1"
-            return {"events": [{"event_id": "event-1"}, {"event_id": "event-2"}, {"event_id": "event-3"}]}
+            assert payload is not None
+            assert payload["type"] == "smoke.api_source_evidence"
+            return {"event_id": "api-source-event-1"}
         if path == "/v1/memories":
             assert bearer_token == "device-token-1"
             assert payload is not None
@@ -334,7 +438,7 @@ def test_deployed_smoke_collects_required_runtime_evidence_after_rest_proofs(mon
                         "memory_id": "memory-episodic",
                         "explanation": {
                             "source_evidence": {
-                                "event_id": "event-1",
+                                "event_id": "api-source-event-1",
                                 "event_type": "memory.evidence",
                                 "excerpt": "Round 6 deployed smoke",
                                 "device_id": "device-1",
@@ -343,21 +447,21 @@ def test_deployed_smoke_collects_required_runtime_evidence_after_rest_proofs(mon
                                 "person_id": "person-1",
                             },
                             "source_excerpt": "Round 6 deployed smoke",
-                            "source_event_id": "event-1",
+                            "source_event_id": "api-source-event-1",
                             "device_id": "device-1",
                             "space_id": "space-1",
                             "session_id": "session-1",
                             "person_id": "person-1",
                             "consent_filters": {"applied": True},
                             "ranking": {"embedding_distance": 0.1, "keyword_match": ["round6"], "rank": 1},
-                            "tapdb_euid": "MVN-MEMORY-1",
+                            "tapdb_euid": "tapdb-owned-reference-1",
                         },
                     }
                 ]
             }
         if path.startswith("/api/dag/data?"):
             assert bearer_token == "access-token"
-            return {"nodes": [{"id": "MVN-MEMORY-1"}], "edges": []}
+            return {"nodes": [{"id": "tapdb-owned-reference-1"}], "edges": []}
         if path == "/api_health":
             return {"status": "ok", "service": "marvain"}
         if path.startswith("/endpoint_health?"):
@@ -366,21 +470,23 @@ def test_deployed_smoke_collects_required_runtime_evidence_after_rest_proofs(mon
 
     monkeypatch.setattr(smoke_mod, "_http_json", fake_http_json)
 
-    report = smoke_mod.run_deployed_smoke(stack="marvain-greenfield-tapdb-dev", include_two_device_proof=True)
+    with pytest.raises(smoke_mod.SmokeBlockersError) as exc_info:
+        smoke_mod.run_deployed_smoke(stack="marvain-greenfield-tapdb-dev", include_two_device_proof=True)
 
-    assert report["ok"] is True
+    report = exc_info.value.report
+    assert report["ok"] is False
     assert report["mode"] == "v1-dev-deployed"
-    assert str(report["run_id"]).startswith("round6-")
-    assert report["proofs"]["chat_transcript_event_id"] == "event-1"
-    assert report["proofs"]["speech_transcript"]["event_id"] == "event-2"
-    assert report["proofs"]["recognition"]["event_id"] == "event-3"
-    assert report["proofs"]["memory_ids_by_kind"] == {kind: f"memory-{kind}" for kind in MEMORY_KIND_VALUES}
-    assert report["proofs"]["tapdb_graph_probe"] == {"nodes": [{"id": "MVN-MEMORY-1"}], "edges": []}
-    assert report["proofs"]["two_device"]["routing_transport"] == "deployed-rest-device-token"
-    for key in smoke_mod.DEPLOYED_SMOKE_REQUIRED_RUNTIME_EVIDENCE:
-        assert isinstance(report["proofs"][key], dict)
-        assert report["proofs"][key]["ok"] is True
-    assert [call[1] for call in calls].count("/v1/admin/devices/register") == 2
+    assert report["proofs"]["api_source_event_id"] == "api-source-event-1"
+    assert report["proofs"]["api_memory_probe"]["memory_ids_by_kind"] == {
+        kind: f"memory-{kind}" for kind in MEMORY_KIND_VALUES
+    }
+    assert report["proofs"]["speech_transcript"]["ok"] is False
+    assert report["proofs"]["recognition"]["ok"] is False
+    assert report["proofs"]["two_device"]["ok"] is False
+    assert any("worker_join:" in blocker for blocker in exc_info.value.blockers)
+    assert any("two_device:" in blocker for blocker in exc_info.value.blockers)
+    assert [call[1] for call in calls].count("/v1/events") == 1
+    assert "/v1/admin/devices/register" not in [call[1] for call in calls]
 
 
 def test_cli_smoke_gui_guide_reports_generated_artifact(monkeypatch, tmp_path) -> None:

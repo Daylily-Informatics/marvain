@@ -139,7 +139,7 @@ The compact evidence fields below are initialized from the assessment. Agents re
 | OPS-08 | API/GUI route coverage measurement | 35 | 100 | 35 | OPEN | A1 | 6 | OPS-07 | Token-based generator | Generator tests | none | pending | Dynamic probe over-credits behavior | |
 | OPS-09 | Playwright workflow coverage | 40 | 100 | 40 | OPEN | A10 | 6 | OPS-02,OPS-07 | Local Playwright | 25 passed | none | pending | Fakes and token scanning | |
 | OPS-10 | GUI smoke guide | 34 | 100 | 34 | OPEN | A10 | 6 | OPS-02,OPS-09 | Screenshot generator | Shallow test | none | pending | Generic first-form behavior | |
-| OPS-11 | Deployed v1-dev smoke | 20 | 100 | 20 | OPEN | A2 | 8 | LIV-08,IDN-04,TOP-05 | REST smoke | Mocked tests | synthetic only | pending | Fabricated owning-service evidence | |
+| OPS-11 | Deployed v1-dev smoke | 20 | 100 | 20 | IN_PROGRESS | A2 | 8 | LIV-08,IDN-04,TOP-05 | Runtime receipt contracts now reject synthetic REST, fake-audio, arbitrary recognition, inferred worker, and registration-only topology proof | 11 focused smoke tests pass | none accepted | Runtime evidence validator rejects malformed and fixture receipts | Owning-service collectors and clean-room run remain absent | |
 | OPS-12 | Fresh clean-room deployment | 10 | 100 | 10 | OPEN | A2 | 8 | FND-03,DAT-03,LIV-08 | none accepted | none | none | pending | No clean-room receipt | |
 | OPS-13 | Worker/service supervision | 27 | 100 | 27 | OPEN | A2 | 4 | FND-03 | Local processes | Local status tests | none | pending | Agent/recognition workers unmanaged | |
 | OPS-14 | Failure injection and recovery | 32 | 100 | 32 | OPEN | A10 | 8 | OPS-06,OPS-11 | Failure catalog | Unit tests | none | pending | Real failures not exercised | |
