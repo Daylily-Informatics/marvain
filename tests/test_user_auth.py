@@ -54,16 +54,15 @@ class TestUserAuth(unittest.TestCase):
         self.assertEqual((fake_db.last_params or {}).get("sub"), "sub-123")
         self.assertEqual((fake_db.last_params or {}).get("email"), "me@example.com")
 
-    def test_authenticate_user_access_token_uses_username_when_sub_absent(self) -> None:
+    def test_authenticate_user_access_token_rejects_username_without_sub(self) -> None:
         fake_db = _FakeDb(user_id="u2")
         fake_verifier = _FakeVerifier({"username": "userpool-username"})
 
         with mock.patch("agent_hub.auth._cognito_token_verifier", return_value=fake_verifier):
-            u = authenticate_user_access_token(fake_db, "atk")
+            with self.assertRaisesRegex(PermissionError, "missing sub"):
+                authenticate_user_access_token(fake_db, "atk")
 
-        self.assertEqual(u.user_id, "u2")
-        self.assertEqual(u.cognito_sub, "userpool-username")
-        self.assertIsNone(u.email)
+        self.assertIsNone(fake_db.last_sql)
 
 
 if __name__ == "__main__":

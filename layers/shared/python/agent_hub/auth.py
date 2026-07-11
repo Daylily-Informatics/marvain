@@ -1,11 +1,79 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 from dataclasses import dataclass, field
 from typing import Any
 
 from agent_hub.rds_data import RdsData
+
+
+class AuthStateError(RuntimeError):
+    """Raised when persisted authentication state is malformed."""
+
+
+def _auth_text(value: Any, *, field_name: str, state_name: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise AuthStateError(f"Malformed {state_name}: {field_name} must be a non-empty string")
+    return value
+
+
+def _required_auth_text(row: dict[str, Any], field_name: str, *, state_name: str) -> str:
+    return _auth_text(row.get(field_name), field_name=field_name, state_name=state_name)
+
+
+def _auth_string_list(value: Any, *, field_name: str, state_name: str) -> list[str]:
+    if not isinstance(value, list):
+        raise AuthStateError(f"Malformed {state_name}: {field_name} must be a JSON array")
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str) or not item or item != item.strip():
+            raise AuthStateError(f"Malformed {state_name}: {field_name} entries must be non-empty strings")
+        if item in seen:
+            raise AuthStateError(f"Malformed {state_name}: {field_name} entries must be unique")
+        seen.add(item)
+        result.append(item)
+    return result
+
+
+def _parse_auth_string_list(value: Any, *, field_name: str, state_name: str) -> list[str]:
+    if not isinstance(value, str) or not value:
+        raise AuthStateError(f"Malformed {state_name}: {field_name} must contain JSON")
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise AuthStateError(f"Malformed {state_name}: {field_name} contains invalid JSON") from exc
+    return _auth_string_list(parsed, field_name=field_name, state_name=state_name)
+
+
+def _parse_auth_object(value: Any, *, field_name: str, state_name: str) -> dict[str, Any]:
+    if not isinstance(value, str) or not value:
+        raise AuthStateError(f"Malformed {state_name}: {field_name} must contain JSON")
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise AuthStateError(f"Malformed {state_name}: {field_name} contains invalid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise AuthStateError(f"Malformed {state_name}: {field_name} must be a JSON object")
+    return parsed
+
+
+def _input_text(value: Any, *, field_name: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return value
+
+
+def _input_string_list(value: Any, *, field_name: str) -> list[str]:
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be an explicit list")
+    try:
+        return _auth_string_list(value, field_name=field_name, state_name="token input")
+    except AuthStateError as exc:
+        raise ValueError(str(exc).replace("Malformed token input: ", "")) from exc
 
 
 def hash_token(token: str) -> str:
@@ -49,10 +117,18 @@ def authenticate_user_access_token(db: RdsData, access_token: str) -> Authentica
     except Exception as e:
         raise PermissionError(f"Invalid access token: {e}")
 
-    sub = str(claims.get("sub") or claims.get("username") or claims.get("cognito:username") or "").strip() or None
-    if not sub:
+    if not isinstance(claims, dict):
+        raise PermissionError("Cognito verifier returned malformed claims")
+    sub = claims.get("sub")
+    if not isinstance(sub, str) or not sub or sub != sub.strip():
         raise PermissionError("Cognito token missing sub")
-    email = str(claims.get("email") or "").strip() or None
+    raw_email = claims.get("email")
+    if raw_email is None:
+        email = None
+    elif not isinstance(raw_email, str) or not raw_email or raw_email != raw_email.strip():
+        raise PermissionError("Cognito token contains malformed email")
+    else:
+        email = raw_email
 
     user_id = ensure_user_row(db, cognito_sub=sub, email=email)
     return AuthenticatedUser(user_id=user_id, cognito_sub=sub, email=email)
@@ -132,13 +208,15 @@ def list_cognito_users(*, user_pool_id: str, region: str | None = None) -> list[
 
 
 def authenticate_device(db: RdsData, bearer_token: str) -> AuthenticatedDevice | None:
+    if not isinstance(bearer_token, str) or not bearer_token or bearer_token != bearer_token.strip():
+        return None
     thash = hash_token(bearer_token)
     rows = db.query(
         """
         SELECT device_id::TEXT as device_id,
                agent_id::TEXT as agent_id,
-               COALESCE(scopes, '[]'::jsonb)::TEXT as scopes_json,
-               COALESCE(capabilities, '{}'::jsonb)::TEXT as capabilities_json
+               scopes::TEXT as scopes_json,
+               capabilities::TEXT as capabilities_json
         FROM devices
         WHERE token_hash = :token_hash
           AND revoked_at IS NULL
@@ -149,26 +227,25 @@ def authenticate_device(db: RdsData, bearer_token: str) -> AuthenticatedDevice |
     if not rows:
         return None
     row = rows[0]
-    try:
-        scopes = __import__("json").loads(row.get("scopes_json") or "[]")
-    except Exception:
-        scopes = []
-    try:
-        capabilities = __import__("json").loads(row.get("capabilities_json") or "{}")
-        if not isinstance(capabilities, dict):
-            capabilities = {}
-    except Exception:
-        capabilities = {}
+    state_name = "device auth state"
+    scopes = _parse_auth_string_list(row.get("scopes_json"), field_name="scopes", state_name=state_name)
+    capabilities = _parse_auth_object(
+        row.get("capabilities_json"),
+        field_name="capabilities",
+        state_name=state_name,
+    )
     return AuthenticatedDevice(
-        device_id=row["device_id"],
-        agent_id=row["agent_id"],
-        scopes=[str(s) for s in scopes],
-        capabilities={str(k): v for k, v in capabilities.items()},
+        device_id=_required_auth_text(row, "device_id", state_name=state_name),
+        agent_id=_required_auth_text(row, "agent_id", state_name=state_name),
+        scopes=scopes,
+        capabilities=capabilities,
     )
 
 
 def require_scopes(device: AuthenticatedDevice, required: list[str]) -> None:
-    missing = [s for s in required if s not in device.scopes]
+    granted = _auth_string_list(device.scopes, field_name="scopes", state_name="authenticated device")
+    required_scopes = _input_string_list(required, field_name="required")
+    missing = [scope for scope in required_scopes if scope not in granted]
     if missing:
         raise PermissionError(f"Missing required scopes: {missing}")
 
@@ -178,9 +255,11 @@ def has_scope(device: AuthenticatedDevice, scope: str) -> bool:
 
     Supports wildcard matching: '*' in device.scopes grants all scopes.
     """
-    if "*" in device.scopes:
+    granted = _auth_string_list(device.scopes, field_name="scopes", state_name="authenticated device")
+    required_scope = _input_text(scope, field_name="scope")
+    if "*" in granted:
         return True
-    return scope in device.scopes
+    return required_scope in granted
 
 
 def require_scope(device: AuthenticatedDevice, scope: str) -> None:
@@ -209,7 +288,10 @@ def ensure_user_row(db: RdsData, *, cognito_sub: str, email: str | None) -> str:
     )
     if not rows:
         raise RuntimeError("Failed to ensure users row")
-    return str(rows[0].get("user_id") or "").strip()
+    user_id = rows[0].get("user_id")
+    if not isinstance(user_id, str) or not user_id or user_id != user_id.strip():
+        raise RuntimeError("Failed to ensure users row: malformed user_id")
+    return user_id
 
 
 # -----------------------------------------------------------------------------
@@ -227,9 +309,9 @@ class AuthenticatedAgent:
 
     token_id: str
     issuer_agent_id: str  # The agent that issued the token
-    target_agent_id: str | None  # The agent allowed to use it (None = any)
+    target_agent_id: str  # The only agent allowed to use it
     scopes: list[str]
-    allowed_spaces: list[str] | None  # None = all spaces
+    allowed_spaces: list[str]  # Empty means the token cannot access any space
 
 
 def generate_agent_token() -> str:
@@ -244,10 +326,10 @@ def create_agent_token(
     db: RdsData,
     *,
     issuer_agent_id: str,
-    target_agent_id: str | None = None,
+    target_agent_id: str,
+    scopes: list[str],
+    allowed_spaces: list[str],
     name: str = "agent-token",
-    scopes: list[str] | None = None,
-    allowed_spaces: list[str] | None = None,
     expires_at: str | None = None,
     created_by_user_id: str | None = None,
 ) -> tuple[str, str]:
@@ -256,18 +338,20 @@ def create_agent_token(
     Args:
         db: Database connection
         issuer_agent_id: The agent issuing/owning this token
-        target_agent_id: If set, only this agent can use the token
+        target_agent_id: The only agent allowed to use the token
         name: Human-readable name for the token
         scopes: List of permission scopes (e.g., ["read_memories", "write_events"])
-        allowed_spaces: If set, token only valid for these space IDs
+        allowed_spaces: Explicit space IDs available to the token; an empty list denies all spaces
         expires_at: ISO timestamp when token expires (None = never)
         created_by_user_id: User who created the token (for audit)
 
     Returns:
         Tuple of (token_id, plaintext_token) - plaintext is only returned once!
     """
-    import json
-
+    issuer_agent_id = _input_text(issuer_agent_id, field_name="issuer_agent_id")
+    target_agent_id = _input_text(target_agent_id, field_name="target_agent_id")
+    scopes = _input_string_list(scopes, field_name="scopes")
+    allowed_spaces = _input_string_list(allowed_spaces, field_name="allowed_spaces")
     token = generate_agent_token()
     token_hash_val = hash_token(token)
 
@@ -279,11 +363,11 @@ def create_agent_token(
         )
         VALUES (
             :issuer_agent_id::uuid,
-            CASE WHEN :target_agent_id IS NULL THEN NULL ELSE :target_agent_id::uuid END,
+            :target_agent_id::uuid,
             :name,
             :token_hash,
             :scopes::jsonb,
-            CASE WHEN :allowed_spaces IS NULL THEN NULL ELSE :allowed_spaces::jsonb END,
+            :allowed_spaces::jsonb,
             CASE WHEN :expires_at IS NULL THEN NULL ELSE :expires_at::timestamptz END,
             CASE WHEN :created_by_user_id IS NULL THEN NULL ELSE :created_by_user_id::uuid END
         )
@@ -294,8 +378,8 @@ def create_agent_token(
             "target_agent_id": target_agent_id,
             "name": name,
             "token_hash": token_hash_val,
-            "scopes": json.dumps(scopes or []),
-            "allowed_spaces": json.dumps(allowed_spaces) if allowed_spaces else None,
+            "scopes": json.dumps(scopes),
+            "allowed_spaces": json.dumps(allowed_spaces),
             "expires_at": expires_at,
             "created_by_user_id": created_by_user_id,
         },
@@ -304,22 +388,29 @@ def create_agent_token(
     if not rows:
         raise RuntimeError("Failed to create agent token")
 
-    token_id = str(rows[0].get("token_id") or "").strip()
+    token_id = _required_auth_text(rows[0], "token_id", state_name="created agent token")
     return token_id, token
 
 
-def authenticate_agent_token(db: RdsData, bearer_token: str) -> AuthenticatedAgent | None:
+def authenticate_agent_token(
+    db: RdsData,
+    bearer_token: str,
+    *,
+    target_agent_id: str,
+) -> AuthenticatedAgent | None:
     """Authenticate an agent-to-agent bearer token.
 
     Args:
         db: Database connection
         bearer_token: The plaintext bearer token
+        target_agent_id: Authenticated identity of the agent presenting the token
 
     Returns:
         AuthenticatedAgent if valid, None if invalid/expired/revoked
     """
-    import json
-
+    target_agent_id = _input_text(target_agent_id, field_name="target_agent_id")
+    if not isinstance(bearer_token, str) or not bearer_token or bearer_token != bearer_token.strip():
+        return None
     token_hash_val = hash_token(bearer_token)
 
     rows = db.query(
@@ -328,7 +419,7 @@ def authenticate_agent_token(db: RdsData, bearer_token: str) -> AuthenticatedAge
             token_id::TEXT as token_id,
             issuer_agent_id::TEXT as issuer_agent_id,
             target_agent_id::TEXT as target_agent_id,
-            COALESCE(scopes, '[]'::jsonb)::TEXT as scopes_json,
+            scopes::TEXT as scopes_json,
             allowed_spaces::TEXT as allowed_spaces_json
         FROM agent_tokens
         WHERE token_hash = :token_hash
@@ -343,30 +434,30 @@ def authenticate_agent_token(db: RdsData, bearer_token: str) -> AuthenticatedAge
         return None
 
     row = rows[0]
-
-    # Update last_used_at
-    db.execute(
-        "UPDATE agent_tokens SET last_used_at = NOW() WHERE token_id = :token_id::uuid",
-        {"token_id": row["token_id"]},
+    state_name = "agent token auth state"
+    token_id = _required_auth_text(row, "token_id", state_name=state_name)
+    issuer_agent_id = _required_auth_text(row, "issuer_agent_id", state_name=state_name)
+    persisted_target_agent_id = _required_auth_text(row, "target_agent_id", state_name=state_name)
+    scopes = _parse_auth_string_list(row.get("scopes_json"), field_name="scopes", state_name=state_name)
+    allowed_spaces = _parse_auth_string_list(
+        row.get("allowed_spaces_json"),
+        field_name="allowed_spaces",
+        state_name=state_name,
     )
 
-    try:
-        scopes = json.loads(row.get("scopes_json") or "[]")
-    except Exception:
-        scopes = []
+    if persisted_target_agent_id != target_agent_id:
+        return None
 
-    allowed_spaces = None
-    if row.get("allowed_spaces_json"):
-        try:
-            allowed_spaces = json.loads(row["allowed_spaces_json"])
-        except Exception:
-            pass
+    db.execute(
+        "UPDATE agent_tokens SET last_used_at = NOW() WHERE token_id = :token_id::uuid",
+        {"token_id": token_id},
+    )
 
     return AuthenticatedAgent(
-        token_id=row["token_id"],
-        issuer_agent_id=row["issuer_agent_id"],
-        target_agent_id=row.get("target_agent_id"),
-        scopes=[str(s) for s in scopes],
+        token_id=token_id,
+        issuer_agent_id=issuer_agent_id,
+        target_agent_id=persisted_target_agent_id,
+        scopes=scopes,
         allowed_spaces=allowed_spaces,
     )
 
@@ -404,15 +495,14 @@ def list_agent_tokens(db: RdsData, issuer_agent_id: str) -> list[dict]:
     Returns:
         List of token metadata (excludes token_hash for security)
     """
-    import json
-
+    issuer_agent_id = _input_text(issuer_agent_id, field_name="issuer_agent_id")
     rows = db.query(
         """
         SELECT
             token_id::TEXT as token_id,
             target_agent_id::TEXT as target_agent_id,
             name,
-            COALESCE(scopes, '[]'::jsonb)::TEXT as scopes_json,
+            scopes::TEXT as scopes_json,
             allowed_spaces::TEXT as allowed_spaces_json,
             expires_at::TEXT as expires_at,
             revoked_at::TEXT as revoked_at,
@@ -427,22 +517,18 @@ def list_agent_tokens(db: RdsData, issuer_agent_id: str) -> list[dict]:
 
     result = []
     for row in rows:
-        try:
-            scopes = json.loads(row.get("scopes_json") or "[]")
-        except Exception:
-            scopes = []
-
-        allowed_spaces = None
-        if row.get("allowed_spaces_json"):
-            try:
-                allowed_spaces = json.loads(row["allowed_spaces_json"])
-            except Exception:
-                pass
+        state_name = "agent token metadata"
+        scopes = _parse_auth_string_list(row.get("scopes_json"), field_name="scopes", state_name=state_name)
+        allowed_spaces = _parse_auth_string_list(
+            row.get("allowed_spaces_json"),
+            field_name="allowed_spaces",
+            state_name=state_name,
+        )
 
         result.append(
             {
-                "token_id": row["token_id"],
-                "target_agent_id": row.get("target_agent_id"),
+                "token_id": _required_auth_text(row, "token_id", state_name=state_name),
+                "target_agent_id": _required_auth_text(row, "target_agent_id", state_name=state_name),
                 "name": row.get("name"),
                 "scopes": scopes,
                 "allowed_spaces": allowed_spaces,
@@ -467,9 +553,23 @@ def require_agent_scopes(agent: AuthenticatedAgent, required: list[str]) -> None
     Raises:
         PermissionError: If any required scope is missing
     """
-    missing = [s for s in required if s not in agent.scopes]
+    granted = _auth_string_list(agent.scopes, field_name="scopes", state_name="authenticated agent")
+    required_scopes = _input_string_list(required, field_name="required")
+    missing = [scope for scope in required_scopes if scope not in granted]
     if missing:
         raise PermissionError(f"Missing required scopes: {missing}")
+
+
+def check_agent_target_access(agent: AuthenticatedAgent, target_agent_id: str) -> bool:
+    """Return whether a token is bound to the agent presenting it."""
+
+    persisted_target = _auth_text(
+        agent.target_agent_id,
+        field_name="target_agent_id",
+        state_name="authenticated agent",
+    )
+    requested_target = _input_text(target_agent_id, field_name="target_agent_id")
+    return persisted_target == requested_target
 
 
 def check_agent_space_access(agent: AuthenticatedAgent, space_id: str) -> bool:
@@ -482,6 +582,10 @@ def check_agent_space_access(agent: AuthenticatedAgent, space_id: str) -> bool:
     Returns:
         True if access is allowed, False otherwise
     """
-    if agent.allowed_spaces is None:
-        return True  # No restriction = all spaces allowed
-    return space_id in agent.allowed_spaces
+    allowed_spaces = _auth_string_list(
+        agent.allowed_spaces,
+        field_name="allowed_spaces",
+        state_name="authenticated agent",
+    )
+    requested_space = _input_text(space_id, field_name="space_id")
+    return requested_space in allowed_spaces
