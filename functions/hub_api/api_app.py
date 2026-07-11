@@ -12,6 +12,8 @@ Architecture:
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -23,6 +25,15 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import boto3
+from agent_hub.artifact_service import (
+    ArtifactLifecycleService,
+    ArtifactLifecycleState,
+    ArtifactObjectEvidence,
+    ArtifactPurpose,
+    ArtifactServiceError,
+    ArtifactUploadIntent,
+    VerifiedArtifact,
+)
 from agent_hub.audit import append_audit_entry
 from agent_hub.auth import (
     AuthenticatedAgent,
@@ -100,6 +111,7 @@ from agent_hub.recognition_service import (
 from agent_hub.secrets import get_secret_json
 from agent_hub.semantic_outbox import enqueue_semantic_record
 from agent_hub.semantic_tapdb import TEMPLATE_CODES
+from artifact_repository import RdsArtifactRepository
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from recognition_repository import (
@@ -429,10 +441,18 @@ class PersonaOut(BaseModel):
     source: str
 
 
-class PresignIn(BaseModel):
-    filename: str
-    content_type: str = Field(default="application/octet-stream")
-    purpose: str | None = Field(default="general", description="general|recognition")
+class ArtifactUploadIntentCreateIn(BaseModel):
+    idempotency_key: str = Field(min_length=1, max_length=255)
+    agent_id: str = Field(min_length=1, max_length=64)
+    purpose: ArtifactPurpose
+    filename: str = Field(min_length=1, max_length=255)
+    media_type: str = Field(min_length=3, max_length=255)
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_byte_count: int = Field(gt=0)
+    upload_ttl_seconds: int = Field(ge=60, le=3600)
+    space_id: str | None = Field(default=None, max_length=64)
+    session_id: str | None = Field(default=None, max_length=64)
+    source_event_id: str | None = Field(default=None, max_length=64)
 
 
 class RecognitionArtifactEvidenceIn(BaseModel):
@@ -3980,22 +4000,451 @@ def review_recognition_hypothesis(
     }
 
 
-@api_app.post("/v1/artifacts/presign")
-def presign_upload(body: PresignIn, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
-    require_scope(device, "artifacts:write")
-    if not _cfg.artifact_bucket:
-        raise HTTPException(status_code=500, detail="Artifact bucket not configured")
-    purpose = str(body.purpose or "general").strip().lower()
-    if purpose not in {"general", "recognition"}:
-        purpose = "general"
-    prefix = "recognition" if purpose == "recognition" else "artifacts"
-    key = f"{prefix}/agent_id={device.agent_id}/{uuid.uuid4()}_{body.filename}"
-    url = _get_s3().generate_presigned_url(
-        ClientMethod="put_object",
-        Params={"Bucket": _cfg.artifact_bucket, "Key": key, "ContentType": body.content_type},
-        ExpiresIn=900,
+def _artifact_uuid(value: str | None, field: str, *, required: bool = True) -> str | None:
+    raw = str(value or "")
+    normalized = raw.strip()
+    if not normalized:
+        if required:
+            raise HTTPException(status_code=400, detail=f"{field} is required")
+        return None
+    if raw != normalized:
+        raise HTTPException(status_code=400, detail=f"{field} must not contain surrounding whitespace")
+    try:
+        return str(uuid.UUID(normalized))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"{field} must be a UUID") from exc
+
+
+def _require_artifact_agent_access(
+    *,
+    device: AuthenticatedDevice,
+    target_agent_id: str,
+    purpose: ArtifactPurpose,
+) -> None:
+    if str(device.agent_id) == target_agent_id:
+        return
+    kind = str((device.capabilities or {}).get("kind") or "").strip().lower()
+    if kind == "recognition_worker" and purpose is ArtifactPurpose.RECOGNITION:
+        _require_recognition_worker_access(device=device, target_agent_id=target_agent_id)
+        return
+    if kind in {"admin", "worker"}:
+        return
+    raise HTTPException(status_code=403, detail="Device is not authorized for the artifact agent")
+
+
+def _resolve_artifact_context(
+    *,
+    body: ArtifactUploadIntentCreateIn,
+    device: AuthenticatedDevice,
+) -> tuple[str, str | None, str | None, str | None]:
+    target_agent_id = str(_artifact_uuid(body.agent_id, "agent_id"))
+    space_id = _artifact_uuid(body.space_id, "space_id", required=False)
+    session_id = _artifact_uuid(body.session_id, "session_id", required=False)
+    source_event_id = _artifact_uuid(body.source_event_id, "source_event_id", required=False)
+    _require_artifact_agent_access(
+        device=device,
+        target_agent_id=target_agent_id,
+        purpose=body.purpose,
     )
-    return {"upload_url": url, "bucket": _cfg.artifact_bucket, "key": key, "purpose": purpose}
+
+    if body.purpose in {ArtifactPurpose.RECOGNITION, ArtifactPurpose.VISUAL} and source_event_id is None:
+        raise HTTPException(status_code=400, detail=f"source_event_id is required for {body.purpose.value} artifacts")
+
+    if source_event_id is not None:
+        rows = _get_db().query(
+            """
+            SELECT event_id::TEXT AS event_id,
+                   agent_id::TEXT AS agent_id,
+                   space_id::TEXT AS space_id,
+                   session_id::TEXT AS session_id,
+                   type
+            FROM events
+            WHERE event_id = :source_event_id::uuid
+              AND agent_id = :agent_id::uuid
+            LIMIT 1
+            """,
+            {"source_event_id": source_event_id, "agent_id": target_agent_id},
+        )
+        if len(rows) != 1:
+            raise HTTPException(status_code=404, detail="Source event was not found for the artifact agent")
+        row = rows[0]
+        event_space_id = str(row.get("space_id") or "").strip() or None
+        event_session_id = str(row.get("session_id") or "").strip() or None
+        event_type = str(row.get("type") or "").strip()
+        if space_id is not None and event_space_id != space_id:
+            raise HTTPException(status_code=400, detail="Artifact space does not match the source event")
+        if session_id is not None and event_session_id != session_id:
+            raise HTTPException(status_code=400, detail="Artifact session does not match the source event")
+        space_id = event_space_id
+        session_id = event_session_id
+        if body.purpose is ArtifactPurpose.RECOGNITION and event_type not in {"voice.sample", "face.snapshot"}:
+            raise HTTPException(status_code=400, detail="Recognition artifact source event type is invalid")
+        if body.purpose is ArtifactPurpose.VISUAL:
+            if not event_type.startswith("visual."):
+                raise HTTPException(status_code=400, detail="Visual artifact source event type is invalid")
+            if space_id is None or session_id is None:
+                raise HTTPException(status_code=400, detail="Visual artifacts require source space and session context")
+    else:
+        if session_id is not None:
+            rows = _get_db().query(
+                """
+                SELECT session_id::TEXT AS session_id,
+                       space_id::TEXT AS space_id
+                FROM sessions
+                WHERE session_id = :session_id::uuid
+                  AND agent_id = :agent_id::uuid
+                LIMIT 1
+                """,
+                {"session_id": session_id, "agent_id": target_agent_id},
+            )
+            if len(rows) != 1:
+                raise HTTPException(status_code=404, detail="Session was not found for the artifact agent")
+            session_space_id = str(rows[0].get("space_id") or "").strip() or None
+            if space_id is not None and session_space_id != space_id:
+                raise HTTPException(status_code=400, detail="Artifact space does not match the session")
+            space_id = session_space_id
+        if space_id is not None:
+            _require_agent_space(target_agent_id, space_id)
+
+    if target_agent_id != str(device.agent_id) and source_event_id is None and space_id is None:
+        raise HTTPException(status_code=403, detail="Cross-agent artifacts require owned source context")
+    return target_agent_id, space_id, session_id, source_event_id
+
+
+def _artifact_intent_matches(
+    intent: ArtifactUploadIntent,
+    *,
+    body: ArtifactUploadIntentCreateIn,
+    target_agent_id: str,
+    device_id: str,
+    space_id: str | None,
+    session_id: str | None,
+    source_event_id: str | None,
+) -> bool:
+    return (
+        intent.agent_id == target_agent_id
+        and intent.device_id == device_id
+        and intent.purpose is body.purpose
+        and intent.filename == body.filename
+        and intent.media_type == body.media_type
+        and intent.expected_sha256 == body.expected_sha256
+        and intent.expected_byte_count == body.expected_byte_count
+        and intent.space_id == space_id
+        and intent.session_id == session_id
+        and intent.source_event_id == source_event_id
+    )
+
+
+def _artifact_intent_payload(
+    intent: ArtifactUploadIntent,
+    *,
+    upload_url: str | None,
+    required_headers: dict[str, str] | None,
+    replayed: bool,
+) -> dict[str, Any]:
+    return {
+        "artifact_id": intent.artifact_id,
+        "agent_id": intent.agent_id,
+        "device_id": intent.device_id,
+        "purpose": intent.purpose.value,
+        "filename": intent.filename,
+        "media_type": intent.media_type,
+        "bucket": intent.bucket,
+        "object_key": intent.object_key,
+        "uri": intent.uri,
+        "expected_sha256": intent.expected_sha256,
+        "expected_byte_count": intent.expected_byte_count,
+        "lifecycle_state": intent.lifecycle_state.value,
+        "created_at": intent.created_at.isoformat(),
+        "upload_expires_at": intent.upload_expires_at.isoformat(),
+        "space_id": intent.space_id,
+        "session_id": intent.session_id,
+        "source_event_id": intent.source_event_id,
+        "upload_url": upload_url,
+        "required_headers": required_headers,
+        "replayed": replayed,
+    }
+
+
+def _verified_artifact_payload(artifact: VerifiedArtifact, *, replayed: bool) -> dict[str, Any]:
+    payload = _artifact_intent_payload(
+        artifact.intent,
+        upload_url=None,
+        required_headers=None,
+        replayed=replayed,
+    )
+    payload.update(
+        {
+            "actual_sha256": artifact.actual_sha256,
+            "actual_byte_count": artifact.actual_byte_count,
+            "etag": artifact.etag,
+            "version_id": artifact.version_id,
+            "verification_observed_at": artifact.verification_observed_at.isoformat(),
+            "completed_at": artifact.completed_at.isoformat(),
+        }
+    )
+    return payload
+
+
+def _artifact_http_error(exc: ArtifactServiceError) -> None:
+    detail = str(exc)
+    if "not found" in detail:
+        raise HTTPException(status_code=404, detail=detail) from exc
+    if any(token in detail for token in ("not awaiting", "not verified", "expired", "does not match", "rejected")):
+        raise HTTPException(status_code=409, detail=detail) from exc
+    if "persisted" in detail or "was not persisted" in detail:
+        raise HTTPException(status_code=500, detail="Artifact persistence failed") from exc
+    raise HTTPException(status_code=400, detail=detail) from exc
+
+
+def _artifact_presign(intent: ArtifactUploadIntent) -> tuple[str, dict[str, str]]:
+    remaining = int((intent.upload_expires_at - datetime.now(timezone.utc)).total_seconds())
+    if remaining < 1:
+        raise HTTPException(status_code=409, detail="Artifact upload intent has expired")
+    checksum_b64 = base64.b64encode(bytes.fromhex(intent.expected_sha256)).decode("ascii")
+    params = {
+        "Bucket": intent.bucket,
+        "Key": intent.object_key,
+        "ContentType": intent.media_type,
+        "ContentLength": intent.expected_byte_count,
+        "Metadata": {"sha256": intent.expected_sha256},
+        "ChecksumSHA256": checksum_b64,
+    }
+    try:
+        url = _get_s3().generate_presigned_url(
+            ClientMethod="put_object",
+            Params=params,
+            ExpiresIn=remaining,
+            HttpMethod="PUT",
+        )
+    except Exception as exc:
+        logger.error("Artifact upload URL generation failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="Artifact storage could not create an upload URL") from exc
+    return str(url), {
+        "Content-Type": intent.media_type,
+        "Content-Length": str(intent.expected_byte_count),
+        "x-amz-meta-sha256": intent.expected_sha256,
+        "x-amz-checksum-sha256": checksum_b64,
+    }
+
+
+def _artifact_s3_evidence(intent: ArtifactUploadIntent) -> ArtifactObjectEvidence:
+    try:
+        response = _get_s3().head_object(
+            Bucket=intent.bucket,
+            Key=intent.object_key,
+            ChecksumMode="ENABLED",
+        )
+    except Exception as exc:
+        error = getattr(exc, "response", {})
+        code = str(error.get("Error", {}).get("Code", "")) if isinstance(error, dict) else ""
+        if code in {"404", "NoSuchKey", "NotFound"}:
+            raise HTTPException(status_code=409, detail="Uploaded artifact object was not found") from exc
+        logger.error("Artifact HeadObject failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=502, detail="Artifact storage verification failed") from exc
+    if not isinstance(response, dict):
+        raise HTTPException(status_code=502, detail="Artifact storage returned malformed object evidence")
+    metadata = response.get("Metadata")
+    metadata_sha256 = str(metadata.get("sha256") or "") if isinstance(metadata, dict) else ""
+    checksum_b64 = str(response.get("ChecksumSHA256") or "")
+    if not checksum_b64:
+        raise HTTPException(status_code=502, detail="Artifact storage omitted a valid SHA-256 checksum")
+    try:
+        checksum_sha256 = base64.b64decode(checksum_b64, validate=True).hex()
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=502, detail="Artifact storage omitted a valid SHA-256 checksum") from None
+    if metadata_sha256 != checksum_sha256:
+        raise HTTPException(status_code=409, detail="Artifact checksum metadata does not match S3 checksum evidence")
+    byte_count = response.get("ContentLength")
+    if not isinstance(byte_count, int) or isinstance(byte_count, bool):
+        raise HTTPException(status_code=502, detail="Artifact storage returned an invalid object size")
+    media_type = str(response.get("ContentType") or "").strip()
+    etag = str(response.get("ETag") or "").strip()
+    version_id = str(response.get("VersionId") or "").strip()
+    if not media_type or not etag or not version_id:
+        raise HTTPException(status_code=502, detail="Artifact storage evidence is incomplete")
+    return ArtifactObjectEvidence(
+        bucket=intent.bucket,
+        object_key=intent.object_key,
+        sha256=checksum_sha256,
+        byte_count=byte_count,
+        etag=etag,
+        version_id=version_id,
+        media_type=media_type,
+        observed_at=datetime.now(timezone.utc),
+    )
+
+
+def _require_artifact_record_access(intent: ArtifactUploadIntent, device: AuthenticatedDevice) -> None:
+    if intent.device_id != str(device.device_id):
+        raise HTTPException(status_code=404, detail="Artifact was not found for this device")
+    _require_artifact_agent_access(
+        device=device,
+        target_agent_id=intent.agent_id,
+        purpose=intent.purpose,
+    )
+
+
+@api_app.post("/v1/artifacts/upload-intents", status_code=201)
+def create_artifact_upload_intent(
+    body: ArtifactUploadIntentCreateIn,
+    device: AuthenticatedDevice = Depends(get_device),
+) -> dict[str, Any]:
+    require_scope(device, "artifacts:write")
+    for field, value in (
+        ("idempotency_key", body.idempotency_key),
+        ("filename", body.filename),
+        ("media_type", body.media_type),
+    ):
+        if value != value.strip():
+            raise HTTPException(status_code=400, detail=f"{field} must not contain surrounding whitespace")
+    bucket = str(_cfg.artifact_bucket or "").strip()
+    if not bucket:
+        raise HTTPException(status_code=500, detail="ARTIFACT_BUCKET is not configured")
+    target_agent_id, space_id, session_id, source_event_id = _resolve_artifact_context(
+        body=body,
+        device=device,
+    )
+    artifact_id = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"marvain:artifact-upload:{target_agent_id}:{device.device_id}:{body.idempotency_key}",
+        )
+    )
+    repository = RdsArtifactRepository(_get_db())
+    replayed = False
+    try:
+        existing = repository.get_upload_intent(artifact_id)
+    except ArtifactServiceError as exc:
+        if "not found" not in str(exc):
+            _artifact_http_error(exc)
+            raise AssertionError("unreachable")
+        existing = None
+    if existing is not None:
+        if not _artifact_intent_matches(
+            existing,
+            body=body,
+            target_agent_id=target_agent_id,
+            device_id=str(device.device_id),
+            space_id=space_id,
+            session_id=session_id,
+            source_event_id=source_event_id,
+        ):
+            raise HTTPException(status_code=409, detail="Artifact idempotency key was reused with different input")
+        intent = existing
+        replayed = True
+    else:
+        service = ArtifactLifecycleService(repository, id_factory=lambda: artifact_id)
+        try:
+            intent = service.create_upload_intent(
+                agent_id=target_agent_id,
+                device_id=str(device.device_id),
+                purpose=body.purpose,
+                filename=body.filename,
+                media_type=body.media_type,
+                bucket=bucket,
+                expected_sha256=body.expected_sha256,
+                expected_byte_count=body.expected_byte_count,
+                upload_ttl_seconds=body.upload_ttl_seconds,
+                space_id=space_id,
+                session_id=session_id,
+                source_event_id=source_event_id,
+            )
+        except Exception as exc:
+            try:
+                raced = repository.get_upload_intent(artifact_id)
+            except Exception:
+                if isinstance(exc, ArtifactServiceError):
+                    _artifact_http_error(exc)
+                    raise AssertionError("unreachable")
+                logger.error("Artifact upload intent persistence failed: %s", type(exc).__name__)
+                raise HTTPException(status_code=500, detail="Artifact upload intent persistence failed") from exc
+            if not _artifact_intent_matches(
+                raced,
+                body=body,
+                target_agent_id=target_agent_id,
+                device_id=str(device.device_id),
+                space_id=space_id,
+                session_id=session_id,
+                source_event_id=source_event_id,
+            ):
+                raise HTTPException(status_code=409, detail="Artifact idempotency race used different input") from exc
+            intent = raced
+            replayed = True
+    if intent.lifecycle_state is ArtifactLifecycleState.AVAILABLE:
+        return _artifact_intent_payload(intent, upload_url=None, required_headers=None, replayed=True)
+    if intent.lifecycle_state is not ArtifactLifecycleState.PENDING_UPLOAD:
+        raise HTTPException(status_code=409, detail="Artifact upload intent is not writable")
+    upload_url, required_headers = _artifact_presign(intent)
+    return _artifact_intent_payload(
+        intent,
+        upload_url=upload_url,
+        required_headers=required_headers,
+        replayed=replayed,
+    )
+
+
+@api_app.post("/v1/artifacts/{artifact_id}/complete")
+def complete_artifact_upload(
+    artifact_id: str,
+    device: AuthenticatedDevice = Depends(get_device),
+) -> dict[str, Any]:
+    require_scope(device, "artifacts:write")
+    artifact_id = str(_artifact_uuid(artifact_id, "artifact_id"))
+    repository = RdsArtifactRepository(_get_db())
+    try:
+        intent = repository.get_upload_intent(artifact_id)
+    except ArtifactServiceError as exc:
+        _artifact_http_error(exc)
+        raise AssertionError("unreachable")
+    _require_artifact_record_access(intent, device)
+    if intent.lifecycle_state is ArtifactLifecycleState.AVAILABLE:
+        try:
+            return _verified_artifact_payload(repository.get_verified_artifact(artifact_id), replayed=True)
+        except ArtifactServiceError as exc:
+            _artifact_http_error(exc)
+            raise AssertionError("unreachable")
+    if datetime.now(timezone.utc) > intent.upload_expires_at:
+        raise HTTPException(status_code=409, detail="Artifact upload intent has expired")
+    evidence = _artifact_s3_evidence(intent)
+    try:
+        artifact = ArtifactLifecycleService(repository).verify_completion(
+            artifact_id=artifact_id,
+            evidence=evidence,
+        )
+        return _verified_artifact_payload(artifact, replayed=False)
+    except ArtifactServiceError as exc:
+        try:
+            raced = repository.get_verified_artifact(artifact_id)
+        except ArtifactServiceError:
+            _artifact_http_error(exc)
+            raise AssertionError("unreachable")
+        if (
+            raced.actual_sha256 != evidence.sha256
+            or raced.actual_byte_count != evidence.byte_count
+            or raced.etag != evidence.etag
+            or raced.version_id != evidence.version_id
+        ):
+            raise HTTPException(status_code=409, detail="Artifact completion race produced different evidence") from exc
+        return _verified_artifact_payload(raced, replayed=True)
+
+
+@api_app.get("/v1/artifacts/{artifact_id}")
+def get_verified_artifact(
+    artifact_id: str,
+    device: AuthenticatedDevice = Depends(get_device),
+) -> dict[str, Any]:
+    require_scope(device, "artifacts:write")
+    artifact_id = str(_artifact_uuid(artifact_id, "artifact_id"))
+    repository = RdsArtifactRepository(_get_db())
+    try:
+        intent = repository.get_upload_intent(artifact_id)
+        _require_artifact_record_access(intent, device)
+        artifact = repository.get_verified_artifact(artifact_id)
+    except ArtifactServiceError as exc:
+        _artifact_http_error(exc)
+        raise AssertionError("unreachable")
+    return _verified_artifact_payload(artifact, replayed=False)
 
 
 # -----------------------------------------------------------------------------

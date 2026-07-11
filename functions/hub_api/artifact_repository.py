@@ -37,6 +37,33 @@ def _optional_text(value: Any) -> str | None:
     return normalized or None
 
 
+def _intent_from_row(row: dict[str, Any]) -> ArtifactUploadIntent:
+    try:
+        purpose = ArtifactPurpose(str(row.get("purpose") or ""))
+        state = ArtifactLifecycleState(str(row.get("lifecycle_state") or ""))
+    except ValueError as exc:
+        raise ArtifactServiceError("persisted artifact lifecycle is invalid") from exc
+    return ArtifactUploadIntent(
+        artifact_id=str(row["artifact_id"]),
+        agent_id=str(row["agent_id"]),
+        device_id=str(row["device_id"]),
+        purpose=purpose,
+        filename=str(row["filename"]),
+        media_type=str(row["media_type"]),
+        bucket=str(row["bucket"]),
+        object_key=str(row["object_key"]),
+        uri=str(row["uri"]),
+        expected_sha256=str(row["expected_sha256"]),
+        expected_byte_count=int(row["expected_byte_count"]),
+        lifecycle_state=state,
+        created_at=_datetime(row.get("created_at"), "created_at"),
+        upload_expires_at=_datetime(row.get("upload_expires_at"), "upload_expires_at"),
+        space_id=_optional_text(row.get("space_id")),
+        session_id=_optional_text(row.get("session_id")),
+        source_event_id=_optional_text(row.get("source_event_id")),
+    )
+
+
 class RdsArtifactRepository:
     def __init__(self, db: RdsData) -> None:
         self.db = db
@@ -111,30 +138,53 @@ class RdsArtifactRepository:
         )
         if not rows:
             raise ArtifactServiceError("artifact upload intent was not found")
+        return _intent_from_row(rows[0])
+
+    def get_verified_artifact(self, artifact_id: str) -> VerifiedArtifact:
+        rows = self.db.query(
+            """
+            SELECT artifact_id::TEXT AS artifact_id,
+                   agent_id::TEXT AS agent_id,
+                   space_id::TEXT AS space_id,
+                   device_id::TEXT AS device_id,
+                   session_id::TEXT AS session_id,
+                   source_event_id::TEXT AS source_event_id,
+                   purpose, filename, bucket, object_key, uri, media_type,
+                   expected_sha256, expected_byte_count, lifecycle_state,
+                   actual_sha256, actual_byte_count, s3_etag, s3_version_id,
+                   created_at::TEXT AS created_at,
+                   upload_expires_at::TEXT AS upload_expires_at,
+                   verification_observed_at::TEXT AS verification_observed_at,
+                   completed_at::TEXT AS completed_at
+            FROM artifact_references
+            WHERE artifact_id = :artifact_id::uuid
+            LIMIT 1
+            """,
+            {"artifact_id": artifact_id},
+        )
+        if not rows:
+            raise ArtifactServiceError("artifact was not found")
         row = rows[0]
-        try:
-            purpose = ArtifactPurpose(str(row.get("purpose") or ""))
-            state = ArtifactLifecycleState(str(row.get("lifecycle_state") or ""))
-        except ValueError as exc:
-            raise ArtifactServiceError("persisted artifact lifecycle is invalid") from exc
-        return ArtifactUploadIntent(
-            artifact_id=str(row["artifact_id"]),
-            agent_id=str(row["agent_id"]),
-            device_id=str(row["device_id"]),
-            purpose=purpose,
-            filename=str(row["filename"]),
-            media_type=str(row["media_type"]),
-            bucket=str(row["bucket"]),
-            object_key=str(row["object_key"]),
-            uri=str(row["uri"]),
-            expected_sha256=str(row["expected_sha256"]),
-            expected_byte_count=int(row["expected_byte_count"]),
-            lifecycle_state=state,
-            created_at=_datetime(row.get("created_at"), "created_at"),
-            upload_expires_at=_datetime(row.get("upload_expires_at"), "upload_expires_at"),
-            space_id=_optional_text(row.get("space_id")),
-            session_id=_optional_text(row.get("session_id")),
-            source_event_id=_optional_text(row.get("source_event_id")),
+        intent = _intent_from_row(row)
+        if intent.lifecycle_state is not ArtifactLifecycleState.AVAILABLE:
+            raise ArtifactServiceError("artifact is not verified and available")
+        actual_sha256 = _optional_text(row.get("actual_sha256"))
+        actual_byte_count = row.get("actual_byte_count")
+        etag = _optional_text(row.get("s3_etag"))
+        version_id = _optional_text(row.get("s3_version_id"))
+        if actual_sha256 is None or actual_byte_count is None or etag is None or version_id is None:
+            raise ArtifactServiceError("persisted verified artifact evidence is incomplete")
+        return VerifiedArtifact(
+            intent=intent,
+            actual_sha256=actual_sha256,
+            actual_byte_count=int(actual_byte_count),
+            etag=etag,
+            version_id=version_id,
+            verification_observed_at=_datetime(
+                row.get("verification_observed_at"),
+                "verification_observed_at",
+            ),
+            completed_at=_datetime(row.get("completed_at"), "completed_at"),
         )
 
     def persist_verified_completion(self, artifact: VerifiedArtifact) -> None:
@@ -173,6 +223,25 @@ class RdsArtifactRepository:
             )
             if not rows or str(rows[0].get("artifact_id") or "") != intent.artifact_id:
                 raise ArtifactServiceError("verified artifact completion was not persisted")
+            if intent.source_event_id:
+                event_rows = self.db.query(
+                    """
+                    UPDATE events
+                    SET artifact_id = :artifact_id::uuid
+                    WHERE event_id = :source_event_id::uuid
+                      AND agent_id = :agent_id::uuid
+                      AND (artifact_id IS NULL OR artifact_id = :artifact_id::uuid)
+                    RETURNING event_id::TEXT AS event_id
+                    """,
+                    {
+                        "artifact_id": intent.artifact_id,
+                        "source_event_id": intent.source_event_id,
+                        "agent_id": intent.agent_id,
+                    },
+                    transaction_id=tx,
+                )
+                if not event_rows or str(event_rows[0].get("event_id") or "") != intent.source_event_id:
+                    raise ArtifactServiceError("source event rejected the verified artifact link")
             enqueue_semantic_record(
                 self.db,
                 transaction_id=tx,
