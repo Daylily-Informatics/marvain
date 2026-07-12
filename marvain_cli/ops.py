@@ -652,6 +652,11 @@ def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool, no_confirm: bool = Fals
         param_overrides["ArtifactCorsAllowedOrigins"] = artifact_cors_origins
         _eprint("Using ARTIFACT_CORS_ALLOWED_ORIGINS from environment")
 
+    cognito_domain_prefix = os.environ.get("COGNITO_DOMAIN_PREFIX", "").strip()
+    if cognito_domain_prefix:
+        param_overrides["CognitoDomainPrefix"] = cognito_domain_prefix
+        _eprint("Using COGNITO_DOMAIN_PREFIX from environment")
+
     missing_required_parameters = [
         name
         for name in REQUIRED_SAM_DEPLOY_PARAMETERS

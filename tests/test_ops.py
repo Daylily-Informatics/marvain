@@ -193,6 +193,7 @@ class TestOps(unittest.TestCase):
                 {
                     "LIVEKIT_URL": "wss://livekit.example.test",
                     "ARTIFACT_CORS_ALLOWED_ORIGINS": "https://localhost:8084",
+                    "COGNITO_DOMAIN_PREFIX": "marvain-cleanroom-test",
                 },
                 clear=True,
             ),
@@ -204,6 +205,7 @@ class TestOps(unittest.TestCase):
         deploy_cmd = run_cmd.call_args_list[1].args[0]
         self.assertIn("LiveKitUrl=wss://livekit.example.test", deploy_cmd)
         self.assertIn("ArtifactCorsAllowedOrigins=https://localhost:8084", deploy_cmd)
+        self.assertIn("CognitoDomainPrefix=marvain-cleanroom-test", deploy_cmd)
 
     def test_prepare_agent_worker_deployment_dry_run_is_explicit_and_non_mutating(self) -> None:
         env_cfg = {"sam": {"parameter_overrides": {}}}
