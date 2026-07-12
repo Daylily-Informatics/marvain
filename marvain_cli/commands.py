@@ -57,6 +57,7 @@ from marvain_cli.ops import (
     load_ctx,
     monitor_outputs,
     monitor_status,
+    prepare_agent_worker_deployment,
     sam_build,
     sam_build_simple,
     sam_deploy,
@@ -404,6 +405,11 @@ def bootstrap_cmd(
     space_name: str = Option("default", "--space-name"),
     device_name: str | None = Option(None, "--device-name"),
     force: bool = Option(False, "--force"),
+    worker_device_token: bool = Option(
+        False,
+        "--worker-device-token",
+        help="Register the token from AgentWorkerHubDeviceTokenSecretArn without exposing it locally",
+    ),
 ) -> None:
     """Bootstrap an agent, space, and device."""
     _exit(
@@ -414,8 +420,24 @@ def bootstrap_cmd(
             space_name=space_name,
             device_name=device_name,
             force=force,
+            worker_device_token=worker_device_token,
         )
     )
+
+
+def agent_prepare_deployment_cmd(
+    worker_version: str = Option(..., "--worker-version", help="Immutable source or release identity"),
+    image_tag: str | None = Option(None, "--image-tag", help="Explicit immutable ECR tag; defaults to worker version"),
+) -> None:
+    """Create and configure fresh ECR and worker-token prerequisites."""
+
+    receipt = prepare_agent_worker_deployment(
+        _load(),
+        dry_run=_dry_run(),
+        worker_version=worker_version,
+        image_tag=image_tag,
+    )
+    _json(receipt)
 
 
 def members_claim_owner(
@@ -895,6 +917,17 @@ def register(registry: CommandRegistry, spec: CliSpec) -> None:
         "agent",
         "Agent worker management.",
         [
+            (
+                "prepare-deployment",
+                agent_prepare_deployment_cmd,
+                required_policy(
+                    supports_json=True,
+                    mutates_state=True,
+                    supports_dry_run=True,
+                    long_running=True,
+                    prereq_tags={MARVAIN_AWS_TAG},
+                ),
+            ),
             ("start", agent_start_cmd, required_policy(mutates_state=True, supports_dry_run=True, long_running=True)),
             ("stop", agent_stop_cmd, required_policy(mutates_state=True, supports_dry_run=True)),
             (

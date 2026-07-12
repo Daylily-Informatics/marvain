@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -31,6 +33,7 @@ MARVAIN_CONDA_ENV_NAME = "marvain"
 MARVAIN_CONDA_ENV_FILE = "environment.yaml"
 MARVAIN_PYTHON_VERSION = (3, 12)
 MARVAIN_PYTHON_EXECUTABLE = "python3.12"
+MARVAIN_PROJECT_TAG = "project=marvain"
 REQUIRED_SAM_DEPLOY_PARAMETERS = (
     "ArtifactCorsAllowedOrigins",
     "AgentWorkerImageUri",
@@ -678,6 +681,8 @@ def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool, no_confirm: bool = Fals
         ctx.env.stack_name,
         "--resolve-s3",
         "--no-fail-on-empty-changeset",
+        "--tags",
+        MARVAIN_PROJECT_TAG,
     ]
     if guided:
         cmd.append("--guided")
@@ -695,6 +700,165 @@ def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool, no_confirm: bool = Fals
             cmd.append(f"{k}={v}")
 
     return run_cmd(cmd, env=cmd_env(ctx.env), dry_run=dry_run)
+
+
+def prepare_agent_worker_deployment(
+    ctx: Ctx,
+    *,
+    dry_run: bool,
+    worker_version: str,
+    image_tag: str | None,
+) -> dict[str, Any]:
+    """Create fresh worker prerequisites and pin them in the selected config."""
+
+    rc = _conda_preflight(enforce=not dry_run)
+    if rc != 0:
+        raise ConfigError("Marvain runtime preflight failed")
+
+    version = worker_version.strip()
+    if not version:
+        raise ConfigError("worker_version is required")
+    selected_tag = (image_tag or version).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", selected_tag):
+        raise ConfigError("image_tag must contain only letters, digits, underscore, period, and hyphen")
+
+    repository_name = f"{ctx.env.stack_name}-agent-worker"
+    secret_name = f"{ctx.env.stack_name}/agent-worker-device-token"
+    sam_cfg = ctx.env.raw.get("sam")
+    if not isinstance(sam_cfg, dict):
+        raise ConfigError("envs.<env>.sam must be a mapping")
+    parameter_overrides = sam_cfg.get("parameter_overrides")
+    if not isinstance(parameter_overrides, dict):
+        raise ConfigError("envs.<env>.sam.parameter_overrides must be a mapping")
+    managed_parameters = (
+        "AgentWorkerImageUri",
+        "AgentWorkerVersion",
+        "AgentWorkerHubDeviceTokenSecretArn",
+        "AgentWorkerDesiredCount",
+    )
+    already_configured = [name for name in managed_parameters if str(parameter_overrides.get(name) or "").strip()]
+    if already_configured:
+        raise ConfigError(
+            "Worker deployment parameters already exist; refusing to overwrite existing deployment state: "
+            + ", ".join(already_configured)
+        )
+
+    receipt: dict[str, Any] = {
+        "aws_profile": ctx.env.aws_profile,
+        "aws_region": ctx.env.aws_region,
+        "stack_name": ctx.env.stack_name,
+        "repository_name": repository_name,
+        "secret_name": secret_name,
+        "worker_version": version,
+        "image_tag": selected_tag,
+        "project_tag": MARVAIN_PROJECT_TAG,
+        "dry_run": dry_run,
+    }
+    if dry_run:
+        return receipt
+
+    missing = require_tools(["docker"])
+    if missing:
+        raise ConfigError("Docker is required to publish the agent worker image")
+
+    import boto3
+    from botocore.exceptions import ClientError
+
+    session = boto3.Session(profile_name=ctx.env.aws_profile, region_name=ctx.env.aws_region)
+    ecr = session.client("ecr")
+    secrets_manager = session.client("secretsmanager")
+
+    try:
+        ecr.describe_repositories(repositoryNames=[repository_name])
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "RepositoryNotFoundException":
+            raise
+    else:
+        raise ConfigError(f"ECR repository already exists; refusing to modify existing resource: {repository_name}")
+
+    try:
+        secrets_manager.describe_secret(SecretId=secret_name)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+            raise
+    else:
+        raise ConfigError(f"Secrets Manager secret already exists; refusing to modify existing resource: {secret_name}")
+
+    worker_dir = Path(__file__).resolve().parents[1] / "apps" / "agent_worker"
+    local_image = f"marvain-agent-worker-build:{selected_tag}"
+    build_cmd = [
+        "docker",
+        "buildx",
+        "build",
+        "--platform",
+        "linux/amd64",
+        "--load",
+        "--build-arg",
+        f"MARVAIN_WORKER_VERSION={version}",
+        "--tag",
+        local_image,
+        ".",
+    ]
+    if run_cmd(build_cmd, env=None, dry_run=False, cwd=str(worker_dir)) != 0:
+        raise ConfigError("Agent worker image build failed")
+
+    repository = ecr.create_repository(
+        repositoryName=repository_name,
+        imageTagMutability="IMMUTABLE",
+        imageScanningConfiguration={"scanOnPush": True},
+        encryptionConfiguration={"encryptionType": "AES256"},
+        tags=[{"Key": "project", "Value": "marvain"}],
+    )["repository"]
+    repository_uri = str(repository["repositoryUri"])
+    repository_arn = str(repository["repositoryArn"])
+    tagged_image = f"{repository_uri}:{selected_tag}"
+
+    auth_data = ecr.get_authorization_token()["authorizationData"][0]
+    username, password = base64.b64decode(auth_data["authorizationToken"]).decode("utf-8").split(":", 1)
+    subprocess.run(
+        ["docker", "login", "--username", username, "--password-stdin", auth_data["proxyEndpoint"]],
+        input=password,
+        text=True,
+        check=True,
+    )
+    run_cmd(["docker", "tag", local_image, tagged_image], env=None, dry_run=False)
+    run_cmd(["docker", "push", tagged_image], env=None, dry_run=False)
+
+    image_details = ecr.describe_images(
+        repositoryName=repository_name,
+        imageIds=[{"imageTag": selected_tag}],
+    )["imageDetails"]
+    if len(image_details) != 1 or not image_details[0].get("imageDigest"):
+        raise ConfigError("ECR did not return exactly one digest for the published worker image")
+    image_uri = f"{repository_uri}@{image_details[0]['imageDigest']}"
+
+    device_token = secrets.token_hex(32)
+    secret = secrets_manager.create_secret(
+        Name=secret_name,
+        Description="Marvain agent worker Hub device token",
+        SecretString=json.dumps({"device_token": device_token}),
+        Tags=[{"Key": "project", "Value": "marvain"}],
+    )
+    secret_arn = str(secret["ARN"])
+
+    parameter_overrides.update(
+        {
+            "AgentWorkerImageUri": image_uri,
+            "AgentWorkerVersion": version,
+            "AgentWorkerHubDeviceTokenSecretArn": secret_arn,
+            "AgentWorkerDesiredCount": 1,
+        }
+    )
+    save_config_dict(ctx.config_path, ctx.cfg)
+    receipt.update(
+        {
+            "repository_arn": repository_arn,
+            "image_uri": image_uri,
+            "device_token_secret_arn": secret_arn,
+            "config_path": str(ctx.config_path),
+        }
+    )
+    return receipt
 
 
 def _stream_process(
@@ -3077,6 +3241,7 @@ def bootstrap(
     space_name: str,
     device_name: str | None,
     force: bool,
+    worker_device_token: bool = False,
 ) -> int:
     rc = _conda_preflight(enforce=not dry_run)
     if rc != 0:
@@ -3100,7 +3265,21 @@ def bootstrap(
 
     a_name = agent_name or f"{ctx.env.stack_name}"
     d_name = device_name or socket.gethostname()
-    token = secrets.token_hex(32)
+    token_secret_arn: str | None = None
+    if worker_device_token:
+        sam_cfg = ctx.env.raw.get("sam")
+        overrides = sam_cfg.get("parameter_overrides") if isinstance(sam_cfg, dict) else None
+        if not isinstance(overrides, dict):
+            raise ConfigError("envs.<env>.sam.parameter_overrides must be configured for worker token bootstrap")
+        token_secret_arn = str(overrides.get("AgentWorkerHubDeviceTokenSecretArn") or "").strip()
+        if not token_secret_arn:
+            raise ConfigError("AgentWorkerHubDeviceTokenSecretArn is required for worker token bootstrap")
+        secret_payload = _fetch_secret_json(token_secret_arn, ctx.env.aws_profile, ctx.env.aws_region)
+        token = str(secret_payload.get("device_token") or "").strip()
+        if not token:
+            raise ConfigError("Agent worker device-token secret has no device_token value")
+    else:
+        token = secrets.token_hex(32)
     import hashlib
 
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -3227,7 +3406,8 @@ def bootstrap(
                 "space_id": space_id,
                 "device_id": device_id,
                 "device_name": d_name,
-                "device_token": token,
+                "device_token_secret_arn": token_secret_arn,
+                "device_token_stored_in_config": token_secret_arn is None,
                 "membership_created": membership_created,
             },
             indent=2,
@@ -3236,14 +3416,18 @@ def bootstrap(
     )
 
     if not dry_run:
-        env_cfg["bootstrap"] = {
+        bootstrap_config = {
             "agent_id": agent_id,
             "persona_id": persona_id,
             "space_id": space_id,
             "device_id": device_id,
             "device_name": d_name,
-            "device_token": token,
         }
+        if token_secret_arn:
+            bootstrap_config["device_token_secret_arn"] = token_secret_arn
+        else:
+            bootstrap_config["device_token"] = token
+        env_cfg["bootstrap"] = bootstrap_config
         save_config_dict(ctx.config_path, ctx.cfg)
         _eprint(f"Updated config bootstrap block: {ctx.config_path}")
 

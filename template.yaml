@@ -95,6 +95,8 @@ Globals:
     Timeout: 30
     MemorySize: 512
     Tracing: Active
+    Tags:
+      project: marvain
     Environment:
       Variables:
         STAGE: !Ref StageName
@@ -743,6 +745,9 @@ Resources:
     Type: AWS::ECS::Cluster
     Properties:
       ClusterName: !Sub ${AWS::StackName}-agent-worker
+      Tags:
+        - Key: project
+          Value: marvain
       ClusterSettings:
         - Name: containerInsights
           Value: enabled
@@ -799,6 +804,9 @@ Resources:
     Type: AWS::ECS::TaskDefinition
     Properties:
       Family: !Sub ${AWS::StackName}-agent-worker
+      Tags:
+        - Key: project
+          Value: marvain
       Cpu: '1024'
       Memory: '2048'
       NetworkMode: awsvpc
@@ -863,6 +871,9 @@ Resources:
       EnableECSManagedTags: true
       EnableExecuteCommand: false
       PropagateTags: SERVICE
+      Tags:
+        - Key: project
+          Value: marvain
       DeploymentConfiguration:
         MinimumHealthyPercent: 100
         MaximumPercent: 200

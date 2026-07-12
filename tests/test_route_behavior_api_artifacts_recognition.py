@@ -41,7 +41,7 @@ PERSON_ID = "88888888-8888-4888-8888-888888888888"
 CONSENT_ID = "99999999-9999-4999-8999-999999999999"
 LOCATION_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 DIGEST = "a" * 64
-NOW = datetime(2026, 7, 11, 4, 30, tzinfo=timezone.utc)
+NOW = datetime.now(timezone.utc)
 
 
 def _load_api_module():

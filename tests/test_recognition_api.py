@@ -44,7 +44,7 @@ LOCATION_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 SESSION_ID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 OUTBOX_ID = "dddddddd-dddd-dddd-dddd-dddddddddddd"
 SYNC_ID = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
-NOW = datetime(2026, 7, 11, 2, 0, tzinfo=timezone.utc)
+NOW = datetime.now(timezone.utc)
 
 
 def _load_api_module():

@@ -168,6 +168,8 @@ def test_agent_worker_is_an_explicit_egress_only_fargate_service() -> None:
     assert service["PlatformVersion"] == "1.4.0"
     assert service["DesiredCount"] == "AgentWorkerDesiredCount"
     assert service["EnableExecuteCommand"] is False
+    assert service["Tags"] == [{"Key": "project", "Value": "marvain"}]
+    assert service["PropagateTags"] == "SERVICE"
     assert service["DeploymentConfiguration"]["DeploymentCircuitBreaker"] == {
         "Enable": True,
         "Rollback": True,
@@ -188,6 +190,7 @@ def test_agent_worker_is_an_explicit_egress_only_fargate_service() -> None:
     ]
 
     task = resources["AgentWorkerTaskDefinition"]["Properties"]
+    assert task["Tags"] == [{"Key": "project", "Value": "marvain"}]
     assert task["RequiresCompatibilities"] == ["FARGATE"]
     assert task["RuntimePlatform"] == {
         "CpuArchitecture": "X86_64",
@@ -217,6 +220,7 @@ def test_agent_worker_is_an_explicit_egress_only_fargate_service() -> None:
     assert secret_resources == ["OpenAISecret", "LiveKitSecret", "AgentWorkerHubDeviceTokenSecretArn"]
     assert "Policies" not in resources["AgentWorkerTaskRole"]["Properties"]
     assert resources["AgentWorkerRunningTaskAlarm"]["Condition"] == "AgentWorkerEnabled"
+    assert resources["AgentWorkerCluster"]["Properties"]["Tags"] == [{"Key": "project", "Value": "marvain"}]
 
     for name in (
         "AgentWorkerClusterName",
@@ -228,6 +232,16 @@ def test_agent_worker_is_an_explicit_egress_only_fargate_service() -> None:
         "AgentWorkerHubDeviceTokenSecretArn",
     ):
         assert name in outputs
+
+
+def test_sam_stack_and_lambda_resources_require_the_marvain_project_tag() -> None:
+    template = yaml.load(
+        (REPO_ROOT / "template.yaml").read_text(encoding="utf-8"),
+        Loader=_CloudFormationLoader,
+    )
+
+    assert ops.MARVAIN_PROJECT_TAG == "project=marvain"
+    assert template["Globals"]["Function"]["Tags"] == {"project": "marvain"}
 
 
 def test_ci_workflows_are_python_312_gates() -> None:

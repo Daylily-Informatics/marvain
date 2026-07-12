@@ -14,6 +14,7 @@ from marvain_cli.ops import (
     GUI_DEFAULT_PORT,
     GUI_LOG_FILENAME,
     GUI_PID_FILENAME,
+    MARVAIN_PROJECT_TAG,
     Ctx,
     _cluster_identifier_from_arn,
     _ensure_tapdb_runtime_config,
@@ -36,6 +37,7 @@ from marvain_cli.ops import (
     gui_stop,
     hub_claim_first_owner,
     init_db,
+    prepare_agent_worker_deployment,
     sam_deploy,
     sam_logs,
 )
@@ -156,6 +158,62 @@ class TestOps(unittest.TestCase):
         self.assertIn("ArtifactCorsAllowedOrigins=https://localhost:8084", deploy_cmd)
         self.assertIn("AgentWorkerVersion=test-release", deploy_cmd)
         self.assertIn("AgentWorkerDesiredCount=0", deploy_cmd)
+        tag_flag = deploy_cmd.index("--tags")
+        self.assertEqual(deploy_cmd[tag_flag + 1], MARVAIN_PROJECT_TAG)
+
+    def test_prepare_agent_worker_deployment_dry_run_is_explicit_and_non_mutating(self) -> None:
+        env_cfg = {"sam": {"parameter_overrides": {}}}
+        ctx = Ctx(
+            config_path=Path("/tmp/marvain-cleanroom.yaml"),
+            cfg={"envs": {"cleanroom": env_cfg}},
+            env=ResolvedEnv(
+                env="cleanroom",
+                aws_profile="lsmc",
+                aws_region="us-west-1",
+                stack_name="marvain-cleanroom-test",
+                raw=env_cfg,
+            ),
+        )
+
+        with (
+            mock.patch("marvain_cli.ops._conda_preflight", return_value=0),
+            mock.patch("marvain_cli.ops.save_config_dict") as save_config,
+        ):
+            receipt = prepare_agent_worker_deployment(
+                ctx,
+                dry_run=True,
+                worker_version="commit-123",
+                image_tag=None,
+            )
+
+        save_config.assert_not_called()
+        self.assertEqual(receipt["repository_name"], "marvain-cleanroom-test-agent-worker")
+        self.assertEqual(receipt["secret_name"], "marvain-cleanroom-test/agent-worker-device-token")
+        self.assertEqual(receipt["project_tag"], "project=marvain")
+        self.assertEqual(receipt["aws_region"], "us-west-1")
+
+    def test_prepare_agent_worker_deployment_refuses_existing_config_state(self) -> None:
+        env_cfg = {"sam": {"parameter_overrides": {"AgentWorkerVersion": "already-configured"}}}
+        ctx = Ctx(
+            config_path=Path("/tmp/marvain-cleanroom.yaml"),
+            cfg={"envs": {"cleanroom": env_cfg}},
+            env=ResolvedEnv(
+                env="cleanroom",
+                aws_profile="lsmc",
+                aws_region="us-west-1",
+                stack_name="marvain-cleanroom-test",
+                raw=env_cfg,
+            ),
+        )
+
+        with mock.patch("marvain_cli.ops._conda_preflight", return_value=0):
+            with self.assertRaisesRegex(ConfigError, "refusing to overwrite existing deployment state"):
+                prepare_agent_worker_deployment(
+                    ctx,
+                    dry_run=True,
+                    worker_version="commit-123",
+                    image_tag=None,
+                )
 
     def test_split_sql_ignores_comment_lines_and_splits(self) -> None:
         sql = """-- comment\nCREATE TABLE a(x int);\n\n-- another\nCREATE TABLE b(y int);"""
@@ -225,6 +283,73 @@ class TestOps(unittest.TestCase):
         # Bootstrap now auto-creates agent_membership for the first user
         self.assertTrue(any("SELECT user_id FROM users" in s for s in captured_sql))
         self.assertTrue(any("INSERT INTO agent_memberships" in s for s in captured_sql))
+
+    def test_bootstrap_registers_secret_backed_worker_token_without_exposing_plaintext(self) -> None:
+        import hashlib
+
+        token = "worker-token-must-not-be-printed"
+        secret_arn = "arn:aws:secretsmanager:us-west-1:123456789012:secret:cleanroom-worker"
+        captured_params: list[list[dict]] = []
+        identifiers = iter(
+            [
+                "11111111-1111-1111-1111-111111111111",
+                "22222222-2222-2222-2222-222222222222",
+                "33333333-3333-3333-3333-333333333333",
+                "44444444-4444-4444-4444-444444444444",
+            ]
+        )
+
+        def fake_rds_execute(*_args, **kwargs):
+            captured_params.append(kwargs.get("parameters") or [])
+            if str(kwargs.get("sql", "")).startswith("SELECT user_id"):
+                return {"records": []}
+            return {"records": [[{"stringValue": next(identifiers)}]]}
+
+        env_cfg = {
+            "sam": {"parameter_overrides": {"AgentWorkerHubDeviceTokenSecretArn": secret_arn}},
+            "bootstrap": {},
+        }
+        cfg = {"envs": {"cleanroom": env_cfg}}
+        ctx = Ctx(
+            config_path=Path("/tmp/marvain-cleanroom.yaml"),
+            cfg=cfg,
+            env=ResolvedEnv(
+                env="cleanroom",
+                aws_profile="lsmc",
+                aws_region="us-west-1",
+                stack_name="marvain-cleanroom-test",
+                raw=env_cfg,
+            ),
+        )
+        stdout = io.StringIO()
+
+        with (
+            mock.patch("marvain_cli.ops._conda_preflight", return_value=0),
+            mock.patch("marvain_cli.ops._db_outputs", return_value=("db", "sec", "name")),
+            mock.patch("marvain_cli.ops._fetch_secret_json", return_value={"device_token": token}),
+            mock.patch("marvain_cli.ops._rds_execute", side_effect=fake_rds_execute),
+            mock.patch("marvain_cli.ops._eprint"),
+            mock.patch("marvain_cli.ops.save_config_dict"),
+            contextlib.redirect_stdout(stdout),
+        ):
+            rc = bootstrap(
+                ctx,
+                dry_run=False,
+                agent_name="Forge",
+                space_name="home",
+                device_name="worker",
+                force=False,
+                worker_device_token=True,
+            )
+
+        self.assertEqual(rc, 0)
+        self.assertNotIn(token, stdout.getvalue())
+        bootstrap_config = cfg["envs"]["cleanroom"]["bootstrap"]
+        self.assertEqual(bootstrap_config["device_token_secret_arn"], secret_arn)
+        self.assertNotIn("device_token", bootstrap_config)
+        expected_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        flattened_params = [parameter for parameters in captured_params for parameter in parameters]
+        self.assertIn({"name": "h", "value": {"stringValue": expected_hash}}, flattened_params)
 
     def test_examples_create_creates_agent_space_device_and_seeds_memories(self) -> None:
         captured_sql: list[str] = []
