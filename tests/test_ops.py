@@ -216,7 +216,7 @@ class TestOps(unittest.TestCase):
                 env="cleanroom",
                 aws_profile="lsmc",
                 aws_region="us-west-1",
-                stack_name="marvain-cleanroom-test",
+                stack_name="marvain-cleanroom-20260712T103857Z",
                 raw=env_cfg,
             ),
         )
@@ -233,10 +233,13 @@ class TestOps(unittest.TestCase):
             )
 
         save_config.assert_not_called()
-        self.assertEqual(receipt["repository_name"], "marvain-cleanroom-test-agent-worker")
-        self.assertEqual(receipt["worker_secret_name"], "marvain-cleanroom-test/agent-worker-device-token")
-        self.assertEqual(receipt["openai_secret_name"], "marvain-cleanroom-test/openai")
-        self.assertEqual(receipt["livekit_secret_name"], "marvain-cleanroom-test/livekit")
+        self.assertEqual(receipt["repository_name"], "marvain-cleanroom-20260712t103857z-agent-worker")
+        self.assertEqual(
+            receipt["worker_secret_name"],
+            "marvain-cleanroom-20260712T103857Z/agent-worker-device-token",
+        )
+        self.assertEqual(receipt["openai_secret_name"], "marvain-cleanroom-20260712T103857Z/openai")
+        self.assertEqual(receipt["livekit_secret_name"], "marvain-cleanroom-20260712T103857Z/livekit")
         self.assertEqual(receipt["project_tag"], "project=marvain")
         self.assertEqual(receipt["aws_region"], "us-west-1")
 

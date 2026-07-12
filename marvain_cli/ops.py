@@ -734,7 +734,7 @@ def prepare_agent_worker_deployment(
     if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", selected_tag):
         raise ConfigError("image_tag must contain only letters, digits, underscore, period, and hyphen")
 
-    repository_name = f"{ctx.env.stack_name}-agent-worker"
+    repository_name = f"{ctx.env.stack_name}-agent-worker".lower()
     worker_secret_name = f"{ctx.env.stack_name}/agent-worker-device-token"
     openai_secret_name = f"{ctx.env.stack_name}/openai"
     livekit_secret_name = f"{ctx.env.stack_name}/livekit"
