@@ -28,6 +28,16 @@ Parameters:
     Description: Required LiveKit WebSocket server URL used by the Hub and agent worker.
     AllowedPattern: '^wss://.+'
 
+  OpenAICredentialsSecretArn:
+    Type: String
+    Description: Required pre-provisioned Secrets Manager ARN containing the OpenAI api_key.
+    AllowedPattern: '^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$'
+
+  LiveKitCredentialsSecretArn:
+    Type: String
+    Description: Required pre-provisioned Secrets Manager ARN containing LiveKit api_key and api_secret.
+    AllowedPattern: '^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$'
+
   AgentWorkerImageUri:
     Type: String
     Description: Required ECR image URI pinned by sha256 digest for the Marvain agent worker.
@@ -294,18 +304,6 @@ Resources:
         PasswordLength: 40
         ExcludePunctuation: true
 
-  OpenAISecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Name: !Sub ${AWS::StackName}/openai
-      Description: Populate explicitly with OpenAI credentials as {"api_key":"..."} before starting workers.
-
-  LiveKitSecret:
-    Type: AWS::SecretsManager::Secret
-    Properties:
-      Name: !Sub ${AWS::StackName}/livekit
-      Description: Populate explicitly with LiveKit credentials as {"api_key":"...","api_secret":"..."} before starting workers.
-
   GoogleOAuthSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
@@ -537,9 +535,9 @@ Resources:
           AUDIT_BUCKET: !Ref AuditBucket
           ARTIFACT_BUCKET: !Ref ArtifactBucket
           ADMIN_SECRET_ARN: !Ref AdminApiKeySecret
-          OPENAI_SECRET_ARN: !Ref OpenAISecret
+          OPENAI_SECRET_ARN: !Ref OpenAICredentialsSecretArn
           LIVEKIT_URL: !Ref LiveKitUrl
-          LIVEKIT_SECRET_ARN: !Ref LiveKitSecret
+          LIVEKIT_SECRET_ARN: !Ref LiveKitCredentialsSecretArn
           # Cognito settings
           COGNITO_REGION: !Ref AWS::Region
           COGNITO_USER_POOL_ID: !Ref CognitoUserPool
@@ -579,8 +577,8 @@ Resources:
               Resource:
                 - !Ref DbCredentialsSecret
                 - !Ref AdminApiKeySecret
-                - !Ref OpenAISecret
-                - !Ref LiveKitSecret
+                - !Ref OpenAICredentialsSecretArn
+                - !Ref LiveKitCredentialsSecretArn
                 - !Ref SessionSecret
                 - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}/integrations/*
             - Effect: Allow
@@ -775,8 +773,8 @@ Resources:
                 Action:
                   - secretsmanager:GetSecretValue
                 Resource:
-                  - !Ref OpenAISecret
-                  - !Ref LiveKitSecret
+                  - !Ref OpenAICredentialsSecretArn
+                  - !Ref LiveKitCredentialsSecretArn
                   - !Ref AgentWorkerHubDeviceTokenSecretArn
 
   AgentWorkerTaskRole:
@@ -832,11 +830,11 @@ Resources:
               Value: !Ref AgentWorkerVersion
           Secrets:
             - Name: OPENAI_API_KEY
-              ValueFrom: !Sub '${OpenAISecret}:api_key::'
+              ValueFrom: !Sub '${OpenAICredentialsSecretArn}:api_key::'
             - Name: LIVEKIT_API_KEY
-              ValueFrom: !Sub '${LiveKitSecret}:api_key::'
+              ValueFrom: !Sub '${LiveKitCredentialsSecretArn}:api_key::'
             - Name: LIVEKIT_API_SECRET
-              ValueFrom: !Sub '${LiveKitSecret}:api_secret::'
+              ValueFrom: !Sub '${LiveKitCredentialsSecretArn}:api_secret::'
             - Name: HUB_DEVICE_TOKEN
               ValueFrom: !Sub '${AgentWorkerHubDeviceTokenSecretArn}:device_token::'
           LogConfiguration:
@@ -1126,7 +1124,7 @@ Resources:
           TAPDB_WRITER_QUEUE_URL: !Ref TapdbWriterQueue
           INTEGRATION_QUEUE_URL: !Ref IntegrationQueue
           AUDIT_BUCKET: !Ref AuditBucket
-          OPENAI_SECRET_ARN: !Ref OpenAISecret
+          OPENAI_SECRET_ARN: !Ref OpenAICredentialsSecretArn
           PLANNER_MODEL: !Ref PlannerModel
           STACK_NAME: !Ref AWS::StackName
           WS_TABLE: !Ref WsConnectionsTable
@@ -1154,7 +1152,7 @@ Resources:
                 - secretsmanager:GetSecretValue
               Resource:
                 - !Ref DbCredentialsSecret
-                - !Ref OpenAISecret
+                - !Ref OpenAICredentialsSecretArn
                 - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${AWS::StackName}/integrations/*
             - Effect: Allow
               Action:
@@ -1784,11 +1782,11 @@ Outputs:
     Description: Secrets Manager ARN containing admin API key
     Value: !Ref AdminApiKeySecret
   OpenAISecretArn:
-    Description: Secrets Manager ARN containing OpenAI API key placeholder
-    Value: !Ref OpenAISecret
+    Description: Secrets Manager ARN containing the configured OpenAI API key
+    Value: !Ref OpenAICredentialsSecretArn
   LiveKitSecretArn:
-    Description: Secrets Manager ARN containing LiveKit API key/secret placeholder
-    Value: !Ref LiveKitSecret
+    Description: Secrets Manager ARN containing the configured LiveKit API key and secret
+    Value: !Ref LiveKitCredentialsSecretArn
   LiveKitUrl:
     Description: LiveKit server URL for media connections
     Value: !Ref LiveKitUrl

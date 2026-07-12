@@ -36,6 +36,8 @@ MARVAIN_PYTHON_EXECUTABLE = "python3.12"
 MARVAIN_PROJECT_TAG = "project=marvain"
 REQUIRED_SAM_DEPLOY_PARAMETERS = (
     "ArtifactCorsAllowedOrigins",
+    "OpenAICredentialsSecretArn",
+    "LiveKitCredentialsSecretArn",
     "AgentWorkerImageUri",
     "AgentWorkerVersion",
     "AgentWorkerHubDeviceTokenSecretArn",
@@ -728,7 +730,9 @@ def prepare_agent_worker_deployment(
         raise ConfigError("image_tag must contain only letters, digits, underscore, period, and hyphen")
 
     repository_name = f"{ctx.env.stack_name}-agent-worker"
-    secret_name = f"{ctx.env.stack_name}/agent-worker-device-token"
+    worker_secret_name = f"{ctx.env.stack_name}/agent-worker-device-token"
+    openai_secret_name = f"{ctx.env.stack_name}/openai"
+    livekit_secret_name = f"{ctx.env.stack_name}/livekit"
     sam_cfg = ctx.env.raw.get("sam")
     if not isinstance(sam_cfg, dict):
         raise ConfigError("envs.<env>.sam must be a mapping")
@@ -740,6 +744,8 @@ def prepare_agent_worker_deployment(
         "AgentWorkerVersion",
         "AgentWorkerHubDeviceTokenSecretArn",
         "AgentWorkerDesiredCount",
+        "OpenAICredentialsSecretArn",
+        "LiveKitCredentialsSecretArn",
     )
     already_configured = [name for name in managed_parameters if str(parameter_overrides.get(name) or "").strip()]
     if already_configured:
@@ -753,7 +759,9 @@ def prepare_agent_worker_deployment(
         "aws_region": ctx.env.aws_region,
         "stack_name": ctx.env.stack_name,
         "repository_name": repository_name,
-        "secret_name": secret_name,
+        "worker_secret_name": worker_secret_name,
+        "openai_secret_name": openai_secret_name,
+        "livekit_secret_name": livekit_secret_name,
         "worker_version": version,
         "image_tag": selected_tag,
         "project_tag": MARVAIN_PROJECT_TAG,
@@ -765,6 +773,15 @@ def prepare_agent_worker_deployment(
     missing = require_tools(["docker"])
     if missing:
         raise ConfigError("Docker is required to publish the agent worker image")
+
+    required_credentials = {
+        "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY", "").strip(),
+        "LIVEKIT_API_KEY": os.environ.get("LIVEKIT_API_KEY", "").strip(),
+        "LIVEKIT_API_SECRET": os.environ.get("LIVEKIT_API_SECRET", "").strip(),
+    }
+    missing_credentials = [name for name, value in required_credentials.items() if not value]
+    if missing_credentials:
+        raise ConfigError("Missing required worker credential environment variables: " + ", ".join(missing_credentials))
 
     import boto3
     from botocore.exceptions import ClientError
@@ -781,13 +798,16 @@ def prepare_agent_worker_deployment(
     else:
         raise ConfigError(f"ECR repository already exists; refusing to modify existing resource: {repository_name}")
 
-    try:
-        secrets_manager.describe_secret(SecretId=secret_name)
-    except ClientError as exc:
-        if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
-            raise
-    else:
-        raise ConfigError(f"Secrets Manager secret already exists; refusing to modify existing resource: {secret_name}")
+    for secret_name in (worker_secret_name, openai_secret_name, livekit_secret_name):
+        try:
+            secrets_manager.describe_secret(SecretId=secret_name)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+                raise
+        else:
+            raise ConfigError(
+                f"Secrets Manager secret already exists; refusing to modify existing resource: {secret_name}"
+            )
 
     worker_dir = Path(__file__).resolve().parents[1] / "apps" / "agent_worker"
     local_image = f"marvain-agent-worker-build:{selected_tag}"
@@ -838,20 +858,41 @@ def prepare_agent_worker_deployment(
     image_uri = f"{repository_uri}@{image_details[0]['imageDigest']}"
 
     device_token = secrets.token_hex(32)
-    secret = secrets_manager.create_secret(
-        Name=secret_name,
+    worker_secret = secrets_manager.create_secret(
+        Name=worker_secret_name,
         Description="Marvain agent worker Hub device token",
         SecretString=json.dumps({"device_token": device_token}),
         Tags=[{"Key": "project", "Value": "marvain"}],
     )
-    secret_arn = str(secret["ARN"])
+    openai_secret = secrets_manager.create_secret(
+        Name=openai_secret_name,
+        Description="Marvain OpenAI credentials",
+        SecretString=json.dumps({"api_key": required_credentials["OPENAI_API_KEY"]}),
+        Tags=[{"Key": "project", "Value": "marvain"}],
+    )
+    livekit_secret = secrets_manager.create_secret(
+        Name=livekit_secret_name,
+        Description="Marvain LiveKit credentials",
+        SecretString=json.dumps(
+            {
+                "api_key": required_credentials["LIVEKIT_API_KEY"],
+                "api_secret": required_credentials["LIVEKIT_API_SECRET"],
+            }
+        ),
+        Tags=[{"Key": "project", "Value": "marvain"}],
+    )
+    worker_secret_arn = str(worker_secret["ARN"])
+    openai_secret_arn = str(openai_secret["ARN"])
+    livekit_secret_arn = str(livekit_secret["ARN"])
 
     parameter_overrides.update(
         {
             "AgentWorkerImageUri": image_uri,
             "AgentWorkerVersion": version,
-            "AgentWorkerHubDeviceTokenSecretArn": secret_arn,
+            "AgentWorkerHubDeviceTokenSecretArn": worker_secret_arn,
             "AgentWorkerDesiredCount": 1,
+            "OpenAICredentialsSecretArn": openai_secret_arn,
+            "LiveKitCredentialsSecretArn": livekit_secret_arn,
         }
     )
     save_config_dict(ctx.config_path, ctx.cfg)
@@ -859,7 +900,9 @@ def prepare_agent_worker_deployment(
         {
             "repository_arn": repository_arn,
             "image_uri": image_uri,
-            "device_token_secret_arn": secret_arn,
+            "device_token_secret_arn": worker_secret_arn,
+            "openai_secret_arn": openai_secret_arn,
+            "livekit_secret_arn": livekit_secret_arn,
             "config_path": str(ctx.config_path),
         }
     )

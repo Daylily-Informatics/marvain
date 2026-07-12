@@ -151,6 +151,8 @@ def test_agent_worker_is_an_explicit_egress_only_fargate_service() -> None:
 
     for name in (
         "LiveKitUrl",
+        "OpenAICredentialsSecretArn",
+        "LiveKitCredentialsSecretArn",
         "AgentWorkerImageUri",
         "AgentWorkerVersion",
         "AgentWorkerHubDeviceTokenSecretArn",
@@ -159,8 +161,8 @@ def test_agent_worker_is_an_explicit_egress_only_fargate_service() -> None:
         assert "Default" not in parameters[name], name
 
     assert "@sha256:" in parameters["AgentWorkerImageUri"]["AllowedPattern"]
-    assert resources["OpenAISecret"]["Properties"].get("SecretString") is None
-    assert resources["LiveKitSecret"]["Properties"].get("SecretString") is None
+    assert "OpenAISecret" not in resources
+    assert "LiveKitSecret" not in resources
     assert resources["GoogleOAuthSecret"]["Properties"].get("SecretString") is None
 
     service = resources["AgentWorkerService"]["Properties"]
@@ -217,7 +219,11 @@ def test_agent_worker_is_an_explicit_egress_only_fargate_service() -> None:
 
     execution_policy = resources["AgentWorkerExecutionRole"]["Properties"]["Policies"][0]["PolicyDocument"]
     secret_resources = execution_policy["Statement"][0]["Resource"]
-    assert secret_resources == ["OpenAISecret", "LiveKitSecret", "AgentWorkerHubDeviceTokenSecretArn"]
+    assert secret_resources == [
+        "OpenAICredentialsSecretArn",
+        "LiveKitCredentialsSecretArn",
+        "AgentWorkerHubDeviceTokenSecretArn",
+    ]
     assert "Policies" not in resources["AgentWorkerTaskRole"]["Properties"]
     assert resources["AgentWorkerRunningTaskAlarm"]["Condition"] == "AgentWorkerEnabled"
     assert resources["AgentWorkerCluster"]["Properties"]["Tags"] == [{"Key": "project", "Value": "marvain"}]

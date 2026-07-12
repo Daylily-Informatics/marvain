@@ -42,6 +42,9 @@ from marvain_cli.ops import (
     sam_logs,
 )
 
+OPENAI_SECRET_ARN = "arn:aws:secretsmanager:us-west-1:123456789012:secret:openai"
+LIVEKIT_SECRET_ARN = "arn:aws:secretsmanager:us-west-1:123456789012:secret:livekit"
+
 
 class TestOps(unittest.TestCase):
     @staticmethod
@@ -77,12 +80,16 @@ class TestOps(unittest.TestCase):
         self.assertIn("AgentWorkerVersion", errors)
         self.assertIn("AgentWorkerHubDeviceTokenSecretArn", errors)
         self.assertIn("AgentWorkerDesiredCount", errors)
+        self.assertIn("OpenAICredentialsSecretArn", errors)
+        self.assertIn("LiveKitCredentialsSecretArn", errors)
 
     def test_sam_deploy_rejects_an_unpinned_agent_worker_image(self) -> None:
         ctx = self._deploy_ctx(
             {
                 "LiveKitUrl": "wss://livekit.example.test",
                 "ArtifactCorsAllowedOrigins": "https://localhost:8084",
+                "OpenAICredentialsSecretArn": OPENAI_SECRET_ARN,
+                "LiveKitCredentialsSecretArn": LIVEKIT_SECRET_ARN,
                 "AgentWorkerImageUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/marvain-agent:latest",
                 "AgentWorkerVersion": "test-release",
                 "AgentWorkerHubDeviceTokenSecretArn": (
@@ -109,6 +116,8 @@ class TestOps(unittest.TestCase):
         ctx = self._deploy_ctx(
             {
                 "LiveKitUrl": "wss://livekit.example.test",
+                "OpenAICredentialsSecretArn": OPENAI_SECRET_ARN,
+                "LiveKitCredentialsSecretArn": LIVEKIT_SECRET_ARN,
                 "AgentWorkerImageUri": image_uri,
                 "AgentWorkerVersion": "test-release",
                 "AgentWorkerHubDeviceTokenSecretArn": (
@@ -136,6 +145,8 @@ class TestOps(unittest.TestCase):
             {
                 "LiveKitUrl": "wss://livekit.example.test",
                 "ArtifactCorsAllowedOrigins": "https://localhost:8084",
+                "OpenAICredentialsSecretArn": OPENAI_SECRET_ARN,
+                "LiveKitCredentialsSecretArn": LIVEKIT_SECRET_ARN,
                 "AgentWorkerImageUri": image_uri,
                 "AgentWorkerVersion": "test-release",
                 "AgentWorkerHubDeviceTokenSecretArn": (
@@ -166,6 +177,8 @@ class TestOps(unittest.TestCase):
         ctx = self._deploy_ctx(
             {
                 "AgentWorkerImageUri": image_uri,
+                "OpenAICredentialsSecretArn": OPENAI_SECRET_ARN,
+                "LiveKitCredentialsSecretArn": LIVEKIT_SECRET_ARN,
                 "AgentWorkerVersion": "test-release",
                 "AgentWorkerHubDeviceTokenSecretArn": (
                     "arn:aws:secretsmanager:us-west-1:123456789012:secret:worker-token"
@@ -219,7 +232,9 @@ class TestOps(unittest.TestCase):
 
         save_config.assert_not_called()
         self.assertEqual(receipt["repository_name"], "marvain-cleanroom-test-agent-worker")
-        self.assertEqual(receipt["secret_name"], "marvain-cleanroom-test/agent-worker-device-token")
+        self.assertEqual(receipt["worker_secret_name"], "marvain-cleanroom-test/agent-worker-device-token")
+        self.assertEqual(receipt["openai_secret_name"], "marvain-cleanroom-test/openai")
+        self.assertEqual(receipt["livekit_secret_name"], "marvain-cleanroom-test/livekit")
         self.assertEqual(receipt["project_tag"], "project=marvain")
         self.assertEqual(receipt["aws_region"], "us-west-1")
 
