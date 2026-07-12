@@ -161,6 +161,37 @@ class TestOps(unittest.TestCase):
         tag_flag = deploy_cmd.index("--tags")
         self.assertEqual(deploy_cmd[tag_flag + 1], MARVAIN_PROJECT_TAG)
 
+    def test_sam_deploy_accepts_explicit_artifact_origin_environment_contract(self) -> None:
+        image_uri = "123456789012.dkr.ecr.us-west-1.amazonaws.com/marvain-agent@sha256:" + "a" * 64
+        ctx = self._deploy_ctx(
+            {
+                "AgentWorkerImageUri": image_uri,
+                "AgentWorkerVersion": "test-release",
+                "AgentWorkerHubDeviceTokenSecretArn": (
+                    "arn:aws:secretsmanager:us-west-1:123456789012:secret:worker-token"
+                ),
+                "AgentWorkerDesiredCount": 1,
+            }
+        )
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "LIVEKIT_URL": "wss://livekit.example.test",
+                    "ARTIFACT_CORS_ALLOWED_ORIGINS": "https://localhost:8084",
+                },
+                clear=True,
+            ),
+            mock.patch("marvain_cli.ops.run_cmd", return_value=0) as run_cmd,
+        ):
+            rc = sam_deploy(ctx, dry_run=True, guided=False)
+
+        self.assertEqual(rc, 0)
+        deploy_cmd = run_cmd.call_args_list[1].args[0]
+        self.assertIn("LiveKitUrl=wss://livekit.example.test", deploy_cmd)
+        self.assertIn("ArtifactCorsAllowedOrigins=https://localhost:8084", deploy_cmd)
+
     def test_prepare_agent_worker_deployment_dry_run_is_explicit_and_non_mutating(self) -> None:
         env_cfg = {"sam": {"parameter_overrides": {}}}
         ctx = Ctx(

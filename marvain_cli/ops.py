@@ -645,6 +645,11 @@ def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool, no_confirm: bool = Fals
         )
         return 2
 
+    artifact_cors_origins = os.environ.get("ARTIFACT_CORS_ALLOWED_ORIGINS", "").strip()
+    if artifact_cors_origins:
+        param_overrides["ArtifactCorsAllowedOrigins"] = artifact_cors_origins
+        _eprint("Using ARTIFACT_CORS_ALLOWED_ORIGINS from environment")
+
     missing_required_parameters = [
         name
         for name in REQUIRED_SAM_DEPLOY_PARAMETERS
