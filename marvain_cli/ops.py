@@ -626,6 +626,10 @@ def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool, no_confirm: bool = Fals
         return rc
     sam_cfg = (ctx.env.raw.get("sam") or {}) if isinstance(ctx.env.raw.get("sam"), dict) else {}
     source_template = str(sam_cfg.get("template") or "template.yaml")
+    deployment_bucket = str(sam_cfg.get("s3_bucket") or "").strip()
+    if not deployment_bucket:
+        _eprint("ERROR: sam.s3_bucket is required; run 'marvain agent prepare-deployment' for this target.")
+        return 2
     caps = sam_cfg.get("capabilities") or ["CAPABILITY_IAM"]
     if not isinstance(caps, list):
         caps = ["CAPABILITY_IAM"]
@@ -691,7 +695,8 @@ def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool, no_confirm: bool = Fals
         template,
         "--stack-name",
         ctx.env.stack_name,
-        "--resolve-s3",
+        "--s3-bucket",
+        deployment_bucket,
         "--no-fail-on-empty-changeset",
         "--tags",
         MARVAIN_PROJECT_TAG,
@@ -735,6 +740,7 @@ def prepare_agent_worker_deployment(
         raise ConfigError("image_tag must contain only letters, digits, underscore, period, and hyphen")
 
     repository_name = f"{ctx.env.stack_name}-agent-worker".lower()
+    packaging_stack_name = f"{ctx.env.stack_name}-packaging"
     worker_secret_name = f"{ctx.env.stack_name}/agent-worker-device-token"
     openai_secret_name = f"{ctx.env.stack_name}/openai"
     livekit_secret_name = f"{ctx.env.stack_name}/livekit"
@@ -744,6 +750,8 @@ def prepare_agent_worker_deployment(
     parameter_overrides = sam_cfg.get("parameter_overrides")
     if not isinstance(parameter_overrides, dict):
         raise ConfigError("envs.<env>.sam.parameter_overrides must be a mapping")
+    if str(sam_cfg.get("s3_bucket") or "").strip():
+        raise ConfigError("sam.s3_bucket already exists; refusing to overwrite existing deployment state")
     managed_parameters = (
         "AgentWorkerImageUri",
         "AgentWorkerVersion",
@@ -764,6 +772,7 @@ def prepare_agent_worker_deployment(
         "aws_region": ctx.env.aws_region,
         "stack_name": ctx.env.stack_name,
         "repository_name": repository_name,
+        "packaging_stack_name": packaging_stack_name,
         "worker_secret_name": worker_secret_name,
         "openai_secret_name": openai_secret_name,
         "livekit_secret_name": livekit_secret_name,
@@ -792,6 +801,7 @@ def prepare_agent_worker_deployment(
     from botocore.exceptions import ClientError
 
     session = boto3.Session(profile_name=ctx.env.aws_profile, region_name=ctx.env.aws_region)
+    cloudformation = session.client("cloudformation")
     ecr = session.client("ecr")
     secrets_manager = session.client("secretsmanager")
 
@@ -814,7 +824,17 @@ def prepare_agent_worker_deployment(
                 f"Secrets Manager secret already exists; refusing to modify existing resource: {secret_name}"
             )
 
-    worker_dir = Path(__file__).resolve().parents[1] / "apps" / "agent_worker"
+    try:
+        cloudformation.describe_stacks(StackName=packaging_stack_name)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") != "ValidationError" or "does not exist" not in str(exc):
+            raise
+    else:
+        raise ConfigError(
+            f"CloudFormation packaging stack already exists; refusing to modify existing resource: {packaging_stack_name}"
+        )
+
+    repository_root = Path(__file__).resolve().parents[1]
     local_image = f"marvain-agent-worker-build:{selected_tag}"
     build_cmd = [
         "docker",
@@ -823,14 +843,32 @@ def prepare_agent_worker_deployment(
         "--platform",
         "linux/amd64",
         "--load",
+        "--file",
+        "apps/agent_worker/Dockerfile",
         "--build-arg",
         f"MARVAIN_WORKER_VERSION={version}",
         "--tag",
         local_image,
         ".",
     ]
-    if run_cmd(build_cmd, env=None, dry_run=False, cwd=str(worker_dir)) != 0:
+    if run_cmd(build_cmd, env=None, dry_run=False, cwd=str(repository_root)) != 0:
         raise ConfigError("Agent worker image build failed")
+
+    packaging_template = (repository_root / "infrastructure" / "sam_packaging_bucket.yaml").read_text(encoding="utf-8")
+    cloudformation.create_stack(
+        StackName=packaging_stack_name,
+        TemplateBody=packaging_template,
+        Tags=[{"Key": "project", "Value": "marvain"}],
+    )
+    cloudformation.get_waiter("stack_create_complete").wait(StackName=packaging_stack_name)
+    packaging_stack = cloudformation.describe_stacks(StackName=packaging_stack_name)["Stacks"][0]
+    packaging_outputs = {
+        str(item["OutputKey"]): str(item["OutputValue"]) for item in packaging_stack.get("Outputs", [])
+    }
+    packaging_bucket = packaging_outputs.get("PackagingBucketName", "")
+    packaging_bucket_arn = packaging_outputs.get("PackagingBucketArn", "")
+    if not packaging_bucket or not packaging_bucket_arn:
+        raise ConfigError("Packaging stack did not return its required bucket outputs")
 
     repository = ecr.create_repository(
         repositoryName=repository_name,
@@ -900,10 +938,14 @@ def prepare_agent_worker_deployment(
             "LiveKitCredentialsSecretArn": livekit_secret_arn,
         }
     )
+    sam_cfg["s3_bucket"] = packaging_bucket
     save_config_dict(ctx.config_path, ctx.cfg)
     receipt.update(
         {
             "repository_arn": repository_arn,
+            "packaging_stack_arn": str(packaging_stack["StackId"]),
+            "packaging_bucket": packaging_bucket,
+            "packaging_bucket_arn": packaging_bucket_arn,
             "image_uri": image_uri,
             "device_token_secret_arn": worker_secret_arn,
             "openai_secret_arn": openai_secret_arn,

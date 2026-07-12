@@ -260,6 +260,15 @@ Resources:
       ToPort: 443
       SourceSecurityGroupId: !Ref TapdbWriterSecurityGroup
 
+  AgentWorkerEndpointIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref TapdbWriterSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourceSecurityGroupId: !Ref AgentWorkerSecurityGroup
+
   SecretsManagerVpcEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:

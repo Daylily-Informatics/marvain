@@ -52,6 +52,7 @@ class TestOps(unittest.TestCase):
         raw = {
             "sam": {
                 "template": "template.yaml",
+                "s3_bucket": "marvain-test-packaging-bucket",
                 "capabilities": ["CAPABILITY_IAM"],
                 "parameter_overrides": parameter_overrides,
             }
@@ -169,6 +170,9 @@ class TestOps(unittest.TestCase):
         self.assertIn("ArtifactCorsAllowedOrigins=https://localhost:8084", deploy_cmd)
         self.assertIn("AgentWorkerVersion=test-release", deploy_cmd)
         self.assertIn("AgentWorkerDesiredCount=0", deploy_cmd)
+        self.assertIn("--s3-bucket", deploy_cmd)
+        self.assertIn("marvain-test-packaging-bucket", deploy_cmd)
+        self.assertNotIn("--resolve-s3", deploy_cmd)
         tag_flag = deploy_cmd.index("--tags")
         self.assertEqual(deploy_cmd[tag_flag + 1], MARVAIN_PROJECT_TAG)
 
@@ -234,6 +238,7 @@ class TestOps(unittest.TestCase):
 
         save_config.assert_not_called()
         self.assertEqual(receipt["repository_name"], "marvain-cleanroom-20260712t103857z-agent-worker")
+        self.assertEqual(receipt["packaging_stack_name"], "marvain-cleanroom-20260712T103857Z-packaging")
         self.assertEqual(
             receipt["worker_secret_name"],
             "marvain-cleanroom-20260712T103857Z/agent-worker-device-token",

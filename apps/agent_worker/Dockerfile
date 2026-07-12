@@ -11,11 +11,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt /app/requirements.txt
+COPY apps/agent_worker/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-COPY worker.py /app/worker.py
-COPY .env.example /app/.env.example
+COPY layers/shared/python/agent_hub /app/agent_hub
+COPY apps/agent_worker/worker.py /app/worker.py
+COPY apps/agent_worker/.env.example /app/.env.example
+RUN python -c "import agent_hub.livekit_tokens, agent_hub.memory_classifier, agent_hub.personas"
 
 ENV PYTHONUNBUFFERED=1
 

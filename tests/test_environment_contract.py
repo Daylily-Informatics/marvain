@@ -123,6 +123,8 @@ def test_deployment_runtime_contract_is_python_312() -> None:
     dockerfile = (REPO_ROOT / "apps" / "agent_worker" / "Dockerfile").read_text(encoding="utf-8")
     base_images = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
     assert base_images == ["FROM python:3.12-slim"]
+    assert "COPY layers/shared/python/agent_hub /app/agent_hub" in dockerfile
+    assert "import agent_hub.livekit_tokens, agent_hub.memory_classifier, agent_hub.personas" in dockerfile
 
 
 def test_cli_runtime_preflight_uses_the_python_312_contract() -> None:
@@ -190,6 +192,16 @@ def test_agent_worker_is_an_explicit_egress_only_fargate_service() -> None:
             "CidrIp": "0.0.0.0/0",
         }
     ]
+    endpoint = resources["SecretsManagerVpcEndpoint"]["Properties"]
+    assert endpoint["PrivateDnsEnabled"] is True
+    assert endpoint["SecurityGroupIds"] == ["TapdbWriterSecurityGroup"]
+    assert resources["AgentWorkerEndpointIngress"]["Properties"] == {
+        "GroupId": "TapdbWriterSecurityGroup",
+        "IpProtocol": "tcp",
+        "FromPort": 443,
+        "ToPort": 443,
+        "SourceSecurityGroupId": "AgentWorkerSecurityGroup",
+    }
 
     task = resources["AgentWorkerTaskDefinition"]["Properties"]
     assert task["Tags"] == [{"Key": "project", "Value": "marvain"}]
@@ -248,6 +260,21 @@ def test_sam_stack_and_lambda_resources_require_the_marvain_project_tag() -> Non
 
     assert ops.MARVAIN_PROJECT_TAG == "project=marvain"
     assert template["Globals"]["Function"]["Tags"] == {"project": "marvain"}
+
+    packaging = yaml.load(
+        (REPO_ROOT / "infrastructure" / "sam_packaging_bucket.yaml").read_text(encoding="utf-8"),
+        Loader=_CloudFormationLoader,
+    )
+    bucket = packaging["Resources"]["PackagingBucket"]
+    assert bucket["DeletionPolicy"] == "Retain"
+    assert bucket["UpdateReplacePolicy"] == "Retain"
+    assert bucket["Properties"]["Tags"] == [{"Key": "project", "Value": "marvain"}]
+    assert bucket["Properties"]["PublicAccessBlockConfiguration"] == {
+        "BlockPublicAcls": True,
+        "BlockPublicPolicy": True,
+        "IgnorePublicAcls": True,
+        "RestrictPublicBuckets": True,
+    }
 
 
 def test_ci_workflows_are_python_312_gates() -> None:

@@ -1,0 +1,27 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Isolated Marvain SAM packaging bucket
+
+Resources:
+  PackagingBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: project
+          Value: marvain
+
+Outputs:
+  PackagingBucketName:
+    Value: !Ref PackagingBucket
+  PackagingBucketArn:
+    Value: !GetAtt PackagingBucket.Arn
