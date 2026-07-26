@@ -37,9 +37,10 @@ def _load_api_module():
 
 
 class SessionDb:
-    def __init__(self, *, status: str = "opening", status_event_id: str | None = None) -> None:
+    def __init__(self, *, status: str = "opening", status_event_id: str | None = None, found: bool = True) -> None:
         self.status = status
         self.status_event_id = status_event_id
+        self.found = found
         self.transaction_id = "session-tx"
         self.execute_calls: list[tuple[str, dict, str | None]] = []
         self.commits: list[str] = []
@@ -50,6 +51,8 @@ class SessionDb:
 
     def query(self, sql: str, _params: dict | None = None, *, transaction_id: str | None = None):
         if "FROM sessions" in sql:
+            if not self.found:
+                return []
             return [
                 {
                     "session_id": SESSION_ID,
@@ -91,12 +94,17 @@ def _transition_body(module, *, from_state: str = "opening", to_state: str = "ac
     )
 
 
-def _worker() -> AuthenticatedDevice:
+def _worker(
+    *,
+    agent_id: str = AGENT_ID,
+    scopes: list[str] | None = None,
+    capabilities: dict[str, str] | None = None,
+) -> AuthenticatedDevice:
     return AuthenticatedDevice(
         device_id=DEVICE_ID,
-        agent_id=AGENT_ID,
-        scopes=["events:write"],
-        capabilities={"kind": "worker"},
+        agent_id=agent_id,
+        scopes=scopes or ["events:read", "events:write"],
+        capabilities=capabilities or {"kind": "worker"},
     )
 
 
@@ -118,6 +126,64 @@ def test_session_creation_uses_opening_state() -> None:
     sql = db.execute_calls[0][0]
     assert "'opening'" in sql
     assert "'open'" not in sql
+
+
+def test_worker_lifecycle_read_returns_only_authoritative_session_identity(monkeypatch) -> None:
+    module = _load_api_module()
+    db = SessionDb(status="active", status_event_id="event-active-1")
+    module._db = db
+    monkeypatch.setattr(module, "is_agent_disabled", lambda *_args: False)
+
+    result = module.get_worker_session_lifecycle(SESSION_ID, _worker())
+
+    assert result == {
+        "session_id": SESSION_ID,
+        "agent_id": AGENT_ID,
+        "space_id": SPACE_ID,
+        "livekit_room": ROOM_NAME,
+        "status": "active",
+        "status_event_id": "event-active-1",
+    }
+    assert len(db.execute_calls) == 0
+
+
+def test_worker_lifecycle_read_requires_events_read_scope(monkeypatch) -> None:
+    module = _load_api_module()
+    module._db = SessionDb()
+    monkeypatch.setattr(module, "is_agent_disabled", lambda *_args: False)
+
+    with pytest.raises(module.HTTPException) as exc_info:
+        module.get_worker_session_lifecycle(SESSION_ID, _worker(scopes=["events:write"]))
+
+    assert exc_info.value.status_code == 403
+
+
+def test_worker_lifecycle_read_rejects_unrelated_nonworker_device(monkeypatch) -> None:
+    module = _load_api_module()
+    module._db = SessionDb()
+    monkeypatch.setattr(module, "is_agent_disabled", lambda *_args: False)
+
+    with pytest.raises(module.HTTPException) as exc_info:
+        module.get_worker_session_lifecycle(
+            SESSION_ID,
+            _worker(
+                agent_id="55555555-5555-5555-5555-555555555555",
+                capabilities={"kind": "satellite"},
+            ),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+def test_worker_lifecycle_read_returns_not_found_for_missing_session(monkeypatch) -> None:
+    module = _load_api_module()
+    module._db = SessionDb(found=False)
+    monkeypatch.setattr(module, "is_agent_disabled", lambda *_args: False)
+
+    with pytest.raises(module.HTTPException) as exc_info:
+        module.get_worker_session_lifecycle(SESSION_ID, _worker())
+
+    assert exc_info.value.status_code == 404
 
 
 def test_session_transition_is_projected_in_the_same_event_transaction(monkeypatch) -> None:

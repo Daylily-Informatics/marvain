@@ -1843,6 +1843,7 @@ class TestTapdbNativeGraphIntegration(unittest.TestCase):
 
         async def fake_tapdb_app(scope, receive, send):
             captured["path"] = scope.get("path")
+            captured["root_path"] = scope.get("root_path")
             captured["query_string"] = scope.get("query_string")
             captured["tapdb_host_user"] = scope.get("tapdb_host_user")
             response = self.mod.HTMLResponse("<html><body>Complex Query</body></html>")
@@ -1862,7 +1863,8 @@ class TestTapdbNativeGraphIntegration(unittest.TestCase):
 
         self.assertEqual(r.status_code, 200)
         self.assertIn("Complex Query", r.text)
-        self.assertEqual(captured["path"], "/query")
+        self.assertEqual(captured["path"], "/tapdb/query")
+        self.assertEqual(captured["root_path"], "/tapdb")
         self.assertIn(b"kind=instance", captured["query_string"])
         self.assertEqual(captured["host_bridge"].auth_mode, "host_session")
         self.assertEqual(captured["tapdb_host_user"]["email"], "user@example.com")
@@ -2836,6 +2838,9 @@ class TestLiveSessionGui(unittest.TestCase):
         self.assertIn("video.muted = true", r.text)
         self.assertIn("await video.play()", r.text)
         self.assertIn("browser did not produce a current frame", r.text)
+        self.assertIn("document.addEventListener('DOMContentLoaded'", r.text)
+        self.assertIn("window.Marvain.wsOn('message'", r.text)
+        self.assertNotIn("\nMarvain.wsOn('message'", r.text)
         self.assertIn("Camera is enabled, but no camera preview is available for the agent", r.text)
         self.assertIn("Camera is enabled, but the agent did not acknowledge visual access", r.text)
         self.assertIn("Agent vision failed", r.text)

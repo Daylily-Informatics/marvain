@@ -837,6 +837,14 @@ Resources:
               Value: !Sub https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
             - Name: MARVAIN_WORKER_VERSION
               Value: !Ref AgentWorkerVersion
+            - Name: MARVAIN_MEMORY_CLASSIFIER_PROVIDER
+              Value: openai
+            - Name: MARVAIN_MEMORY_CLASSIFIER_MODEL
+              Value: !Ref PlannerModel
+            - Name: OPENAI_REALTIME_MODEL
+              Value: gpt-realtime
+            - Name: OPENAI_VOICE
+              Value: marin
           Secrets:
             - Name: OPENAI_API_KEY
               ValueFrom: !Sub '${OpenAICredentialsSecretArn}:api_key::'

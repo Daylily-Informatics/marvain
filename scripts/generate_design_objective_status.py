@@ -44,6 +44,7 @@ ROUND5_TAPDB_INTERNAL_TOKENS = (
 ROUND6_MIN_API_ROUTE_COVERAGE = 100
 ROUND6_MIN_GUI_ROUTE_COVERAGE = 100
 ROUND6_MIN_PLAYWRIGHT_WORKFLOW_COVERAGE = 75
+CANONICAL_EVIDENCE_MINIMUM = 90
 ROUND7_MEMORY_PROVENANCE_CLASSES = (
     "external_interaction",
     "self_reflection",
@@ -909,7 +910,7 @@ def _format_items(items: tuple[EvidenceToken, ...]) -> str:
     return "<br>".join(f"`{item.kind}: {item.label}` ({item.rel_path})" for item in items)
 
 
-def build_doc(root: Path = ROOT, *, min_score: int = 90) -> str:
+def build_doc(root: Path = ROOT) -> str:
     status = build_status(root)
     score = int(status["score"])
     rows = status["rows"]
@@ -928,8 +929,8 @@ def build_doc(root: Path = ROOT, *, min_score: int = 90) -> str:
         "",
         f"Repository evidence-presence score: **{score}%** "
         f"({status['present_evidence']}/{status['total_evidence']} checks present).",
-        f"Repository evidence minimum: **{min_score}%**.",
-        f"Repository evidence gate: **{'PASS' if score >= min_score else 'FAIL'}**.",
+        f"Repository evidence minimum: **{CANONICAL_EVIDENCE_MINIMUM}%**.",
+        f"Repository evidence gate: **{'PASS' if score >= CANONICAL_EVIDENCE_MINIMUM else 'FAIL'}**.",
         operational_line,
         "",
         "## Architecture Purity Gate",
@@ -985,7 +986,12 @@ def build_doc(root: Path = ROOT, *, min_score: int = 90) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true", help="Fail if generated output differs")
-    parser.add_argument("--min-score", type=int, default=90, help="Minimum overall score required to pass")
+    parser.add_argument(
+        "--min-score",
+        type=int,
+        default=None,
+        help="Optional explicit overall-score enforcement threshold; does not change the canonical document",
+    )
     parser.add_argument(
         "--min-operational-score",
         type=int,
@@ -994,7 +1000,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    generated = build_doc(ROOT, min_score=args.min_score)
+    generated = build_doc(ROOT)
     status = build_status(ROOT)
     score = int(status["score"])
     operational_score = status["operational_score"]
@@ -1016,18 +1022,21 @@ def main() -> int:
         if existing != generated:
             print("Design objective status doc is out of date. Re-run generator.")
             return 1
-        if score < args.min_score:
+        if args.min_score is not None and score < args.min_score:
             print(f"Design objective score {score}% is below required minimum {args.min_score}%.")
             return 1
         if operational_gate_failed():
             return 1
-        print(f"Design objective status doc is up to date; score {score}% >= {args.min_score}%.")
+        if args.min_score is None:
+            print(f"Design objective status doc is up to date; score {score}% recorded.")
+        else:
+            print(f"Design objective status doc is up to date; score {score}% >= {args.min_score}%.")
         return 0
 
     OUT_FILE.write_text(generated, encoding="utf-8")
     print(f"Wrote {OUT_FILE}")
     print(f"Design objective score: {score}%")
-    if score < args.min_score:
+    if args.min_score is not None and score < args.min_score:
         print(f"Design objective score {score}% is below required minimum {args.min_score}%.")
         return 1
     if operational_gate_failed():

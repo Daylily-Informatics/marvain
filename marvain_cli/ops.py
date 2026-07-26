@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -719,6 +720,219 @@ def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool, no_confirm: bool = Fals
     return run_cmd(cmd, env=cmd_env(ctx.env), dry_run=dry_run)
 
 
+def _resolve_exact_source_commit(*, source_commit: str, repository_root: Path) -> str:
+    requested = source_commit.strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", requested):
+        raise ConfigError("source_commit must be an explicit 40-character lowercase Git commit SHA")
+    try:
+        resolved = (
+            subprocess.check_output(
+                ["git", "-C", str(repository_root), "rev-parse", "--verify", f"{requested}^{{commit}}"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+            .strip()
+            .lower()
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ConfigError(f"source_commit is not a locally reachable Git commit: {requested}") from exc
+    if resolved != requested:
+        raise ConfigError("source_commit must resolve exactly to the supplied full Git commit SHA")
+    return resolved
+
+
+def _existing_agent_worker_deployment_config(ctx: Ctx) -> tuple[dict[str, Any], dict[str, Any], str, str, str]:
+    sam_cfg = ctx.env.raw.get("sam")
+    if not isinstance(sam_cfg, dict):
+        raise ConfigError("envs.<env>.sam must be a mapping")
+    if not str(sam_cfg.get("s3_bucket") or "").strip():
+        raise ConfigError("sam.s3_bucket is required for an existing worker deployment")
+    parameter_overrides = sam_cfg.get("parameter_overrides")
+    if not isinstance(parameter_overrides, dict):
+        raise ConfigError("envs.<env>.sam.parameter_overrides must be a mapping")
+
+    current_image_uri = str(parameter_overrides.get("AgentWorkerImageUri") or "").strip()
+    repository_uri, separator, configured_digest = current_image_uri.rpartition("@sha256:")
+    if (
+        not separator
+        or not repository_uri
+        or not re.fullmatch(r"[a-f0-9]{64}", configured_digest)
+        or "/" not in repository_uri
+    ):
+        raise ConfigError(
+            "AgentWorkerImageUri must be an existing ECR image URI pinned by a 64-character sha256 digest"
+        )
+    registry, repository_name = repository_uri.split("/", 1)
+    if not registry or not repository_name:
+        raise ConfigError("AgentWorkerImageUri must identify an existing ECR registry and repository")
+    if not str(parameter_overrides.get("AgentWorkerVersion") or "").strip():
+        raise ConfigError("AgentWorkerVersion is required for an existing worker deployment")
+    return sam_cfg, parameter_overrides, repository_uri, repository_name, configured_digest
+
+
+def _assert_existing_worker_repository(
+    *,
+    ecr: Any,
+    repository_name: str,
+    expected_repository_uri: str,
+) -> tuple[str, str]:
+    response = ecr.describe_repositories(repositoryNames=[repository_name])
+    repositories = response.get("repositories") or []
+    if len(repositories) != 1:
+        raise ConfigError("Expected exactly one configured agent worker ECR repository")
+    repository = repositories[0]
+    repository_uri = str(repository.get("repositoryUri") or "")
+    repository_arn = str(repository.get("repositoryArn") or "")
+    if repository_uri != expected_repository_uri or not repository_arn:
+        raise ConfigError("Configured AgentWorkerImageUri does not match the existing ECR repository")
+    if str(repository.get("imageTagMutability") or "") != "IMMUTABLE":
+        raise ConfigError("Configured agent worker ECR repository must use IMMUTABLE image tags")
+    tag_response = ecr.list_tags_for_resource(resourceArn=repository_arn)
+    tags = {(str(item.get("Key")), str(item.get("Value"))) for item in tag_response.get("tags", [])}
+    if ("project", "marvain") not in tags:
+        raise ConfigError("Configured agent worker ECR repository is missing required project=marvain tag")
+    return repository_uri, repository_arn
+
+
+def _assert_worker_image_tag_is_unused(*, ecr: Any, repository_name: str, image_tag: str) -> None:
+    from botocore.exceptions import ClientError
+
+    try:
+        response = ecr.describe_images(repositoryName=repository_name, imageIds=[{"imageTag": image_tag}])
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ImageNotFoundException":
+            return
+        raise
+    if response.get("imageDetails"):
+        raise ConfigError(f"Agent worker ECR image tag already exists and is immutable: {image_tag}")
+    raise ConfigError("ECR tag lookup returned no image and no ImageNotFoundException")
+
+
+def publish_agent_worker_image(
+    ctx: Ctx,
+    *,
+    source_commit: str,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Publish one immutable worker image to the already-configured ECR repository.
+
+    This command never deploys CloudFormation, creates resources, rotates credentials,
+    or discovers an alternate repository. The supplied source commit is the ECR tag and
+    worker release identity, and Docker builds from a detached worktree at that commit.
+    """
+
+    rc = _conda_preflight(enforce=not dry_run)
+    if rc != 0:
+        raise ConfigError("Marvain runtime preflight failed")
+
+    required_tools = ["git"] if dry_run else ["docker", "git"]
+    missing = require_tools(required_tools)
+    if missing:
+        raise ConfigError("Required tools for immutable worker publication are missing: " + ", ".join(missing))
+
+    repository_root = Path(__file__).resolve().parents[1]
+    commit = _resolve_exact_source_commit(source_commit=source_commit, repository_root=repository_root)
+    _sam_cfg, parameter_overrides, configured_repository_uri, repository_name, _configured_digest = (
+        _existing_agent_worker_deployment_config(ctx)
+    )
+    receipt: dict[str, Any] = {
+        "aws_profile": ctx.env.aws_profile,
+        "aws_region": ctx.env.aws_region,
+        "stack_name": ctx.env.stack_name,
+        "source_commit": commit,
+        "image_tag": commit,
+        "repository_uri": configured_repository_uri,
+        "repository_name": repository_name,
+        "project_tag": MARVAIN_PROJECT_TAG,
+        "dry_run": dry_run,
+    }
+    if dry_run:
+        return receipt
+
+    import boto3
+
+    session = boto3.Session(profile_name=ctx.env.aws_profile, region_name=ctx.env.aws_region)
+    ecr = session.client("ecr")
+    repository_uri, repository_arn = _assert_existing_worker_repository(
+        ecr=ecr,
+        repository_name=repository_name,
+        expected_repository_uri=configured_repository_uri,
+    )
+    _assert_worker_image_tag_is_unused(ecr=ecr, repository_name=repository_name, image_tag=commit)
+
+    local_image = f"marvain-agent-worker-build:{commit}"
+    tagged_image = f"{repository_uri}:{commit}"
+    with tempfile.TemporaryDirectory(prefix="marvain-agent-worker-") as worktree_parent:
+        worktree_path = Path(worktree_parent) / "source"
+        worktree_added = False
+        try:
+            run_cmd(
+                ["git", "-C", str(repository_root), "worktree", "add", "--detach", str(worktree_path), commit],
+                env=None,
+                dry_run=False,
+            )
+            worktree_added = True
+            build_cmd = [
+                "docker",
+                "buildx",
+                "build",
+                "--platform",
+                "linux/amd64",
+                "--load",
+                "--file",
+                "apps/agent_worker/Dockerfile",
+                "--build-arg",
+                f"MARVAIN_WORKER_VERSION={commit}",
+                "--tag",
+                local_image,
+                ".",
+            ]
+            if run_cmd(build_cmd, env=None, dry_run=False, cwd=str(worktree_path)) != 0:
+                raise ConfigError("Agent worker image build failed")
+        finally:
+            if worktree_added:
+                run_cmd(
+                    ["git", "-C", str(repository_root), "worktree", "remove", "--force", str(worktree_path)],
+                    env=None,
+                    dry_run=False,
+                )
+
+    auth_data = ecr.get_authorization_token()["authorizationData"][0]
+    username, password = base64.b64decode(auth_data["authorizationToken"]).decode("utf-8").split(":", 1)
+    subprocess.run(
+        ["docker", "login", "--username", username, "--password-stdin", auth_data["proxyEndpoint"]],
+        input=password,
+        text=True,
+        check=True,
+    )
+    run_cmd(["docker", "tag", local_image, tagged_image], env=None, dry_run=False)
+    run_cmd(["docker", "push", tagged_image], env=None, dry_run=False)
+
+    image_details = ecr.describe_images(
+        repositoryName=repository_name,
+        imageIds=[{"imageTag": commit}],
+    )["imageDetails"]
+    if len(image_details) != 1:
+        raise ConfigError("ECR did not return exactly one digest for the published worker image")
+    image_digest = str(image_details[0].get("imageDigest") or "")
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", image_digest):
+        raise ConfigError("ECR returned an invalid digest for the published worker image")
+    image_uri = f"{repository_uri}@{image_digest}"
+
+    parameter_overrides["AgentWorkerImageUri"] = image_uri
+    parameter_overrides["AgentWorkerVersion"] = commit
+    save_config_dict(ctx.config_path, ctx.cfg)
+    receipt.update(
+        {
+            "repository_arn": repository_arn,
+            "image_uri": image_uri,
+            "config_path": str(ctx.config_path),
+            "dry_run": False,
+        }
+    )
+    return receipt
+
+
 def prepare_agent_worker_deployment(
     ctx: Ctx,
     *,
@@ -950,6 +1164,153 @@ def prepare_agent_worker_deployment(
             "device_token_secret_arn": worker_secret_arn,
             "openai_secret_arn": openai_secret_arn,
             "livekit_secret_arn": livekit_secret_arn,
+            "config_path": str(ctx.config_path),
+        }
+    )
+    return receipt
+
+
+def finalize_agent_worker_deployment(
+    ctx: Ctx,
+    *,
+    agent_id: str,
+    device_id: str,
+    access_token: str | None,
+    reconcile_only: bool,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Bind an audited device-token rotation to the deployed worker secret."""
+
+    rc = _conda_preflight(enforce=not dry_run)
+    if rc != 0:
+        raise ConfigError("Marvain runtime preflight failed")
+
+    env_cfg = ctx.cfg.get("envs", {}).get(ctx.env.env)
+    if not isinstance(env_cfg, dict):
+        raise ConfigError(f"Missing config environment: {ctx.env.env}")
+    bootstrap_cfg = env_cfg.get("bootstrap")
+    if not isinstance(bootstrap_cfg, dict):
+        raise ConfigError("bootstrap configuration is required before worker finalization")
+    if str(bootstrap_cfg.get("agent_id") or "") != agent_id:
+        raise ConfigError("agent_id does not match the configured bootstrap agent")
+    if str(bootstrap_cfg.get("device_id") or "") != device_id:
+        raise ConfigError("device_id does not match the configured bootstrap device")
+
+    sam_cfg = env_cfg.get("sam")
+    overrides = sam_cfg.get("parameter_overrides") if isinstance(sam_cfg, dict) else None
+    if not isinstance(overrides, dict):
+        raise ConfigError("SAM parameter overrides are required before worker finalization")
+    worker_secret_arn = str(overrides.get("AgentWorkerHubDeviceTokenSecretArn") or "").strip()
+    if not worker_secret_arn:
+        raise ConfigError("AgentWorkerHubDeviceTokenSecretArn is required before worker finalization")
+
+    cluster_name = resolve_stack_output(ctx, key="AgentWorkerClusterName", dry_run=dry_run)
+    service_name = resolve_stack_output(ctx, key="AgentWorkerServiceName", dry_run=dry_run)
+    receipt: dict[str, Any] = {
+        "agent_id": agent_id,
+        "device_id": device_id,
+        "worker_secret_arn": worker_secret_arn,
+        "cluster_name": cluster_name,
+        "service_name": service_name,
+        "project_tag": MARVAIN_PROJECT_TAG,
+        "reconcile_only": reconcile_only,
+        "dry_run": dry_run,
+    }
+    if dry_run:
+        return receipt
+
+    import boto3
+
+    session = boto3.Session(profile_name=ctx.env.aws_profile, region_name=ctx.env.aws_region)
+    secrets_manager = session.client("secretsmanager")
+    ecs = session.client("ecs")
+
+    secret = secrets_manager.describe_secret(SecretId=worker_secret_arn)
+    secret_tags = {(str(item.get("Key")), str(item.get("Value"))) for item in secret.get("Tags", [])}
+    if ("project", "marvain") not in secret_tags:
+        raise ConfigError("Worker token secret is missing required project=marvain tag")
+
+    service_response = ecs.describe_services(cluster=cluster_name, services=[service_name], include=["TAGS"])
+    services = service_response.get("services") or []
+    if len(services) != 1:
+        raise ConfigError("Expected exactly one deployed agent worker service")
+    service = services[0]
+    service_tags = {(str(item.get("key")), str(item.get("value"))) for item in service.get("tags", [])}
+    if ("project", "marvain") not in service_tags:
+        raise ConfigError("Agent worker service is missing required project=marvain tag")
+
+    if reconcile_only:
+        secret_value = secrets_manager.get_secret_value(SecretId=worker_secret_arn)
+        secret_payload = json.loads(str(secret_value.get("SecretString") or "{}"))
+        device_token = str(secret_payload.get("device_token") or "")
+        secret_version_id = str(secret_value.get("VersionId") or "")
+        if not device_token or not secret_version_id:
+            raise ConfigError("Worker token secret returned malformed reconciliation evidence")
+    else:
+        token = resolve_access_token(access_token)
+        rotation = hub_api_json(
+            ctx,
+            method="POST",
+            path=f"/v1/devices/{device_id}/rotate-token",
+            payload={},
+            access_token=token,
+            hub_rest_api_base=None,
+            dry_run=False,
+        )
+        rotated_device_id = str(rotation.get("device_id") or "")
+        device_token = str(rotation.get("device_token") or "")
+        if rotated_device_id != device_id or not device_token:
+            raise ConfigError("Device token rotation returned malformed evidence")
+
+        secret_version = secrets_manager.put_secret_value(
+            SecretId=worker_secret_arn,
+            SecretString=json.dumps({"device_token": device_token}),
+        )
+        secret_version_id = str(secret_version.get("VersionId") or "")
+        ecs.update_service(cluster=cluster_name, service=service_name, forceNewDeployment=True)
+        ecs.get_waiter("services_stable").wait(cluster=cluster_name, services=[service_name])
+
+    persona = hub_api_json(
+        ctx,
+        method="GET",
+        path=f"/v1/agents/{agent_id}/personas/default",
+        payload=None,
+        access_token=device_token,
+        hub_rest_api_base=None,
+        dry_run=False,
+    )
+    if str(persona.get("agent_id") or "") != agent_id:
+        raise ConfigError("Worker secret token is not bound to the configured bootstrap agent")
+
+    deadline = time.monotonic() + 300.0
+    while True:
+        stable_response = ecs.describe_services(cluster=cluster_name, services=[service_name])
+        stable_services = stable_response.get("services") or []
+        if len(stable_services) != 1:
+            raise ConfigError("Agent worker service disappeared during finalization")
+        stable = stable_services[0]
+        desired = int(stable.get("desiredCount") or 0)
+        running = int(stable.get("runningCount") or 0)
+        primary = next(
+            (item for item in stable.get("deployments", []) if str(item.get("status") or "") == "PRIMARY"),
+            {},
+        )
+        if desired >= 1 and running == desired and str(primary.get("rolloutState") or "") == "COMPLETED":
+            break
+        if time.monotonic() >= deadline:
+            raise ConfigError("Agent worker service did not reach a completed healthy deployment")
+        time.sleep(5.0)
+
+    bootstrap_cfg.pop("device_token", None)
+    bootstrap_cfg["device_token_secret_arn"] = worker_secret_arn
+    save_config_dict(ctx.config_path, ctx.cfg)
+    receipt.update(
+        {
+            "dry_run": False,
+            "secret_version_id": secret_version_id,
+            "desired_count": desired,
+            "running_count": running,
+            "rollout_state": str(primary.get("rolloutState") or ""),
             "config_path": str(ctx.config_path),
         }
     )
@@ -1805,6 +2166,28 @@ def gui_start(
     for res_key, env_key in resource_to_env.items():
         if res_key in resources and resources[res_key]:
             env[env_key] = str(resources[res_key])
+
+    sam_params = ctx.cfg.get("envs", {}).get(ctx.env.env, {}).get("sam", {}).get("parameter_overrides", {})
+    classifier_model = str(sam_params.get("PlannerModel") or "").strip()
+    if not classifier_model:
+        _eprint("ERROR: sam.parameter_overrides.PlannerModel is required for memory classification.")
+        return 2
+    openai_secret_arn = str(env.get("OPENAI_SECRET_ARN") or "").strip()
+    if not openai_secret_arn:
+        _eprint("ERROR: OpenAISecretArn is required for memory classification.")
+        return 2
+    try:
+        openai_secret = _fetch_secret_json(openai_secret_arn, ctx.env.aws_profile, ctx.env.aws_region)
+    except Exception as exc:
+        _eprint(f"ERROR: Failed to load the OpenAI classifier credential: {exc}")
+        return 2
+    openai_api_key = str(openai_secret.get("api_key") or "").strip()
+    if not openai_api_key or openai_api_key == "REPLACE_ME":
+        _eprint("ERROR: OpenAI classifier credential is missing api_key or contains a placeholder value.")
+        return 2
+    env["OPENAI_API_KEY"] = openai_api_key
+    env["MARVAIN_MEMORY_CLASSIFIER_PROVIDER"] = "openai"
+    env["MARVAIN_MEMORY_CLASSIFIER_MODEL"] = classifier_model
 
     # Fallback: read LiveKitUrl from sam.parameter_overrides if not in resources
     # (This can be removed once the stack is redeployed with the LiveKitUrl output)

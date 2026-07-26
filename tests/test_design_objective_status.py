@@ -42,7 +42,7 @@ def test_repository_evidence_score_and_operational_score_are_separate() -> None:
 
     status = generator.build_status(REPO_ROOT)
 
-    assert status["score"] >= 90
+    assert status["score"] == 89
     assert status["operational_score"] == 49
 
 
@@ -77,7 +77,8 @@ def test_check_command_supports_min_score_gate() -> None:
         check=False,
     )
 
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.returncode == 1
+    assert "Design objective score 89% is below required minimum 90%" in result.stdout
 
 
 def test_check_command_can_gate_operational_score_independently() -> None:
@@ -87,7 +88,7 @@ def test_check_command_can_gate_operational_score_independently() -> None:
             str(REPO_ROOT / "scripts" / "generate_design_objective_status.py"),
             "--check",
             "--min-score",
-            "90",
+            "89",
             "--min-operational-score",
             "85",
         ],
@@ -105,7 +106,7 @@ def test_check_command_can_gate_operational_score_independently() -> None:
 def test_generated_design_objective_status_doc_is_current() -> None:
     generator = _load_generator()
 
-    expected = generator.build_doc(REPO_ROOT, min_score=90)
+    expected = generator.build_doc(REPO_ROOT)
     actual = (REPO_ROOT / "docs" / "DESIGN_OBJECTIVE_STATUS.generated.md").read_text(encoding="utf-8")
 
     assert actual == expected

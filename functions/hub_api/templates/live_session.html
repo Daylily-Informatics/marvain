@@ -703,21 +703,23 @@ document.getElementById('cam-select').addEventListener('change', e => {
   });
 });
 
-Marvain.wsOn('message', function(msg) {
-  if (!msg || !msg.type) return;
-  const type = String(msg.type);
-  const payload = msg.payload || {};
-  const event = payload.event || {};
-  if (event.session_id && activeSession && event.session_id !== activeSession) return;
-  if (event.event_id) {
-    renderSessionEvent(event);
-    return;
-  }
-  if (type.includes('transcript') || type.includes('chat')) appendLog('transcript-log', type);
-  if (type.includes('memory') || type.includes('recognition') || type.includes('action') || type.includes('presence')) {
-    appendLog('lifecycle-log', type);
-  }
-});
+document.addEventListener('DOMContentLoaded', function() {
+  window.Marvain.wsOn('message', function(msg) {
+    if (!msg || !msg.type) return;
+    const type = String(msg.type);
+    const payload = msg.payload || {};
+    const event = payload.event || {};
+    if (event.session_id && activeSession && event.session_id !== activeSession) return;
+    if (event.event_id) {
+      renderSessionEvent(event);
+      return;
+    }
+    if (type.includes('transcript') || type.includes('chat')) appendLog('transcript-log', type);
+    if (type.includes('memory') || type.includes('recognition') || type.includes('action') || type.includes('presence')) {
+      appendLog('lifecycle-log', type);
+    }
+  });
+}, {once: true});
 
 enumerateDevices({requireAudio: false}).catch(e => {
   document.getElementById('device-hint').textContent = 'Device enumeration unavailable: ' + e.message;

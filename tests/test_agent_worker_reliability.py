@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import importlib.util
 import json
 import os
@@ -32,6 +33,27 @@ def _load_agent_worker_module():
     return mod
 
 
+def _dispatch_metadata(worker):
+    return worker.DispatchMetadata(
+        session_id="session-1",
+        agent_id="agent-1",
+        space_id="space-1",
+        room_session_id="room-session-1",
+        participant_identity="user:user-1",
+    )
+
+
+def _worker_lifecycle(worker, *, status: str, status_event_id: str | None = None):
+    return worker.WorkerSessionLifecycle(
+        session_id="session-1",
+        agent_id="agent-1",
+        space_id="space-1",
+        livekit_room="room-1",
+        status=status,
+        status_event_id=status_event_id,
+    )
+
+
 def _decode_jwt_payload(token: str) -> dict:
     encoded = token.split(".")[1]
     encoded += "=" * (-len(encoded) % 4)
@@ -60,6 +82,131 @@ def test_session_state_transition_is_durable_before_local_state_changes() -> Non
     assert payload["from_state"] == "opening"
     assert payload["to_state"] == "active"
     assert payload["session_id"] == "session-1"
+
+
+@pytest.mark.parametrize(
+    ("status", "status_event_id"),
+    [
+        ("opening", None),
+        ("active", "event-active-1"),
+        ("reconnecting", "event-reconnecting-1"),
+    ],
+)
+def test_worker_hydrates_only_startable_durable_session_states(status: str, status_event_id: str | None) -> None:
+    worker = _load_agent_worker_module()
+
+    state = worker.hydrate_session_state(
+        lifecycle=_worker_lifecycle(worker, status=status, status_event_id=status_event_id),
+        metadata=_dispatch_metadata(worker),
+        room_name="room-1",
+    )
+
+    assert state.session_id == "session-1"
+    assert state.state == status
+    assert state.last_event_id == status_event_id
+
+
+@pytest.mark.parametrize("terminal_state", ["closed", "failed", "reconciled"])
+def test_worker_rejects_terminal_durable_session_before_livekit_start(terminal_state: str) -> None:
+    worker = _load_agent_worker_module()
+
+    with pytest.raises(worker.WorkerContractError, match="not startable"):
+        worker.hydrate_session_state(
+            lifecycle=_worker_lifecycle(worker, status=terminal_state, status_event_id=f"event-{terminal_state}-1"),
+            metadata=_dispatch_metadata(worker),
+            room_name="room-1",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("session_id", "other-session"),
+        ("agent_id", "other-agent"),
+        ("space_id", "other-space"),
+        ("livekit_room", "other-room"),
+    ],
+)
+def test_worker_rejects_mismatched_durable_session_identity(field: str, value: str) -> None:
+    worker = _load_agent_worker_module()
+    lifecycle = _worker_lifecycle(worker, status="active", status_event_id="event-active-1")
+    lifecycle = dataclasses.replace(lifecycle, **{field: value})
+
+    with pytest.raises(worker.WorkerContractError, match=f"{field} mismatch"):
+        worker.hydrate_session_state(
+            lifecycle=lifecycle,
+            metadata=_dispatch_metadata(worker),
+            room_name="room-1",
+        )
+
+
+def test_worker_rejects_missing_rehydrated_status_event_id() -> None:
+    worker = _load_agent_worker_module()
+
+    with pytest.raises(worker.WorkerContractError, match="status_event_id is required"):
+        worker.hydrate_session_state(
+            lifecycle=_worker_lifecycle(worker, status="active"),
+            metadata=_dispatch_metadata(worker),
+            room_name="room-1",
+        )
+
+
+def test_forge_agent_rejects_terminal_lifecycle_before_connecting_livekit() -> None:
+    worker = _load_agent_worker_module()
+    ctx = mock.Mock()
+    ctx.room.name = "room-1"
+    ctx.connect = mock.AsyncMock()
+    ctx.job.metadata = json.dumps(
+        {
+            "session_id": "session-1",
+            "agent_id": "agent-1",
+            "space_id": "space-1",
+            "room_session_id": "room-session-1",
+            "participant_identity": "user:user-1",
+        }
+    )
+
+    with (
+        mock.patch.object(
+            worker,
+            "hub_get_worker_session_lifecycle",
+            return_value=_worker_lifecycle(worker, status="closed", status_event_id="event-closed-1"),
+        ),
+        pytest.raises(worker.WorkerContractError, match="not startable"),
+    ):
+        asyncio.run(worker.forge_agent(ctx))
+
+    ctx.connect.assert_not_awaited()
+
+
+def test_worker_reads_lifecycle_with_device_authentication() -> None:
+    worker = _load_agent_worker_module()
+    response = mock.Mock(ok=True)
+    response.json.return_value = {
+        "session_id": "session-1",
+        "agent_id": "agent-1",
+        "space_id": "space-1",
+        "livekit_room": "room-1",
+        "status": "active",
+        "status_event_id": "event-active-1",
+    }
+
+    with (
+        mock.patch.dict(
+            os.environ,
+            {"HUB_API_BASE": "https://hub.example.test", "HUB_DEVICE_TOKEN": "device-token"},
+            clear=False,
+        ),
+        mock.patch.object(worker.requests, "get", return_value=response) as get,
+    ):
+        lifecycle = worker.hub_get_worker_session_lifecycle("session-1")
+
+    assert lifecycle.status == "active"
+    get.assert_called_once_with(
+        "https://hub.example.test/v1/sessions/session-1/worker-lifecycle",
+        headers={"Authorization": "Bearer device-token"},
+        timeout=3,
+    )
 
 
 def test_session_state_does_not_change_when_transition_event_fails() -> None:
@@ -182,7 +329,7 @@ def test_livekit_session_becomes_active_only_after_start_and_durable_acceptance(
         return "event-active-1"
 
     with mock.patch.object(worker, "hub_ingest_event", side_effect=accept_event):
-        event_id = asyncio.run(
+        result = asyncio.run(
             lifecycle.start_agent_session(
                 session=FakeAgentSession(),
                 start_kwargs={"room": "room-object"},
@@ -190,7 +337,11 @@ def test_livekit_session_becomes_active_only_after_start_and_durable_acceptance(
         )
 
     assert observed == [("start", "opening"), ("persist", "opening")]
-    assert event_id == "event-active-1"
+    assert result.transition_event_id == "event-active-1"
+    assert result.initial_state == "opening"
+    assert result.final_state == "active"
+    assert result.is_active
+    assert result.should_greet
     assert lifecycle.state == "active"
     assert state.last_event_id == "event-active-1"
 
@@ -213,18 +364,91 @@ def test_completed_start_does_not_reactivate_an_orderly_closed_session() -> None
             )
 
     with mock.patch.object(worker, "hub_ingest_event", return_value="event-closed-1") as ingest:
-        event_id = asyncio.run(
+        result = asyncio.run(
             lifecycle.start_agent_session(
                 session=FakeAgentSession(),
                 start_kwargs={"room": "room-object"},
             )
         )
 
-    assert event_id is None
+    assert result.transition_event_id is None
+    assert result.initial_state == "opening"
+    assert result.final_state == "closed"
+    assert not result.is_active
+    assert not result.should_greet
     assert lifecycle.state == "closed"
     assert state.last_event_id == "event-closed-1"
     assert ingest.call_count == 1
     assert ingest.call_args.kwargs["payload"]["to_state"] == "closed"
+
+
+def test_resumed_active_session_starts_without_duplicate_transition_or_greeting() -> None:
+    worker = _load_agent_worker_module()
+    state = worker.SessionStateMachine(
+        session_id="session-1",
+        state="active",
+        last_event_id="event-active-1",
+    )
+    lifecycle = worker.DurableSessionLifecycle(
+        state_machine=state,
+        space_id="space-1",
+        room_name="room-1",
+        worker_version="worker-1",
+    )
+
+    class FakeAgentSession:
+        async def start(self, **kwargs: object) -> None:
+            assert kwargs == {"room": "room-object"}
+
+    with mock.patch.object(worker, "hub_ingest_event") as ingest:
+        result = asyncio.run(
+            lifecycle.start_agent_session(
+                session=FakeAgentSession(),
+                start_kwargs={"room": "room-object"},
+            )
+        )
+
+    assert result.initial_state == "active"
+    assert result.final_state == "active"
+    assert result.transition_event_id is None
+    assert result.is_active
+    assert not result.should_greet
+    ingest.assert_not_called()
+
+
+def test_resumed_reconnecting_session_emits_one_recovery_transition_without_greeting() -> None:
+    worker = _load_agent_worker_module()
+    state = worker.SessionStateMachine(
+        session_id="session-1",
+        state="reconnecting",
+        last_event_id="event-reconnecting-1",
+    )
+    lifecycle = worker.DurableSessionLifecycle(
+        state_machine=state,
+        space_id="space-1",
+        room_name="room-1",
+        worker_version="worker-1",
+    )
+
+    class FakeAgentSession:
+        async def start(self, **kwargs: object) -> None:
+            assert kwargs == {"room": "room-object"}
+
+    with mock.patch.object(worker, "hub_ingest_event", return_value="event-active-2") as ingest:
+        result = asyncio.run(
+            lifecycle.start_agent_session(
+                session=FakeAgentSession(),
+                start_kwargs={"room": "room-object"},
+            )
+        )
+
+    assert result.initial_state == "reconnecting"
+    assert result.final_state == "active"
+    assert result.transition_event_id == "event-active-2"
+    assert result.is_active
+    assert not result.should_greet
+    assert ingest.call_args.kwargs["payload"]["from_state"] == "reconnecting"
+    assert ingest.call_args.kwargs["payload"]["reason"] == "worker_rehydrated_after_dispatch"
 
 
 def test_reconnect_transitions_are_durable_and_serialized() -> None:

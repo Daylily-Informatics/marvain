@@ -30,6 +30,7 @@ from marvain_cli.ops import (
     bootstrap,
     cognito_create_user,
     examples_create,
+    finalize_agent_worker_deployment,
     gui_logs,
     gui_restart,
     gui_start,
@@ -38,6 +39,7 @@ from marvain_cli.ops import (
     hub_claim_first_owner,
     init_db,
     prepare_agent_worker_deployment,
+    publish_agent_worker_image,
     sam_deploy,
     sam_logs,
 )
@@ -61,6 +63,24 @@ class TestOps(unittest.TestCase):
             config_path=Path("/tmp/marvain.yaml"),
             cfg={"envs": {"dev": raw}},
             env=ResolvedEnv(env="dev", aws_profile="p", aws_region="r", stack_name="s", raw=raw),
+        )
+
+    @staticmethod
+    def _existing_worker_ctx() -> Ctx:
+        image_uri = "123456789012.dkr.ecr.us-west-1.amazonaws.com/marvain-agent@sha256:" + "a" * 64
+        return TestOps._deploy_ctx(
+            {
+                "LiveKitUrl": "wss://livekit.example.test",
+                "ArtifactCorsAllowedOrigins": "https://localhost:8084",
+                "OpenAICredentialsSecretArn": OPENAI_SECRET_ARN,
+                "LiveKitCredentialsSecretArn": LIVEKIT_SECRET_ARN,
+                "AgentWorkerImageUri": image_uri,
+                "AgentWorkerVersion": "old-commit",
+                "AgentWorkerHubDeviceTokenSecretArn": (
+                    "arn:aws:secretsmanager:us-west-1:123456789012:secret:worker-token"
+                ),
+                "AgentWorkerDesiredCount": 1,
+            }
         )
 
     def test_sam_deploy_requires_all_explicit_parameters(self) -> None:
@@ -270,6 +290,257 @@ class TestOps(unittest.TestCase):
                     worker_version="commit-123",
                     image_tag=None,
                 )
+
+    def test_publish_agent_worker_image_dry_run_uses_only_existing_pinned_deployment_config(self) -> None:
+        ctx = self._existing_worker_ctx()
+        commit = "b" * 40
+
+        with (
+            mock.patch("marvain_cli.ops._conda_preflight", return_value=0),
+            mock.patch("marvain_cli.ops._resolve_exact_source_commit", return_value=commit),
+            mock.patch("marvain_cli.ops.save_config_dict") as save_config,
+        ):
+            receipt = publish_agent_worker_image(ctx, source_commit=commit, dry_run=True)
+
+        save_config.assert_not_called()
+        self.assertTrue(receipt["dry_run"])
+        self.assertEqual(receipt["source_commit"], commit)
+        self.assertEqual(receipt["image_tag"], commit)
+        self.assertEqual(receipt["repository_name"], "marvain-agent")
+
+    def test_publish_agent_worker_image_refuses_nonexisting_stack_configuration(self) -> None:
+        raw = {"sam": {"parameter_overrides": {"AgentWorkerVersion": "old-commit"}}}
+        ctx = Ctx(
+            config_path=Path("/tmp/marvain.yaml"),
+            cfg={"envs": {"dev": raw}},
+            env=ResolvedEnv(env="dev", aws_profile="p", aws_region="r", stack_name="s", raw=raw),
+        )
+        commit = "b" * 40
+
+        with (
+            mock.patch("marvain_cli.ops._conda_preflight", return_value=0),
+            mock.patch("marvain_cli.ops._resolve_exact_source_commit", return_value=commit),
+            self.assertRaisesRegex(ConfigError, "sam.s3_bucket is required"),
+        ):
+            publish_agent_worker_image(ctx, source_commit=commit, dry_run=True)
+
+    def test_publish_agent_worker_image_pins_digest_after_immutable_commit_build(self) -> None:
+        from botocore.exceptions import ClientError
+
+        ctx = self._existing_worker_ctx()
+        commit = "b" * 40
+        digest = "sha256:" + "c" * 64
+        ecr = mock.Mock()
+        ecr.describe_repositories.return_value = {
+            "repositories": [
+                {
+                    "repositoryUri": "123456789012.dkr.ecr.us-west-1.amazonaws.com/marvain-agent",
+                    "repositoryArn": "arn:aws:ecr:us-west-1:123456789012:repository/marvain-agent",
+                    "imageTagMutability": "IMMUTABLE",
+                }
+            ]
+        }
+        ecr.list_tags_for_resource.return_value = {"tags": [{"Key": "project", "Value": "marvain"}]}
+        ecr.describe_images.side_effect = [
+            ClientError({"Error": {"Code": "ImageNotFoundException", "Message": "not found"}}, "DescribeImages"),
+            {"imageDetails": [{"imageDigest": digest}]},
+        ]
+        ecr.get_authorization_token.return_value = {
+            "authorizationData": [
+                {
+                    "authorizationToken": "QVdTOmRvY2tlci1wYXNzd29yZA==",
+                    "proxyEndpoint": "https://123456789012.dkr.ecr.us-west-1.amazonaws.com",
+                }
+            ]
+        }
+        session = mock.Mock()
+        session.client.return_value = ecr
+
+        with (
+            mock.patch("marvain_cli.ops._conda_preflight", return_value=0),
+            mock.patch("marvain_cli.ops._resolve_exact_source_commit", return_value=commit),
+            mock.patch("marvain_cli.ops.require_tools", return_value=[]),
+            mock.patch("boto3.Session", return_value=session),
+            mock.patch("marvain_cli.ops.run_cmd", return_value=0) as run_cmd,
+            mock.patch("marvain_cli.ops.subprocess.run") as docker_login,
+            mock.patch("marvain_cli.ops.save_config_dict") as save_config,
+        ):
+            receipt = publish_agent_worker_image(ctx, source_commit=commit, dry_run=False)
+
+        self.assertFalse(receipt["dry_run"])
+        self.assertEqual(receipt["image_uri"], f"123456789012.dkr.ecr.us-west-1.amazonaws.com/marvain-agent@{digest}")
+        overrides = ctx.env.raw["sam"]["parameter_overrides"]
+        self.assertEqual(overrides["AgentWorkerImageUri"], receipt["image_uri"])
+        self.assertEqual(overrides["AgentWorkerVersion"], commit)
+        save_config.assert_called_once_with(ctx.config_path, ctx.cfg)
+        docker_login.assert_called_once()
+        commands = [call.args[0] for call in run_cmd.call_args_list]
+        self.assertTrue(any(command[:5] == ["git", "-C", mock.ANY, "worktree", "add"] for command in commands))
+        self.assertTrue(any(command[:3] == ["docker", "buildx", "build"] for command in commands))
+        self.assertTrue(any(command[:5] == ["git", "-C", mock.ANY, "worktree", "remove"] for command in commands))
+        self.assertIn(
+            ["docker", "push", f"123456789012.dkr.ecr.us-west-1.amazonaws.com/marvain-agent:{commit}"], commands
+        )
+
+    def test_publish_agent_worker_image_refuses_reused_immutable_tag(self) -> None:
+        ctx = self._existing_worker_ctx()
+        commit = "b" * 40
+        ecr = mock.Mock()
+        ecr.describe_repositories.return_value = {
+            "repositories": [
+                {
+                    "repositoryUri": "123456789012.dkr.ecr.us-west-1.amazonaws.com/marvain-agent",
+                    "repositoryArn": "arn:aws:ecr:us-west-1:123456789012:repository/marvain-agent",
+                    "imageTagMutability": "IMMUTABLE",
+                }
+            ]
+        }
+        ecr.list_tags_for_resource.return_value = {"tags": [{"Key": "project", "Value": "marvain"}]}
+        ecr.describe_images.return_value = {"imageDetails": [{"imageDigest": "sha256:" + "d" * 64}]}
+        session = mock.Mock()
+        session.client.return_value = ecr
+
+        with (
+            mock.patch("marvain_cli.ops._conda_preflight", return_value=0),
+            mock.patch("marvain_cli.ops._resolve_exact_source_commit", return_value=commit),
+            mock.patch("marvain_cli.ops.require_tools", return_value=[]),
+            mock.patch("boto3.Session", return_value=session),
+            mock.patch("marvain_cli.ops.run_cmd") as run_cmd,
+            mock.patch("marvain_cli.ops.save_config_dict") as save_config,
+            self.assertRaisesRegex(ConfigError, "already exists and is immutable"),
+        ):
+            publish_agent_worker_image(ctx, source_commit=commit, dry_run=False)
+
+        run_cmd.assert_not_called()
+        save_config.assert_not_called()
+
+    def test_finalize_agent_worker_deployment_dry_run_is_non_mutating(self) -> None:
+        agent_id = "11111111-1111-1111-1111-111111111111"
+        device_id = "22222222-2222-2222-2222-222222222222"
+        secret_arn = "arn:aws:secretsmanager:us-west-1:123456789012:secret:worker"
+        env_cfg = {
+            "sam": {"parameter_overrides": {"AgentWorkerHubDeviceTokenSecretArn": secret_arn}},
+            "bootstrap": {"agent_id": agent_id, "device_id": device_id, "device_token": "local-token"},
+            "resources": {
+                "AgentWorkerClusterName": "cluster",
+                "AgentWorkerServiceName": "service",
+            },
+        }
+        ctx = Ctx(
+            config_path=Path("/tmp/marvain-cleanroom.yaml"),
+            cfg={"envs": {"cleanroom": env_cfg}},
+            env=ResolvedEnv(
+                env="cleanroom",
+                aws_profile="lsmc",
+                aws_region="us-west-1",
+                stack_name="marvain-cleanroom-test",
+                raw=env_cfg,
+            ),
+        )
+
+        with (
+            mock.patch("marvain_cli.ops._conda_preflight", return_value=0),
+            mock.patch("marvain_cli.ops.save_config_dict") as save_config,
+        ):
+            receipt = finalize_agent_worker_deployment(
+                ctx,
+                agent_id=agent_id,
+                device_id=device_id,
+                access_token=None,
+                reconcile_only=False,
+                dry_run=True,
+            )
+
+        save_config.assert_not_called()
+        self.assertTrue(receipt["dry_run"])
+        self.assertEqual(receipt["worker_secret_arn"], secret_arn)
+        self.assertEqual(env_cfg["bootstrap"]["device_token"], "local-token")
+
+    def test_finalize_agent_worker_deployment_rotates_audited_token_and_restarts_tagged_service(self) -> None:
+        agent_id = "11111111-1111-1111-1111-111111111111"
+        device_id = "22222222-2222-2222-2222-222222222222"
+        secret_arn = "arn:aws:secretsmanager:us-west-1:123456789012:secret:worker"
+        env_cfg = {
+            "sam": {"parameter_overrides": {"AgentWorkerHubDeviceTokenSecretArn": secret_arn}},
+            "bootstrap": {"agent_id": agent_id, "device_id": device_id, "device_token": "old-local-token"},
+            "resources": {
+                "AgentWorkerClusterName": "cluster",
+                "AgentWorkerServiceName": "service",
+            },
+        }
+        ctx = Ctx(
+            config_path=Path("/tmp/marvain-cleanroom.yaml"),
+            cfg={"envs": {"cleanroom": env_cfg}},
+            env=ResolvedEnv(
+                env="cleanroom",
+                aws_profile="lsmc",
+                aws_region="us-west-1",
+                stack_name="marvain-cleanroom-test",
+                raw=env_cfg,
+            ),
+        )
+        secrets_manager = mock.Mock()
+        secrets_manager.describe_secret.return_value = {
+            "Tags": [{"Key": "project", "Value": "marvain"}],
+        }
+        secrets_manager.put_secret_value.return_value = {"VersionId": "version-2"}
+        ecs = mock.Mock()
+        ecs.describe_services.side_effect = [
+            {
+                "services": [
+                    {
+                        "serviceArn": "arn:aws:ecs:us-west-1:123456789012:service/cluster/service",
+                        "tags": [{"key": "project", "value": "marvain"}],
+                    }
+                ]
+            },
+            {
+                "services": [
+                    {
+                        "desiredCount": 1,
+                        "runningCount": 1,
+                        "deployments": [{"status": "PRIMARY", "rolloutState": "COMPLETED"}],
+                    }
+                ]
+            },
+        ]
+        session = mock.Mock()
+        session.client.side_effect = lambda name: secrets_manager if name == "secretsmanager" else ecs
+
+        with (
+            mock.patch("marvain_cli.ops._conda_preflight", return_value=0),
+            mock.patch("boto3.Session", return_value=session),
+            mock.patch(
+                "marvain_cli.ops.hub_api_json",
+                side_effect=[
+                    {"device_id": device_id, "device_token": "rotated-worker-token"},
+                    {"agent_id": agent_id, "persona_id": "persona-1"},
+                ],
+            ) as hub_call,
+            mock.patch("marvain_cli.ops.save_config_dict") as save_config,
+        ):
+            receipt = finalize_agent_worker_deployment(
+                ctx,
+                agent_id=agent_id,
+                device_id=device_id,
+                access_token="access-token",
+                reconcile_only=False,
+                dry_run=False,
+            )
+
+        self.assertEqual(hub_call.call_count, 2)
+        self.assertEqual(hub_call.call_args_list[0].kwargs["path"], f"/v1/devices/{device_id}/rotate-token")
+        self.assertEqual(hub_call.call_args_list[1].kwargs["path"], f"/v1/agents/{agent_id}/personas/default")
+        secrets_manager.put_secret_value.assert_called_once_with(
+            SecretId=secret_arn,
+            SecretString='{"device_token": "rotated-worker-token"}',
+        )
+        ecs.update_service.assert_called_once_with(cluster="cluster", service="service", forceNewDeployment=True)
+        ecs.get_waiter.return_value.wait.assert_called_once_with(cluster="cluster", services=["service"])
+        save_config.assert_called_once_with(ctx.config_path, ctx.cfg)
+        self.assertNotIn("device_token", env_cfg["bootstrap"])
+        self.assertEqual(env_cfg["bootstrap"]["device_token_secret_arn"], secret_arn)
+        self.assertEqual(receipt["rollout_state"], "COMPLETED")
 
     def test_split_sql_ignores_comment_lines_and_splits(self) -> None:
         sql = """-- comment\nCREATE TABLE a(x int);\n\n-- another\nCREATE TABLE b(y int);"""
@@ -637,6 +908,7 @@ class TestGuiLifecycle(unittest.TestCase):
             cfg={
                 "envs": {
                     "dev": {
+                        "sam": {"parameter_overrides": {"PlannerModel": "gpt-4.1-mini"}},
                         "resources": {
                             "DbClusterArn": "arn:aws:rds:us-east-1:123456789012:cluster:test",
                             "DbSecretArn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:test",
@@ -645,7 +917,8 @@ class TestGuiLifecycle(unittest.TestCase):
                             "CognitoAppClientId": "testclientid",
                             "CognitoDomain": "test.auth.us-east-1.amazoncognito.com",
                             "SessionSecretArn": "arn:aws:secretsmanager:us-east-1:123456789012:secret:session",
-                        }
+                            "OpenAISecretArn": OPENAI_SECRET_ARN,
+                        },
                     }
                 }
             },
@@ -778,12 +1051,34 @@ class TestGuiLifecycle(unittest.TestCase):
             mock.patch("marvain_cli.ops._eprint", side_effect=lambda m: emitted.append(m)),
             mock.patch("pathlib.Path.exists", return_value=True),
             mock.patch("marvain_cli.ops._ensure_tapdb_runtime_config", return_value=None),
+            mock.patch("marvain_cli.ops._fetch_secret_json", return_value={"api_key": "test-openai-key"}),
             mock.patch.dict(os.environ, {"SESSION_SECRET_KEY": "", "SESSION_SECRET_ARN": ""}),
         ):
             rc = gui_start(ctx, dry_run=False, host=GUI_DEFAULT_HOST, port=GUI_DEFAULT_PORT, reload=True, https=False)
 
         self.assertEqual(rc, 2)
         self.assertIn("SESSION_SECRET_ARN or SESSION_SECRET_KEY is required", "\n".join(emitted))
+
+    def test_gui_start_configures_openai_memory_classifier(self) -> None:
+        ctx = self._make_ctx()
+        process = mock.Mock(pid=1234)
+
+        with (
+            mock.patch("marvain_cli.ops._conda_preflight", return_value=0),
+            mock.patch("marvain_cli.ops._is_port_in_use", return_value=False),
+            mock.patch("marvain_cli.ops._ensure_tapdb_runtime_config", return_value=None),
+            mock.patch("marvain_cli.ops._fetch_secret_json", return_value={"api_key": "test-openai-key"}),
+            mock.patch("marvain_cli.ops.subprocess.Popen", return_value=process) as popen,
+            mock.patch("marvain_cli.ops._write_pid_file"),
+            mock.patch("builtins.open", mock.mock_open()),
+        ):
+            rc = gui_start(ctx, dry_run=False, port=GUI_DEFAULT_PORT, reload=False, https=False)
+
+        self.assertEqual(rc, 0)
+        child_env = popen.call_args.kwargs["env"]
+        self.assertEqual(child_env["MARVAIN_MEMORY_CLASSIFIER_PROVIDER"], "openai")
+        self.assertEqual(child_env["MARVAIN_MEMORY_CLASSIFIER_MODEL"], "gpt-4.1-mini")
+        self.assertEqual(child_env["OPENAI_API_KEY"], "test-openai-key")
 
     def test_gui_start_detects_port_conflict(self) -> None:
         """gui_start should fail when port is already in use."""

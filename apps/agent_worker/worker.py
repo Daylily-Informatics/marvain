@@ -23,6 +23,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 import requests
 from agent_hub.livekit_tokens import (
@@ -168,6 +169,14 @@ class HubWriteError(RuntimeError):
         self.operation = operation
 
 
+class HubReadError(RuntimeError):
+    """Raised when required durable Hub state cannot be read or validated."""
+
+    def __init__(self, operation: str, message: str) -> None:
+        super().__init__(f"{operation}: {message}")
+        self.operation = operation
+
+
 @dataclass(frozen=True)
 class DispatchMetadata:
     space_id: str
@@ -175,6 +184,35 @@ class DispatchMetadata:
     session_id: str
     room_session_id: str
     participant_identity: str
+
+
+@dataclass(frozen=True)
+class WorkerSessionLifecycle:
+    """Authoritative session state the worker must hydrate before joining LiveKit."""
+
+    session_id: str
+    agent_id: str
+    space_id: str
+    livekit_room: str
+    status: str
+    status_event_id: str | None
+
+
+@dataclass(frozen=True)
+class AgentSessionStartResult:
+    """Outcome of a LiveKit start without conflating resumed and terminal state."""
+
+    initial_state: str
+    final_state: str
+    transition_event_id: str | None
+
+    @property
+    def is_active(self) -> bool:
+        return self.final_state == "active"
+
+    @property
+    def should_greet(self) -> bool:
+        return self.initial_state == "opening" and self.is_active and self.transition_event_id is not None
 
 
 @dataclass
@@ -187,7 +225,10 @@ class SessionStateMachine:
         self.session_id = _require_runtime_text(self.session_id, "session_id")
         if self.state not in SESSION_STATES:
             raise WorkerContractError(f"invalid initial session state: {self.state}")
-        if self.state != "opening":
+        if self.state == "opening":
+            if self.last_event_id is not None:
+                raise WorkerContractError("opening session state must not have a status_event_id")
+        else:
             self.last_event_id = _require_runtime_text(
                 self.last_event_id,
                 "last_event_id for rehydrated session state",
@@ -283,14 +324,32 @@ class DurableSessionLifecycle:
                 worker_version=self.worker_version,
             )
 
-    async def start_agent_session(self, *, session: Any, start_kwargs: dict[str, object]) -> str | None:
-        """Start LiveKit first, then durably accept the transition to active."""
+    async def start_agent_session(self, *, session: Any, start_kwargs: dict[str, object]) -> AgentSessionStartResult:
+        """Start LiveKit and durably accept only the legal initial-state transition."""
+
+        initial_state = self.state
+        if initial_state not in {"opening", "active", "reconnecting"}:
+            raise WorkerContractError(f"session state is not startable: {initial_state}")
 
         await session.start(**start_kwargs)
-        return await self.transition_if_current(
-            from_states={"opening"},
-            to_state="active",
-            reason="livekit_agent_session_started",
+        transition_event_id: str | None = None
+        if initial_state == "opening":
+            transition_event_id = await self.transition_if_current(
+                from_states={"opening"},
+                to_state="active",
+                reason="livekit_agent_session_started",
+            )
+        elif initial_state == "reconnecting":
+            transition_event_id = await self.transition_if_current(
+                from_states={"reconnecting"},
+                to_state="active",
+                reason="worker_rehydrated_after_dispatch",
+            )
+
+        return AgentSessionStartResult(
+            initial_state=initial_state,
+            final_state=self.state,
+            transition_event_id=transition_event_id,
         )
 
     async def reconcile(self, *, reason: str) -> str:
@@ -577,6 +636,93 @@ def _post_hub_json(*, path: str, operation: str, payload: dict[str, object]) -> 
     if not isinstance(body, dict):
         raise HubWriteError(operation, "response body must be a JSON object")
     return body
+
+
+def _get_hub_json(*, path: str, operation: str) -> dict[str, object]:
+    hub_api_base, hub_device_token = _hub_connection()
+    try:
+        response = requests.get(
+            f"{hub_api_base}{path}",
+            headers={"Authorization": f"Bearer {hub_device_token}"},
+            timeout=3,
+        )
+    except Exception as exc:
+        raise HubReadError(operation, f"request failed with {exc.__class__.__name__}: {exc}") from exc
+    if not response.ok:
+        raise HubReadError(operation, f"status={response.status_code} body={response.text[:300]}")
+    try:
+        body = response.json()
+    except Exception as exc:
+        raise HubReadError(operation, "response body was not valid JSON") from exc
+    if not isinstance(body, dict):
+        raise HubReadError(operation, "response body must be a JSON object")
+    return body
+
+
+def hub_get_worker_session_lifecycle(session_id: str) -> WorkerSessionLifecycle:
+    """Read the durable lifecycle state required before a worker joins a room."""
+
+    normalized_session_id = _require_runtime_text(session_id, "session_id")
+    body = _get_hub_json(
+        path=f"/v1/sessions/{quote(normalized_session_id, safe='')}/worker-lifecycle",
+        operation="session.lifecycle.read",
+    )
+    status = _require_runtime_text(body.get("status"), "worker lifecycle status").lower()
+    if status not in SESSION_STATES:
+        raise WorkerContractError(f"worker lifecycle returned invalid status: {status}")
+    raw_status_event_id = str(body.get("status_event_id") or "").strip()
+    status_event_id = raw_status_event_id or None
+    return WorkerSessionLifecycle(
+        session_id=_require_runtime_text(body.get("session_id"), "worker lifecycle session_id"),
+        agent_id=_require_runtime_text(body.get("agent_id"), "worker lifecycle agent_id"),
+        space_id=_require_runtime_text(body.get("space_id"), "worker lifecycle space_id"),
+        livekit_room=_require_runtime_text(body.get("livekit_room"), "worker lifecycle livekit_room"),
+        status=status,
+        status_event_id=status_event_id,
+    )
+
+
+def hydrate_session_state(
+    *,
+    lifecycle: WorkerSessionLifecycle,
+    metadata: DispatchMetadata,
+    room_name: str,
+) -> SessionStateMachine:
+    """Validate durable identity and produce the only permissible initial state."""
+
+    expected = {
+        "session_id": metadata.session_id,
+        "agent_id": metadata.agent_id,
+        "space_id": metadata.space_id,
+        "livekit_room": _require_runtime_text(room_name, "room_name"),
+    }
+    actual = {
+        "session_id": lifecycle.session_id,
+        "agent_id": lifecycle.agent_id,
+        "space_id": lifecycle.space_id,
+        "livekit_room": lifecycle.livekit_room,
+    }
+    for field, expected_value in expected.items():
+        if actual[field] != expected_value:
+            raise WorkerContractError(
+                f"worker lifecycle {field} mismatch: expected {expected_value!r}, got {actual[field]!r}"
+            )
+
+    if lifecycle.status not in {"opening", "active", "reconnecting"}:
+        raise WorkerContractError(f"worker lifecycle is not startable: {lifecycle.status}")
+    if lifecycle.status == "opening":
+        if lifecycle.status_event_id is not None:
+            raise WorkerContractError("opening worker lifecycle must not include status_event_id")
+    elif lifecycle.status_event_id is None:
+        raise WorkerContractError(
+            f"worker lifecycle status_event_id is required for rehydrated {lifecycle.status} session"
+        )
+
+    return SessionStateMachine(
+        session_id=lifecycle.session_id,
+        state=lifecycle.status,
+        last_event_id=lifecycle.status_event_id,
+    )
 
 
 def hub_ingest_event(
@@ -1314,7 +1460,12 @@ async def forge_agent(ctx: agents.JobContext):
     room_session_id = metadata.room_session_id
     expected_participant_identity = metadata.participant_identity
     worker_version = _require_worker_version()
-    session_state = SessionStateMachine(session_id=session_id)
+    persisted_session_lifecycle = hub_get_worker_session_lifecycle(session_id)
+    session_state = hydrate_session_state(
+        lifecycle=persisted_session_lifecycle,
+        metadata=metadata,
+        room_name=ctx.room.name,
+    )
     lifecycle = DurableSessionLifecycle(
         state_machine=session_state,
         space_id=space_id,
@@ -1464,9 +1615,9 @@ async def forge_agent(ctx: agents.JobContext):
     ctx.room.on("reconnected", on_room_reconnected)
     ctx.room.on("disconnected", on_room_disconnected)
 
-    # Realtime model (speech-to-speech). Configure voice via env.
-    voice = os.getenv("OPENAI_VOICE", "alloy")
-    model = os.getenv("OPENAI_REALTIME_MODEL", "gpt-4o-realtime-preview")
+    # Realtime model and voice are deployment-owned configuration.
+    voice = _require_runtime_text(os.getenv("OPENAI_VOICE"), "OPENAI_VOICE")
+    model = _require_runtime_text(os.getenv("OPENAI_REALTIME_MODEL"), "OPENAI_REALTIME_MODEL")
 
     session = AgentSession(
         llm=openai.realtime.RealtimeModel(
@@ -2068,7 +2219,7 @@ async def forge_agent(ctx: agents.JobContext):
 
     try:
         await _emit_worker_health("starting")
-        active_event_id = await lifecycle.start_agent_session(
+        start_result = await lifecycle.start_agent_session(
             session=session,
             start_kwargs={
                 "room": ctx.room,
@@ -2088,16 +2239,19 @@ async def forge_agent(ctx: agents.JobContext):
                 ),
             },
         )
-        if active_event_id is None:
+        if not start_result.is_active:
             logger.info("LiveKit session started after lifecycle reached %s; skipping ready state", lifecycle.state)
             return
-        logger.info("Recorded active session transition %s for session %s", active_event_id, session_id)
+        if start_result.transition_event_id is not None:
+            logger.info(
+                "Recorded active session transition %s for session %s", start_result.transition_event_id, session_id
+            )
         await _emit_worker_health("ready")
 
-        # Initial greeting
-        await session.generate_reply(
-            instructions="Greet the user and offer your assistance. Start by speaking in English."
-        )
+        if start_result.should_greet:
+            await session.generate_reply(
+                instructions="Greet the user and offer your assistance. Start by speaking in English."
+            )
     except Exception as exc:
         transition_error: Exception | None = None
         if lifecycle.state in {"opening", "active", "reconnecting"}:

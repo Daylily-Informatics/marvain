@@ -41,6 +41,7 @@ from marvain_cli.ops import (
     cognito_set_password,
     doctor,
     examples_create,
+    finalize_agent_worker_deployment,
     gui_logs,
     gui_restart,
     gui_start,
@@ -58,6 +59,7 @@ from marvain_cli.ops import (
     monitor_outputs,
     monitor_status,
     prepare_agent_worker_deployment,
+    publish_agent_worker_image,
     sam_build,
     sam_build_simple,
     sam_deploy,
@@ -436,6 +438,42 @@ def agent_prepare_deployment_cmd(
         dry_run=_dry_run(),
         worker_version=worker_version,
         image_tag=image_tag,
+    )
+    _json(receipt)
+
+
+def agent_publish_image_cmd(
+    source_commit: str = Option(..., "--source-commit", help="Exact 40-character Git commit SHA to build and publish"),
+) -> None:
+    """Publish one immutable worker image to the already-configured ECR repository."""
+
+    receipt = publish_agent_worker_image(
+        _load(),
+        source_commit=source_commit,
+        dry_run=_dry_run(),
+    )
+    _json(receipt)
+
+
+def agent_finalize_deployment_cmd(
+    agent_id: str = Option(..., "--agent-id", help="Configured bootstrap agent ID"),
+    device_id: str = Option(..., "--device-id", help="Configured bootstrap worker device ID"),
+    access_token: str | None = Option(None, "--access-token", help="Cognito access token"),
+    reconcile_only: bool = Option(
+        False,
+        "--reconcile-only",
+        help="Verify an already-rotated worker secret/service and finish local config reconciliation",
+    ),
+) -> None:
+    """Rotate and bind the deployed worker device token without exposing it."""
+
+    receipt = finalize_agent_worker_deployment(
+        _load(),
+        agent_id=agent_id,
+        device_id=device_id,
+        access_token=access_token,
+        reconcile_only=reconcile_only,
+        dry_run=_dry_run(),
     )
     _json(receipt)
 
@@ -918,8 +956,30 @@ def register(registry: CommandRegistry, spec: CliSpec) -> None:
         "Agent worker management.",
         [
             (
+                "publish-image",
+                agent_publish_image_cmd,
+                required_policy(
+                    supports_json=True,
+                    mutates_state=True,
+                    supports_dry_run=True,
+                    long_running=True,
+                    prereq_tags={MARVAIN_AWS_TAG},
+                ),
+            ),
+            (
                 "prepare-deployment",
                 agent_prepare_deployment_cmd,
+                required_policy(
+                    supports_json=True,
+                    mutates_state=True,
+                    supports_dry_run=True,
+                    long_running=True,
+                    prereq_tags={MARVAIN_AWS_TAG},
+                ),
+            ),
+            (
+                "finalize-deployment",
+                agent_finalize_deployment_cmd,
                 required_policy(
                     supports_json=True,
                     mutates_state=True,

@@ -1448,6 +1448,48 @@ async def livekit_device_token(
     return LiveKitTokenOut(url=url, token=token, room=room, identity=identity, session_id=session_id)
 
 
+@api_app.get("/v1/sessions/{session_id}/worker-lifecycle")
+def get_worker_session_lifecycle(
+    session_id: str,
+    device: AuthenticatedDevice = Depends(get_device),
+) -> dict[str, str | None]:
+    """Return the minimum durable state a worker must verify before joining LiveKit."""
+
+    require_scope(device, "events:read")
+    rows = _get_db().query(
+        """
+        SELECT session_id::TEXT AS session_id,
+               agent_id::TEXT AS agent_id,
+               space_id::TEXT AS space_id,
+               livekit_room,
+               status,
+               status_event_id::TEXT AS status_event_id
+        FROM sessions
+        WHERE session_id = :session_id::uuid
+        LIMIT 1
+        """,
+        {"session_id": session_id},
+    )
+    if len(rows) != 1:
+        raise HTTPException(status_code=404, detail="Session not found")
+    row = rows[0]
+    agent_id = str(row.get("agent_id") or "").strip()
+    if not agent_id:
+        raise HTTPException(status_code=500, detail="Session is missing an agent identity")
+    _require_device_agent_access(device=device, agent_id=agent_id)
+    if is_agent_disabled(_get_db(), agent_id):
+        raise HTTPException(status_code=403, detail="Agent is disabled")
+
+    return {
+        "session_id": str(row.get("session_id") or ""),
+        "agent_id": agent_id,
+        "space_id": str(row.get("space_id") or ""),
+        "livekit_room": str(row.get("livekit_room") or ""),
+        "status": str(row.get("status") or ""),
+        "status_event_id": str(row.get("status_event_id") or "") or None,
+    }
+
+
 @api_app.get("/v1/agents/{agent_id}/personas/default", response_model=PersonaOut)
 def get_default_persona(
     agent_id: str,

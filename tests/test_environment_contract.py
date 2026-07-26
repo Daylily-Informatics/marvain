@@ -225,7 +225,12 @@ def test_agent_worker_is_an_explicit_egress_only_fargate_service() -> None:
         "LIVEKIT_URL": "LiveKitUrl",
         "HUB_API_BASE": "https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}",
         "MARVAIN_WORKER_VERSION": "AgentWorkerVersion",
+        "MARVAIN_MEMORY_CLASSIFIER_PROVIDER": "openai",
+        "MARVAIN_MEMORY_CLASSIFIER_MODEL": "PlannerModel",
+        "OPENAI_REALTIME_MODEL": "gpt-realtime",
+        "OPENAI_VOICE": "marin",
     }
+
     assert container["HealthCheck"]["Retries"] == 3
     assert container["LogConfiguration"]["LogDriver"] == "awslogs"
 

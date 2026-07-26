@@ -59,6 +59,8 @@ def _load_agent_worker_module():
     os.environ["AGENT_DISCONNECT_DELAY_SECONDS"] = "0"
     os.environ["MARVAIN_AGENT_PERSONA_INSTRUCTIONS"] = "Test persona instructions."
     os.environ["MARVAIN_WORKER_VERSION"] = "test-worker-1"
+    os.environ["OPENAI_REALTIME_MODEL"] = "gpt-realtime"
+    os.environ["OPENAI_VOICE"] = "marin"
 
     spec = importlib.util.spec_from_file_location("agent_worker_for_tests_rejoin", worker_py)
     assert spec and spec.loader
@@ -238,6 +240,18 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
         with (
             mock.patch.object(worker, "AgentSession", FakeSession),
             mock.patch.object(worker.openai.realtime, "RealtimeModel", lambda **kwargs: object()),
+            mock.patch.object(
+                worker,
+                "hub_get_worker_session_lifecycle",
+                return_value=worker.WorkerSessionLifecycle(
+                    session_id="session-1",
+                    agent_id="agent-1",
+                    space_id="space-1",
+                    livekit_room="space-1",
+                    status="opening",
+                    status_event_id=None,
+                ),
+            ),
             mock.patch.object(worker, "hub_ingest_event", return_value="event-1") as ingest_event,
         ):
 
@@ -350,6 +364,18 @@ class TestAgentWorkerDisconnect(unittest.TestCase):
         with (
             mock.patch.object(worker, "AgentSession", FakeSession),
             mock.patch.object(worker.openai.realtime, "RealtimeModel", lambda **kwargs: object()),
+            mock.patch.object(
+                worker,
+                "hub_get_worker_session_lifecycle",
+                return_value=worker.WorkerSessionLifecycle(
+                    session_id="session-1",
+                    agent_id="agent-1",
+                    space_id="space-1",
+                    livekit_room="space-1",
+                    status="opening",
+                    status_event_id=None,
+                ),
+            ),
             mock.patch.object(worker, "hub_ingest_event", return_value="event-1"),
         ):
 

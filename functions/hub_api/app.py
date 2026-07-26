@@ -279,12 +279,6 @@ def _requested_app_path(scope: dict[str, Any]) -> str:
 
 def _tapdb_child_scope(scope: dict[str, Any], user: AuthenticatedUser) -> dict[str, Any]:
     scoped = dict(scope)
-    path = str(scoped.get("path") or "")
-    if path == _TAPDB_MOUNT_PATH:
-        scoped["path"] = "/"
-    elif path.startswith(f"{_TAPDB_MOUNT_PATH}/"):
-        scoped["path"] = path[len(_TAPDB_MOUNT_PATH) :]
-
     root_path = str(scoped.get("root_path") or "").rstrip("/")
     if not root_path.endswith(_TAPDB_MOUNT_PATH):
         scoped["root_path"] = f"{root_path}{_TAPDB_MOUNT_PATH}"
