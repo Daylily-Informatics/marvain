@@ -13,6 +13,7 @@ from marvain_cli.ops import (
     Ctx,
     cognito_password_access_token,
     hub_claim_first_owner,
+    hub_list_memberships,
     read_password_stdin,
     resolve_user_access_token,
 )
@@ -168,6 +169,32 @@ class TestSecureCognitoAuthOps(unittest.TestCase):
         )
         self.assertEqual(request.call_args.kwargs["access_token"], "unit-access-token")
 
+    def test_list_memberships_uses_the_secure_resolver(self) -> None:
+        ctx = _ctx()
+        with (
+            mock.patch("marvain_cli.ops.resolve_user_access_token", return_value="unit-access-token") as resolve_token,
+            mock.patch("marvain_cli.ops.hub_api_json", return_value={"memberships": []}) as request,
+        ):
+            receipt = hub_list_memberships(
+                ctx,
+                agent_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                access_token=None,
+                hub_rest_api_base=None,
+                dry_run=False,
+                cognito_email="owner@example.test",
+                password_stdin=True,
+            )
+
+        self.assertEqual(receipt, {"memberships": []})
+        resolve_token.assert_called_once_with(
+            ctx,
+            access_token=None,
+            cognito_email="owner@example.test",
+            password_stdin=True,
+            dry_run=False,
+        )
+        self.assertEqual(request.call_args.kwargs["access_token"], "unit-access-token")
+
 
 class TestSecureCognitoAuthCli(unittest.TestCase):
     def test_claim_owner_wires_password_stdin_without_an_access_token_argument(self) -> None:
@@ -252,6 +279,16 @@ class TestSecureCognitoAuthCli(unittest.TestCase):
         from marvain_cli import cli
 
         result = invoke(cli.build_app(), ["agent", "finalize-deployment", "--help"], prog_name="marvain")
+
+        assert_exit_code(result, 0)
+        self.assertIn("--password-stdin", result.output)
+        self.assertIn("--cognito-email", result.output)
+        self.assertNotIn("--access-token", result.output)
+
+    def test_members_list_help_exposes_the_same_secure_auth_mode(self) -> None:
+        from marvain_cli import cli
+
+        result = invoke(cli.build_app(), ["members", "list", "--help"], prog_name="marvain")
 
         assert_exit_code(result, 0)
         self.assertIn("--password-stdin", result.output)

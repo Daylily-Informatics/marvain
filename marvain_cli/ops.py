@@ -574,8 +574,16 @@ def hub_list_memberships(
     access_token: str | None,
     hub_rest_api_base: str | None,
     dry_run: bool,
+    cognito_email: str | None = None,
+    password_stdin: bool = False,
 ) -> dict[str, Any]:
-    tok = resolve_access_token(access_token)
+    tok = resolve_user_access_token(
+        ctx,
+        access_token=access_token,
+        cognito_email=cognito_email,
+        password_stdin=password_stdin,
+        dry_run=dry_run,
+    )
     return hub_api_json(
         ctx,
         method="GET",

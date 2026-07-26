@@ -589,16 +589,27 @@ def members_invite(
 
 def members_list(
     agent_id: str = Option(..., "--agent-id", help="Agent ID"),
-    access_token: str | None = Option(None, "--access-token", help="Cognito access token"),
+    cognito_email: str | None = Option(
+        None,
+        "--cognito-email",
+        help="Cognito email used only with --password-stdin",
+    ),
+    password_stdin: bool = Option(
+        False,
+        "--password-stdin",
+        help="Read a password from stdin or a hidden TTY prompt without storing it",
+    ),
     hub_rest_api_base: str | None = Option(None, "--hub-rest-api-base"),
 ) -> None:
     """List agent members."""
     data = hub_list_memberships(
         _load(),
         agent_id=agent_id,
-        access_token=access_token,
+        access_token=None,
         hub_rest_api_base=hub_rest_api_base,
         dry_run=_dry_run(),
+        cognito_email=cognito_email,
+        password_stdin=password_stdin,
     )
     if not _dry_run():
         _json(data)
