@@ -31,7 +31,8 @@ Ledger path: `docs/plans/20260726T141910Z_marvain_cleanroom_cognito_owner_and_te
 | AUTH-006 | Deployment handoff | State whether an owner `MARVAIN_ACCESS_TOKEN` is available for the already-approved deployment/finalization sequence. | BLOCKED | active_product_contract | Gate 5: Final Acceptance | Codex | Owner Cognito account exists and the secure in-process authentication path is validated, but no owner-selected permanent password or login-derived token is available. | Owner-only password entry is still required. | The implementation does not export, print, or persist `MARVAIN_ACCESS_TOKEN`; deployment finalization remains paused. |
 | AUTH-007 | Secure CLI auth | Implement an explicit `--password-stdin` Cognito-password path for account password establishment, owner claim, and deployment finalization without outputting or persisting the password or transient access token. | SUCCESS | feature_implementation | Gate 3: Active Product Routes And Auth | Codex | `cognito set-password`, `members claim-owner`, and `agent finalize-deployment` now expose the explicit secure mode; deterministic tests cover stdin, hidden TTY prompting, exclusivity, owner claim, and finalization routing. The public claim/finalization commands no longer expose `--access-token`; the static temporary-password branch was removed. | The initial implementation used an unsupported admin auth flow; source-declared client policy required the normal user-password flow. | The secure path holds the Cognito access token only in process and uses `USER_PASSWORD_AUTH` against the selected client. |
 | AUTH-008 | Secure CLI auth | Validate the new credential path locally and with one isolated generated Cognito user, then remove that user. | SUCCESS | contract_test | Gate 3: Active Product Routes And Auth | Codex | Final deterministic suite -> `1173 passed, 38 skipped`; live selected-pool `tests/e2e/test_cognito_password_stdin.py` -> `1 passed in 1.68s`; read-only Marvain CLI cleanup check -> `synthetic_cognito_users_remaining=0`. | The first live probe rejected `ADMIN_USER_PASSWORD_AUTH` as disabled; source inspection identified `ALLOW_USER_PASSWORD_AUTH`, then the implementation and test were corrected before acceptance. | No generated password, access token, or synthetic email was retained. |
-| AUTH-009 | Owner membership | Establish the owner-selected permanent password through the secure interactive path, then claim first-owner membership for the configured agent. | IN_PROGRESS | active_product_contract | Gate 3: Active Product Routes And Auth | Codex | User approved the live ownership claim; the secure command path is validated. | The owner must enter a chosen permanent password locally; Codex must not receive it through chat or command arguments. | Do not replace an existing owner or run deployment finalization in this row. |
+| AUTH-009 | Owner membership | Establish the owner-selected permanent password through the secure interactive path, then claim first-owner membership for the configured agent. | IN_PROGRESS | active_product_contract | Gate 3: Active Product Routes And Auth | Codex | The owner entered credentials locally in the approved interactive session, but no claim receipt was retained. The two earlier follow-up checks used a child process with captured stdio, which prevented the required TTY password prompt; those checks are invalid diagnostic attempts, not proof of failure or success. | The owner must enter a chosen permanent password locally; Codex must not receive it through chat or command arguments. | Do not replace an existing owner or run deployment finalization in this row. |
+| AUTH-010 | Owner membership verification | Provide a direct TTY-only owner count verifier that returns no membership details and hard-fails on malformed response data. | SUCCESS | feature_implementation | Gate 3: Active Product Routes And Auth | Codex | `members list --owner-count-only` returns only `active_owner_memberships`; focused tests -> `17 passed`; full suite -> `1177 passed, 38 skipped`. | Capturing a child process suppresses `getpass`; the verifier must `exec` the Marvain CLI directly in the owner terminal. | The live count remains pending a direct owner-terminal run; no password, token, email, agent ID, or membership details are retained. |
 
 ## Scope Limits
 
@@ -43,6 +44,7 @@ Ledger path: `docs/plans/20260726T141910Z_marvain_cleanroom_cognito_owner_and_te
 
 - AUTH-007 and AUTH-008 completed under the user-approved secure-password and owner-claim amendment; AUTH-009 is awaiting the owner-only interactive password entry.
 - AUTH-006 remains accurately blocked until AUTH-009 completes; no `MARVAIN_ACCESS_TOKEN` will be exported, printed, or written to local configuration.
+- AUTH-010 adds a redacted direct-TTY verification path after the two captured-stdio diagnostics proved unable to prompt securely. It is source-validated but does not itself assert the live owner result.
 - The prior image receipt remains `sha256:1d4367eb8d9e360eacf5f2dc14dd0534995d8293cc7dc57fc513b28f2ea7e4f9`; this source-only authentication change does not republish an image or alter the selected deployment configuration.
 
 ## Current Terminal Report
@@ -53,7 +55,7 @@ Objective complete: `no`
 
 Status counts:
 
-- SUCCESS: `6`
+- SUCCESS: `7`
 - DUPLICATE: `0`
 - NO_LONGER_NEEDED: `0`
 - FAIL: `1`
@@ -68,10 +70,10 @@ Validation and live evidence:
 - Approved Hosted UI reset request after creation -> Cognito returned `Could not reset password for the account`; no verification code was handled.
 - User-approved generated-user Hosted UI E2E -> `tests/e2e/test_hosted_ui_login_playwright.py` passed against `http://localhost:8084` and the selected clean-room pool.
 - Read-only `marvain cognito list-users` JSON check -> no synthetic `marvain-e2e-*@example.test` Cognito users remain.
-- Secure credential final validation -> `1173 passed, 38 skipped`; live generated-user password-stdin auth -> `1 passed`; read-only Marvain CLI cleanup check -> `synthetic_cognito_users_remaining=0`.
-- Repository checks -> Ruff, formatting, docs contracts, implementation-status, and regenerated capability matrix passed. The regenerated canonical design status is current at 89%; the required `--min-score 90` rejection and independent operational 85% rejection were both recorded as expected.
+- Secure credential final validation -> original generated-user password-stdin auth -> `1 passed`; read-only Marvain CLI cleanup check -> `synthetic_cognito_users_remaining=0`. The follow-on redacted owner-count implementation passed `17` focused tests and `1177 passed, 38 skipped` repository-wide tests.
+- Repository checks -> Ruff, formatting, docs contracts, implementation-status, regenerated capability matrix, and canonical design-status check passed. The canonical design status remains 89%; the required `--min-score 90` rejection and independent operational 85% rejection were both recorded as expected.
 
 Residual risks:
 
-- The owner account is not login-ready until a secure owner-password path is supplied.
+- The owner password/claim and owner membership count are not independently verified until the direct interactive TTY-only command returns a count.
 - The approved image deployment, device-token rotation, ECS restart, and vertical-slice proof remain untouched.

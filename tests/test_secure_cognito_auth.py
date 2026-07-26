@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import unittest
 from pathlib import Path
@@ -293,7 +294,73 @@ class TestSecureCognitoAuthCli(unittest.TestCase):
         assert_exit_code(result, 0)
         self.assertIn("--password-stdin", result.output)
         self.assertIn("--cognito-email", result.output)
+        self.assertIn("--owner-count-only", result.output)
         self.assertNotIn("--access-token", result.output)
+
+    def test_members_list_owner_count_only_redacts_membership_details(self) -> None:
+        from marvain_cli import cli
+
+        app = cli.build_app()
+        with (
+            mock.patch("marvain_cli.commands._load", return_value=object()),
+            mock.patch(
+                "marvain_cli.commands.hub_list_memberships",
+                return_value={
+                    "memberships": [
+                        {"email": "owner@example.test", "role": "owner"},
+                        {"email": "member@example.test", "role": "member"},
+                    ]
+                },
+            ),
+        ):
+            result = invoke(
+                app,
+                [
+                    "members",
+                    "list",
+                    "--agent-id",
+                    "agent-1",
+                    "--cognito-email",
+                    "owner@example.test",
+                    "--password-stdin",
+                    "--owner-count-only",
+                ],
+                prog_name="marvain",
+            )
+
+        assert_exit_code(result, 0)
+        self.assertEqual(json.loads(result.output), {"active_owner_memberships": 1})
+        self.assertNotIn("owner@example.test", result.output)
+        self.assertNotIn("member@example.test", result.output)
+
+    def test_members_list_owner_count_only_rejects_non_object_membership(self) -> None:
+        from marvain_cli import cli
+
+        app = cli.build_app()
+        with (
+            mock.patch("marvain_cli.commands._load", return_value=object()),
+            mock.patch(
+                "marvain_cli.commands.hub_list_memberships",
+                return_value={"memberships": ["not-a-membership-object"]},
+            ),
+        ):
+            result = invoke(
+                app,
+                [
+                    "members",
+                    "list",
+                    "--agent-id",
+                    "agent-1",
+                    "--cognito-email",
+                    "owner@example.test",
+                    "--password-stdin",
+                    "--owner-count-only",
+                ],
+                prog_name="marvain",
+            )
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("non-object membership", result.output)
 
 
 if __name__ == "__main__":

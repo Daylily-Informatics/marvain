@@ -599,6 +599,11 @@ def members_list(
         "--password-stdin",
         help="Read a password from stdin or a hidden TTY prompt without storing it",
     ),
+    owner_count_only: bool = Option(
+        False,
+        "--owner-count-only",
+        help="Return only the active owner-membership count",
+    ),
     hub_rest_api_base: str | None = Option(None, "--hub-rest-api-base"),
 ) -> None:
     """List agent members."""
@@ -612,7 +617,15 @@ def members_list(
         password_stdin=password_stdin,
     )
     if not _dry_run():
-        _json(data)
+        if not owner_count_only:
+            _json(data)
+            return
+        memberships = data.get("memberships")
+        if not isinstance(memberships, list):
+            raise ClickException("Membership response did not contain a memberships list")
+        if not all(isinstance(item, dict) for item in memberships):
+            raise ClickException("Membership response contained a non-object membership")
+        _json({"active_owner_memberships": sum(1 for item in memberships if item.get("role") == "owner")})
 
 
 def members_update(
