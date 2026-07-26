@@ -60,6 +60,7 @@ from marvain_cli.ops import (
     monitor_status,
     prepare_agent_worker_deployment,
     publish_agent_worker_image,
+    read_password_stdin,
     sam_build,
     sam_build_simple,
     sam_deploy,
@@ -458,7 +459,16 @@ def agent_publish_image_cmd(
 def agent_finalize_deployment_cmd(
     agent_id: str = Option(..., "--agent-id", help="Configured bootstrap agent ID"),
     device_id: str = Option(..., "--device-id", help="Configured bootstrap worker device ID"),
-    access_token: str | None = Option(None, "--access-token", help="Cognito access token"),
+    cognito_email: str | None = Option(
+        None,
+        "--cognito-email",
+        help="Cognito email used only with --password-stdin",
+    ),
+    password_stdin: bool = Option(
+        False,
+        "--password-stdin",
+        help="Read a password from stdin or a hidden TTY prompt without storing it",
+    ),
     reconcile_only: bool = Option(
         False,
         "--reconcile-only",
@@ -471,25 +481,38 @@ def agent_finalize_deployment_cmd(
         _load(),
         agent_id=agent_id,
         device_id=device_id,
-        access_token=access_token,
+        access_token=None,
         reconcile_only=reconcile_only,
         dry_run=_dry_run(),
+        cognito_email=cognito_email,
+        password_stdin=password_stdin,
     )
     _json(receipt)
 
 
 def members_claim_owner(
     agent_id: str = Option(..., "--agent-id"),
-    access_token: str | None = Option(None, "--access-token", help="User access token"),
+    cognito_email: str | None = Option(
+        None,
+        "--cognito-email",
+        help="Cognito email used only with --password-stdin",
+    ),
+    password_stdin: bool = Option(
+        False,
+        "--password-stdin",
+        help="Read a password from stdin or a hidden TTY prompt without storing it",
+    ),
     hub_rest_api_base: str | None = Option(None, "--hub-rest-api-base"),
 ) -> None:
     """Claim first owner membership for an agent."""
     data = hub_claim_first_owner(
         _load(),
         agent_id=agent_id,
-        access_token=access_token,
+        access_token=None,
         hub_rest_api_base=hub_rest_api_base,
         dry_run=_dry_run(),
+        cognito_email=cognito_email,
+        password_stdin=password_stdin,
     )
     if not _dry_run():
         _json(data)
@@ -625,22 +648,36 @@ def members_revoke(
 
 def cognito_create_user_cmd(
     email: str = Argument(..., help="Email address for the new user"),
-    password: str | None = Option(None, "--password", "-p", help="Set permanent password"),
+    password_stdin: bool = Option(
+        False,
+        "--password-stdin",
+        help="Read a password from stdin or a hidden TTY prompt without storing it",
+    ),
 ) -> None:
     """Create a Cognito user."""
-    temp_pw = "TempPw123!" if password else None
-    user = cognito_create_user(_load(), email=email, temporary_password=temp_pw, dry_run=_dry_run())
-    if password and not _dry_run():
-        cognito_set_password(_load(), email=email, password=password, permanent=True, dry_run=False)
+    ctx = _load()
+    password = "dry-run-password" if password_stdin and _dry_run() else None
+    if password_stdin and not _dry_run():
+        password = read_password_stdin()
+    user = cognito_create_user(ctx, email=email, temporary_password=None, dry_run=_dry_run())
+    if password is not None:
+        cognito_set_password(ctx, email=email, password=password, permanent=True, dry_run=_dry_run())
     if not _dry_run():
         _json(user)
 
 
 def cognito_set_password_cmd(
     email: str = Argument(..., help="Email address of the user"),
-    password: str = Argument(..., help="New password"),
+    password_stdin: bool = Option(
+        False,
+        "--password-stdin",
+        help="Read a password from stdin or a hidden TTY prompt without storing it",
+    ),
 ) -> None:
     """Set a Cognito user's password."""
+    if not password_stdin:
+        raise ClickException("cognito set-password requires --password-stdin")
+    password = "dry-run-password" if _dry_run() else read_password_stdin()
     cognito_set_password(_load(), email=email, password=password, permanent=True, dry_run=_dry_run())
     if not _dry_run():
         output.print_text(f"Password set for {email}")

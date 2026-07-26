@@ -11,8 +11,8 @@ Operational completion score: **49%** from the 85-capability execution ledger an
 ## Architecture Purity Gate
 
 Status: **FAIL**.
-- scripts/generate_route_coverage.py: API route coverage 52% is below 100%
-- scripts/generate_route_coverage.py: GUI route coverage 22% is below 100%
+- scripts/generate_route_coverage.py: API route coverage 0% is below 100%
+- scripts/generate_route_coverage.py: GUI route coverage 0% is below 100%
 - scripts/generate_route_coverage.py: Playwright workflow coverage 0% is below 75%
 
 ## Objective Evidence

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import getpass
 import json
 import os
 import re
@@ -400,8 +401,84 @@ def _ensure_tapdb_runtime_config(ctx: Ctx, *, resources: dict[str, Any]) -> Path
 def resolve_access_token(access_token: str | None) -> str:
     tok = (access_token or os.getenv("MARVAIN_ACCESS_TOKEN") or "").strip()
     if not tok:
-        raise ConfigError("Missing access token (pass --access-token or set MARVAIN_ACCESS_TOKEN)")
+        raise ConfigError("Missing access token (set MARVAIN_ACCESS_TOKEN or use a supported credential option)")
     return tok
+
+
+def read_password_stdin() -> str:
+    """Read one password from stdin or a hidden interactive prompt."""
+    if sys.stdin.isatty():
+        password = getpass.getpass("Cognito password: ")
+    else:
+        password = sys.stdin.readline()
+    password = password.rstrip("\r\n")
+    if not password:
+        raise ConfigError("Password input is empty")
+    return password
+
+
+def _get_cognito_app_client_id(ctx: Ctx) -> str:
+    """Get the Cognito app client ID from the selected config resources."""
+    resources = ctx.cfg.get("envs", {}).get(ctx.env.env, {}).get("resources", {})
+    app_client_id = str(resources.get("CognitoAppClientId") or "").strip()
+    if app_client_id:
+        return app_client_id
+    raise ConfigError(
+        f"CognitoAppClientId not found in config for env '{ctx.env.env}'. "
+        "Run 'marvain monitor outputs --write-config' before password authentication."
+    )
+
+
+def cognito_password_access_token(ctx: Ctx, *, email: str, password: str) -> str:
+    """Authenticate once with Cognito and return only an in-process access token."""
+    from daylily_auth_cognito.admin.client import CognitoAdminClient
+
+    user_pool_id = _get_user_pool_id(ctx)
+    app_client_id = _get_cognito_app_client_id(ctx)
+    admin = CognitoAdminClient(
+        region=ctx.env.aws_region,
+        aws_profile=ctx.env.aws_profile,
+        user_pool_id=user_pool_id,
+        app_client_id=app_client_id,
+    )
+    try:
+        response = admin.cognito.initiate_auth(
+            ClientId=app_client_id,
+            AuthFlow="USER_PASSWORD_AUTH",
+            AuthParameters={"USERNAME": email, "PASSWORD": password},
+        )
+    except Exception as exc:
+        raise ConfigError("Cognito password authentication failed") from exc
+    auth_result = response.get("AuthenticationResult") or {}
+    token = str(auth_result.get("AccessToken") or "").strip()
+    if not token:
+        raise ConfigError("Cognito password authentication did not return an access token")
+    return token
+
+
+def resolve_user_access_token(
+    ctx: Ctx,
+    *,
+    access_token: str | None,
+    cognito_email: str | None,
+    password_stdin: bool,
+    dry_run: bool,
+) -> str:
+    """Resolve one explicit user-auth mechanism without persisting credentials."""
+    if not password_stdin:
+        if cognito_email:
+            raise ConfigError("--cognito-email requires --password-stdin")
+        return resolve_access_token(access_token)
+    if access_token is not None or os.getenv("MARVAIN_ACCESS_TOKEN"):
+        raise ConfigError("--password-stdin cannot be combined with an access token")
+    email = str(cognito_email or "").strip()
+    if not email:
+        raise ConfigError("--password-stdin requires --cognito-email")
+    _get_user_pool_id(ctx)
+    _get_cognito_app_client_id(ctx)
+    if dry_run:
+        return "dry-run-cognito-access-token"
+    return cognito_password_access_token(ctx, email=email, password=read_password_stdin())
 
 
 def resolve_hub_rest_api_base(ctx: Ctx, *, hub_rest_api_base: str | None, dry_run: bool) -> str:
@@ -469,8 +546,16 @@ def hub_claim_first_owner(
     access_token: str | None,
     hub_rest_api_base: str | None,
     dry_run: bool,
+    cognito_email: str | None = None,
+    password_stdin: bool = False,
 ) -> dict[str, Any]:
-    tok = resolve_access_token(access_token)
+    tok = resolve_user_access_token(
+        ctx,
+        access_token=access_token,
+        cognito_email=cognito_email,
+        password_stdin=password_stdin,
+        dry_run=dry_run,
+    )
     return hub_api_json(
         ctx,
         method="POST",
@@ -1178,6 +1263,8 @@ def finalize_agent_worker_deployment(
     access_token: str | None,
     reconcile_only: bool,
     dry_run: bool,
+    cognito_email: str | None = None,
+    password_stdin: bool = False,
 ) -> dict[str, Any]:
     """Bind an audited device-token rotation to the deployed worker secret."""
 
@@ -1240,6 +1327,8 @@ def finalize_agent_worker_deployment(
         raise ConfigError("Agent worker service is missing required project=marvain tag")
 
     if reconcile_only:
+        if cognito_email or password_stdin:
+            raise ConfigError("--reconcile-only does not accept Cognito password authentication")
         secret_value = secrets_manager.get_secret_value(SecretId=worker_secret_arn)
         secret_payload = json.loads(str(secret_value.get("SecretString") or "{}"))
         device_token = str(secret_payload.get("device_token") or "")
@@ -1247,7 +1336,13 @@ def finalize_agent_worker_deployment(
         if not device_token or not secret_version_id:
             raise ConfigError("Worker token secret returned malformed reconciliation evidence")
     else:
-        token = resolve_access_token(access_token)
+        token = resolve_user_access_token(
+            ctx,
+            access_token=access_token,
+            cognito_email=cognito_email,
+            password_stdin=password_stdin,
+            dry_run=False,
+        )
         rotation = hub_api_json(
             ctx,
             method="POST",

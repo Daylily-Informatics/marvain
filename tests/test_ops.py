@@ -517,17 +517,27 @@ class TestOps(unittest.TestCase):
                     {"agent_id": agent_id, "persona_id": "persona-1"},
                 ],
             ) as hub_call,
+            mock.patch("marvain_cli.ops.resolve_user_access_token", return_value="access-token") as resolve_token,
             mock.patch("marvain_cli.ops.save_config_dict") as save_config,
         ):
             receipt = finalize_agent_worker_deployment(
                 ctx,
                 agent_id=agent_id,
                 device_id=device_id,
-                access_token="access-token",
+                access_token=None,
                 reconcile_only=False,
                 dry_run=False,
+                cognito_email="owner@example.test",
+                password_stdin=True,
             )
 
+        resolve_token.assert_called_once_with(
+            ctx,
+            access_token=None,
+            cognito_email="owner@example.test",
+            password_stdin=True,
+            dry_run=False,
+        )
         self.assertEqual(hub_call.call_count, 2)
         self.assertEqual(hub_call.call_args_list[0].kwargs["path"], f"/v1/devices/{device_id}/rotate-token")
         self.assertEqual(hub_call.call_args_list[1].kwargs["path"], f"/v1/agents/{agent_id}/personas/default")

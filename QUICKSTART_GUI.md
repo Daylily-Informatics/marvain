@@ -88,10 +88,10 @@ aws secretsmanager put-secret-value \
 ## 6) Create a Cognito User
 
 ```sh
-marvain cognito create-user <your-email> --password '<YourPassword123!>'
+marvain cognito create-user <your-email> --password-stdin
 ```
 
-This creates a user in the Cognito User Pool and sets a permanent password. You'll use this to log in to the GUI.
+This opens a hidden password prompt in a terminal (or consumes one password line from stdin), creates the user in the Cognito User Pool, and sets a permanent password. The password is never placed in command history or config. You'll use this account to log in to the GUI.
 
 ## 7) Bootstrap Your First Agent
 

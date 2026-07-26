@@ -651,10 +651,9 @@ def _cognito_access_token(
         app_client_id=app_client_id,
     )
     try:
-        response = admin.cognito.admin_initiate_auth(
-            UserPoolId=user_pool_id,
+        response = admin.cognito.initiate_auth(
             ClientId=app_client_id,
-            AuthFlow="ADMIN_USER_PASSWORD_AUTH",
+            AuthFlow="USER_PASSWORD_AUTH",
             AuthParameters={"USERNAME": username, "PASSWORD": password},
         )
     except Exception as exc:
