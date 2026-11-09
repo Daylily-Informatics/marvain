@@ -279,6 +279,24 @@ def deployment_initialize_canonical(
         raise ClickException(str(exc)) from exc
 
 
+def deployment_stop_builder() -> None:
+    """Request a normal stop of the selected dedicated EC2 builder."""
+    from marvain_cli.deployment import stop_builder
+    try:
+        _json(stop_builder(ctx=_load()))
+    except (ConfigError, OSError) as exc:
+        raise ClickException(str(exc)) from exc
+
+
+def deployment_builder_power_state() -> None:
+    """Read the selected builder's current EC2 lifecycle state."""
+    from marvain_cli.deployment import builder_power_state
+    try:
+        _json(builder_power_state(ctx=_load()))
+    except (ConfigError, OSError) as exc:
+        raise ClickException(str(exc)) from exc
+
+
 def deployment_set_parameter(
     name: str = Option(..., "--name", help="Parameter declared by the selected SAM template."),
     value: str = Option(..., "--value", help="Explicit non-secret parameter value or secret ARN."),
@@ -1078,6 +1096,8 @@ def register(registry: CommandRegistry, spec: CliSpec) -> None:
             ("source-inputs", deployment_source_inputs, required_policy(supports_json=True)),
             ("launch-builder", deployment_launch_builder, required_policy(mutates_state=True)),
             ("builder-status", deployment_builder_status, required_policy(supports_json=True)),
+            ("stop-builder", deployment_stop_builder, required_policy(mutates_state=True, supports_json=True)),
+            ("builder-power-state", deployment_builder_power_state, required_policy(supports_json=True)),
             ("complete-target", deployment_complete_target, required_policy(mutates_state=True)),
             ("publish-image", deployment_publish_image, required_policy(mutates_state=True, long_running=True, supports_json=True)),
             ("repair-builder-push", deployment_repair_builder_push, required_policy(mutates_state=True, supports_json=True)),

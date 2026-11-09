@@ -29,4 +29,5 @@ marvain deployment publish-image --target-profile lsmc --target-region us-east-2
 marvain config init --write /home/ubuntu/marvain-4.0.0-build.yaml --env prod --region us-east-2 --stack marvain4-prod
 marvain --config /home/ubuntu/marvain-4.0.0-build.yaml --env prod --profile lsmc --region us-east-2 build \
   > /home/ubuntu/marvain-4.0.0-sam-build.log 2>&1
-tar -czf /home/ubuntu/marvain-4.0.0-sam-build.tar.gz .aws-sam/build
+# SAM leaves the unbuilt shared layer as ../../layers/shared in its template.
+tar -czf /home/ubuntu/marvain-4.0.0-sam-build.tar.gz .aws-sam/build layers/shared

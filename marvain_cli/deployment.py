@@ -568,7 +568,7 @@ def initialize_canonical(*, profile: str, region: str, host: str, port: int, dat
         username = json.loads(secret["SecretString"])["username"]
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigError("Aurora secret lacks the required username") from exc
-    config = {"meta": {"client_id": "marvain", "database_name": database, "owner_repo_name": "marvain",
+    config = {"meta": {"config_version": 3, "client_id": "marvain", "database_name": database, "owner_repo_name": "marvain",
                        "domain_registry_path": str(root / "domain_code_registry.json"),
                        "prefix_ownership_registry_path": str(root / "prefix_ownership_registry.json")},
               "environments": {"prod": {"engine_type": "aurora", "host": host, "port": port,
@@ -585,3 +585,32 @@ def initialize_canonical(*, profile: str, region: str, host: str, port: int, dat
             if result.returncode != 0:
                 raise ConfigError(f"TapDB owner schema {action} failed with exit code {result.returncode}")
     return {"status": "schema_initialized", "database": database, "builder_instance_id": builder_instance_id}
+
+
+def stop_builder(*, ctx: Any) -> dict[str, str]:
+    """Request a normal stop of the selected dedicated builder instance."""
+    if ctx.env.aws_profile != "lsmc" or ctx.env.aws_region != "us-east-2":
+        raise ConfigError("Builder target must explicitly be profile lsmc in us-east-2")
+    deployment = ctx.env.raw.get("deployment")
+    if not isinstance(deployment, dict) or not deployment.get("builder_instance_id"):
+        raise ConfigError("selected config has no builder instance receipt")
+    instance_id = str(deployment["builder_instance_id"])
+    session = boto3.Session(profile_name=ctx.env.aws_profile, region_name=ctx.env.aws_region)
+    response = session.client("ec2").stop_instances(InstanceIds=[instance_id])
+    stopped = response["StoppingInstances"][0]
+    return {"instance_id": stopped["InstanceId"], "previous_state": stopped["PreviousState"]["Name"],
+            "current_state": stopped["CurrentState"]["Name"]}
+
+
+def builder_power_state(*, ctx: Any) -> dict[str, str]:
+    """Read lifecycle state for the selected dedicated builder instance."""
+    if ctx.env.aws_profile != "lsmc" or ctx.env.aws_region != "us-east-2":
+        raise ConfigError("Builder target must explicitly be profile lsmc in us-east-2")
+    deployment = ctx.env.raw.get("deployment")
+    if not isinstance(deployment, dict) or not deployment.get("builder_instance_id"):
+        raise ConfigError("selected config has no builder instance receipt")
+    instance_id = str(deployment["builder_instance_id"])
+    session = boto3.Session(profile_name=ctx.env.aws_profile, region_name=ctx.env.aws_region)
+    response = session.client("ec2").describe_instances(InstanceIds=[instance_id])
+    instance = response["Reservations"][0]["Instances"][0]
+    return {"instance_id": instance["InstanceId"], "state": instance["State"]["Name"]}
