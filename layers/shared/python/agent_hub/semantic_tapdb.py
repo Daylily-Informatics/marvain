@@ -206,6 +206,40 @@ def _build_secret_db_url(*, secret_arn: str, host: str, port: int, database: str
     )
 
 
+def initialize_aurora_schema(
+    *, config_path: Path, host: str, port: int, username: str, password: str,
+    database: str, region: str,
+) -> None:
+    """Apply the owning 6.0.8 schema, prefix setup and migration baseline once.
+
+    The schema locator and two post-apply TapDB helpers are the exact private
+    functions used by the 6.0.8 CLI and are version-coupled; no schema is copied here.
+    """
+    from daylily_tapdb.aurora.schema_deployer import AuroraSchemaDeployer
+    from daylily_tapdb.cli.context import clear_cli_context, set_cli_context
+    from daylily_tapdb.cli.db import (Environment, _find_schema_file,
+                                      _sync_identity_prefix_config, _write_migration_baseline)
+
+    set_cli_context(config_path=config_path, env_name="prod")
+    try:
+        success, output = AuroraSchemaDeployer.deploy_schema(
+            host=host, port=port, user=username, database=database, region=region,
+            schema_file=_find_schema_file(), iam_auth=False, password=password,
+        )
+        if not success:
+            raise RuntimeError(f"TapDB owner schema apply failed: {output}")
+        try:
+            _sync_identity_prefix_config(Environment.prod)
+        except Exception as exc:
+            raise RuntimeError(f"TapDB schema applied, but owner prefix setup failed: {exc}") from exc
+        try:
+            _write_migration_baseline(Environment.prod)
+        except Exception as exc:
+            raise RuntimeError(f"TapDB schema and prefixes applied, but owner migration baseline failed: {exc}") from exc
+    finally:
+        clear_cli_context()
+
+
 class DaylilyTapdbSemanticStore:
     """Production TapDB repository boundary using established TapDB/Bloom patterns."""
 

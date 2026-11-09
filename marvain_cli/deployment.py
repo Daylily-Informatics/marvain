@@ -538,7 +538,6 @@ def initialize_canonical(*, profile: str, region: str, host: str, port: int, dat
     import json
     import os
     import platform
-    import subprocess
     import tempfile
     import urllib.request
 
@@ -565,9 +564,10 @@ def initialize_canonical(*, profile: str, region: str, host: str, port: int, dat
     session = boto3.Session(profile_name=profile, region_name=region)
     secret = session.client("secretsmanager").get_secret_value(SecretId=secret_arn)
     try:
-        username = json.loads(secret["SecretString"])["username"]
+        credential = json.loads(secret["SecretString"])
+        username, password = credential["username"], credential["password"]
     except (KeyError, TypeError, ValueError) as exc:
-        raise ConfigError("Aurora secret lacks the required username") from exc
+        raise ConfigError("Aurora secret lacks the required database credentials") from exc
     config = {"meta": {"config_version": 3, "client_id": "marvain", "database_name": database, "owner_repo_name": "marvain",
                        "domain_registry_path": str(root / "domain_code_registry.json"),
                        "prefix_ownership_registry_path": str(root / "prefix_ownership_registry.json")},
@@ -580,10 +580,20 @@ def initialize_canonical(*, profile: str, region: str, host: str, port: int, dat
         path = Path(directory) / "tapdb-config.json"
         path.write_text(json.dumps(config), encoding="utf-8")
         path.chmod(0o600)
-        for action in ("apply", "migrate"):
-            result = subprocess.run(["tapdb", "--config", str(path), "db", "schema", action, "prod"], env=env)
-            if result.returncode != 0:
-                raise ConfigError(f"TapDB owner schema {action} failed with exit code {result.returncode}")
+        from agent_hub.semantic_tapdb import initialize_aurora_schema
+        previous = {key: os.environ.get(key) for key in ("AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION")}
+        try:
+            os.environ.update({key: env[key] for key in previous})
+            initialize_aurora_schema(config_path=path, host=host, port=port, username=username,
+                                     password=password, database=database, region=region)
+        except RuntimeError as exc:
+            raise ConfigError(str(exc)) from exc
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
     return {"status": "schema_initialized", "database": database, "builder_instance_id": builder_instance_id}
 
 
