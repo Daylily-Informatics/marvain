@@ -10,9 +10,8 @@ from enum import StrEnum
 
 from agent_hub.dot_bridge.events import HandoffReadyEvent
 from agent_hub.memory_service import MemoryAccessPolicy, MemoryLayer, MemoryPurpose
-from agent_hub.semantic_tapdb import TEMPLATE_CODES, GraphLinkWrite, GraphObjectRef, GraphObjectWrite
+from agent_hub.semantic_tapdb import EXTERNAL_REFERENCE_TEMPLATE, TEMPLATE_CODES, GraphLinkWrite, GraphObjectRef, GraphObjectWrite
 
-_LINEAR_REFERENCE_TEMPLATE = "reference/external_identifier/tapdb_object/1.0/"
 
 
 def _require_text(field: str, value: str | None) -> None:
@@ -180,7 +179,7 @@ class DaylilyWorkBridge:
             ),
             GraphObjectWrite(
                 key="linear_issue",
-                template_code=_LINEAR_REFERENCE_TEMPLATE,
+                template_code=EXTERNAL_REFERENCE_TEMPLATE,
                 name=f"linear-issue:{self.binding.workspace_id}:{receipt.issue_id}",
                 properties={
                     "root_euid": receipt.issue_id,

@@ -1,6 +1,6 @@
 # Marvain 4.x source release and demonstration packet
 
-**Status: scoped source integration prepared and untested; no release, build, deployment, live capture or acceptance.** This packet prepares decisions and is not authority to execute them. The owning execution plan is /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_multiagent_execution_plan.md.
+**Status: 4.0.0 infrastructure deployed to LSMC/us-east-2; 4.0.1 TapDB integration amendment is ready for final build and deployment. Tests and live capture remain off; product acceptance is pending.** The user's deployment request supersedes the original source-only boundary for this selected service. The owning execution plan is /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_multiagent_execution_plan.md. Earlier source-only statements below describe the original preparation milestone; deployment receipts in the owning plan supersede them.
 
 ## Intended service boundaries
 
@@ -29,6 +29,12 @@ The diagram is the intended topology, not a deployment claim. Atomic graph queue
 4. Dot backend and dedicated-process CLI/configuration are integrated in source with canonical lifecycle, inbox idempotency, configured identity and policy. Writes resolve the current owning operational session status via the scene’s typed reference. The TapDB connection must also have access to the existing Marvain `sessions` table. MCP dependency is declared in source; no package installation occurred.
 5. The authenticated Linear reporter intake and outbox are wired in source; provider delivery remains unselected. The configured reporter supplies its owning connector result; no provider signature or readback is implied. The pointer event can only be built after the writer returns the persisted handoff identity; provider delivery is unselected.
 6. Session/device authorization and per-session routing are wired in source. Event query source supports session filtering and returns session identity; selected AV source carries occurrence and hub receipt separately. These changes are untested and do not prove two-scene isolation.
+
+## TapDB 7.0.11 deployment amendment
+
+The first 4.0.0 deployment reached Marvain and TapDB base schema initialization, but template seeding failed because TapDB 6.0.8's prefix helper wrote the core issuer while Marvain's seed requires its configured issuer. The old runtime also referenced a typed external-reference template absent from that package. Source is being amended to TapDB 7.0.11, the earliest inspected release containing both the configured-owner prefix fix and native `XRF/external_identifier/tapdb_object/1.0/` template. The inspected 6.0.8 and 7.0.11 owner schema files are identical; do not reapply the already successful base schema. Marvain's MVN template category convention remains supported.
+
+The separate `deployment initialize-prefixes` stage uses the owner helper and configured V/marvain prefix registry against the existing selected schema. It does not rerun schema apply or migrations. Release 4.0.1 must then be built and deployed with the same 7.0.11 pin across Hub, writer and dot before the writer's `marvain init tapdb --no-overwrite` seed is retried. Queued, failed and written remain separate statuses. This is a source and deployment plan, not a claim of a successful seed or acceptance.
 
 ## Bootstrap order and source gaps
 

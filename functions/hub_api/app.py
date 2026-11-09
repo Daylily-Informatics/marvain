@@ -255,7 +255,6 @@ async def marvain_unhandled_exception_handler(request: Request, exc: Exception) 
 @dataclass(frozen=True)
 class TapdbRuntimeConfig:
     config_path: str
-    env_name: str
 
 
 class MarvainTapdbConfigError(RuntimeError):
@@ -298,11 +297,7 @@ def _resolve_tapdb_runtime_config() -> TapdbRuntimeConfig:
     if not resolved.exists():
         raise MarvainTapdbConfigError(f"TapDB config file not found: {resolved}")
 
-    env_name = str(os.getenv("MARVAIN_TAPDB_ENV") or os.getenv("TAPDB_ENV") or _cfg.stage or "").strip()
-    if not env_name:
-        raise MarvainTapdbConfigError("TapDB environment is not configured. Set TAPDB_ENV or MARVAIN_TAPDB_ENV.")
-
-    return TapdbRuntimeConfig(config_path=str(resolved), env_name=env_name)
+    return TapdbRuntimeConfig(config_path=str(resolved))
 
 
 def _tapdb_user_payload(user: AuthenticatedUser) -> dict[str, Any]:
@@ -346,7 +341,6 @@ def _build_tapdb_web_asgi_app() -> Any:
     cfg = _resolve_tapdb_runtime_config()
     return create_tapdb_web_app(
         config_path=cfg.config_path,
-        env_name=cfg.env_name,
         host_bridge=_tapdb_host_bridge(),
     )
 
@@ -363,7 +357,6 @@ def _build_tapdb_dag_asgi_app() -> _FastAPI:
     dag_app = _FastAPI()
     router = create_tapdb_dag_router(
         config_path=cfg.config_path,
-        env_name=cfg.env_name,
         service_name="marvain",
     )
     dag_app.include_router(router)
@@ -401,14 +394,13 @@ def _tapdb_runtime_error_response(_exc: Exception) -> JSONResponse:
 
 def _tapdb_runtime_error_detail() -> str:
     generic = (
-        "TapDB runtime is not available. Check TAPDB_CONFIG_PATH or MARVAIN_TAPDB_CONFIG_PATH "
-        "and TAPDB_ENV or MARVAIN_TAPDB_ENV."
+        "TapDB runtime is not available. Check TAPDB_CONFIG_PATH or MARVAIN_TAPDB_CONFIG_PATH."
     )
     try:
-        from daylily_tapdb.cli.db_config import get_db_config_for_env
+        from daylily_tapdb.cli.db_config import get_db_config
 
         runtime = _resolve_tapdb_runtime_config()
-        cfg = get_db_config_for_env(runtime.env_name, config_path=runtime.config_path)
+        cfg = get_db_config(config_path=runtime.config_path)
     except Exception:
         return generic
 

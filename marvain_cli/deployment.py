@@ -533,8 +533,11 @@ def bootstrap_network_status(*, ctx: Any) -> dict[str, Any]:
 
 
 def initialize_canonical(*, profile: str, region: str, host: str, port: int, database: str,
-                         secret_arn: str, builder_instance_id: str, registry_root: str) -> dict[str, str]:
-    """Invoke the pinned TapDB owner CLI on the selected networked EC2 builder."""
+                         secret_arn: str, builder_instance_id: str, registry_root: str,
+                         cluster_identifier: str, stage: str = "schema") -> dict[str, str]:
+    """Run the explicitly selected TapDB owner initialization stage."""
+    if stage not in {"schema", "prefixes"}:
+        raise ConfigError("TapDB initialization stage must be schema or prefixes")
     import json
     import os
     import platform
@@ -568,24 +571,30 @@ def initialize_canonical(*, profile: str, region: str, host: str, port: int, dat
         username, password = credential["username"], credential["password"]
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigError("Aurora secret lacks the required database credentials") from exc
-    config = {"meta": {"config_version": 3, "client_id": "marvain", "database_name": database, "owner_repo_name": "marvain",
+    from daylily_tapdb.cli import DEFAULT_UI_PORT
+    config = {"meta": {"config_version": 4, "client_id": "marvain", "database_name": database, "owner_repo_name": "marvain",
                        "domain_registry_path": str(root / "domain_code_registry.json"),
                        "prefix_ownership_registry_path": str(root / "prefix_ownership_registry.json")},
-              "environments": {"prod": {"engine_type": "aurora", "host": host, "port": port,
-                       "database": database, "user": username, "region": region, "iam_auth": "false",
-                       "secret_arn": secret_arn, "domain_code": "V"}}}
+              "safety": {"safety_tier": "production", "destructive_operations": "blocked"},
+              "target": {"engine_type": "aurora", "host": host, "port": port, "ui_port": DEFAULT_UI_PORT,
+                         "database": database, "schema_name": "public", "user": username, "region": region,
+                         "aws_profile": profile, "iam_auth": "false", "secret_arn": secret_arn,
+                         "cluster_identifier": cluster_identifier, "ssl": "true", "domain_code": "V"}}
     env = os.environ.copy()
     env.update({"AWS_PROFILE": profile, "AWS_REGION": region, "AWS_DEFAULT_REGION": region})
     with tempfile.TemporaryDirectory(prefix="marvain-tapdb-owner-") as directory:
         path = Path(directory) / "tapdb-config.json"
         path.write_text(json.dumps(config), encoding="utf-8")
         path.chmod(0o600)
-        from agent_hub.semantic_tapdb import initialize_aurora_schema
+        from agent_hub import semantic_tapdb
         previous = {key: os.environ.get(key) for key in ("AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION")}
         try:
             os.environ.update({key: env[key] for key in previous})
-            initialize_aurora_schema(config_path=path, host=host, port=port, username=username,
-                                     password=password, database=database, region=region)
+            if stage == "schema":
+                semantic_tapdb.initialize_aurora_schema(config_path=path, host=host, port=port, username=username,
+                                                         password=password, database=database, region=region)
+            else:
+                semantic_tapdb.initialize_aurora_prefixes(config_path=path)
         except RuntimeError as exc:
             raise ConfigError(str(exc)) from exc
         finally:
@@ -594,7 +603,8 @@ def initialize_canonical(*, profile: str, region: str, host: str, port: int, dat
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
-    return {"status": "schema_initialized", "database": database, "builder_instance_id": builder_instance_id}
+    return {"status": "schema_initialized" if stage == "schema" else "prefixes_initialized",
+            "database": database, "builder_instance_id": builder_instance_id}
 
 
 def stop_builder(*, ctx: Any) -> dict[str, str]:

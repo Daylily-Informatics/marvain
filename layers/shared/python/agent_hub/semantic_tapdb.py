@@ -22,7 +22,7 @@ from uuid import UUID
 MARVAIN_TAPDB_DOMAIN_CODE = "V"
 MARVAIN_TAPDB_OWNER_REPO = "marvain"
 _MERIDIAN_PREFIX_RE = re.compile(r"^[0-9A-HJ-KMNP-TV-Z]{1,4}$")
-EXTERNAL_REFERENCE_TEMPLATE = "reference/external_identifier/tapdb_object/1.0/"
+EXTERNAL_REFERENCE_TEMPLATE = "XRF/external_identifier/tapdb_object/1.0/"
 INBOX_RECEIPT_REFERENCE_SYSTEM = "marvain-tapdb-inbox"
 
 
@@ -210,17 +210,17 @@ def initialize_aurora_schema(
     *, config_path: Path, host: str, port: int, username: str, password: str,
     database: str, region: str,
 ) -> None:
-    """Apply the owning 6.0.8 schema, prefix setup and migration baseline once.
+    """Apply the owning 7.0.11 schema, prefix setup and migration baseline once.
 
     The schema locator and two post-apply TapDB helpers are the exact private
-    functions used by the 6.0.8 CLI and are version-coupled; no schema is copied here.
+    functions used by the 7.0.11 CLI and are version-coupled; no schema is copied here.
     """
     from daylily_tapdb.aurora.schema_deployer import AuroraSchemaDeployer
     from daylily_tapdb.cli.context import clear_cli_context, set_cli_context
     from daylily_tapdb.cli.db import (Environment, _find_schema_file,
                                       _sync_identity_prefix_config, _write_migration_baseline)
 
-    set_cli_context(config_path=config_path, env_name="prod")
+    set_cli_context(config_path=config_path)
     try:
         success, output = AuroraSchemaDeployer.deploy_schema(
             host=host, port=port, user=username, database=database, region=region,
@@ -229,13 +229,25 @@ def initialize_aurora_schema(
         if not success:
             raise RuntimeError(f"TapDB owner schema apply failed: {output}")
         try:
-            _sync_identity_prefix_config(Environment.prod)
+            _sync_identity_prefix_config(Environment.target)
         except Exception as exc:
             raise RuntimeError(f"TapDB schema applied, but owner prefix setup failed: {exc}") from exc
         try:
-            _write_migration_baseline(Environment.prod)
+            _write_migration_baseline(Environment.target)
         except Exception as exc:
             raise RuntimeError(f"TapDB schema and prefixes applied, but owner migration baseline failed: {exc}") from exc
+    finally:
+        clear_cli_context()
+
+
+def initialize_aurora_prefixes(*, config_path: Path) -> None:
+    """Run TapDB's owner-scoped prefix setup against an already applied schema."""
+    from daylily_tapdb.cli.context import clear_cli_context, set_cli_context
+    from daylily_tapdb.cli.db import Environment, _sync_identity_prefix_config
+
+    set_cli_context(config_path=config_path)
+    try:
+        _sync_identity_prefix_config(Environment.target)
     finally:
         clear_cli_context()
 
@@ -254,14 +266,19 @@ class DaylilyTapdbSemanticStore:
         from daylily_tapdb.connection import TAPDBConnection
         from daylily_tapdb.factory.instance import InstanceFactory
         from daylily_tapdb.templates.manager import TemplateManager
+        from sqlalchemy.engine import make_url
 
         self.domain_code = domain_code
         self.owner_repo_name = owner_repo_name
         self.template_dir = template_dir
         self.connection = TAPDBConnection(
             db_url=db_url,
+            db_user=make_url(db_url).username,
+            engine_type="aurora",
+            echo_sql=False,
             domain_code=domain_code,
             owner_repo_name=owner_repo_name,
+            schema_name="public",
             app_username="marvain.tapdb_writer",
         )
         self.template_manager = TemplateManager(config_path=template_dir)
@@ -316,13 +333,14 @@ class DaylilyTapdbSemanticStore:
     def seed_templates(self, *, overwrite: bool) -> TemplateSeedResult:
         from daylily_tapdb.templates.loader import find_tapdb_core_config_dir, load_template_configs, seed_templates
 
-        templates = load_template_configs(self.template_dir)
+        core_dir = find_tapdb_core_config_dir()
+        templates = load_template_configs([core_dir, self.template_dir])
         with self.connection.session_scope(commit=True) as session:
             summary = seed_templates(
                 session,
                 templates,
                 overwrite=overwrite,
-                core_config_dir=find_tapdb_core_config_dir(),
+                core_config_dir=core_dir,
                 domain_code=self.domain_code,
                 owner_repo_name=self.owner_repo_name,
                 domain_registry_path=MARVAIN_TAPDB_DOMAIN_REGISTRY,
@@ -489,7 +507,7 @@ class DaylilyTapdbSemanticStore:
 
         reference = session.query(generic_instance).filter_by(
             is_deleted=False, domain_code=self.domain_code,
-            category="reference", type="external_identifier", subtype="tapdb_object", version="1.0",
+            category="XRF", type="external_identifier", subtype="tapdb_object", version="1.0",
         ).filter(generic_instance.json_addl["properties"]["external_identifier"].contains({
             "system": INBOX_RECEIPT_REFERENCE_SYSTEM, "target_euid": receipt_id,
         })).one()

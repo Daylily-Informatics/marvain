@@ -367,29 +367,19 @@ def _ensure_tapdb_runtime_config(ctx: Ctx, *, resources: dict[str, Any]) -> Path
     )
     cfg = {
         "meta": {
-            "config_version": 3,
+            "config_version": 4,
             "client_id": "marvain",
             "database_name": ctx.env.stack_name,
             "owner_repo_name": "marvain",
-            "domain_code": "V",
             "domain_registry_path": str(repo_root / "tapdb_templates" / "domain_code_registry.json"),
             "prefix_ownership_registry_path": str(repo_root / "tapdb_templates" / "prefix_ownership_registry.json"),
         },
-        "environments": {
-            ctx.env.env: {
-                "engine_type": "aurora",
-                "host": endpoint,
-                "port": port,
-                "ui_port": "8914",
-                "user": "agenthub",
-                "password": "",
-                "database": database,
-                "secret_arn": secret_arn,
-                "region": ctx.env.aws_region,
-                "iam_auth": "false",
-                "ssl": "true",
-                "domain_code": "V",
-            }
+        "safety": {"safety_tier": "production", "destructive_operations": "blocked"},
+        "target": {
+            "engine_type": "aurora", "host": endpoint, "port": port, "ui_port": "8914",
+            "user": "agenthub", "database": database, "schema_name": "public", "secret_arn": secret_arn,
+            "region": ctx.env.aws_region, "aws_profile": ctx.env.aws_profile,
+            "cluster_identifier": cluster_id, "iam_auth": "false", "ssl": "true", "domain_code": "V",
         },
     }
     config_path.parent.mkdir(parents=True, exist_ok=True)

@@ -16,7 +16,7 @@ from agent_hub.semantic_outbox import (
     semantic_record_target,
 )
 from agent_hub.semantic_tapdb import (
-    TEMPLATE_CODES, DaylilyTapdbSemanticStore, GraphLinkWrite, GraphObjectRef, GraphObjectWrite,
+    EXTERNAL_REFERENCE_TEMPLATE, TEMPLATE_CODES, DaylilyTapdbSemanticStore, GraphLinkWrite, GraphObjectRef, GraphObjectWrite,
     validate_marvain_template_pack,
 )
 from daylily_tapdb.outbox.inbox import mark_inbox_processed, mark_inbox_processing, receive_message
@@ -28,7 +28,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-EXTERNAL_REFERENCE_TEMPLATE_CODE = "reference/external_identifier/tapdb_object/1.0/"
 EXTERNAL_REFERENCE_RELATIONSHIP = "has_external_reference"
 
 
@@ -136,7 +135,7 @@ def _record_semantic_in_session(
     reference = envelope.reference
     external_reference = store.factory.create_instance(
         session,
-        template_code=EXTERNAL_REFERENCE_TEMPLATE_CODE,
+        template_code=EXTERNAL_REFERENCE_TEMPLATE,
         name=f"{reference.system}:{reference.foreign_uid}",
         properties={
             **reference.to_payload(),
@@ -236,7 +235,7 @@ def _dispatch_in_session(
             raise ValueError("graph uses a reserved reference key")
         reference = envelope.reference
         reference_object = GraphObjectWrite(
-            key=reference_key, template_code=EXTERNAL_REFERENCE_TEMPLATE_CODE,
+            key=reference_key, template_code=EXTERNAL_REFERENCE_TEMPLATE,
             name=f"{reference.system}:{reference.foreign_uid}",
             properties={**reference.to_payload(), "root_euid": reference.foreign_uid, "href": "",
                         "external_identifier": {"system": reference.system, "target_euid": reference.foreign_uid,

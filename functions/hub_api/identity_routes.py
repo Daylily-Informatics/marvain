@@ -13,10 +13,9 @@ from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 from agent_hub.auth import AuthenticatedUser
 from agent_hub.rds_data import RdsData
 from agent_hub.semantic_outbox import GraphSourceRef, SemanticOutboxError, enqueue_semantic_graph
-from agent_hub.semantic_tapdb import TEMPLATE_CODES, GraphLinkWrite, GraphObjectRef, GraphObjectWrite
+from agent_hub.semantic_tapdb import EXTERNAL_REFERENCE_TEMPLATE, TEMPLATE_CODES, GraphLinkWrite, GraphObjectRef, GraphObjectWrite
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)]
-_EXTERNAL_REFERENCE = "reference/external_identifier/tapdb_object/1.0/"
 
 
 class IdentityOperation(BaseModel):
@@ -171,7 +170,7 @@ def build_identity_router(
         actor = source(db, agent=agent, kind=body.actor_kind, source_id=actor_id)
         principal = GraphObjectWrite("principal", TEMPLATE_CODES["principal"], f"linked-account:{body.operation_id}",
             {"binding_kind": "authenticated_linked_account"}, "active")
-        reference = GraphObjectWrite("credential", _EXTERNAL_REFERENCE, f"cognito-subject:{body.operation_id}",
+        reference = GraphObjectWrite("credential", EXTERNAL_REFERENCE_TEMPLATE, f"cognito-subject:{body.operation_id}",
             {"root_euid": user.cognito_sub, "external_identifier": {"system": issuer,
              "target_euid": user.cognito_sub, "href": None, "base_url": None, "graph_data_path": None,
              "object_detail_path_template": None, "auth_mode": "none"}}, "active")

@@ -13,7 +13,7 @@ from agent_hub.memory_service import (
 )
 from agent_hub.memory_taxonomy import normalize_memory_kind
 from agent_hub.semantic_tapdb import (
-    TEMPLATE_CODES, GraphLinkWrite, GraphObjectRef, GraphObjectWrite, SemanticObject, TapdbSemanticStore,
+    EXTERNAL_REFERENCE_TEMPLATE, TEMPLATE_CODES, GraphLinkWrite, GraphObjectRef, GraphObjectWrite, SemanticObject, TapdbSemanticStore,
 )
 
 
@@ -150,7 +150,7 @@ class MarvainSemanticLifecycle:
             raise LifecycleError("principal requires an established actor")
         objects = (
             GraphObjectWrite("principal", TEMPLATE_CODES["principal"], _require_text(name, "name"), {}, "active"),
-            GraphObjectWrite("external_reference", "reference/external_identifier/tapdb_object/1.0/",
+            GraphObjectWrite("external_reference", EXTERNAL_REFERENCE_TEMPLATE,
                              f"{issuer}:{subject}", {"root_euid": subject, "external_identifier": {
                                  "system": issuer, "target_euid": subject, "href": None, "base_url": None,
                                  "graph_data_path": None, "object_detail_path_template": None, "auth_mode": "none",

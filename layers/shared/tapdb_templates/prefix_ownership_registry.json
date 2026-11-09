@@ -4,6 +4,24 @@
     "V": {
       "MVN": {
         "issuer_app_code": "marvain"
+      },
+      "TPX": {
+        "issuer_app_code": "marvain"
+      },
+      "EDG": {
+        "issuer_app_code": "marvain"
+      },
+      "ADT": {
+        "issuer_app_code": "marvain"
+      },
+      "SYS": {
+        "issuer_app_code": "marvain"
+      },
+      "MSG": {
+        "issuer_app_code": "marvain"
+      },
+      "XRF": {
+        "issuer_app_code": "marvain"
       }
     }
   }
