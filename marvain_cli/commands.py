@@ -120,6 +120,136 @@ def _json(data: object) -> None:
     output.print_text(json.dumps(data, indent=2, sort_keys=True, default=str))
 
 
+def deployment_inspect(
+    target_profile: str = Option(..., "--target-profile", help="Explicit AWS profile for the selected target."),
+    target_region: str = Option(..., "--target-region", help="Explicit AWS region for the selected target."),
+    stack_name: str | None = Option(None, "--stack-name", help="Exact Marvain stack name, if already selected."),
+) -> None:
+    """Inspect the selected deployment account and region without changing resources."""
+    from marvain_cli.deployment import inspect_target
+
+    try:
+        result = inspect_target(profile=target_profile, region=target_region, stack_name=stack_name)
+    except ValueError as exc:
+        raise ClickException(str(exc)) from exc
+    _json(result)
+    if result.get("errors"):
+        raise Exit(code=1)
+
+
+def deployment_source_inputs(
+    source_config: str = Option(..., "--source-config", help="Absolute path to the source Marvain config."),
+    source_env: str = Option(..., "--source-env", help="Explicit source environment."),
+    livekit_url_source: str = Option(..., "--livekit-url-source", help="Select parameter_overrides or resources."),
+    source_profile: str = Option(..., "--source-profile", help="Explicit source AWS profile."),
+    source_region: str = Option(..., "--source-region", help="Explicit source AWS region."),
+) -> None:
+    """Show selected source secret ARNs and LiveKit URL without secret values."""
+    from marvain_cli.deployment import source_inputs
+    try:
+        _json(source_inputs(source_config=source_config, source_env=source_env, livekit_url_source=livekit_url_source, source_profile=source_profile, source_region=source_region))
+    except (ConfigError, OSError) as exc:
+        raise ClickException(str(exc)) from exc
+
+
+def deployment_launch_builder(
+    public_key: str = Option(..., "--public-key", help="Absolute path to the selected ed25519 public key."),
+    ssh_cidr: str = Option(..., "--ssh-cidr", help="Selected operator IPv4 /32."),
+) -> None:
+    """Create the selected isolated builder and image prerequisites."""
+    from marvain_cli.deployment import launch_builder
+    try:
+        _json(launch_builder(ctx=_load(), public_key_path=public_key, ssh_cidr=ssh_cidr))
+    except (ConfigError, OSError) as exc:
+        raise ClickException(str(exc)) from exc
+
+
+def deployment_builder_status() -> None:
+    """Read the prerequisite stack status and returned builder outputs."""
+    from marvain_cli.deployment import builder_status
+    try:
+        _json(builder_status(ctx=_load()))
+    except (ConfigError, OSError) as exc:
+        raise ClickException(str(exc)) from exc
+
+
+def deployment_complete_target(
+    source_config: str = Option(..., "--source-config"), source_env: str = Option(..., "--source-env"),
+    source_profile: str = Option(..., "--source-profile"), source_region: str = Option(..., "--source-region"),
+    livekit_url_source: str = Option(..., "--livekit-url-source"),
+    worker_desired_count: int = Option(..., "--worker-desired-count"),
+) -> None:
+    """Complete selected target prerequisites and copy the selected credentials."""
+    from marvain_cli.deployment import complete_target
+    try:
+        _json(complete_target(ctx=_load(), source_config=source_config, source_env=source_env,
+                              source_profile=source_profile, source_region=source_region,
+                              livekit_url_source=livekit_url_source, worker_desired_count=worker_desired_count))
+    except (ConfigError, OSError) as exc:
+        raise ClickException(str(exc)) from exc
+
+
+def deployment_publish_image(
+    target_profile: str = Option(..., "--target-profile"), target_region: str = Option(..., "--target-region"),
+    repository_uri: str = Option(..., "--repository-uri"), release_version: str = Option(..., "--release-version"),
+    source_dir: str = Option(..., "--source-dir"), builder_instance_id: str = Option(..., "--builder-instance-id"),
+    image_kind: str = Option(..., "--image-kind"),
+) -> None:
+    """Publish a final tagged worker or dot image on the selected EC2 builder."""
+    from marvain_cli.deployment import publish_image
+    try:
+        _json(publish_image(profile=target_profile, region=target_region, repository_uri=repository_uri,
+                            release_version=release_version, source_dir=source_dir,
+                            builder_instance_id=builder_instance_id, image_kind=image_kind))
+    except (ConfigError, OSError) as exc:
+        raise ClickException(str(exc)) from exc
+
+
+def deployment_create_dot_edge() -> None:
+    """Create the selected dot edge with its runtime explicitly disabled."""
+    from marvain_cli.deployment import deploy_dot_disabled
+    try:
+        _json(deploy_dot_disabled(ctx=_load()))
+    except (ConfigError, OSError) as exc:
+        raise ClickException(str(exc)) from exc
+
+
+def deployment_dot_status() -> None:
+    """Read the selected dot stack status and outputs."""
+    from marvain_cli.deployment import dot_status
+    try:
+        _json(dot_status(ctx=_load()))
+    except (ConfigError, OSError) as exc:
+        raise ClickException(str(exc)) from exc
+
+
+def deployment_set_parameter(
+    name: str = Option(..., "--name", help="Parameter declared by the selected SAM template."),
+    value: str = Option(..., "--value", help="Explicit non-secret parameter value or secret ARN."),
+) -> None:
+    """Set one declared SAM deployment parameter in the selected config."""
+    from marvain_cli.deployment import set_parameter
+    try:
+        ctx = _load()
+        set_parameter(ctx, name=name, value=value, dry_run=_dry_run())
+    except (ConfigError, OSError) as exc:
+        raise ClickException(str(exc)) from exc
+    output.detail(f"{'Would set' if _dry_run() else 'Set'} {name} in {ctx.config_path}")
+
+
+def deployment_set_packaging_bucket(
+    bucket: str = Option(..., "--bucket", help="Explicit existing SAM packaging bucket name."),
+) -> None:
+    """Set the SAM packaging bucket in the selected config."""
+    from marvain_cli.deployment import set_packaging_bucket
+    try:
+        ctx = _load()
+        set_packaging_bucket(ctx, bucket=bucket, dry_run=_dry_run())
+    except (ConfigError, OSError) as exc:
+        raise ClickException(str(exc)) from exc
+    output.detail(f"{'Would set' if _dry_run() else 'Set'} SAM packaging bucket in {ctx.config_path}")
+
+
 def config_path() -> None:
     """Print the resolved Marvain config path."""
     path = find_config_path(_config_override())
@@ -201,9 +331,11 @@ def build() -> None:
 def deploy(
     guided: bool = Option(True, "--guided/--no-guided", help="Use SAM guided deploy"),
     no_confirm: bool = Option(False, "--no-confirm", help="Skip changeset confirmation"),
+    prebuilt_template: str | None = Option(None, "--prebuilt-template", help="Absolute path to the selected SAM-built template."),
 ) -> None:
     """Deploy the SAM application."""
-    _exit(sam_deploy(_load(), dry_run=_dry_run(), guided=guided, no_confirm=no_confirm))
+    _exit(sam_deploy(_load(), dry_run=_dry_run(), guided=guided, no_confirm=no_confirm,
+                     prebuilt_template=prebuilt_template))
 
 
 def logs(
@@ -881,6 +1013,23 @@ def recognition_logs_cmd(
 
 def register(registry: CommandRegistry, spec: CliSpec) -> None:
     _ = spec
+    register_group_commands(
+        registry,
+        "deployment",
+        "Read-only deployment target inspection.",
+        [
+            ("inspect", deployment_inspect, required_policy(supports_json=True)),
+            ("source-inputs", deployment_source_inputs, required_policy(supports_json=True)),
+            ("launch-builder", deployment_launch_builder, required_policy(mutates_state=True)),
+            ("builder-status", deployment_builder_status, required_policy(supports_json=True)),
+            ("complete-target", deployment_complete_target, required_policy(mutates_state=True)),
+            ("publish-image", deployment_publish_image, required_policy(mutates_state=True, long_running=True, supports_json=True)),
+            ("create-dot-edge", deployment_create_dot_edge, required_policy(mutates_state=True, supports_json=True)),
+            ("dot-status", deployment_dot_status, required_policy(supports_json=True)),
+            ("set-parameter", deployment_set_parameter, required_policy(mutates_state=True, supports_dry_run=True)),
+            ("set-packaging-bucket", deployment_set_packaging_bucket, required_policy(mutates_state=True, supports_dry_run=True)),
+        ],
+    )
     register_group_commands(
         registry,
         "config",

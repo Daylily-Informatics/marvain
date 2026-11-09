@@ -122,7 +122,7 @@ from agent_hub.semantic_outbox import GraphSourceRef, enqueue_semantic_graph, en
 from agent_hub.memory_service import MemoryLayer, MemoryPurpose
 from agent_hub.semantic_lifecycle import MarvainSemanticLifecycle
 from agent_hub.semantic_tapdb import DaylilyTapdbSemanticStore, GraphLinkWrite, GraphObjectRef, GraphObjectWrite
-from agent_hub.v4_runtime import load_route, resolve_caller, resolve_human, resolve_route
+from agent_hub.v4_runtime import load_bindings, load_route, resolve_caller, resolve_human, resolve_route
 from agent_hub.semantic_tapdb import TEMPLATE_CODES
 from agent_hub.session_lifecycle import SessionLifecycleError, SessionLifecycleState, validate_session_transition
 from artifact_repository import RdsArtifactRepository
@@ -4202,17 +4202,13 @@ class CaretakerAssociationIn(BaseModel):
 
 def _authorize_daylily_intake(request: Request, *, initiating_evidence_euid: str,
                               episode_euid: str) -> Any:
-    from pathlib import Path
     from agent_hub.daylily_work.handoff import DaylilyLinearBinding
     from daylily_routes import AuthorizedDaylilyIntake
 
     device = get_device(request)
     require_scope(device, "events:write")
-    path = os.environ.get("MARVAIN_V4_BINDINGS_FILE", "").strip()
-    if not path:
-        raise HTTPException(status_code=503, detail="Daylily connector binding is not configured")
     try:
-        config = json.loads(Path(path).read_text())["daylily"]
+        config = load_bindings()["daylily"]
         store = DaylilyTapdbSemanticStore.from_environment()
         reporter = resolve_caller(store=store, device_id=device.device_id, agent_id=device.agent_id)
         if reporter != config["reporter_principal_euid"]:
@@ -4281,12 +4277,8 @@ api_app.include_router(build_identity_router(get_db=_get_db, get_user=get_user,
 def associate_animal(body: CaretakerAssociationIn, user: AuthenticatedUser = Depends(get_user)) -> dict[str, str]:
     """Record an explicit human caretaker decision against source evidence."""
     operation_id = str(_recognition_uuid(body.operation_id, "operation_id"))
-    path = os.environ.get("MARVAIN_V4_BINDINGS_FILE", "").strip()
-    if not path:
-        raise HTTPException(status_code=503, detail="Caretaker bindings are not configured")
     try:
-        from pathlib import Path
-        config = json.loads(Path(path).read_text())
+        config = load_bindings()
         caretakers = config["caretakers"]
         matches = [item for item in caretakers if item.get("user_id") == user.user_id and
                    item.get("subject") == user.cognito_sub]

@@ -17,7 +17,6 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY layers/shared/python/agent_hub /app/agent_hub
 COPY apps/agent_worker/worker.py /app/worker.py
 COPY apps/agent_worker/.env.example /app/.env.example
-RUN python -c "import agent_hub.livekit_tokens, agent_hub.memory_classifier, agent_hub.personas"
 
 ENV PYTHONUNBUFFERED=1
 

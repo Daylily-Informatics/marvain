@@ -9,7 +9,9 @@ from typer import Option
 
 
 def serve_cmd(
-    binding_file: Path = Option(..., "--binding-file", help="Absolute path to the server-owned 4.x bindings JSON."),
+    binding_file: Path | None = Option(None, "--binding-file", help="Absolute path to the server-owned 4.x bindings JSON."),
+    binding_secret_arn: str | None = Option(None, "--binding-secret-arn", help="Secrets Manager ARN of the 4.x bindings JSON."),
+    resource_uri: str | None = Option(None, "--resource-uri", help="Exact deployed public HTTPS MCP resource URI."),
     host: str = Option(..., "--host", help="Bind address for the dedicated MCP process."),
     port: int = Option(..., "--port", min=1, max=65535, help="Bind port for the dedicated MCP process."),
 ) -> None:
@@ -19,14 +21,25 @@ def serve_cmd(
     from agent_hub.dot_bridge.canonical_backend import TapdbDotCanonicalBackend
     from agent_hub.dot_bridge.mcp_server import create_dot_mcp_app
     from agent_hub.dot_bridge.service import DotBinding, DotBridge, DotScene
+    from agent_hub.secrets import get_secret_json
     from agent_hub.semantic_lifecycle import MarvainSemanticLifecycle
     from agent_hub.semantic_tapdb import DaylilyTapdbSemanticStore, TEMPLATE_CODES
 
-    if not binding_file.is_absolute():
+    if (binding_file is None) == (binding_secret_arn is None):
+        raise ClickException("Select exactly one of --binding-file and --binding-secret-arn")
+    if binding_file is not None and not binding_file.is_absolute():
         raise ClickException("--binding-file must be an absolute path")
     try:
-        raw = json.loads(binding_file.read_text())["dot"]
+        if binding_file is not None:
+            bindings = json.loads(binding_file.read_text())
+        else:
+            if not binding_secret_arn or not binding_secret_arn.strip() or not resource_uri:
+                raise ValueError("Secret-backed bindings require an explicit secret ARN and --resource-uri")
+            bindings = get_secret_json(binding_secret_arn)
+        raw = bindings["dot"]
         oauth = DotOAuthConfig(**raw["oauth"])
+        if resource_uri is not None and oauth.resource_uri != resource_uri:
+            raise ValueError("The configured OAuth resource URI must match the deployed MCP resource URI")
         selected = raw["binding"]
         store = DaylilyTapdbSemanticStore.from_environment()
         with store.read_view() as view:

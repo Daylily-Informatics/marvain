@@ -1,0 +1,154 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Isolated Marvain release builder and immutable image repositories
+Parameters:
+  BuilderImageId:
+    Type: AWS::EC2::Image::Id
+    Description: Explicit selected Ubuntu 24.04 amd64 AMI in this region.
+  BuilderPublicKey:
+    Type: String
+    Description: Explicit existing operator public key material.
+    NoEcho: true
+  BuilderSshCidr:
+    Type: String
+    Description: Explicit operator IPv4 /32 for SSH access.
+    AllowedPattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/32$'
+  BuilderUserData:
+    Type: String
+    Description: Inspectable builder bootstrap script.
+Resources:
+  BuilderVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.29.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+  BuilderSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref BuilderVpc
+      CidrBlock: 10.29.0.0/24
+      MapPublicIpOnLaunch: true
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref BuilderVpc
+      InternetGatewayId: !Ref InternetGateway
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref BuilderVpc
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref BuilderSubnet
+      RouteTableId: !Ref PublicRouteTable
+  BuilderSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Explicit operator SSH access to Marvain release builder
+      VpcId: !Ref BuilderVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref BuilderSshCidr
+  BuilderKeyPair:
+    Type: AWS::EC2::KeyPair
+    Properties:
+      KeyName: !Sub '${AWS::StackName}-builder'
+      KeyType: ed25519
+      PublicKeyMaterial: !Ref BuilderPublicKey
+  SourceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+  WorkerRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      ImageTagMutability: IMMUTABLE
+  DotRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      ImageTagMutability: IMMUTABLE
+  BuilderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-builder-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action: sts:AssumeRole
+            Condition:
+              ArnEquals:
+                aws:PrincipalArn: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${AWS::StackName}-builder-role'
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore'
+      Policies:
+        - PolicyName: MarvainImagePublish
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${AWS::StackName}-builder-role'
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:InitiateLayerUpload
+                  - ecr:UploadLayerPart
+                  - ecr:CompleteLayerUpload
+                  - ecr:PutImage
+                Resource: [!GetAtt WorkerRepository.Arn, !GetAtt DotRepository.Arn]
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub '${SourceBucket.Arn}/*'
+  BuilderProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref BuilderRole]
+  Builder:
+    Type: AWS::EC2::Instance
+    DependsOn: PublicRoute
+    Properties:
+      ImageId: !Ref BuilderImageId
+      InstanceType: t3.xlarge
+      KeyName: !Ref BuilderKeyPair
+      SubnetId: !Ref BuilderSubnet
+      SecurityGroupIds: [!Ref BuilderSecurityGroup]
+      IamInstanceProfile: !Ref BuilderProfile
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs: {VolumeSize: 100, VolumeType: gp3, DeleteOnTermination: true}
+      UserData:
+        Fn::Base64: !Ref BuilderUserData
+      Tags:
+        - {Key: Name, Value: !Sub '${AWS::StackName}-builder'}
+Outputs:
+  BuilderInstanceId: {Value: !Ref Builder}
+  BuilderPublicIp: {Value: !GetAtt Builder.PublicIp}
+  BuilderRoleArn: {Value: !GetAtt BuilderRole.Arn}
+  SourceBucket: {Value: !Ref SourceBucket}
+  WorkerRepositoryUri: {Value: !GetAtt WorkerRepository.RepositoryUri}
+  DotRepositoryUri: {Value: !GetAtt DotRepository.RepositoryUri}

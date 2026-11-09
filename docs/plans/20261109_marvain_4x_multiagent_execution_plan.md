@@ -2,13 +2,13 @@
 
 **Revision:** 1  
 **Prepared:** 9 November 2026  
-**Status:** Waves 1–4 approved on 9 November 2026; source execution beginning. Tests and live changes remain off.
+**Status:** Waves 1–4 source complete. LSMC/us-east-2 prerequisites created; WP-15 final release build and application deployment in progress. Tests remain off.
 
 ## Current continuation state
 
 Updated 9 November 2026. Approved objective: Waves 1–4 source implementation and concrete release/demo preparation for two-location human/animal/software-agent memory, the selected camera/microphone satellite, core dot and deliberate Daylily handoff. This source objective is complete; the initial deployed demonstration is not.
 
-Authority: the user approved Waves 1–4 with TapDB canonical memory and all six model/effort assignments. Source edits, scoped commits and project-ledger updates were authorized. Tests, builds, publication, deployments, capture, live subscriptions/delivery, schedules, hardware actions, PRs and merges remain off. No additional source-work permission is needed.
+Authority: the user approved Waves 1–4 with TapDB canonical memory and all six model/effort assignments, then requested deployment using lsmc outside us-west-2 and us-east-1. That request authorizes necessary source integration, final tagged publication, EC2-only container builds and selected Marvain infrastructure/deployment. Tests, capture/enrollment, subscriptions, schedules, hardware actions, PRs and merges remain off. No new deployment permission is needed.
 
 Repository: /Users/jmajor/projects/marvain; branch codex/marvain-operational-100-closure. Preserved source commits include fc67c79 (canonical memory/dot contracts), 1d790c5 (Daylily domain), ae8981d (satellite and scene isolation), e11855d (commitment intake and pending transport). Final integration commit receipt is recorded in the native Linear execution ledger after Git returns it. Pre-existing /Users/jmajor/projects/marvain/AGENTS.md, /Users/jmajor/projects/marvain/.playwright-cli/ and /Users/jmajor/projects/marvain/Marvain_Restart_Thread.md remain excluded.
 
@@ -20,9 +20,11 @@ WP-10 source is implemented: public MCP Events discovery/subscription methods, d
 
 Review packet: /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_release_demo_packet.md. It records real bootstrap routes, binding shape, topology and demonstration narrative. Future selections: actual service/EC2 builder, runtime delivery of the private binding file, versioned artifact storage and request-size support, writer HTTPS egress, actual actors/sites/devices, policies, OAuth and subscription. Source is untested, unreleased, undeployed and unaccepted.
 
-Disposition: 14 approved source/preparation packages complete, with stated limits; WP-15/16 live release/demonstration and WP-17 physical work remain outside authorization. Next action is user review of the concrete packet and selection of those live inputs; no deployment, test or subscription is implied.
+Deployment continuation: target lsmc account 108782052779, us-east-2. Owning CLI inventory returned enabled region, no ParallelCluster-tagged instances, no name-matched builder or application secrets. A0 owns cloud/Git/ledger actions; A6 owns Hub/CLI/prerequisite source; A4 delivered dedicated dot HTTPS hosting. Source integration before this phase: 6d66b2f. Selected config: /Users/jmajor/.config/marvain/marvain-lsmc-us-east-2.yaml, env prod, service stack marvain4-prod. Create-only prerequisite stack submitted: arn:aws:cloudformation:us-east-2:108782052779:stack/marvain4-prod-release-prerequisites/80801700-dc18-11f1-badd-02dbc035fa8d (rollback disabled). It provisions isolated EC2 builder, private packaging bucket and immutable image repositories. Exact historical same-account OpenAI/LiveKit secrets and resources.LiveKitUrl from /Users/jmajor/.config/marvain/marvain-cleanroom-20260712T111914Z.yaml env cleanroom/us-west-1 are selected credential inputs; no other historical resources are adopted. Hub bindings use a selected secret; initial worker count 0, dot runtime disabled and events disabled until real bootstrap bindings. No final build/tag/service deployment yet. WP-15 in progress; WP-16/17 unexecuted. Next: complete prerequisites from controlling CloudFormation result, preserve/tag final source, build on EC2 and deploy.
 
 ## 1. Approved execution scope
+
+Deployment amendment, 9 November 2026: the later user request authorizes LSMC deployment outside us-west-2/us-east-1. The original Waves 1–4 scope below remains historical; its no-live-change boundary is superseded only for selected Marvain deployment. Target config is /Users/jmajor/.config/marvain/marvain-lsmc-us-east-2.yaml. CloudFormation prerequisites completed and application secret creation returned success. Builder i-0325430bfec70e41e at 18.220.193.93 is designated for this final build; cloud-init returned done. Repositories are 108782052779.dkr.ecr.us-east-2.amazonaws.com/marvain4-prod-release-prerequisites-workerrepository-fdisivyobf3k and 108782052779.dkr.ecr.us-east-2.amazonaws.com/marvain4-prod-release-prerequisites-dotrepository-etkhiob3bqsd. Packaging bucket is s3://marvain4-prod-release-prerequisites-sourcebucket-yzo3gdtiji0t/. Release 4.0.0 was selected after fetching current tags; no image is built yet. The explicit worker Dockerfile import smoke command was removed to honor the no-test build scope. Remote packaging and final tagged images precede the selected service deployment; no PR or merge.
 
 Approve **Waves 1–4: design, source implementation and integration preparation**, using TapDB as the canonical-memory baseline, the named specialists and ownership rules below, and existing Daylily project records for progress.
 

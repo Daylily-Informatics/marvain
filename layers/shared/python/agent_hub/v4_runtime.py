@@ -9,12 +9,28 @@ import json
 import os
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any
+
+import boto3
 
 from agent_hub.memory_service import MemoryAccessPolicy, MemoryLayer, MemoryPurpose, RetentionDecision
 from agent_hub.semantic_lifecycle import MarvainSemanticLifecycle
 from agent_hub.semantic_tapdb import DaylilyTapdbSemanticStore, TEMPLATE_CODES
+
+
+def load_bindings() -> dict[str, Any]:
+    """Read the selected binding secret without caching across bootstrap updates."""
+    arn = os.environ.get("MARVAIN_V4_BINDINGS_SECRET_ARN", "").strip()
+    if not arn:
+        raise ValueError("MARVAIN_V4_BINDINGS_SECRET_ARN is required")
+    response = boto3.client("secretsmanager").get_secret_value(SecretId=arn)
+    value = response.get("SecretString")
+    if not isinstance(value, str):
+        raise ValueError("Binding secret must contain a JSON string")
+    data = json.loads(value)
+    if not isinstance(data, dict):
+        raise ValueError("Binding secret must contain a JSON object")
+    return data
 
 
 @dataclass(frozen=True)
@@ -30,10 +46,7 @@ class V4Route:
 
 
 def load_route(*, device_id: str, agent_id: str, space_id: str) -> V4Route:
-    path = os.environ.get("MARVAIN_V4_BINDINGS_FILE", "").strip()
-    if not path:
-        raise ValueError("MARVAIN_V4_BINDINGS_FILE is required")
-    data = json.loads(Path(path).read_text())
+    data = load_bindings()
     routes = data.get("routes") if isinstance(data, dict) else None
     if not isinstance(routes, list):
         raise ValueError("4.x bindings require a routes array")
@@ -96,10 +109,7 @@ def resolve_route(store: DaylilyTapdbSemanticStore, route: V4Route) -> tuple[Any
 
 def resolve_caller(*, store: DaylilyTapdbSemanticStore, device_id: str, agent_id: str) -> str:
     """Map a verified device identity to its configured canonical principal via lineage."""
-    path = os.environ.get("MARVAIN_V4_BINDINGS_FILE", "").strip()
-    if not path:
-        raise ValueError("MARVAIN_V4_BINDINGS_FILE is required")
-    data = json.loads(Path(path).read_text())
+    data = load_bindings()
     callers = data.get("callers") if isinstance(data, dict) else None
     if not isinstance(callers, list):
         raise ValueError("4.x bindings require a callers array")
@@ -132,10 +142,7 @@ def resolve_caller(*, store: DaylilyTapdbSemanticStore, device_id: str, agent_id
 
 def resolve_human(*, store: DaylilyTapdbSemanticStore, user_id: str, subject: str) -> tuple[str, str]:
     """Resolve a human user from the server binding and canonical authentication lineage."""
-    path = os.environ.get("MARVAIN_V4_BINDINGS_FILE", "").strip()
-    if not path:
-        raise ValueError("MARVAIN_V4_BINDINGS_FILE is required")
-    data = json.loads(Path(path).read_text())
+    data = load_bindings()
     humans = data.get("humans") if isinstance(data, dict) else None
     if not isinstance(humans, list):
         raise ValueError("4.x bindings require a humans array")

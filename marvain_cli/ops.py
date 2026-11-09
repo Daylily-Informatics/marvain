@@ -714,7 +714,8 @@ def sam_build(ctx: Ctx, *, dry_run: bool) -> int:
     return run_cmd(["sam", "build", "-t", template], env=cmd_env(ctx.env), dry_run=dry_run)
 
 
-def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool, no_confirm: bool = False) -> int:
+def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool, no_confirm: bool = False,
+               prebuilt_template: str | None = None) -> int:
     rc = _conda_preflight(enforce=not dry_run)
     if rc != 0:
         return rc
@@ -771,15 +772,17 @@ def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool, no_confirm: bool = Fals
         _eprint("ERROR: AgentWorkerImageUri must be an ECR image URI pinned by a 64-character sha256 digest.")
         return 2
 
-    # Always build before deploy so Lambda functions include vendored dependencies.
-    # This prevents the common failure mode where deployed Lambdas are missing
-    # runtime deps (e.g., mangum) if `sam deploy` is run against the source template.
-    build_rc = run_cmd(["sam", "build", "-t", source_template], env=cmd_env(ctx.env), dry_run=dry_run)
-    if build_rc != 0:
-        return build_rc
-
-    # Deploy the built template.
-    template = ".aws-sam/build/template.yaml"
+    if prebuilt_template is not None:
+        selected = Path(prebuilt_template)
+        if not selected.is_absolute() or not selected.is_file():
+            _eprint("ERROR: --prebuilt-template must identify the existing absolute SAM-built template path.")
+            return 2
+        template = str(selected)
+    else:
+        build_rc = run_cmd(["sam", "build", "-t", source_template], env=cmd_env(ctx.env), dry_run=dry_run)
+        if build_rc != 0:
+            return build_rc
+        template = ".aws-sam/build/template.yaml"
 
     cmd = [
         "sam",

@@ -18,10 +18,15 @@ Parameters:
   PlannerModel:
     Type: String
     Default: gpt-4.1-mini
-  MarvainV4BindingsFile:
+  MarvainV4BindingsSecretArn:
     Type: String
-    Description: Absolute path to the operator-provisioned 4.x bindings JSON readable by the Hub runtime.
-    AllowedPattern: '^/.+'
+    Description: Existing Secrets Manager ARN containing the Hub 4.x bindings JSON.
+    AllowedPattern: '^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$'
+  OpenAIEmbedModel:
+    Type: String
+    Description: OpenAI embedding model used for memory creation.
+    Default: text-embedding-3-small
+    MinLength: 1
   DotEventsMode:
     Type: String
     Description: Explicit dot event delivery mode for the writer.
@@ -253,6 +258,26 @@ Resources:
     Properties:
       GroupDescription: !Sub ${AWS::StackName} TapDB writer SG
       VpcId: !Ref HubVpc
+
+  HubNatEip:
+    Type: AWS::EC2::EIP
+    DependsOn: HubVpcGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  HubNatGateway:
+    Type: AWS::EC2::NatGateway
+    DependsOn: HubVpcGatewayAttachment
+    Properties:
+      AllocationId: !GetAtt HubNatEip.AllocationId
+      SubnetId: !Ref AgentWorkerPublicSubnetA
+
+  PrivateInternetRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref HubNatGateway
 
   AgentWorkerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -553,6 +578,12 @@ Resources:
       Handler: lambda_handler.handler
       Layers:
         - !Ref SharedLayer
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref TapdbWriterSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnetA
+          - !Ref PrivateSubnetB
       Environment:
         Variables:
           DB_RESOURCE_ARN: !GetAtt AuroraCluster.DBClusterArn
@@ -565,7 +596,14 @@ Resources:
           INTEGRATION_QUEUE_URL: !Ref IntegrationQueue
           AUDIT_BUCKET: !Ref AuditBucket
           ARTIFACT_BUCKET: !Ref ArtifactBucket
-          MARVAIN_V4_BINDINGS_FILE: !Ref MarvainV4BindingsFile
+          MARVAIN_V4_BINDINGS_SECRET_ARN: !Ref MarvainV4BindingsSecretArn
+          TAPDB_DB_HOST: !GetAtt AuroraCluster.Endpoint.Address
+          TAPDB_DB_PORT: !GetAtt AuroraCluster.Endpoint.Port
+          TAPDB_DB_SECRET_ARN: !Ref DbCredentialsSecret
+          TAPDB_DB_NAME: !Ref DbName
+          MERIDIAN_DOMAIN_CODE: V
+          TAPDB_OWNER_REPO: marvain
+          OPENAI_EMBED_MODEL: !Ref OpenAIEmbedModel
           ADMIN_SECRET_ARN: !Ref AdminApiKeySecret
           OPENAI_SECRET_ARN: !Ref OpenAICredentialsSecretArn
           LIVEKIT_URL: !Ref LiveKitUrl
@@ -590,6 +628,7 @@ Resources:
           MAX_SPACES_PER_AGENT: !Ref MaxSpacesPerAgent
       Policies:
         - AWSLambdaBasicExecutionRole
+        - VPCAccessPolicy: {}
         - DynamoDBCrudPolicy:
             TableName: !Ref WsConnectionsTable
         - DynamoDBCrudPolicy:
@@ -608,6 +647,7 @@ Resources:
                 - secretsmanager:GetSecretValue
               Resource:
                 - !Ref DbCredentialsSecret
+                - !Ref MarvainV4BindingsSecretArn
                 - !Ref AdminApiKeySecret
                 - !Ref OpenAICredentialsSecretArn
                 - !Ref LiveKitCredentialsSecretArn
@@ -1690,7 +1730,14 @@ Resources:
         - email
         - profile
         - aws.cognito.signin.user.admin
-      CallbackURLs: !Ref GuiCallbackUrls
+      CallbackURLs:
+        Fn::Split:
+          - ","
+          - Fn::Join:
+              - ","
+              - - Fn::Join: [",", !Ref GuiCallbackUrls]
+                - !Sub 'https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/auth/callback'
+
       LogoutURLs: !Ref GuiLogoutUrls
       SupportedIdentityProviders:
         - COGNITO
@@ -1716,7 +1763,14 @@ Resources:
         - email
         - profile
         - aws.cognito.signin.user.admin
-      CallbackURLs: !Ref GuiCallbackUrls
+      CallbackURLs:
+        Fn::Split:
+          - ","
+          - Fn::Join:
+              - ","
+              - - Fn::Join: [",", !Ref GuiCallbackUrls]
+                - !Sub 'https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/auth/callback'
+
       LogoutURLs: !Ref GuiLogoutUrls
       SupportedIdentityProviders:
         - COGNITO
@@ -1814,6 +1868,39 @@ Resources:
       TreatMissingData: notBreaching
 
 Outputs:
+  MarvainVpcId:
+    Description: Marvain VPC for the explicitly selected dot service.
+    Value: !Ref HubVpc
+  MarvainPrivateSubnetAId:
+    Description: First private service subnet with selected outbound route.
+    Value: !Ref PrivateSubnetA
+  MarvainPrivateSubnetBId:
+    Description: Second private service subnet with selected outbound route.
+    Value: !Ref PrivateSubnetB
+  MarvainPublicSubnetAId:
+    Description: First public service subnet.
+    Value: !Ref AgentWorkerPublicSubnetA
+  MarvainPublicSubnetBId:
+    Description: Second public service subnet.
+    Value: !Ref AgentWorkerPublicSubnetB
+  MarvainSecretsEndpointSecurityGroupId:
+    Description: Secrets Manager interface endpoint security group for selected service ingress.
+    Value: !Ref TapdbWriterSecurityGroup
+  MarvainAuroraSecurityGroupId:
+    Description: Aurora security group for explicitly authorized service ingress.
+    Value: !Ref DbSecurityGroup
+  MarvainAuroraEndpoint:
+    Description: Aurora endpoint for selected service configuration.
+    Value: !GetAtt AuroraCluster.Endpoint.Address
+  MarvainAuroraPort:
+    Description: Aurora port for selected service configuration.
+    Value: !GetAtt AuroraCluster.Endpoint.Port
+  MarvainAuroraDatabaseName:
+    Description: Aurora database name for selected service configuration.
+    Value: !Ref DbName
+  MarvainAuroraSecretArn:
+    Description: Aurora credential secret ARN for selected service configuration.
+    Value: !Ref DbCredentialsSecret
   HubRestApiBase:
     Description: Base URL for Hub REST API
     Value: !Sub https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}

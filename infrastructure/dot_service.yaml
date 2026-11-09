@@ -1,0 +1,323 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Marvain dot MCP HTTPS edge and dedicated private Fargate service.
+
+Parameters:
+  DotRuntimeMode:
+    Type: String
+    AllowedValues: [disabled, enabled]
+    Description: Select disabled to provision the edge before binding the dot.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PrivateSubnetAId:
+    Type: AWS::EC2::Subnet::Id
+  PrivateSubnetBId:
+    Type: AWS::EC2::Subnet::Id
+  EcsClusterName:
+    Type: String
+    MinLength: 1
+  AuroraSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+  AuroraEndpoint:
+    Type: String
+    MinLength: 1
+  AuroraPort:
+    Type: Number
+  AuroraDatabaseName:
+    Type: String
+    MinLength: 1
+  AuroraSecretArn:
+    Type: String
+    MinLength: 1
+  SecretsEndpointSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+  DotImageRepositoryUri:
+    Type: String
+    MinLength: 1
+    Description: Selected immutable dot ECR repository URI from the prerequisite stack.
+  DotImageDigest:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^sha256:[0-9a-f]{64}$'
+    Description: ECR digest returned for the final tagged dot image in the selected repository.
+  DotBindingSecretArn:
+    Type: String
+    Default: ''
+    Description: Existing Secrets Manager ARN for the selected Marvain 4.x dot binding JSON.
+  DotEventsSecretArn:
+    Type: String
+    Default: ''
+    Description: Existing event configuration secret ARN when the selected dot binding enables MCP Events.
+
+Rules:
+  EnabledRuntimeInputs:
+    RuleCondition: !Equals [!Ref DotRuntimeMode, enabled]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref DotImageDigest, '']]
+        AssertDescription: Enabled runtime requires the published dot image digest.
+      - Assert: !Not [!Equals [!Ref DotBindingSecretArn, '']]
+        AssertDescription: Enabled runtime requires the selected dot binding secret ARN.
+
+Conditions:
+  RuntimeEnabled: !Equals [!Ref DotRuntimeMode, enabled]
+  HasEventsSecret: !Not [!Equals [!Ref DotEventsSecretArn, '']]
+
+Resources:
+  DotTaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Marvain dot MCP tasks
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: !Ref AuroraPort
+          ToPort: !Ref AuroraPort
+          DestinationSecurityGroupId: !Ref AuroraSecurityGroupId
+
+  DotVpcLinkSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: API Gateway VPC Link for the Marvain dot
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          DestinationSecurityGroupId: !Ref DotTaskSecurityGroup
+
+  DotTaskIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DotTaskSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8000
+      ToPort: 8000
+      SourceSecurityGroupId: !Ref DotVpcLinkSecurityGroup
+
+  DotAuroraIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: RuntimeEnabled
+    Properties:
+      GroupId: !Ref AuroraSecurityGroupId
+      IpProtocol: tcp
+      FromPort: !Ref AuroraPort
+      ToPort: !Ref AuroraPort
+      SourceSecurityGroupId: !Ref DotTaskSecurityGroup
+
+  DotSecretsEndpointIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: RuntimeEnabled
+    Properties:
+      GroupId: !Ref SecretsEndpointSecurityGroupId
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourceSecurityGroupId: !Ref DotTaskSecurityGroup
+
+  DotNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+      Name: !Sub '${AWS::StackName}.marvain.internal'
+      Vpc: !Ref VpcId
+
+  DotDiscovery:
+    Type: AWS::ServiceDiscovery::Service
+    Properties:
+      Name: mcp
+      NamespaceId: !Ref DotNamespace
+      DnsConfig:
+        RoutingPolicy: MULTIVALUE
+        DnsRecords:
+          - Type: SRV
+            TTL: 30
+
+  DotApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${AWS::StackName}-mcp'
+      ProtocolType: HTTP
+
+  DotVpcLink:
+    Type: AWS::ApiGatewayV2::VpcLink
+    Properties:
+      Name: !Sub '${AWS::StackName}-mcp'
+      SecurityGroupIds:
+        - !Ref DotVpcLinkSecurityGroup
+      SubnetIds:
+        - !Ref PrivateSubnetAId
+        - !Ref PrivateSubnetBId
+
+  DotIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref DotApi
+      ConnectionType: VPC_LINK
+      ConnectionId: !Ref DotVpcLink
+      IntegrationType: HTTP_PROXY
+      IntegrationMethod: ANY
+      IntegrationUri: !GetAtt DotDiscovery.Arn
+      PayloadFormatVersion: '1.0'
+      RequestParameters:
+        'overwrite:path': '$request.path'
+
+  DotMcpRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DotApi
+      RouteKey: ANY /mcp
+      Target: !Sub 'integrations/${DotIntegration}'
+
+  DotMetadataRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref DotApi
+      RouteKey: GET /.well-known/oauth-protected-resource/mcp
+      Target: !Sub 'integrations/${DotIntegration}'
+
+  DotApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    DependsOn: [DotMcpRoute, DotMetadataRoute]
+    Properties:
+      ApiId: !Ref DotApi
+      StageName: '$default'
+      AutoDeploy: true
+
+  DotTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Condition: RuntimeEnabled
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+
+  DotTaskRole:
+    Type: AWS::IAM::Role
+    Condition: RuntimeEnabled
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ReadSelectedDotSecrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref AuroraSecretArn
+                  - !Ref DotBindingSecretArn
+                  - !If [HasEventsSecret, !Ref DotEventsSecretArn, !Ref AWS::NoValue]
+
+  DotLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: RuntimeEnabled
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub '/aws/ecs/${AWS::StackName}/dot-mcp'
+      RetentionInDays: 30
+
+  DotTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Condition: RuntimeEnabled
+    Properties:
+      Family: !Sub '${AWS::StackName}-dot-mcp'
+      Cpu: '512'
+      Memory: '1024'
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      RuntimePlatform:
+        CpuArchitecture: X86_64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn: !GetAtt DotTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt DotTaskRole.Arn
+      ContainerDefinitions:
+        - Name: dot-mcp
+          Image: !Sub '${DotImageRepositoryUri}@${DotImageDigest}'
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8000
+          Environment:
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+            - Name: AWS_DEFAULT_REGION
+              Value: !Ref AWS::Region
+            - Name: TAPDB_DB_HOST
+              Value: !Ref AuroraEndpoint
+            - Name: TAPDB_DB_PORT
+              Value: !Sub '${AuroraPort}'
+            - Name: TAPDB_DB_NAME
+              Value: !Ref AuroraDatabaseName
+            - Name: TAPDB_DB_SECRET_ARN
+              Value: !Ref AuroraSecretArn
+            - Name: MERIDIAN_DOMAIN_CODE
+              Value: V
+            - Name: TAPDB_OWNER_REPO
+              Value: marvain
+            - Name: MARVAIN_DOT_BINDING_SECRET_ARN
+              Value: !Ref DotBindingSecretArn
+            - Name: MARVAIN_DOT_RESOURCE_URI
+              Value: !Sub '${DotApi.ApiEndpoint}/mcp'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref DotLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: dot-mcp
+
+  DotService:
+    Type: AWS::ECS::Service
+    Condition: RuntimeEnabled
+    DependsOn: [DotTaskIngress, DotAuroraIngress, DotSecretsEndpointIngress, DotApiStage]
+    Properties:
+      ServiceName: !Sub '${AWS::StackName}-dot-mcp'
+      Cluster: !Ref EcsClusterName
+      TaskDefinition: !Ref DotTaskDefinition
+      LaunchType: FARGATE
+      PlatformVersion: '1.4.0'
+      DesiredCount: 1
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      Tags:
+        - Key: project
+          Value: marvain
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - !Ref DotTaskSecurityGroup
+          Subnets:
+            - !Ref PrivateSubnetAId
+            - !Ref PrivateSubnetBId
+      ServiceRegistries:
+        - RegistryArn: !GetAtt DotDiscovery.Arn
+          Port: 8000
+
+Outputs:
+  DotMcpResourceUri:
+    Value: !Sub '${DotApi.ApiEndpoint}/mcp'
+  DotMcpResourceMetadataUri:
+    Value: !Sub '${DotApi.ApiEndpoint}/.well-known/oauth-protected-resource/mcp'
+  DotEcsServiceArn:
+    Condition: RuntimeEnabled
+    Value: !Ref DotService
