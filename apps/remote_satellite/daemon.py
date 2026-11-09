@@ -1232,6 +1232,12 @@ def load_config_file(path: str) -> dict[str, Any]:
     help="If set, run Location Node mode for this space (stable LiveKit room == space_id)",
 )
 @click.option(
+    "--session-id",
+    envvar="MARVAIN_SESSION_ID",
+    default=None,
+    help="Existing provisioned session for this location node",
+)
+@click.option(
     "--location-mode",
     envvar="MARVAIN_LOCATION_MODE",
     default="persistent",
@@ -1340,6 +1346,7 @@ def main(
     artifact_upload_ttl_seconds: int | None,
     location_label: str | None,
     space_id: str | None,
+    session_id: str | None,
     location_mode: str,
     publish_audio: bool,
     publish_video: bool,
@@ -1377,6 +1384,7 @@ def main(
         heartbeat_interval = file_config.get("heartbeat_interval", heartbeat_interval)
         location_label = file_config.get("location_label", location_label)
         space_id = file_config.get("space_id", space_id)
+        session_id = file_config.get("session_id", session_id)
         location_mode = file_config.get("mode", location_mode)
         publish_audio = bool(file_config.get("publish_audio", publish_audio))
         publish_video = bool(file_config.get("publish_video", publish_video))
@@ -1430,6 +1438,8 @@ def main(
     if space_id:
         if not hub_rest_url:
             raise click.ClickException("--hub-rest-url is required when --space-id is set")
+        if not str(session_id or "").strip():
+            raise click.ClickException("--session-id is required when --space-id is set")
         if artifact_upload_ttl_seconds is None:
             raise click.ClickException("--artifact-upload-ttl-seconds is required when --space-id is set")
         location_node = LocationNode(
@@ -1437,6 +1447,7 @@ def main(
                 rest_url=hub_rest_url,
                 device_token=device_token,
                 space_id=space_id,
+                session_id=str(session_id).strip(),
                 artifact_upload_ttl_seconds=artifact_upload_ttl_seconds,
                 mode=location_mode,
                 publish_audio=publish_audio,

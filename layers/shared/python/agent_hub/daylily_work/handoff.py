@@ -77,8 +77,9 @@ class CommitmentIntent:
     operation_id: str
     scene_euid: str
     episode_euid: str
-    request_euid: str
+    initiating_evidence_euid: str
     requester_principal_euid: str
+    reporter_principal_euid: str
     original_completion_goal: str
     original_delivery_goal: str
     access_policy: MemoryAccessPolicy
@@ -92,8 +93,9 @@ class CommitmentIntent:
             "operation_id",
             "scene_euid",
             "episode_euid",
-            "request_euid",
+            "initiating_evidence_euid",
             "requester_principal_euid",
+            "reporter_principal_euid",
             "original_completion_goal",
             "original_delivery_goal",
         ):
@@ -155,7 +157,7 @@ class DaylilyWorkBridge:
         ):
             raise PermissionError("The handoff recipient is outside its authorized audience")
 
-        event_key = json.dumps([self.binding.workspace_id, intent.request_euid, intent.operation_id])
+        event_key = json.dumps([self.binding.workspace_id, intent.initiating_evidence_euid, intent.operation_id])
         event_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"marvain/daylily/handoff-ready/{event_key}"))
         handoff = GraphObjectRef(key="handoff")
         linear_issue = GraphObjectRef(key="linear_issue")
@@ -167,9 +169,11 @@ class DaylilyWorkBridge:
                 properties={
                     "operation_id": intent.operation_id,
                     "operation": str(receipt.operation),
+                    "receipt_provenance": "configured_reporter",
                     "original_completion_goal": intent.original_completion_goal,
                     "original_delivery_goal": intent.original_delivery_goal,
                     "linear_completed_at": receipt.completed_at.isoformat(),
+                    "handoff_ready_event_id": event_id,
                     "access_policy": policy.as_properties(),
                 },
                 lifecycle_state="recorded",
@@ -201,9 +205,10 @@ class DaylilyWorkBridge:
         links = [
             GraphLinkWrite(handoff, linear_issue, "has_external_reference"),
             GraphLinkWrite(GraphObjectRef(semantic_id=intent.episode_euid), handoff, "INITIATES"),
-            GraphLinkWrite(handoff, GraphObjectRef(semantic_id=intent.request_euid), "DERIVED_FROM"),
+            GraphLinkWrite(handoff, GraphObjectRef(semantic_id=intent.initiating_evidence_euid), "DERIVED_FROM"),
             GraphLinkWrite(handoff, GraphObjectRef(semantic_id=intent.scene_euid), "IN_SCENE"),
             GraphLinkWrite(handoff, GraphObjectRef(semantic_id=intent.requester_principal_euid), "AUTHENTICATED_BY"),
+            GraphLinkWrite(handoff, GraphObjectRef(semantic_id=intent.reporter_principal_euid), "REPORTED_BY"),
             GraphLinkWrite(handoff, GraphObjectRef(semantic_id=policy.owner_principal_id), "OWNER_PRINCIPAL"),
         ]
         links.extend(

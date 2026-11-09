@@ -522,11 +522,21 @@ def hub_ingest_transcript(
             "source": "livekit_agent_worker",
             "input_modality": input_modality,
             "session_id": session_id,
+            "occurred_at": _isoformat_utc(),
+            "occurrence_time_basis": "transcript_produced_at",
         },
         session_id=session_id,
     )
     logger.debug("Ingested transcript (%s): %s...", role, text[:50])
     return event_id
+
+
+@dataclass(frozen=True)
+class PendingMemorySubmission:
+    memory_id: str
+    source_event_id: str
+    semantic_sync_id: str
+    status: str = "pending"
 
 
 def hub_create_memory(
@@ -537,8 +547,8 @@ def hub_create_memory(
     metadata: dict | None = None,
     source_event_id: str,
     session_id: str | None = None,
-) -> str | None:
-    """Create a memory in the Hub's memory system.
+) -> PendingMemorySubmission:
+    """Queue a memory in the Hub's existing canonical writer workflow.
 
     Args:
         space_id: The Marvain space ID
@@ -558,8 +568,15 @@ def hub_create_memory(
             "session_id": session_id,
         },
     )
-    logger.debug("Created memory (%s): %s...", tier, content[:50])
-    return str(body.get("memory_id") or "").strip() or None
+    if body.get("status") != "pending":
+        raise WorkerContractError("memory submission response must report pending canonical persistence")
+    submission = PendingMemorySubmission(
+        memory_id=_require_runtime_text(body.get("memory_id"), "pending memory_id"),
+        source_event_id=_require_runtime_text(body.get("source_event_id"), "pending source_event_id"),
+        semantic_sync_id=_require_runtime_text(body.get("semantic_sync_id"), "pending semantic_sync_id"),
+    )
+    logger.info("Memory queued for canonical persistence: %s", submission.semantic_sync_id)
+    return submission
 
 
 def classify_memory_for_capture(
@@ -1694,7 +1711,7 @@ async def forge_agent(ctx: agents.JobContext):
 
         task.add_done_callback(_log_task_failure)
 
-    def _create_memory_with_error_event(**kwargs: Any) -> str | None:
+    def _create_memory_with_error_event(**kwargs: Any) -> PendingMemorySubmission:
         try:
             return hub_create_memory(**kwargs)
         except Exception as exc:

@@ -31,6 +31,7 @@ class LocationNodeConfig:
     rest_url: str
     device_token: str
     space_id: str
+    session_id: str
     artifact_upload_ttl_seconds: int
 
     mode: str = "persistent"  # triggered|persistent
@@ -77,7 +78,9 @@ class LocationNode:
         self._session_tasks: list[asyncio.Task] = []
 
         self._connected = False
-        self._session_id: str | None = None
+        self._session_id: str = str(cfg.session_id or "").strip()
+        if not self._session_id:
+            raise ValueError("an explicitly provisioned session_id is required")
         self._agent_id: str | None = None
         self._scene_euid: str | None = None
         self._session_euid: str | None = None
@@ -160,8 +163,7 @@ class LocationNode:
                 "subscribe_audio": bool(self.cfg.subscribe_audio),
             },
         }
-        if self._session_id is not None:
-            body["session_id"] = self._session_id
+        body["session_id"] = self._session_id
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=body, timeout=20) as resp:
                 txt = await resp.text()
@@ -188,8 +190,10 @@ class LocationNode:
         session_euid = str(token_out.get("session_euid") or "").strip()
         if not all((lk_url, lk_token, room_name, session_id, agent_id, scene_euid, session_euid)):
             raise RuntimeError("LiveKit device-token response missing bound room, session, or scene")
-        if self._session_id is not None and (
-            session_id != self._session_id or agent_id != self._agent_id or scene_euid != self._scene_euid
+        if session_id != self._session_id:
+            raise RuntimeError("LiveKit device-token response changed the provisioned session")
+        if self._agent_id is not None and (
+            agent_id != self._agent_id or scene_euid != self._scene_euid
             or session_euid != self._session_euid or room_name != self._room_name
         ):
             raise RuntimeError("LiveKit device-token response changed the bound route on reconnect")
