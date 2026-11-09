@@ -1,5 +1,9 @@
 # MARVAIN_GLOBAL_DESIGN_OBJECTIVES_AND_REQUIREMENTS.md
 
+## Current product direction — 2026-11-09
+
+The user's 9 November 2026 clarification restores rich memory, individual actor identity, simultaneous presence across locations, and eventual physical interaction to the center of Marvain's purpose. The authoritative scope clarification is in section 17 below. The earlier sections retain their historical design and implementation statements; this update is not a fresh implementation or deployment assessment.
+
 ## 1. Executive summary
 
 Marvain should be refactored into a durable, consent-aware, multi-person, multi-location AI companion/colleague system. The current repository contains a real AWS-backed hub, device model, event store, memory table, action lifecycle, LiveKit agent worker, remote satellite code, and recognition worker, but several important capabilities are brittle or incomplete. The design objective is not a chatbot with side demos. It is a hub-and-satellite system where people, devices, spaces, sessions, memories, recognition observations, and actions are explicit domain objects with provenance, lifecycle state, policy enforcement, and auditability.
@@ -178,3 +182,71 @@ V1 is acceptable only when:
 - Should TapDB run in the same Aurora cluster or as a separate Postgres/TapDB service?
 - What is the V1 default for memory capture: candidate-only, auto-commit episodic, or user-approved semantic?
 - How should location privacy defaults be configured?
+
+## 17. Expanded actor, memory, and physical interaction requirements — 2026-11-09
+
+### Source and scope
+
+Source: the user's 9 November 2026 clarification in the Marvain discussion following the public-alternatives assessment. The user accepted Linear's role as the authoritative record for commitments, then emphasized enhanced memory detail, interaction with actors besides the user, linking voice and appearance to actors, distinguishing individual people, animals, and agents, simultaneous awareness across places, and eventual interaction with real-world sensors and robotics.
+
+This records product requirements and proposed design implications. It does not claim implementation, authorize a deployment, activate observation or tracking, select hardware, or start a test campaign. The proposed implementation structure and example milestone below remain planning inputs.
+
+### User requirements
+
+| ID | Required capability | Intended outcome |
+|---|---|---|
+| ACTOR-01 | Distinguish individual humans, animals, and software agents | Preserve the identity and history of each distinct participant, beyond identifying a class such as human, dog, or assistant. Individual animal identity and the explicit unified scope across these actor kinds are new requirements. |
+| ACTOR-02 | Link voice and appearance observations to actors | Associate applicable sensory evidence with the same actor across interactions, retaining uncertainty and corrections. Software agents also require service-origin identity; their display names or synthesized voices alone do not establish identity. |
+| ACTOR-03 | Participate in active multi-actor situations | Communicate with participants besides the primary user; attribute statements, requests, replies, actions, and interactions to the appropriate actors and audiences. Track distinct participating agents as well as people and animals. |
+| MEM-DETAIL-01 | Retain enhanced memory detail | Preserve useful event detail, sensory context, actor relationships, and interaction history so later recall can recover more than a compressed conversational summary. |
+| PRESENCE-01 | Maintain simultaneous awareness across places | Support concurrent local observations and interactions at multiple locations, connected by durable actor and event memory. |
+| PHYSICAL-01 | Interact with real-world sensors and robotics | Ultimately connect perception and memory to physical sensing and action through appropriate device and robot interfaces. |
+
+Physical presence and multi-actor interaction are core product objectives. Implementation may be staged, but completion of a work-tracking integration alone does not satisfy this expanded product direction.
+
+### Proposed identity and observation model
+
+The following are design interpretations for a later implementation plan, not prescribed database schemas or claims about current support.
+
+- Distinguish actor identity, actor kind, current role, conversation/session, observation, local track, account principal, and physical embodiment. A robot can be an embodiment of a software actor; a sensor is a source of observations. Neither relationship should be inferred from a shared name.
+- A human can participate through speech, camera observations, messages, or authenticated software. An animal can have its own observed behavior, location, vocalizations, appearance, and interaction history. Species/category recognition alone does not meet individual identification.
+- For software agents, distinguish a persistent agent identity from individual runs, delegated instances, and the service/account through which messages arrive. Separate instances can share an intentional identity only through an explicit owning-service relationship; identical prompts, model names, or voices do not establish it.
+- Preserve the difference between detecting an actor, following a local track, proposing an identity match, and establishing a durable identity. Unknown or ambiguous observations remain explicit. A mistaken association can be corrected while preserving the history of the earlier assertion.
+- Record who was observed where and when, which source observed them, and the basis for the association. Last observed location and inferred presence remain distinguishable from a fresh observation; unseen movement is not fabricated.
+- Retain the existing enrollment, consent, privacy, and audience boundaries. Exact animal enrollment and caretaker authority semantics remain an open design choice; human consent requirements must not be mechanically assigned to animals.
+- Durable relationships use TapDB lineage and typed external-reference objects under the existing modeling contract. Persisted identities come from the owning service; examples and design labels must not impersonate real EUIDs.
+
+### Proposed rich-memory contract
+
+Memory should support multiple levels of detail connected to the same sources:
+
+1. **Source observations:** selected audio/video or sensor artifacts, timestamps, device/location context, authenticated messages, and the owning controller's action results, where capture and retention are permitted.
+2. **Attributed events:** who spoke, acted, addressed whom, or was observed; applicable transcript spans, visual observations, measurements, and uncertainty.
+3. **Episodes:** sequences of related interactions across actors, sessions, and places, with important detail available for later retrieval.
+4. **Durable knowledge:** relationships, preferences, learned routines, decisions, and corrections grounded in those episodes.
+5. **Recall views:** concise answers that can expand into the underlying event and permitted source detail.
+
+Separate observed facts, attributed claims, and Marvain's interpretations. Preserve temporal changes and corrections so a later summary cannot silently overwrite its evidence. Rich memory does not imply indefinite retention of every raw stream; capture, detail level, retention, and permitted audience require an explicit product policy. This amendment does not choose that policy.
+
+### Proposed distributed interaction contract
+
+- Maintain concurrent local scenes and conversations with their own participants, turn attribution, devices, and audiences. Shared identity and memory connect these scenes without merging all conversations into one context.
+- Keep event time, receipt time, last observation, and device availability explicit so delayed or disconnected sources do not appear current.
+- Attribute human and agent messages to their actual origins, including who asked, who responded, who delegated, and which actor acted. Ambient presence does not grant access to every conversation or memory.
+- Treat observation, communication, and physical action as distinct capabilities. Being able to hear a room does not itself confer authority to broadcast into it or operate its devices.
+- Route sensor and robot interactions through the owning device/controller's supported interface and existing operational controls. Record its documented command, acknowledgment, and result semantics; do not add redundant success checks, limits, or enforcement layers.
+- The specific modalities, actor populations, spatial precision, hardware, controllers, latency needs, and autonomy scope remain unselected.
+
+### Relationship to Kit and Daylily
+
+Linear remains authoritative for the commitments intentionally managed in Daylily. Marvain's actor identities, observations, episodes, relationships, and sensory memory have a broader scope than those work records. A conversation or observed event does not automatically become a task.
+
+Kit can be a participating software actor and an interface to Marvain when a supported connection is implemented. The expanded requirement does not make Kit the exclusive conversational interface or assume that Kit can be attached directly to Marvain's media runtime. Marvain may need its own situated interaction runtime; shared memory does not prove identical agent identity.
+
+Daylily is one application of Marvain's capabilities. Its existing separation from LSMC and its information boundaries remain intact; this amendment does not authorize cross-workspace synchronization or pooling restricted context.
+
+### Proposed first representative milestone
+
+Select a bounded two-location scenario that exercises the distinctive product purpose: two consenting people, one individually identified animal, two distinct software agents, and a chosen sensor/device interface. Retain an attributed episode, retrieve its detail in a later interaction, correct a mistaken identity association, and maintain the separate local scenes during simultaneous activity. A later approved physical-action scope should use the owning controller's documented result.
+
+This is an illustrative milestone for planning, not a hardware selection, active tracking program, test authorization, or prerequisite that forces every capability into the first release. The next planning task is to map this scope to existing source and identify the smallest useful end-to-end slice.

@@ -2,6 +2,8 @@
 
 Draft for discussion — 13 October 2026
 
+**Scope clarification — 9 November 2026:** This remains a historical analysis of the Kit/work-coordination slice. The user has clarified that rich sensory and episodic memory, individual human/animal/software-agent identity, active multi-actor interaction, simultaneous presence across locations, and eventual sensor/robot interaction are central Marvain objectives. The earlier recommendation to defer physical presence does not define the whole product's current priority. See section 17 of [/Users/jmajor/projects/marvain/docs/design/MARVAIN_GLOBAL_DESIGN_OBJECTIVES_AND_REQUIREMENTS.md](/Users/jmajor/projects/marvain/docs/design/MARVAIN_GLOBAL_DESIGN_OBJECTIVES_AND_REQUIREMENTS.md). Linear's role as the authoritative record for Daylily commitments does not replace these capabilities. This note updates design scope only; the historical findings and receipts below are preserved.
+
 **Recommendation:** Keep Kit as the companion you talk to and the coordinator of work. Give it Marvain as a service for durable, inspectable memory, commitments, evidence, and selected events. The first useful outcome is an operational colleague that remembers why a decision was made, follows a responsibility across conversations, and knows the difference between an attempted action and an achieved result.
 
 This preserves Marvain's original companion ambition while focusing the next milestone on the user's selected priority: **an operational colleague with strong memory and follow-through first**. Physical presence and richer personal companionship remain possible extensions.
