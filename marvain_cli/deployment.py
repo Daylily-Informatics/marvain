@@ -466,3 +466,122 @@ def publish_built_image(*, profile: str, region: str, repository_uri: str, relea
         raise ConfigError("Image push succeeded but did not return a digest")
     return {"version": release_version, "image_uri": f"{repository_uri}@{match.group(1)}",
             "builder_instance_id": builder_instance_id, "status": "published"}
+
+
+def create_bootstrap_network(*, ctx: Any) -> dict[str, str]:
+    """Connect the selected builder to the selected Hub Aurora for TapDB setup."""
+    if ctx.env.aws_profile != "lsmc" or ctx.env.aws_region != "us-east-2":
+        raise ConfigError("Bootstrap network requires profile lsmc and region us-east-2")
+    deployment = ctx.env.raw.get("deployment")
+    if not isinstance(deployment, dict) or not deployment.get("prerequisite_stack_id"):
+        raise ConfigError("selected config has no prerequisite stack receipt")
+    session = boto3.Session(profile_name=ctx.env.aws_profile, region_name=ctx.env.aws_region)
+    cloudformation = session.client("cloudformation")
+    builder_stack = deployment["prerequisite_stack_id"]
+    hub_stack = ctx.env.stack_name
+
+    def resource(stack: str, logical_id: str) -> str:
+        return str(cloudformation.describe_stack_resource(
+            StackName=stack, LogicalResourceId=logical_id
+        )["StackResourceDetail"]["PhysicalResourceId"])
+
+    hub = cloudformation.describe_stacks(StackName=hub_stack)["Stacks"][0]
+    outputs = {item["OutputKey"]: item["OutputValue"] for item in hub.get("Outputs", [])}
+    for key in ("MarvainAuroraEndpoint", "MarvainAuroraPort", "MarvainAuroraDatabaseName", "MarvainAuroraSecretArn"):
+        if not outputs.get(key):
+            raise ConfigError(f"Selected Hub stack lacks required output {key}")
+    selected = {
+        "BuilderVpcId": resource(builder_stack, "BuilderVpc"),
+        "HubVpcId": resource(hub_stack, "HubVpc"),
+        "BuilderRouteTableId": resource(builder_stack, "PublicRouteTable"),
+        "HubPrivateRouteTableId": resource(hub_stack, "PrivateRouteTable"),
+        "BuilderSecurityGroupId": resource(builder_stack, "BuilderSecurityGroup"),
+        "AuroraSecurityGroupId": resource(hub_stack, "DbSecurityGroup"),
+        "BuilderRoleName": resource(builder_stack, "BuilderRole"),
+        "AuroraSecretArn": outputs["MarvainAuroraSecretArn"],
+    }
+    path = Path(__file__).resolve().parents[1] / "infrastructure" / "tapdb_bootstrap_network.yaml"
+    name = f"{ctx.env.stack_name}-tapdb-bootstrap-network"
+    result = cloudformation.create_stack(
+        StackName=name, TemplateBody=path.read_text(encoding="utf-8"),
+        Parameters=[{"ParameterKey": key, "ParameterValue": value} for key, value in selected.items()],
+        Capabilities=["CAPABILITY_NAMED_IAM"], DisableRollback=True,
+        Tags=[{"Key": "project", "Value": "marvain"}],
+    )
+    deployment["tapdb_bootstrap_network_stack_id"] = result["StackId"]
+    deployment["tapdb_bootstrap"] = {
+        "host": outputs["MarvainAuroraEndpoint"], "port": outputs["MarvainAuroraPort"],
+        "database": outputs["MarvainAuroraDatabaseName"], "secret_arn": outputs["MarvainAuroraSecretArn"],
+        "builder_instance_id": deployment.get("builder_instance_id"),
+    }
+    save_config_dict(ctx.config_path, ctx.cfg)
+    return {"stack_name": name, "stack_id": result["StackId"], "status": "create_submitted"}
+
+
+def bootstrap_network_status(*, ctx: Any) -> dict[str, Any]:
+    """Read the selected TapDB bootstrap connectivity stack's controlling status."""
+    deployment = ctx.env.raw.get("deployment")
+    if not isinstance(deployment, dict) or not deployment.get("tapdb_bootstrap_network_stack_id"):
+        raise ConfigError("selected config has no TapDB bootstrap network receipt")
+    session = boto3.Session(profile_name=ctx.env.aws_profile, region_name=ctx.env.aws_region)
+    stack = session.client("cloudformation").describe_stacks(
+        StackName=deployment["tapdb_bootstrap_network_stack_id"]
+    )["Stacks"][0]
+    return {"stack_id": stack["StackId"], "stack_name": stack["StackName"], "status": stack["StackStatus"],
+            "reason": stack.get("StackStatusReason", ""),
+            "outputs": {item["OutputKey"]: item["OutputValue"] for item in stack.get("Outputs", [])}}
+
+
+def initialize_canonical(*, profile: str, region: str, host: str, port: int, database: str,
+                         secret_arn: str, builder_instance_id: str, registry_root: str) -> dict[str, str]:
+    """Invoke the pinned TapDB owner CLI on the selected networked EC2 builder."""
+    import json
+    import os
+    import platform
+    import subprocess
+    import tempfile
+    import urllib.request
+
+    if profile != "lsmc" or region != "us-east-2" or platform.system() != "Linux":
+        raise ConfigError("TapDB initialization requires profile lsmc on the selected Linux EC2 builder in us-east-2")
+    if not re.fullmatch(r"arn:aws:secretsmanager:us-east-2:[0-9]{12}:secret:.+", secret_arn):
+        raise ConfigError("an explicit us-east-2 Aurora secret ARN is required")
+    root = Path(registry_root)
+    if not root.is_absolute():
+        raise ConfigError("registry_root must be the absolute path to the selected release template directory")
+    try:
+        request = urllib.request.Request("http://169.254.169.254/latest/api/token", method="PUT",
+                  headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            token = response.read().decode("ascii")
+        request = urllib.request.Request("http://169.254.169.254/latest/dynamic/instance-identity/document",
+                  headers={"X-aws-ec2-metadata-token": token})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            identity = json.load(response)
+    except Exception as exc:
+        raise ConfigError("Selected EC2 builder identity is unavailable") from exc
+    if identity.get("instanceId") != builder_instance_id or identity.get("region") != region:
+        raise ConfigError("Current EC2 instance does not match the selected builder and region")
+    session = boto3.Session(profile_name=profile, region_name=region)
+    secret = session.client("secretsmanager").get_secret_value(SecretId=secret_arn)
+    try:
+        username = json.loads(secret["SecretString"])["username"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigError("Aurora secret lacks the required username") from exc
+    config = {"meta": {"client_id": "marvain", "database_name": database, "owner_repo_name": "marvain",
+                       "domain_registry_path": str(root / "domain_code_registry.json"),
+                       "prefix_ownership_registry_path": str(root / "prefix_ownership_registry.json")},
+              "environments": {"prod": {"engine_type": "aurora", "host": host, "port": port,
+                       "database": database, "user": username, "region": region, "iam_auth": "false",
+                       "secret_arn": secret_arn, "domain_code": "V"}}}
+    env = os.environ.copy()
+    env.update({"AWS_PROFILE": profile, "AWS_REGION": region, "AWS_DEFAULT_REGION": region})
+    with tempfile.TemporaryDirectory(prefix="marvain-tapdb-owner-") as directory:
+        path = Path(directory) / "tapdb-config.json"
+        path.write_text(json.dumps(config), encoding="utf-8")
+        path.chmod(0o600)
+        for action in ("apply", "migrate"):
+            result = subprocess.run(["tapdb", "--config", str(path), "db", "schema", action, "prod"], env=env)
+            if result.returncode != 0:
+                raise ConfigError(f"TapDB owner schema {action} failed with exit code {result.returncode}")
+    return {"status": "schema_initialized", "database": database, "builder_instance_id": builder_instance_id}

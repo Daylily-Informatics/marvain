@@ -246,6 +246,39 @@ def deployment_publish_built_image(
         raise ClickException(str(exc)) from exc
 
 
+def deployment_create_bootstrap_network() -> None:
+    """Create narrow selected-builder connectivity for owner TapDB setup."""
+    from marvain_cli.deployment import create_bootstrap_network
+    try:
+        _json(create_bootstrap_network(ctx=_load()))
+    except (ConfigError, OSError) as exc:
+        raise ClickException(str(exc)) from exc
+
+
+def deployment_bootstrap_network_status() -> None:
+    """Read the selected TapDB bootstrap network stack's controlling status."""
+    from marvain_cli.deployment import bootstrap_network_status
+    try:
+        _json(bootstrap_network_status(ctx=_load()))
+    except (ConfigError, OSError) as exc:
+        raise ClickException(str(exc)) from exc
+
+
+def deployment_initialize_canonical(
+    target_profile: str = Option(..., "--target-profile"), target_region: str = Option(..., "--target-region"),
+    host: str = Option(..., "--host"), port: int = Option(..., "--port"), database: str = Option(..., "--database"),
+    secret_arn: str = Option(..., "--secret-arn"), builder_instance_id: str = Option(..., "--builder-instance-id"),
+    registry_root: str = Option(..., "--registry-root"),
+) -> None:
+    """Initialize canonical schema through the selected networked TapDB owner CLI."""
+    from marvain_cli.deployment import initialize_canonical
+    try:
+        _json(initialize_canonical(profile=target_profile, region=target_region, host=host, port=port,
+             database=database, secret_arn=secret_arn, builder_instance_id=builder_instance_id, registry_root=registry_root))
+    except (ConfigError, OSError) as exc:
+        raise ClickException(str(exc)) from exc
+
+
 def deployment_set_parameter(
     name: str = Option(..., "--name", help="Parameter declared by the selected SAM template."),
     value: str = Option(..., "--value", help="Explicit non-secret parameter value or secret ARN."),
@@ -1051,6 +1084,9 @@ def register(registry: CommandRegistry, spec: CliSpec) -> None:
             ("publish-built-image", deployment_publish_built_image, required_policy(mutates_state=True, long_running=True, supports_json=True)),
             ("create-dot-edge", deployment_create_dot_edge, required_policy(mutates_state=True, supports_json=True)),
             ("dot-status", deployment_dot_status, required_policy(supports_json=True)),
+            ("create-bootstrap-network", deployment_create_bootstrap_network, required_policy(mutates_state=True, supports_json=True)),
+            ("bootstrap-network-status", deployment_bootstrap_network_status, required_policy(supports_json=True)),
+            ("initialize-canonical", deployment_initialize_canonical, required_policy(mutates_state=True, long_running=True, supports_json=True)),
             ("set-parameter", deployment_set_parameter, required_policy(mutates_state=True, supports_dry_run=True)),
             ("set-packaging-bucket", deployment_set_packaging_bucket, required_policy(mutates_state=True, supports_dry_run=True)),
         ],

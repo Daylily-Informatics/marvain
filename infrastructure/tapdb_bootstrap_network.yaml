@@ -1,0 +1,55 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Narrow builder-to-Hub Aurora connectivity for owner TapDB initialization
+Parameters:
+  BuilderVpcId: {Type: 'AWS::EC2::VPC::Id'}
+  HubVpcId: {Type: 'AWS::EC2::VPC::Id'}
+  BuilderRouteTableId: {Type: String}
+  HubPrivateRouteTableId: {Type: String}
+  BuilderSecurityGroupId: {Type: 'AWS::EC2::SecurityGroup::Id'}
+  AuroraSecurityGroupId: {Type: 'AWS::EC2::SecurityGroup::Id'}
+  BuilderRoleName: {Type: String}
+  AuroraSecretArn: {Type: String, MinLength: 1}
+Resources:
+  BootstrapPeering:
+    Type: AWS::EC2::VPCPeeringConnection
+    Properties:
+      VpcId: !Ref BuilderVpcId
+      PeerVpcId: !Ref HubVpcId
+      Tags:
+        - {Key: Name, Value: !Sub '${AWS::StackName}-peer'}
+  BuilderToHub:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref BuilderRouteTableId
+      DestinationCidrBlock: 10.20.0.0/16
+      VpcPeeringConnectionId: !Ref BootstrapPeering
+  HubToBuilder:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref HubPrivateRouteTableId
+      DestinationCidrBlock: 10.29.0.0/16
+      VpcPeeringConnectionId: !Ref BootstrapPeering
+  BuilderAuroraIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: BootstrapPeering
+    Properties:
+      GroupId: !Ref AuroraSecurityGroupId
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref BuilderSecurityGroupId
+  BuilderAuroraSecretRead:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${AWS::StackName}-aurora-secret'
+      Roles: [!Ref BuilderRoleName]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource: !Ref AuroraSecretArn
+Outputs:
+  PeeringId: {Value: !Ref BootstrapPeering}
+  BuilderSecurityGroupId: {Value: !Ref BuilderSecurityGroupId}
+  AuroraSecurityGroupId: {Value: !Ref AuroraSecurityGroupId}
