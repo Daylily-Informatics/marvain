@@ -1,6 +1,49 @@
 # Marvain 4.x source release and demonstration packet
 
-**Status: 4.0.0 infrastructure deployed to LSMC/us-east-2; 4.0.1 TapDB integration amendment is ready for final build and deployment. Tests and live capture remain off; product acceptance is pending.** The user's deployment request supersedes the original source-only boundary for this selected service. The owning execution plan is /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_multiagent_execution_plan.md. Earlier source-only statements below describe the original preparation milestone; deployment receipts in the owning plan supersede them.
+**Status: release 4.0.1 is deployed to LSMC/us-east-2, with canonical TapDB templates initialized. Tests and live capture remain off; product acceptance is pending.** The user's deployment request supersedes the original source-only boundary for this selected service. The owning execution plan is /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_multiagent_execution_plan.md. Earlier preparation statements below remain historical and are superseded by this receipt.
+
+## Deployment receipt — 9 November 2026
+
+| Item | Controlling result |
+|---|---|
+| Target | AWS profile lsmc; account 108782052779; us-east-2; stack marvain4-prod |
+| Source | Annotated 4.0.1 at b98d7a2; branch codex/marvain-operational-100-closure pushed |
+| Build | EC2 i-0325430bfec70e41e, tmux marvain-4-0-1-release, exit 0 |
+| Main service | Marvain/SAM returned successful stack update |
+| Hub API | https://1kuwpk5zj7.execute-api.us-east-2.amazonaws.com/prod |
+| WebSocket | wss://6dinziscyg.execute-api.us-east-2.amazonaws.com/prod |
+| Canonical store | TapDB 7.0.11 on the installed Aurora schema; prefix-only setup succeeded |
+| Templates | Deployed writer returned loaded=35, inserted=35, updated=0, skipped=0 |
+| Dot edge | https://6loy8f24g8.execute-api.us-east-2.amazonaws.com/mcp ; stack CREATE_COMPLETE, runtime disabled |
+| Owner | Cognito john@daylilyinformatics.com created with invitation suppressed; FORCE_CHANGE_PASSWORD |
+| Activation | Worker count 0; dot/events disabled; real identity/scene/policy bindings pending |
+| Builder | i-0325430bfec70e41e completed normal stop; state stopped |
+
+Final published images:
+
+- Worker: 108782052779.dkr.ecr.us-east-2.amazonaws.com/marvain4-prod-release-prerequisites-workerrepository-fdisivyobf3k@sha256:211b71b40e3107dbc2ce6596d0b51a3d2e25e32d8c13877f1349eb8efb2292a5
+- Dot: 108782052779.dkr.ecr.us-east-2.amazonaws.com/marvain4-prod-release-prerequisites-dotrepository-etkhiob3bqsd@sha256:ab3dbfc63a35b2b23c267a8a7fd058723047500407eab71a0ba6c99b98aac734
+
+Selected configuration: /Users/jmajor/.config/marvain/marvain-lsmc-us-east-2.yaml (prod). Deployment and seed logs are /Users/jmajor/projects/marvain/build/releases/4.0.1/hub-deployment.log and /Users/jmajor/projects/marvain/build/releases/4.0.1/tapdb-template-init.log. Build/publish and prefix logs are retained in /Users/jmajor/projects/marvain/build/releases/4.0.1/. Earlier schema/failure receipts are retained in /Users/jmajor/projects/marvain/build/releases/4.0.0/. The temporary files directory used by Lambda invocation is not a durable evidence location.
+
+The Hub is API-only; the GUI remains local. CloudFormation completion and the owning seed response establish deployment and initialization, not a live two-location demonstration or user acceptance. No tests, duplicate QC, local container builds, PRs or merges ran. No capture, enrollment, MCP subscription or physical actuation was started. Native application queue/lifecycle controls remain part of the deployed service.
+
+```mermaid
+flowchart LR
+  OWNER["Owner authentication: password pending"] --> AUTH["Cognito: john@daylilyinformatics.com"]
+  CLIENT["Satellites and clients: bindings pending"] -.-> API["API Gateway: deployed"]
+  API --> HUB["Marvain 4.0.1 Hub Lambda"]
+  AUTH --> HUB
+  HUB --> OPS["Aurora: operational state"]
+  HUB --> OUTBOX["Semantic outbox / writer"]
+  OUTBOX --> MEMORY["TapDB 7.0.11: 35 templates initialized"]
+  DOTEDGE["Dot HTTPS edge: provisioned"] -.-> DOT["Dot runtime: disabled"]
+  DOT -.-> MEMORY
+  WORKER["Worker 4.0.1: desired count 0"] -.-> API
+  HUB -. "future authenticated handoff" .-> LINEAR["Daylily Linear: work authority"]
+```
+
+Next activation requires the owner password/login, real person/agent/device/scene identities and selected audience/retention/capture policies. Existing camera/microphone satellites are the selected first sensor; the two locations and their actual runtime bindings remain unselected. The initial product goal and later physical interaction are unfinished.
 
 ## Intended service boundaries
 
