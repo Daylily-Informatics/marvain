@@ -1,1 +1,4 @@
 daylily-tapdb[admin]==6.0.8
+cryptography
+daylily-auth-cognito==2.1.5
+python-jose[cryptography]

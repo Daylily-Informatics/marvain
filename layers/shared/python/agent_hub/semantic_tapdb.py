@@ -11,15 +11,19 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Protocol
 from urllib.parse import quote_plus
+from uuid import UUID
 
 MARVAIN_TAPDB_DOMAIN_CODE = "V"
 MARVAIN_TAPDB_OWNER_REPO = "marvain"
 _MERIDIAN_PREFIX_RE = re.compile(r"^[0-9A-HJ-KMNP-TV-Z]{1,4}$")
+EXTERNAL_REFERENCE_TEMPLATE = "reference/external_identifier/tapdb_object/1.0/"
+INBOX_RECEIPT_REFERENCE_SYSTEM = "marvain-tapdb-inbox"
 
 
 def _find_template_root() -> Path:
@@ -54,6 +58,7 @@ TEMPLATE_CODES: dict[str, str] = {
     "account": "MVN/account/user/1.0/",
     "location": "MVN/location/physical_site/1.0/",
     "space": "MVN/space/physical_room/1.0/",
+    "scene": "MVN/scene/situated/1.0/",
     "device": "MVN/device/satellite/1.0/",
     "capability": "MVN/device/capability/1.0/",
     "session": "MVN/session/conversation/1.0/",
@@ -126,6 +131,7 @@ class SemanticReadView(Protocol):
     def get_object(self, semantic_id: str) -> SemanticObject: ...
     def linked_objects(self, semantic_id: str, *, relationship_type: str,
                        incoming: bool = False) -> tuple[SemanticObject, ...]: ...
+    def operational_session_status(self, *, session_id: str, agent_id: str, space_id: str) -> str | None: ...
 
 
 @dataclass(frozen=True)
@@ -385,32 +391,117 @@ class DaylilyTapdbSemanticStore:
         with self.connection.session_scope(commit=True) as session:
             return self.create_graph_in_session(session, objects=objects, links=links)
 
+    def commit_inbox_graph(
+        self,
+        *,
+        tenant_id: UUID,
+        command_id: UUID,
+        command_fingerprint: str,
+        build: Callable[[SemanticReadView], tuple[GraphObjectWrite, tuple[GraphLinkWrite, ...]]],
+    ) -> SemanticObject:
+        """Authorize and commit one command graph, returning its durable primary result."""
+        from daylily_tapdb.outbox.inbox import (
+            get_inbox_message_by_machine_uuid,
+            mark_inbox_processed,
+            mark_inbox_processing,
+            receive_message,
+        )
+
+        payload = {"command_fingerprint": command_fingerprint}
+        with self.connection.session_scope(commit=True) as session:
+            primary, links = build(self._read_view_for_session(session))
+            receipt = receive_message(
+                session,
+                message_machine_uuid=command_id,
+                payload=payload,
+                tenant_id=tenant_id,
+                domain_code=self.domain_code,
+                issuer_app_code=self.owner_repo_name,
+                source_domain_code=self.domain_code,
+                source_issuer_app_code=self.owner_repo_name,
+                source_destination="marvain_dot_mcp",
+            )
+            receipt_id = str(receipt.receipt_machine_uuid)
+            name = f"{INBOX_RECEIPT_REFERENCE_SYSTEM}:{receipt_id}"
+            if receipt.status == "processed":
+                existing = get_inbox_message_by_machine_uuid(session, command_id)
+                if existing is None:
+                    raise RuntimeError("TapDB inbox receipt is missing its command record")
+                if existing.tenant_id != tenant_id or existing.payload != payload:
+                    raise ValueError("The request key belongs to a different command")
+                return self._inbox_graph_result(session, receipt_id=receipt_id)
+            if receipt.status != "received":
+                raise RuntimeError(f"TapDB inbox command has non-retryable status: {receipt.status}")
+
+            # This command namespace commits receipt, graph and processed state together.
+            mark_inbox_processing(session, command_id)
+            reference = GraphObjectWrite(
+                key="inbox_receipt", template_code=EXTERNAL_REFERENCE_TEMPLATE, name=name,
+                properties={"root_euid": receipt_id, "external_identifier": {
+                    "system": INBOX_RECEIPT_REFERENCE_SYSTEM, "target_euid": receipt_id, "href": None,
+                    "base_url": None, "graph_data_path": None, "object_detail_path_template": None,
+                    "auth_mode": "none",
+                }}, lifecycle_state="recorded",
+            )
+            reference_link = GraphLinkWrite(GraphObjectRef(key=primary.key), GraphObjectRef(key=reference.key),
+                                            "has_external_reference")
+            result = self.create_graph_in_session(session, objects=(primary, reference), links=(*links, reference_link))
+            mark_inbox_processed(session, command_id)
+            return result[primary.key]
+
+    def _inbox_graph_result(self, session: Any, *, receipt_id: str) -> SemanticObject:
+        """Resolve the result of a processed command through its exact receipt reference."""
+        from daylily_tapdb.models.instance import generic_instance
+
+        reference = session.query(generic_instance).filter_by(
+            is_deleted=False, domain_code=self.domain_code,
+            category="reference", type="external_identifier", subtype="tapdb_object", version="1.0",
+        ).filter(generic_instance.json_addl["properties"]["external_identifier"].contains({
+            "system": INBOX_RECEIPT_REFERENCE_SYSTEM, "target_euid": receipt_id,
+        })).one()
+        edge = reference.child_of_lineages.filter_by(is_deleted=False, relationship_type="has_external_reference").one()
+        return self._semantic_object_from_instance(edge.parent_instance)
+
     @contextmanager
     def read_view(self) -> Iterator[SemanticReadView]:
         """Read related canonical instances through TapDB in one transaction."""
+        with self.connection.session_scope(commit=False) as session:
+            yield self._read_view_for_session(session)
+
+    def _read_view_for_session(self, session: Any) -> SemanticReadView:
         from daylily_tapdb.services.object_lookup import find_object_by_euid
 
         store = self
-        with self.connection.session_scope(commit=False) as session:
-            class View:
-                def _find(self, semantic_id: str) -> Any:
-                    obj, record_type = find_object_by_euid(session, semantic_id)
-                    if obj is None or record_type != "instance":
-                        raise KeyError(f"unknown TapDB instance: {semantic_id}")
-                    return obj
+        class View:
+            def _find(self, semantic_id: str) -> Any:
+                obj, record_type = find_object_by_euid(session, semantic_id)
+                if obj is None or record_type != "instance":
+                    raise KeyError(f"unknown TapDB instance: {semantic_id}")
+                return obj
 
-                def get_object(self, semantic_id: str) -> SemanticObject:
-                    return store._semantic_object_from_instance(self._find(semantic_id))
+            def get_object(self, semantic_id: str) -> SemanticObject:
+                return store._semantic_object_from_instance(self._find(semantic_id))
 
-                def linked_objects(self, semantic_id: str, *, relationship_type: str,
-                                   incoming: bool = False) -> tuple[SemanticObject, ...]:
-                    instance = self._find(semantic_id)
-                    relation = instance.child_of_lineages if incoming else instance.parent_of_lineages
-                    edges = relation.filter_by(is_deleted=False, relationship_type=relationship_type)
-                    attr = "parent_instance" if incoming else "child_instance"
-                    return tuple(store._semantic_object_from_instance(getattr(edge, attr)) for edge in edges)
+            def linked_objects(self, semantic_id: str, *, relationship_type: str,
+                               incoming: bool = False) -> tuple[SemanticObject, ...]:
+                instance = self._find(semantic_id)
+                relation = instance.child_of_lineages if incoming else instance.parent_of_lineages
+                edges = relation.filter_by(is_deleted=False, relationship_type=relationship_type)
+                attr = "parent_instance" if incoming else "child_instance"
+                return tuple(store._semantic_object_from_instance(getattr(edge, attr)) for edge in edges)
 
-            yield View()
+            def operational_session_status(self, *, session_id: str, agent_id: str, space_id: str) -> str | None:
+                from sqlalchemy import text
+
+                # The Marvain-owned runtime row is authoritative for live session state.
+                return session.execute(text("""
+                    SELECT status FROM sessions
+                    WHERE session_id = CAST(:session_id AS uuid)
+                      AND agent_id = CAST(:agent_id AS uuid)
+                      AND space_id = CAST(:space_id AS uuid)
+                """), {"session_id": session_id, "agent_id": agent_id, "space_id": space_id}).scalar_one_or_none()
+
+        return View()
 
     def link_objects(
         self,

@@ -1239,3 +1239,41 @@ COMMENT ON COLUMN public.devices.location_label IS 'Human-readable location labe
 COMMENT ON COLUMN public.devices.location_coords IS 'Optional geographic coordinates as JSONB: {"lat": number, "lng": number}';
 COMMENT ON COLUMN public.devices.provisioned_at IS 'Timestamp when the device was provisioned via the wizard';
 COMMENT ON COLUMN public.devices.provisioned_by IS 'User ID of the person who provisioned the device';
+
+CREATE TABLE public.dot_event_subscriptions (
+    subscription_id text PRIMARY KEY,
+    agent_id uuid NOT NULL,
+    principal_euid text NOT NULL,
+    actor_euid text NOT NULL,
+    oauth_issuer text NOT NULL,
+    oauth_subject text NOT NULL,
+    scene_euid text NOT NULL,
+    session_euid text NOT NULL,
+    callback_url text NOT NULL,
+    signing_secret text NOT NULL,
+    previous_secret text,
+    previous_until timestamptz,
+    verified_at timestamptz NOT NULL,
+    started_at timestamptz NOT NULL,
+    expires_at timestamptz NOT NULL,
+    stopped_at timestamptz
+);
+
+CREATE INDEX dot_event_subscriptions_scope_idx ON public.dot_event_subscriptions
+    (agent_id, principal_euid, scene_euid) WHERE stopped_at IS NULL;
+
+CREATE TABLE public.dot_event_deliveries (
+    subscription_id text NOT NULL REFERENCES public.dot_event_subscriptions(subscription_id),
+    event_id uuid NOT NULL,
+    source_command_id uuid NOT NULL,
+    handoff_euid text NOT NULL,
+    occurred_at timestamptz NOT NULL,
+    state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'accepted', 'rejected', 'inactive')),
+    last_http_status integer,
+    last_error text,
+    last_attempt_at timestamptz,
+    PRIMARY KEY (subscription_id, event_id)
+);
+
+CREATE INDEX dot_event_deliveries_source_idx ON public.dot_event_deliveries (source_command_id)
+    WHERE state = 'pending';

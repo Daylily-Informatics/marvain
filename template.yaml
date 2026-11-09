@@ -18,6 +18,19 @@ Parameters:
   PlannerModel:
     Type: String
     Default: gpt-4.1-mini
+  MarvainV4BindingsFile:
+    Type: String
+    Description: Absolute path to the operator-provisioned 4.x bindings JSON readable by the Hub runtime.
+    AllowedPattern: '^/.+'
+  DotEventsMode:
+    Type: String
+    Description: Explicit dot event delivery mode for the writer.
+    AllowedValues: ["enabled", "disabled"]
+  DotEventsSecretArn:
+    Type: String
+    Description: Explicit existing Secrets Manager ARN for dot event delivery; leave empty when events are disabled.
+    Default: ""
+    AllowedPattern: '^$|^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$'
 
   MaxSpacesPerAgent:
     Type: String
@@ -91,6 +104,14 @@ Parameters:
     Type: CommaDelimitedList
     Description: Explicit browser origins allowed to upload verified artifacts directly to S3.
 
+Rules:
+  DotEventsConfiguration:
+    Assertions:
+      - Assert: !Or [!Equals [!Ref DotEventsMode, "disabled"], !Not [!Equals [!Ref DotEventsSecretArn, ""]]]
+        AssertDescription: DotEventsSecretArn is required when dot events are enabled.
+      - Assert: !Or [!Equals [!Ref DotEventsMode, "enabled"], !Equals [!Ref DotEventsSecretArn, ""]]
+        AssertDescription: DotEventsSecretArn must be empty when dot events are disabled.
+
 Conditions:
   IsDeploymentV1: !Equals [!Ref ApiDeploymentVersion, "1"]
   IsDeploymentV2: !Equals [!Ref ApiDeploymentVersion, "2"]
@@ -98,6 +119,7 @@ Conditions:
   GoogleAuthEnabled: !Equals [!Ref EnableGoogleAuth, "true"]
   GoogleAuthDisabled: !Equals [!Ref EnableGoogleAuth, "false"]
   AgentWorkerEnabled: !Not [!Equals [!Ref AgentWorkerDesiredCount, 0]]
+  DotEventsEnabled: !Equals [!Ref DotEventsMode, "enabled"]
 
 Globals:
   Function:
@@ -543,6 +565,7 @@ Resources:
           INTEGRATION_QUEUE_URL: !Ref IntegrationQueue
           AUDIT_BUCKET: !Ref AuditBucket
           ARTIFACT_BUCKET: !Ref ArtifactBucket
+          MARVAIN_V4_BINDINGS_FILE: !Ref MarvainV4BindingsFile
           ADMIN_SECRET_ARN: !Ref AdminApiKeySecret
           OPENAI_SECRET_ARN: !Ref OpenAICredentialsSecretArn
           LIVEKIT_URL: !Ref LiveKitUrl
@@ -1103,6 +1126,8 @@ Resources:
           MERIDIAN_DOMAIN_CODE: V
           TAPDB_OWNER_REPO: marvain
           MARVAIN_METRICS_NAMESPACE: "Marvain"
+          MARVAIN_DOT_EVENTS_MODE: !Ref DotEventsMode
+          MARVAIN_DOT_EVENTS_SECRET_ARN: !Ref DotEventsSecretArn
       Policies:
         - AWSLambdaBasicExecutionRole
         - VPCAccessPolicy: {}
@@ -1114,6 +1139,12 @@ Resources:
                 - secretsmanager:GetSecretValue
               Resource:
                 - !Ref DbCredentialsSecret
+            - !If
+              - DotEventsEnabled
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref DotEventsSecretArn
+              - !Ref AWS::NoValue
       Events:
         TapdbWriterQueueEvent:
           Type: SQS

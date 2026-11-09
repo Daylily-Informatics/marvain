@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
+from agent_hub.dot_bridge.delivery import EventDeliveryRetry
 from agent_hub.semantic_outbox import (
     PersistedExternalReference,
     SemanticOutboxError,
@@ -13,9 +15,15 @@ from agent_hub.semantic_outbox import (
     semantic_link_target,
     semantic_record_target,
 )
-from agent_hub.semantic_tapdb import DaylilyTapdbSemanticStore, validate_marvain_template_pack
+from agent_hub.semantic_tapdb import (
+    TEMPLATE_CODES, DaylilyTapdbSemanticStore, GraphLinkWrite, GraphObjectRef, GraphObjectWrite,
+    validate_marvain_template_pack,
+)
 from daylily_tapdb.outbox.inbox import mark_inbox_processed, mark_inbox_processing, receive_message
 from sqlalchemy import text
+
+if TYPE_CHECKING:
+    from agent_hub.dot_bridge.subscriptions import DotEventSubscriptions
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -57,7 +65,7 @@ def _json_body(record: Mapping[str, Any]) -> dict[str, Any]:
 
 def _semantic_envelope(payload: Mapping[str, Any]) -> SemanticEnvelope:
     action = str(payload.get("action") or "").strip()
-    if action == "record":
+    if action in {"record", "graph"}:
         target = semantic_record_target(str(payload.get("template_code") or ""))
     elif action == "link":
         target = semantic_link_target(
@@ -194,6 +202,54 @@ def _dispatch_in_session(
     store: DaylilyTapdbSemanticStore,
     session: Any,
 ) -> dict[str, Any]:
+    if envelope.action == "graph":
+        raw_objects = payload.get("objects")
+        raw_links = payload.get("links")
+        if not isinstance(raw_objects, list) or not isinstance(raw_links, list):
+            raise ValueError("graph objects and links must be arrays")
+        objects = tuple(GraphObjectWrite(**item) for item in raw_objects)
+        def resolve_graph_ref(value: Mapping[str, Any]) -> GraphObjectRef:
+            if "source_reference" not in value:
+                return GraphObjectRef(**value)
+            source = PersistedExternalReference.from_payload(value["source_reference"])
+            if source.agent_id != envelope.agent_id:
+                raise ValueError("graph source reference is outside the agent scope")
+            template = semantic_record_target(str(value.get("target_template_code") or ""))
+            row = session.execute(text("""SELECT tapdb_euid, status FROM semantic_sync_status
+                WHERE agent_id = CAST(:agent_id AS uuid) AND source_system = :source_system
+                  AND source_table = :source_table AND source_id = CAST(:source_id AS uuid)
+                  AND target_template_code = :template"""),
+                {"agent_id": source.agent_id, "source_system": source.system, "source_table": source.source_table,
+                 "source_id": source.source_id, "template": template}).one_or_none()
+            if row is None or row.status != "written" or not row.tapdb_euid:
+                raise RuntimeError("canonical graph source is not yet written")
+            return GraphObjectRef(semantic_id=str(row.tapdb_euid))
+        links = tuple(GraphLinkWrite(parent=resolve_graph_ref(item["parent"]),
+                                     child=resolve_graph_ref(item["child"]),
+                                     relationship_type=item["relationship_type"]) for item in raw_links)
+        primary_key = str(payload.get("primary_key") or "")
+        primary = next((item for item in objects if item.key == primary_key), None)
+        if primary is None or semantic_record_target(primary.template_code) != envelope.target:
+            raise ValueError("graph primary object does not match the envelope")
+        reference_key = "__marvain_source_reference__"
+        if any(item.key == reference_key for item in objects):
+            raise ValueError("graph uses a reserved reference key")
+        reference = envelope.reference
+        reference_object = GraphObjectWrite(
+            key=reference_key, template_code=EXTERNAL_REFERENCE_TEMPLATE_CODE,
+            name=f"{reference.system}:{reference.foreign_uid}",
+            properties={**reference.to_payload(), "root_euid": reference.foreign_uid, "href": "",
+                        "external_identifier": {"system": reference.system, "target_euid": reference.foreign_uid,
+                                                "href": None, "base_url": None, "graph_data_path": None,
+                                                "object_detail_path_template": None, "auth_mode": "none"}},
+            lifecycle_state="recorded",
+        )
+        reference_link = GraphLinkWrite(parent=GraphObjectRef(key=primary_key),
+                                        child=GraphObjectRef(key=reference_key),
+                                        relationship_type=EXTERNAL_REFERENCE_RELATIONSHIP)
+        result = store.create_graph_in_session(session, objects=objects + (reference_object,),
+                                               links=links + (reference_link,))
+        return {"ok": True, "semantic_id": result[primary_key].semantic_id}
     if envelope.action == "record":
         return _record_semantic_in_session(payload, envelope=envelope, store=store, session=session)
     if envelope.action == "link":
@@ -287,9 +343,28 @@ def _mark_sync_failed(
             )
 
 
+def _handoff_event_transport(
+    store: DaylilyTapdbSemanticStore, envelope: SemanticEnvelope,
+) -> DotEventSubscriptions | None:
+    if envelope.action != "graph" or envelope.target != semantic_record_target(TEMPLATE_CODES["work_handoff"]):
+        return None
+    mode = os.environ.get("MARVAIN_DOT_EVENTS_MODE")
+    if mode == "disabled":
+        return None
+    if mode != "enabled":
+        raise ValueError("MARVAIN_DOT_EVENTS_MODE must explicitly select enabled or disabled")
+    secret_arn = os.environ.get("MARVAIN_DOT_EVENTS_SECRET_ARN", "").strip()
+    if not secret_arn:
+        raise ValueError("Enabled dot events require MARVAIN_DOT_EVENTS_SECRET_ARN")
+    from agent_hub.dot_bridge.subscriptions import DotEventSubscriptions
+
+    return DotEventSubscriptions.from_secret(store, secret_arn)
+
+
 def _dispatch_idempotent(payload: dict[str, Any]) -> dict[str, Any]:
     envelope = _semantic_envelope(payload)
     store = _store()
+    event_transport = _handoff_event_transport(store, envelope)
     try:
         with store.connection.session_scope(commit=True) as session:
             receipt = receive_message(
@@ -304,28 +379,33 @@ def _dispatch_idempotent(payload: dict[str, Any]) -> dict[str, Any]:
             )
             if receipt.status == "processed":
                 semantic_id = _load_written_semantic_id(session, envelope=envelope)
-                return {
+                result = {
                     "ok": True,
                     "duplicate": True,
                     "idempotency_key": str(envelope.idempotency_key),
                     "receipt_id": str(receipt.receipt_machine_uuid),
                     "semantic_id": semantic_id,
                 }
-            if receipt.status != "received":
-                raise RuntimeError(f"semantic inbox message has non-retryable state: {receipt.status}")
-            mark_inbox_processing(session, envelope.idempotency_key)
-            result = _dispatch_in_session(payload, envelope=envelope, store=store, session=session)
-            semantic_id = str(result.get("semantic_id") or "").strip()
-            if not semantic_id:
-                raise RuntimeError("semantic writer did not return a persisted TapDB identifier")
-            _mark_sync_written(session, envelope=envelope, semantic_id=semantic_id)
-            mark_inbox_processed(session, envelope.idempotency_key)
-            return {
-                **result,
-                "duplicate": False,
-                "idempotency_key": str(envelope.idempotency_key),
-                "receipt_id": str(receipt.receipt_machine_uuid),
-            }
+            else:
+                if receipt.status != "received":
+                    raise RuntimeError(f"semantic inbox message has non-retryable state: {receipt.status}")
+                mark_inbox_processing(session, envelope.idempotency_key)
+                written = _dispatch_in_session(payload, envelope=envelope, store=store, session=session)
+                semantic_id = str(written.get("semantic_id") or "").strip()
+                if not semantic_id:
+                    raise RuntimeError("semantic writer did not return a persisted TapDB identifier")
+                if event_transport is not None:
+                    event_transport.enqueue_handoff(session, command_id=envelope.idempotency_key,
+                                                    agent_id=envelope.agent_id, handoff_euid=semantic_id,
+                                                    occurred_at=receipt.received_dt)
+                _mark_sync_written(session, envelope=envelope, semantic_id=semantic_id)
+                mark_inbox_processed(session, envelope.idempotency_key)
+                result = {
+                    **written,
+                    "duplicate": False,
+                    "idempotency_key": str(envelope.idempotency_key),
+                    "receipt_id": str(receipt.receipt_machine_uuid),
+                }
     except Exception as exc:
         try:
             _mark_sync_failed(store, envelope=envelope, error=exc)
@@ -336,6 +416,15 @@ def _dispatch_idempotent(payload: dict[str, Any]) -> dict[str, Any]:
                 envelope.idempotency_key,
             )
         raise
+    if event_transport is not None:
+        try:
+            delivered = event_transport.deliver_for_command(envelope.idempotency_key)
+        except Exception as exc:
+            # The owning receipt is committed. Only event transport may retry here.
+            raise EventDeliveryRetry(canonical_result=result) from exc
+        if not delivered:
+            raise EventDeliveryRetry(canonical_result=result)
+    return result
 
 
 def _dispatch(payload: dict[str, Any]) -> dict[str, Any]:
@@ -374,6 +463,9 @@ def process_sqs_batch(
         try:
             dispatch_fn(_json_body(record))
             processed += 1
+        except EventDeliveryRetry:
+            logger.warning("Committed TapDB handoff has pending webhook delivery message_id=%s", message_id)
+            failures.append({"itemIdentifier": message_id})
         except Exception:
             logger.exception("TapDB writer failed message_id=%s", message_id)
             failures.append({"itemIdentifier": message_id})
@@ -389,6 +481,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     if "Records" not in event:
         try:
             return _dispatch(event)
+        except EventDeliveryRetry as exc:
+            return {**exc.canonical_result, "event_delivery": "pending"}
         except Exception as exc:
             logger.exception("TapDB writer invocation failed")
             return {"ok": False, "error": str(exc)}

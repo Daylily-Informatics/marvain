@@ -12,7 +12,7 @@ from typing import Any, Mapping, Protocol
 MARVAIN_EXTERNAL_REFERENCE_SYSTEM = "marvain-postgres"
 _IDEMPOTENCY_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "https://marvain.daylily.bio/semantic-outbox/v1")
 _SOURCE_TABLE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
-_SUPPORTED_OPERATIONS = frozenset({"link", "record"})
+_SUPPORTED_OPERATIONS = frozenset({"link", "record", "graph"})
 
 
 class SemanticOutboxError(ValueError):
@@ -93,6 +93,14 @@ class PersistedExternalReference:
             "source_table": self.source_table,
             "source_id": self.source_id,
         }
+
+
+@dataclass(frozen=True)
+class GraphSourceRef:
+    """An existing Marvain row whose canonical EUID is resolved by the writer."""
+    source_table: str
+    source_id: str
+    target_template_code: str
 
 
 @dataclass(frozen=True)
@@ -284,6 +292,55 @@ def enqueue_semantic_record(
         idempotency_key=idempotency_key,
         payload_sha256=payload_sha256,
         payload=payload,
+    )
+
+
+
+def enqueue_semantic_graph(
+    db: TransactionalDatabase, *, transaction_id: str, agent_id: str | uuid.UUID,
+    source_table: str, source_id: str | uuid.UUID, objects: tuple[Any, ...],
+    links: tuple[Any, ...], primary_key: str,
+) -> SemanticOutboxRecord:
+    """Queue one atomic graph with the persisted source operation in its transaction."""
+    transaction_id_n = _require_text(transaction_id, "transaction_id")
+    reference = PersistedExternalReference.for_row(agent_id=agent_id, source_table=source_table, source_id=source_id)
+    keys = [item.key for item in objects]
+    if not keys or len(keys) != len(set(keys)) or primary_key not in keys:
+        raise SemanticOutboxError("graph requires unique object keys and a primary key")
+    primary = objects[keys.index(primary_key)]
+    template_code = semantic_record_target(primary.template_code)
+    target = template_code
+    key = semantic_idempotency_key(reference, operation="graph", target=target)
+    def ref_payload(ref: Any) -> dict[str, Any]:
+        if isinstance(ref, GraphSourceRef):
+            source = PersistedExternalReference.for_row(agent_id=reference.agent_id,
+                                                        source_table=ref.source_table, source_id=ref.source_id)
+            return {"source_reference": source.to_payload(),
+                    "target_template_code": semantic_record_target(ref.target_template_code)}
+        return {"key": ref.key, "semantic_id": ref.semantic_id}
+    payload = {
+        "action": "graph", "agent_id": reference.agent_id,
+        "external_reference": reference.to_payload(), "idempotency_key": key,
+        "template_code": template_code, "primary_key": primary_key,
+        "objects": [{"key": item.key, "template_code": item.template_code, "name": item.name,
+                     "properties": item.properties, "lifecycle_state": item.lifecycle_state} for item in objects],
+        "links": [{"parent": ref_payload(link.parent), "child": ref_payload(link.child),
+                   "relationship_type": link.relationship_type} for link in links],
+    }
+    digest = hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+    rows = db.query(_ENQUEUE_RECORD_SQL, {
+        "agent_id": reference.agent_id, "source_system": reference.system,
+        "source_table": reference.source_table, "source_id": reference.source_id,
+        "source_external_reference": reference.to_payload(), "target_template_code": template_code,
+        "idempotency_key": key, "payload": payload, "payload_sha256": digest,
+    }, transaction_id=transaction_id_n)
+    if len(rows) != 1:
+        raise SemanticOutboxError("semantic outbox conflict: persisted source reference has different payload")
+    row = rows[0]
+    return SemanticOutboxRecord(
+        semantic_outbox_id=_normalize_uuid(row.get("semantic_outbox_id"), "semantic_outbox_id"),
+        semantic_sync_id=_normalize_uuid(row.get("semantic_sync_id"), "semantic_sync_id"),
+        agent_id=reference.agent_id, idempotency_key=key, payload_sha256=digest, payload=payload,
     )
 
 

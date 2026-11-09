@@ -21,7 +21,7 @@ import os
 import re
 import time
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
@@ -118,7 +118,11 @@ from agent_hub.recognition_service import (
     ReviewDecision,
 )
 from agent_hub.secrets import get_secret_json
-from agent_hub.semantic_outbox import enqueue_semantic_record
+from agent_hub.semantic_outbox import GraphSourceRef, enqueue_semantic_graph, enqueue_semantic_record
+from agent_hub.memory_service import MemoryLayer, MemoryPurpose
+from agent_hub.semantic_lifecycle import MarvainSemanticLifecycle
+from agent_hub.semantic_tapdb import DaylilyTapdbSemanticStore, GraphLinkWrite, GraphObjectRef, GraphObjectWrite
+from agent_hub.v4_runtime import load_route, resolve_caller, resolve_human, resolve_route
 from agent_hub.semantic_tapdb import TEMPLATE_CODES
 from agent_hub.session_lifecycle import SessionLifecycleError, SessionLifecycleState, validate_session_transition
 from artifact_repository import RdsArtifactRepository
@@ -499,6 +503,7 @@ class IngestEventIn(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     person_id: Optional[str] = None
     session_id: Optional[str] = None
+    artifact_id: Optional[str] = None
 
 
 class IngestEventOut(BaseModel):
@@ -582,6 +587,7 @@ class LiveKitDeviceTokenIn(BaseModel):
     space_id: str
     capabilities: dict[str, Any] = Field(default_factory=dict)
     room_mode: str | None = Field(default="stable", description="Only 'stable' is supported for device tokens.")
+    session_id: str | None = None
 
 
 class LiveKitTokenOut(BaseModel):
@@ -590,6 +596,9 @@ class LiveKitTokenOut(BaseModel):
     room: str
     identity: str
     session_id: str | None = None
+    agent_id: str | None = None
+    scene_euid: str | None = None
+    session_euid: str | None = None
 
 
 class PersonaOut(BaseModel):
@@ -612,6 +621,7 @@ class ArtifactUploadIntentCreateIn(BaseModel):
     space_id: str | None = Field(default=None, max_length=64)
     session_id: str | None = Field(default=None, max_length=64)
     source_event_id: str | None = Field(default=None, max_length=64)
+    upload_via_hub: bool = False
 
 
 class RecognitionArtifactEvidenceIn(BaseModel):
@@ -1032,6 +1042,30 @@ def agents(user: AuthenticatedUser = Depends(get_user)) -> dict[str, list[AgentO
     }
 
 
+@api_app.get("/v1/agents/{agent_id}/semantic-sources/{source_table}/{source_id}")
+def get_semantic_source_status(agent_id: str, source_table: str, source_id: str,
+                               user: AuthenticatedUser = Depends(get_user)) -> dict[str, str | None]:
+    """Resolve the canonical receipt for an explicitly created owning source row."""
+    _require_agent_role(user=user, agent_id=agent_id, required_role="admin")
+    templates = {"agents": TEMPLATE_CODES["agent"], "spaces": TEMPLATE_CODES["space"],
+                 "devices": TEMPLATE_CODES["device"], "people": TEMPLATE_CODES["person"]}
+    template = templates.get(source_table)
+    if template is None:
+        raise HTTPException(status_code=400, detail="Unsupported semantic source table")
+    source_id = str(_recognition_uuid(source_id, "source_id"))
+    rows = _get_db().query(
+        """SELECT status, tapdb_euid FROM semantic_sync_status
+           WHERE agent_id = :agent_id::uuid AND source_table = :source_table AND source_id = :source_id::uuid
+             AND target_template_code = :template""",
+        {"agent_id": agent_id, "source_table": source_table, "source_id": source_id, "template": template},
+    )
+    if len(rows) != 1:
+        raise HTTPException(status_code=404, detail="Semantic source receipt not found")
+    status = str(rows[0].get("status") or "")
+    semantic_id = str(rows[0].get("tapdb_euid") or "").strip() or None
+    return {"status": status, "semantic_id": semantic_id if status == "written" else None}
+
+
 @api_app.post("/v1/agents", response_model=AgentOut)
 def create_agent(body: CreateAgentIn, user: AuthenticatedUser = Depends(get_user)) -> AgentOut:
     """Create a new agent and make the creating user the owner."""
@@ -1383,6 +1417,85 @@ async def livekit_token(body: LiveKitTokenIn, user: AuthenticatedUser = Depends(
     return await _mint_livekit_token_for_user(user=user, space_id=body.space_id, room_mode=body.room_mode)
 
 
+class SceneProvisionIn(BaseModel):
+    space_id: str
+    session_id: str
+
+
+@api_app.post("/v1/scenes/provision", status_code=202)
+def provision_scene(body: SceneProvisionIn, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, str]:
+    """Queue a scene/session graph with its persisted operational session."""
+    require_scope(device, "events:write")
+    agent_id = _resolve_space_agent_for_device(device=device, space_id=body.space_id)
+    session_id = str(_recognition_uuid(body.session_id, "session_id"))
+    try:
+        route = load_route(device_id=device.device_id, agent_id=agent_id, space_id=body.space_id)
+        store = DaylilyTapdbSemanticStore.from_environment()
+        space, canonical_device, owner, readers = resolve_route(store, route)
+        objects, links = MarvainSemanticLifecycle(store).scene_session_graph(
+            space=space, device=canonical_device, session_key=session_id,
+            started_at=datetime.now(timezone.utc), policy=route.policy, owner=owner, readers=readers,
+        )
+    except (ValueError, KeyError, OSError) as exc:
+        raise HTTPException(status_code=503, detail=f"Scene route is not configured: {exc}") from exc
+    room = f"{body.space_id}-{session_id.replace('-', '')[:12]}"
+    db = _get_db()
+    tx = db.begin()
+    try:
+        db.execute(
+            """INSERT INTO sessions(session_id, agent_id, space_id, persona_id, livekit_room, status, metadata)
+               VALUES (:session_id::uuid, :agent_id::uuid, :space_id::uuid,
+                 (SELECT persona_id FROM personas WHERE agent_id = :agent_id::uuid AND is_default
+                  AND lifecycle_state = 'active' AND disabled_at IS NULL ORDER BY created_at DESC LIMIT 1),
+                 :room, 'opening', :metadata::jsonb)""",
+            {"session_id": session_id, "agent_id": agent_id, "space_id": body.space_id, "room": room,
+             "metadata": json.dumps({"room_mode": "stable", "actor_type": "device", "actor_id": device.device_id})},
+            transaction_id=tx,
+        )
+        enqueue_semantic_graph(db, transaction_id=tx, agent_id=agent_id, source_table="sessions",
+                               source_id=session_id, objects=objects, links=links, primary_key="scene")
+        db.commit(tx)
+    except Exception:
+        db.rollback(tx)
+        raise
+    return {"session_id": session_id, "status": "queued"}
+
+
+def _scene_for_session(*, session_id: str, agent_id: str) -> tuple[str, str]:
+    rows = _get_db().query(
+        """SELECT tapdb_euid, status FROM semantic_sync_status
+           WHERE agent_id = :agent_id::uuid AND source_table = 'sessions' AND source_id = :session_id::uuid
+             AND target_template_code = :template""",
+        {"agent_id": agent_id, "session_id": session_id, "template": TEMPLATE_CODES["scene"]},
+    )
+    if len(rows) != 1 or rows[0].get("status") != "written" or not rows[0].get("tapdb_euid"):
+        raise HTTPException(status_code=409, detail="Canonical scene provisioning is not complete")
+    scene_euid = str(rows[0]["tapdb_euid"])
+    store = DaylilyTapdbSemanticStore.from_environment()
+    with store.read_view() as view:
+        scene = view.get_object(scene_euid)
+        if scene.template_code != TEMPLATE_CODES["scene"]:
+            raise HTTPException(status_code=409, detail="Canonical scene type is invalid")
+        sessions = [item for item in view.linked_objects(scene_euid, relationship_type="IN_SCENE", incoming=True)
+                    if item.template_code == TEMPLATE_CODES["session"]]
+        if len(sessions) != 1:
+            raise HTTPException(status_code=409, detail="Canonical scene session lineage is incomplete")
+        return scene_euid, sessions[0].semantic_id
+
+
+@api_app.get("/v1/sessions/{session_id}/scene-provision")
+def scene_provision_status(session_id: str, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, str]:
+    require_scope(device, "events:read")
+    rows = _get_db().query("SELECT agent_id::text AS agent_id FROM sessions WHERE session_id = :session_id::uuid",
+                           {"session_id": session_id})
+    if len(rows) != 1:
+        raise HTTPException(status_code=404, detail="Session not found")
+    agent_id = str(rows[0]["agent_id"])
+    _require_device_agent_access(device=device, agent_id=agent_id)
+    scene, session = _scene_for_session(session_id=session_id, agent_id=agent_id)
+    return {"status": "written", "scene_euid": scene, "session_euid": session}
+
+
 @api_app.post("/v1/livekit/device-token", response_model=LiveKitTokenOut)
 async def livekit_device_token(
     body: LiveKitDeviceTokenIn, device: AuthenticatedDevice = Depends(get_device)
@@ -1406,27 +1519,62 @@ async def livekit_device_token(
     if is_agent_disabled(_get_db(), agent_id):
         raise HTTPException(status_code=403, detail="Agent is disabled")
 
+    if not body.session_id:
+        raise HTTPException(status_code=409, detail="A provisioned session_id is required")
+    try:
+        route = load_route(device_id=device.device_id, agent_id=str(agent_id), space_id=body.space_id)
+        store = DaylilyTapdbSemanticStore.from_environment()
+        resolve_route(store, route)
+        scene_euid, session_euid = _scene_for_session(session_id=body.session_id, agent_id=str(agent_id))
+        with store.read_view() as view:
+            scene = view.get_object(scene_euid)
+            policy = MarvainSemanticLifecycle._read_policy(view, scene)
+            if not policy.raw_capture_allowed or not policy.permits(
+                authenticated_principal_id=route.principal_euid, purpose=MemoryPurpose.DETAIL,
+                layer=MemoryLayer.RAW_ARTIFACT, at=datetime.now(timezone.utc),
+            ):
+                raise HTTPException(status_code=403, detail="Capture is not permitted by the scene policy")
+            if not any(item.semantic_id == route.space_euid for item in view.linked_objects(scene_euid, relationship_type="IN_SPACE")):
+                raise HTTPException(status_code=403, detail="Scene does not belong to the configured space")
+            if not any(item.semantic_id == route.device_euid for item in view.linked_objects(session_euid, relationship_type="USES_DEVICE")):
+                raise HTTPException(status_code=403, detail="Session does not belong to the configured device")
+    except (ValueError, KeyError, OSError) as exc:
+        raise HTTPException(status_code=503, detail=f"Device route is not configured: {exc}") from exc
+
     url, api_key, api_secret = _require_livekit_config()
 
-    session_id = str(uuid.uuid4())
+    session_id = str(body.session_id or uuid.uuid4())
     room_session_id = session_id.replace("-", "")[:12]
-    room = str(body.space_id)
+    room = f"{body.space_id}-{room_session_id}"
     identity = f"device:{device.device_id}"
+    if body.session_id:
+        rows = _get_db().query(
+            """SELECT livekit_room, status, metadata::text AS metadata_json FROM sessions
+               WHERE session_id = :session_id::uuid AND agent_id = :agent_id::uuid
+                 AND space_id = :space_id::uuid""",
+            {"session_id": session_id, "agent_id": agent_id, "space_id": body.space_id},
+        )
+        if len(rows) != 1:
+            raise HTTPException(status_code=404, detail="Session not found")
+        metadata = _parse_json_obj(rows[0].get("metadata_json") or "{}")
+        if metadata.get("actor_type") != "device" or metadata.get("actor_id") != device.device_id:
+            raise HTTPException(status_code=403, detail="Session belongs to a different device")
+        if rows[0].get("status") in {"closed", "ended", "failed"}:
+            raise HTTPException(status_code=409, detail="Session is no longer active")
+        room = str(rows[0].get("livekit_room") or "").strip()
+        if not room:
+            raise HTTPException(status_code=409, detail="Session has no LiveKit room")
 
     caps = body.capabilities or {}
     publish_audio = bool(caps.get("publish_audio", True))
     publish_video = bool(caps.get("publish_video", True))
     subscribe_audio = bool(caps.get("subscribe_audio", True))
 
-    _create_session_record(
-        agent_id=str(agent_id),
-        space_id=str(body.space_id),
-        session_id=session_id,
-        livekit_room=room,
-        room_mode="stable",
-        actor_type="device",
-        actor_id=device.device_id,
-    )
+    if not body.session_id:
+        _create_session_record(
+            agent_id=str(agent_id), space_id=str(body.space_id), session_id=session_id,
+            livekit_room=room, room_mode="stable", actor_type="device", actor_id=device.device_id,
+        )
 
     # LiveKit grants do not separate audio/video publish; treat any publish as can_publish.
     token = mint_livekit_join_token(
@@ -1445,7 +1593,7 @@ async def livekit_device_token(
             "room_session_id": room_session_id,
         },
     )
-    return LiveKitTokenOut(url=url, token=token, room=room, identity=identity, session_id=session_id)
+    return LiveKitTokenOut(url=url, token=token, room=room, identity=identity, session_id=session_id, agent_id=str(agent_id), scene_euid=scene_euid, session_euid=session_euid)
 
 
 @api_app.get("/v1/sessions/{session_id}/worker-lifecycle")
@@ -1480,7 +1628,10 @@ def get_worker_session_lifecycle(
     if is_agent_disabled(_get_db(), agent_id):
         raise HTTPException(status_code=403, detail="Agent is disabled")
 
+    scene_euid, session_euid = _scene_for_session(session_id=session_id, agent_id=agent_id)
     return {
+        "scene_euid": scene_euid,
+        "session_euid": session_euid,
         "session_id": str(row.get("session_id") or ""),
         "agent_id": agent_id,
         "space_id": str(row.get("space_id") or ""),
@@ -1814,7 +1965,10 @@ def register_device(body: RegisterDeviceIn, user: AuthenticatedUser = Depends(ge
     device_id = str(uuid.uuid4())
     token = generate_device_token()
     token_hash = hash_token(token)
-    _get_db().execute(
+    db = _get_db()
+    tx = db.begin()
+    try:
+        db.execute(
         """INSERT INTO devices(device_id, agent_id, name, scopes, capabilities, token_hash,
                                location_label, location_coords, provisioned_at, provisioned_by)
            VALUES (:device_id::uuid, :agent_id::uuid, :name, :scopes::jsonb, :capabilities::jsonb, :token_hash,
@@ -1830,7 +1984,16 @@ def register_device(body: RegisterDeviceIn, user: AuthenticatedUser = Depends(ge
             "location_coords": json.dumps(body.location_coords) if body.location_coords else None,
             "provisioned_by": user.user_id,
         },
-    )
+            transaction_id=tx,
+        )
+        enqueue_semantic_record(db, transaction_id=tx, agent_id=body.agent_id, source_table="devices",
+                                source_id=device_id, target_template_code=TEMPLATE_CODES["device"],
+                                name=body.name or "device", lifecycle_state="active",
+                                properties={"capabilities": body.capabilities})
+        db.commit(tx)
+    except Exception:
+        db.rollback(tx)
+        raise
     if _cfg.audit_bucket:
         append_audit_entry(
             _get_db(),
@@ -2110,13 +2273,22 @@ def v1_create_person(agent_id: str, body: PersonCreateV1In, user: AuthenticatedU
     if not display_name:
         raise HTTPException(status_code=400, detail="display_name is required")
     aliases = [str(a).strip() for a in (body.aliases or []) if str(a).strip()]
-    _get_db().execute(
-        """
-        INSERT INTO people(person_id, agent_id, display_name, aliases)
-        VALUES(:person_id::uuid, :agent_id::uuid, :display_name, :aliases::jsonb)
-        """,
-        {"person_id": person_id, "agent_id": agent_id, "display_name": display_name, "aliases": json.dumps(aliases)},
-    )
+    db = _get_db()
+    tx = db.begin()
+    try:
+        db.execute(
+            """INSERT INTO people(person_id, agent_id, display_name, aliases)
+               VALUES(:person_id::uuid, :agent_id::uuid, :display_name, :aliases::jsonb)""",
+            {"person_id": person_id, "agent_id": agent_id, "display_name": display_name, "aliases": json.dumps(aliases)},
+            transaction_id=tx,
+        )
+        enqueue_semantic_record(db, transaction_id=tx, agent_id=agent_id, source_table="people", source_id=person_id,
+                                target_template_code=TEMPLATE_CODES["person"], name=display_name,
+                                lifecycle_state="active", properties={"aliases": aliases})
+        db.commit(tx)
+    except Exception:
+        db.rollback(tx)
+        raise
     return PersonV1Out(person_id=person_id, agent_id=agent_id, display_name=display_name, aliases=aliases)
 
 
@@ -2791,6 +2963,25 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
     if is_privacy_mode(_get_db(), body.space_id) and body.type != "session.state_transition":
         return IngestEventOut(event_id="privacy_mode", queued=False)
     event_id = str(uuid.uuid4())
+    if body.type in {"voice.sample", "face.snapshot"}:
+        if not body.session_id:
+            raise HTTPException(status_code=400, detail="session_id is required for sensor evidence")
+        for field in ("source_event_key", "captured_at", "modality", "attribution_state"):
+            if not body.payload.get(field):
+                raise HTTPException(status_code=400, detail=f"{field} is required for sensor evidence")
+        if body.payload["attribution_state"] != "unknown" or body.person_id:
+            raise HTTPException(status_code=400, detail="sensor evidence must have unknown attribution")
+        session_rows = _get_db().query(
+            """SELECT metadata::text AS metadata_json FROM sessions
+               WHERE session_id = :session_id::uuid AND agent_id = :agent_id::uuid
+                 AND space_id = :space_id::uuid""",
+            {"session_id": body.session_id, "agent_id": space_agent_id, "space_id": body.space_id},
+        )
+        if len(session_rows) != 1:
+            raise HTTPException(status_code=404, detail="Session not found")
+        metadata = _parse_json_obj(session_rows[0].get("metadata_json") or "{}")
+        if metadata.get("actor_type") != "device" or metadata.get("actor_id") != device.device_id:
+            raise HTTPException(status_code=403, detail="Session belongs to a different device")
     resolved_person_id = str(body.person_id or "").strip()
 
     # Preserve explicit null attribution when no persisted participant mapping exists.
@@ -2821,11 +3012,31 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
             agent_id=space_agent_id,
             event_id=event_id,
         )
-        db.execute(
-            """INSERT INTO events(event_id, agent_id, space_id, device_id, person_id, type, payload, session_id)
+        if body.type in {"voice.sample", "face.snapshot"}:
+            if not body.artifact_id:
+                raise HTTPException(status_code=400, detail="artifact_id is required for sensor evidence")
+            artifact_rows = db.query(
+                """SELECT bucket, object_key, actual_sha256, media_type FROM artifact_references
+                   WHERE artifact_id = :artifact_id::uuid AND agent_id = :agent_id::uuid
+                     AND space_id = :space_id::uuid AND session_id = :session_id::uuid
+                     AND device_id = :device_id::uuid AND purpose = 'recognition' AND lifecycle_state = 'available'""",
+                {"artifact_id": body.artifact_id, "agent_id": space_agent_id, "space_id": body.space_id,
+                 "session_id": body.session_id, "device_id": device.device_id}, transaction_id=tx,
+            )
+            if len(artifact_rows) != 1:
+                raise HTTPException(status_code=409, detail="Artifact is not available for this device session")
+            artifact = artifact_rows[0]
+            for field, column in (("artifact_bucket", "bucket"), ("artifact_key", "object_key"),
+                                  ("artifact_sha256", "actual_sha256"), ("content_type", "media_type")):
+                if body.payload.get(field) != artifact.get(column):
+                    raise HTTPException(status_code=409, detail=f"{field} does not match the artifact")
+        event_rows = db.query(
+            """INSERT INTO events(event_id, agent_id, space_id, device_id, person_id, type, payload, session_id, artifact_id)
                VALUES (:event_id::uuid, :agent_id::uuid, :space_id::uuid, :device_id::uuid,
                        CASE WHEN :person_id = '' THEN NULL ELSE :person_id::uuid END, :type, :payload::jsonb,
-                       NULLIF(CAST(:session_id AS text), '')::uuid)""",
+                       NULLIF(CAST(:session_id AS text), '')::uuid,
+                       NULLIF(CAST(:artifact_id AS text), '')::uuid)
+               RETURNING created_at::text AS received_at""",
             {
                 "event_id": event_id,
                 "agent_id": space_agent_id,
@@ -2835,34 +3046,68 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
                 "type": body.type,
                 "payload": json.dumps(body.payload),
                 "session_id": str(body.session_id or ""),
+                "artifact_id": str(body.artifact_id or ""),
             },
             transaction_id=tx,
         )
         text = body.payload.get("text")
-        enqueue_semantic_record(
-            db,
-            transaction_id=tx,
-            agent_id=space_agent_id,
-            source_table="events",
-            source_id=event_id,
-            target_template_code=(
-                TEMPLATE_CODES["event_transcript"]
-                if body.type == "transcript_chunk"
-                else TEMPLATE_CODES["event_sensor"]
-            ),
-            name=f"event:{event_id}",
-            lifecycle_state="recorded",
-            properties={
-                "agent_id": space_agent_id,
-                "event_id": event_id,
-                "event_type": body.type,
-                "space_id": body.space_id,
-                "device_id": device.device_id,
-                "person_id": resolved_person_id or "",
-                "session_id": str(body.session_id or ""),
-                "text": text if isinstance(text, str) else "",
-            },
-        )
+        if body.session_id and body.type in {"transcript_chunk", "voice.sample", "face.snapshot"}:
+            occurrence = body.payload.get("captured_at") or body.payload.get("occurred_at")
+            if not occurrence:
+                raise HTTPException(status_code=400, detail="Selected evidence requires an occurrence timestamp")
+            try:
+                observed_at = datetime.fromisoformat(str(occurrence).replace("Z", "+00:00"))
+                if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+                    raise ValueError("occurrence timestamp requires timezone")
+                scene_id, canonical_session = _scene_for_session(session_id=body.session_id, agent_id=space_agent_id)
+                store = DaylilyTapdbSemanticStore.from_environment()
+                principal = resolve_caller(store=store, device_id=device.device_id, agent_id=space_agent_id)
+                with store.read_view() as view:
+                    scene = view.get_object(scene_id)
+                    policy = MarvainSemanticLifecycle._read_policy(view, scene)
+                    owner = view.get_object(policy.owner_principal_id)
+                    readers = tuple(view.get_object(key) for key in policy.reader_principal_ids)
+                policy_edges = MarvainSemanticLifecycle._policy_links(policy, owner, readers)
+            except (ValueError, KeyError, OSError) as exc:
+                raise HTTPException(status_code=409, detail=f"Event canonical binding is invalid: {exc}") from exc
+            template = TEMPLATE_CODES["event_transcript"] if body.type == "transcript_chunk" else TEMPLATE_CODES["event_sensor"]
+            evidence_ref = GraphObjectRef(key="evidence")
+            objects = (GraphObjectWrite("evidence", template, f"event:{event_id}",
+                {"event_id": event_id, "event_type": body.type, "observed_at": observed_at.isoformat(),
+                 "received_at": event_rows[0]["received_at"], "detail": body.payload,
+                 "access_policy": policy.as_properties()}, "recorded"),)
+            links = [GraphLinkWrite(evidence_ref, GraphObjectRef(semantic_id=scene_id), "IN_SCENE"),
+                     GraphLinkWrite(evidence_ref, GraphObjectRef(semantic_id=canonical_session), "IN_SESSION"),
+                     GraphLinkWrite(evidence_ref, GraphObjectRef(semantic_id=principal), "AUTHENTICATED_BY")]
+            links.extend(GraphLinkWrite(evidence_ref, GraphObjectRef(semantic_id=obj.semantic_id), relation)
+                         for obj, relation in policy_edges)
+            enqueue_semantic_graph(db, transaction_id=tx, agent_id=space_agent_id, source_table="events",
+                                   source_id=event_id, objects=objects, links=tuple(links), primary_key="evidence")
+        else:
+            enqueue_semantic_record(
+                db,
+                transaction_id=tx,
+                agent_id=space_agent_id,
+                source_table="events",
+                source_id=event_id,
+                target_template_code=(
+                    TEMPLATE_CODES["event_transcript"]
+                    if body.type == "transcript_chunk"
+                    else TEMPLATE_CODES["event_sensor"]
+                ),
+                name=f"event:{event_id}",
+                lifecycle_state="recorded",
+                properties={
+                    "agent_id": space_agent_id,
+                    "event_id": event_id,
+                    "event_type": body.type,
+                    "space_id": body.space_id,
+                    "device_id": device.device_id,
+                    "person_id": resolved_person_id or "",
+                    "session_id": str(body.session_id or ""),
+                    "text": text if isinstance(text, str) else "",
+                },
+            )
         db.commit(tx)
     except HTTPException:
         db.rollback(tx)
@@ -2895,6 +3140,8 @@ def ingest_event(body: IngestEventIn, device: AuthenticatedDevice = Depends(get_
                         "agent_id": space_agent_id,
                         "space_id": body.space_id,
                         "device_id": device.device_id,
+                        "session_id": body.session_id,
+                        "received_at": event_rows[0]["received_at"],
                         "person_id": resolved_person_id or None,
                         "type": body.type,
                         "payload": body.payload,
@@ -3566,6 +3813,9 @@ def list_memories(limit: int = 50, device: AuthenticatedDevice = Depends(get_dev
            WHERE agent_id = :agent_id::uuid
              AND lifecycle_state = 'committed'
              AND tombstoned_at IS NULL
+             AND EXISTS (SELECT 1 FROM semantic_sync_status sync WHERE sync.agent_id = memories.agent_id
+                         AND sync.source_table = 'memories' AND sync.source_id = memories.memory_id
+                         AND sync.status = 'written')
            ORDER BY created_at DESC
            LIMIT :limit""",
         {"agent_id": device.agent_id, "limit": limit},
@@ -3628,7 +3878,7 @@ class MemoryCreateIn(BaseModel):
     related_memory_ids: list[str] = Field(default_factory=list, description="Related memory UUIDs")
 
 
-@api_app.post("/v1/memories")
+@api_app.post("/v1/memories", status_code=202)
 def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
     """Create a memory for the device's agent (requires memories:write scope)."""
     require_scope(device, "memories:write")
@@ -3692,7 +3942,8 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
     db = _get_db()
     evidence_rows = db.query(
         """
-        SELECT 1
+        SELECT payload::text AS payload_json, type, created_at::text AS received_at,
+               session_id::text AS session_id, device_id::text AS device_id
         FROM events
         WHERE event_id = :event_id::uuid
           AND agent_id = :agent_id::uuid
@@ -3703,6 +3954,51 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
     )
     if not evidence_rows:
         raise HTTPException(status_code=400, detail="Source evidence event was not found for this agent and space")
+    evidence_row = evidence_rows[0]
+    if not body.session_id or str(evidence_row.get("session_id") or "") != body.session_id:
+        raise HTTPException(status_code=409, detail="Memory source evidence must belong to the session")
+    source_payload = _parse_json_obj(evidence_row.get("payload_json") or "{}")
+    observed_at = source_payload.get("captured_at") or source_payload.get("occurred_at")
+    if not observed_at:
+        raise HTTPException(status_code=409, detail="Memory source evidence has no occurrence timestamp")
+    try:
+        parsed_observed = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
+        if parsed_observed.tzinfo is None or parsed_observed.utcoffset() is None:
+            raise ValueError("source occurrence time must be timezone-aware")
+        scene_euid, session_euid = _scene_for_session(session_id=body.session_id, agent_id=target_agent_id)
+        store = DaylilyTapdbSemanticStore.from_environment()
+        with store.read_view() as view:
+            scene = view.get_object(scene_euid)
+            policy = MarvainSemanticLifecycle._read_policy(view, scene)
+            owner = view.get_object(policy.owner_principal_id)
+            readers = tuple(view.get_object(key) for key in policy.reader_principal_ids)
+        policy_edges = MarvainSemanticLifecycle._policy_links(policy, owner, readers)
+    except (ValueError, KeyError, OSError) as exc:
+        raise HTTPException(status_code=409, detail=f"Memory source binding is invalid: {exc}") from exc
+    at = datetime.now(timezone.utc).isoformat()
+    shared_policy = policy.as_properties()
+    source_template = TEMPLATE_CODES["event_transcript"] if evidence_row["type"] == "transcript_chunk" else TEMPLATE_CODES["event_sensor"]
+    evidence_ref = GraphSourceRef(source_table="events", source_id=source_event_id,
+                                  target_template_code=source_template)
+    episode_ref, candidate_ref, memory_ref = GraphObjectRef(key="episode"), GraphObjectRef(key="candidate"), GraphObjectRef(key="memory")
+    scene_ref, session_ref = GraphObjectRef(semantic_id=scene_euid), GraphObjectRef(semantic_id=session_euid)
+    memory_properties = {"content": body.content, "tier": memory_tier, "recorded_at": at,
+                         "effective_at": at, "access_policy": shared_policy,
+                         "confidence": classifier_result.confidence, "provenance_class": provenance_class}
+    objects = (
+        GraphObjectWrite("episode", TEMPLATE_CODES["episode"], f"episode:{source_event_id}:{memory_id}",
+                         {"occurred_at": parsed_observed.isoformat(), "detail": source_payload,
+                          "access_policy": shared_policy}, "recorded"),
+        GraphObjectWrite("candidate", TEMPLATE_CODES["memory_candidate"], f"candidate:{memory_candidate_id}", memory_properties, "candidate"),
+        GraphObjectWrite("memory", TEMPLATE_CODES["memory_committed"], f"memory:{memory_id}", memory_properties, "committed"),
+    )
+    links = [GraphLinkWrite(episode_ref, scene_ref, "IN_SCENE"), GraphLinkWrite(episode_ref, session_ref, "IN_SESSION"),
+             GraphLinkWrite(episode_ref, evidence_ref, "DERIVED_FROM"),
+             GraphLinkWrite(candidate_ref, evidence_ref, "DERIVED_FROM"), GraphLinkWrite(candidate_ref, memory_ref, "COMMITTED_AS"),
+             GraphLinkWrite(memory_ref, episode_ref, "IN_EPISODE")]
+    for ref in (episode_ref, candidate_ref, memory_ref):
+        links.extend(GraphLinkWrite(ref, GraphObjectRef(semantic_id=obj.semantic_id), relation)
+                     for obj, relation in policy_edges)
     tx = db.begin()
     try:
         db.execute(
@@ -3810,44 +4106,9 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
             },
             transaction_id=tx,
         )
-        enqueue_semantic_record(
-            db,
-            transaction_id=tx,
-            agent_id=target_agent_id,
-            source_table="memory_candidates",
-            source_id=memory_candidate_id,
-            target_template_code=TEMPLATE_CODES["memory_candidate"],
-            name=f"memory-candidate:{memory_candidate_id}",
-            lifecycle_state="committed",
-            properties={
-                "agent_id": target_agent_id,
-                "memory_candidate_id": memory_candidate_id,
-                "source_event_id": source_event_id,
-                "space_id": body.space_id,
-                "session_id": body.session_id or "",
-                "tier": memory_tier,
-                "classification": classifier_result.as_metadata(),
-            },
-        )
-        enqueue_semantic_record(
-            db,
-            transaction_id=tx,
-            agent_id=target_agent_id,
-            source_table="memories",
-            source_id=memory_id,
-            target_template_code=TEMPLATE_CODES["memory_committed"],
-            name=f"memory:{memory_id}",
-            lifecycle_state="committed",
-            properties={
-                "agent_id": target_agent_id,
-                "memory_id": memory_id,
-                "memory_candidate_id": memory_candidate_id,
-                "source_event_id": source_event_id,
-                "space_id": body.space_id,
-                "session_id": body.session_id or "",
-                "tier": memory_tier,
-            },
-        )
+        queued_memory = enqueue_semantic_graph(db, transaction_id=tx, agent_id=target_agent_id,
+                               source_table="memories", source_id=memory_id,
+                               objects=objects, links=tuple(links), primary_key="memory")
         db.commit(tx)
     except HTTPException:
         db.rollback(tx)
@@ -3862,7 +4123,7 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
             _get_db(),
             bucket=_cfg.audit_bucket,
             agent_id=target_agent_id,
-            entry_type="memory_created",
+            entry_type="memory_queued",
             entry={"memory_id": memory_id, "tier": memory_tier, "source": "device"},
         )
 
@@ -3872,7 +4133,9 @@ def create_memory(body: MemoryCreateIn, device: AuthenticatedDevice = Depends(ge
         "source_event_id": source_event_id,
         "tier": memory_tier,
         "provenance_class": provenance_class,
-        "created": True,
+        "status": "pending",
+        "semantic_sync_id": queued_memory.semantic_sync_id,
+        "created": False,
     }
 
 
@@ -3921,6 +4184,236 @@ def _required_embedding_model() -> str:
     if not model:
         raise HTTPException(status_code=503, detail="OPENAI_EMBED_MODEL not configured")
     return model
+
+
+class SceneRecallIn(BaseModel):
+    query: str = Field(max_length=10000)
+    top_k: int = Field(default=10, ge=1, le=200)
+    as_of: datetime | None = None
+    historical: bool = False
+
+
+class CaretakerAssociationIn(BaseModel):
+    operation_id: str
+    evidence_euid: str
+    animal_euid: str
+    basis: str = Field(min_length=1, max_length=4096)
+
+
+def _authorize_daylily_intake(request: Request, *, initiating_evidence_euid: str,
+                              episode_euid: str) -> Any:
+    from pathlib import Path
+    from agent_hub.daylily_work.handoff import DaylilyLinearBinding
+    from daylily_routes import AuthorizedDaylilyIntake
+
+    device = get_device(request)
+    require_scope(device, "events:write")
+    path = os.environ.get("MARVAIN_V4_BINDINGS_FILE", "").strip()
+    if not path:
+        raise HTTPException(status_code=503, detail="Daylily connector binding is not configured")
+    try:
+        config = json.loads(Path(path).read_text())["daylily"]
+        store = DaylilyTapdbSemanticStore.from_environment()
+        reporter = resolve_caller(store=store, device_id=device.device_id, agent_id=device.agent_id)
+        if reporter != config["reporter_principal_euid"]:
+            raise ValueError("caller is not the configured connector reporter")
+        binding = DaylilyLinearBinding(connection_id=config["connection_id"], account_id=config["account_id"],
+            workspace_id=config["workspace_id"], team_id=config["team_id"], project_id=config["project_id"])
+        with store.read_view() as view:
+            episode = view.get_object(episode_euid)
+            evidence = view.get_object(initiating_evidence_euid)
+            if episode.template_code != TEMPLATE_CODES["episode"]:
+                raise ValueError("initiating episode type is invalid")
+            if not any(x.semantic_id == evidence.semantic_id for x in view.linked_objects(episode_euid, relationship_type="DERIVED_FROM")):
+                raise ValueError("initiating evidence does not belong to the episode")
+            if not any(x.semantic_id == reporter for x in view.linked_objects(evidence.semantic_id, relationship_type="AUTHENTICATED_BY")):
+                raise ValueError("initiating evidence was not authenticated by this reporter")
+            detail = evidence.properties.get("detail")
+            if not isinstance(detail, dict) or not (evidence.properties.get("event_type") == "agent.update" or
+                    (evidence.properties.get("event_type") == "transcript_chunk" and detail.get("role") == "assistant")):
+                raise ValueError("initiating evidence is not an authenticated agent update")
+            scenes = view.linked_objects(episode_euid, relationship_type="IN_SCENE")
+            sessions = view.linked_objects(episode_euid, relationship_type="IN_SESSION")
+            evidence_scenes = view.linked_objects(evidence.semantic_id, relationship_type="IN_SCENE")
+            evidence_sessions = view.linked_objects(evidence.semantic_id, relationship_type="IN_SESSION")
+            if (len(scenes) != 1 or len(sessions) != 1 or len(evidence_scenes) != 1 or len(evidence_sessions) != 1
+                    or scenes[0].semantic_id != evidence_scenes[0].semantic_id
+                    or sessions[0].semantic_id != evidence_sessions[0].semantic_id):
+                raise ValueError("episode and evidence do not share a unique scene and session")
+            policy = MarvainSemanticLifecycle._read_policy(view, episode)
+            evidence_policy = MarvainSemanticLifecycle._read_policy(view, evidence)
+            now = datetime.now(timezone.utc)
+            if not policy.permits(authenticated_principal_id=reporter, purpose=MemoryPurpose.DETAIL,
+                                  layer=MemoryLayer.EPISODE, at=now) or not evidence_policy.permits(
+                    authenticated_principal_id=reporter, purpose=MemoryPurpose.DETAIL,
+                    layer=MemoryLayer.ATTRIBUTED_EVENT, at=now):
+                raise ValueError("reporter is outside the source audience")
+        rows = _get_db().query(
+            """SELECT s.agent_id::text AS agent_id, s.space_id::text AS space_id, s.session_id::text AS session_id
+               FROM semantic_sync_status sync JOIN sessions s ON s.session_id = sync.source_id
+               WHERE sync.source_table = 'sessions' AND sync.status = 'written' AND sync.tapdb_euid = :scene""",
+            {"scene": scenes[0].semantic_id},
+        )
+        if len(rows) != 1 or str(rows[0]["agent_id"]) != device.agent_id:
+            raise ValueError("episode has no unique authenticated agent session")
+        _, canonical_session = _scene_for_session(session_id=str(rows[0]["session_id"]), agent_id=device.agent_id)
+        if canonical_session != sessions[0].semantic_id:
+            raise ValueError("episode session does not match the persisted scene")
+        return AuthorizedDaylilyIntake(binding=binding, agent_id=device.agent_id,
+            space_id=str(rows[0]["space_id"]), session_id=str(rows[0]["session_id"]),
+            scene_euid=scenes[0].semantic_id, reporter_principal_euid=reporter,
+            requester_principal_euid=reporter, access_policy=policy,
+            recipient_principal_euid=config.get("recipient_principal_euid"))
+    except (KeyError, ValueError, OSError, TypeError) as exc:
+        raise HTTPException(status_code=403, detail=f"Daylily intake is not authorized: {exc}") from exc
+
+
+from daylily_routes import build_daylily_router
+from identity_routes import build_identity_router
+
+api_app.include_router(build_daylily_router(get_db=_get_db, authorize=_authorize_daylily_intake))
+api_app.include_router(build_identity_router(get_db=_get_db, get_user=get_user,
+                                             require_agent_role=_require_agent_role,
+                                             cognito_issuer=_cfg.cognito_issuer))
+
+
+@api_app.post("/v1/actors/animal-associations", status_code=202)
+def associate_animal(body: CaretakerAssociationIn, user: AuthenticatedUser = Depends(get_user)) -> dict[str, str]:
+    """Record an explicit human caretaker decision against source evidence."""
+    operation_id = str(_recognition_uuid(body.operation_id, "operation_id"))
+    path = os.environ.get("MARVAIN_V4_BINDINGS_FILE", "").strip()
+    if not path:
+        raise HTTPException(status_code=503, detail="Caretaker bindings are not configured")
+    try:
+        from pathlib import Path
+        config = json.loads(Path(path).read_text())
+        caretakers = config["caretakers"]
+        matches = [item for item in caretakers if item.get("user_id") == user.user_id and
+                   item.get("subject") == user.cognito_sub]
+        if len(matches) != 1:
+            raise ValueError("exactly one authenticated caretaker binding is required")
+        binding = matches[0]
+        store = DaylilyTapdbSemanticStore.from_environment()
+        with store.read_view() as view:
+            evidence, animal = view.get_object(body.evidence_euid), view.get_object(body.animal_euid)
+            author, principal = view.get_object(binding["actor_euid"]), view.get_object(binding["principal_euid"])
+            if not any(x.semantic_id == principal.semantic_id for x in view.linked_objects(author.semantic_id, relationship_type="AUTHENTICATED_AS")):
+                raise ValueError("caretaker principal is not linked to the human actor")
+            references = view.linked_objects(principal.semantic_id, relationship_type="has_external_reference")
+            if not any(x.properties.get("external_identifier", {}).get("system") == binding["issuer"] and
+                       x.properties.get("external_identifier", {}).get("target_euid") == user.cognito_sub for x in references):
+                raise ValueError("caretaker principal does not identify this authenticated subject")
+            if not any(x.semantic_id == animal.semantic_id for x in view.linked_objects(author.semantic_id, relationship_type="CARETAKER_OF")):
+                raise ValueError("human has no explicit caretaker authority for this animal")
+            scenes = view.linked_objects(evidence.semantic_id, relationship_type="IN_SCENE")
+            sessions = view.linked_objects(evidence.semantic_id, relationship_type="IN_SESSION")
+            if len(scenes) != 1 or len(sessions) != 1:
+                raise ValueError("evidence scene/session lineage is incomplete")
+            policy = MarvainSemanticLifecycle._read_policy(view, evidence)
+            if not policy.permits(authenticated_principal_id=principal.semantic_id, purpose=MemoryPurpose.DETAIL,
+                                  layer=MemoryLayer.ATTRIBUTED_EVENT, at=datetime.now(timezone.utc)):
+                raise ValueError("caretaker is not authorized for the source evidence")
+            owner = view.get_object(policy.owner_principal_id)
+            readers = tuple(view.get_object(key) for key in policy.reader_principal_ids)
+        scene_rows = _get_db().query(
+            """SELECT s.agent_id::text AS agent_id, s.space_id::text AS space_id, s.session_id::text AS session_id
+               FROM semantic_sync_status sync JOIN sessions s ON s.session_id = sync.source_id
+               WHERE sync.source_table = 'sessions' AND sync.status = 'written' AND sync.tapdb_euid = :scene""",
+            {"scene": scenes[0].semantic_id},
+        )
+        if len(scene_rows) != 1:
+            raise ValueError("scene has no unique operational session")
+        scope = scene_rows[0]
+        _, session_euid = _scene_for_session(session_id=str(scope["session_id"]), agent_id=str(scope["agent_id"]))
+        if sessions[0].semantic_id != session_euid:
+            raise ValueError("evidence session does not match the scene")
+        _require_agent_role(user=user, agent_id=str(scope["agent_id"]), required_role="member")
+    except (ValueError, KeyError, OSError, TypeError) as exc:
+        raise HTTPException(status_code=403, detail=f"Caretaker association is not authorized: {exc}") from exc
+    db = _get_db()
+    tx = db.begin()
+    payload = json.dumps({"evidence_euid": body.evidence_euid, "animal_euid": body.animal_euid,
+                          "basis": body.basis, "author_principal_euid": principal.semantic_id}, sort_keys=True)
+    try:
+        rows = db.query(
+            """INSERT INTO events(event_id, agent_id, space_id, session_id, type, payload)
+               VALUES (:event_id::uuid, :agent_id::uuid, :space_id::uuid, :session_id::uuid,
+                       'animal.association', :payload::jsonb)
+               ON CONFLICT (event_id) DO UPDATE SET event_id = events.event_id
+               WHERE events.agent_id = EXCLUDED.agent_id AND events.space_id = EXCLUDED.space_id
+                 AND events.session_id = EXCLUDED.session_id AND events.type = EXCLUDED.type
+                 AND events.payload = EXCLUDED.payload
+               RETURNING created_at::text AS created_at""",
+            {"event_id": operation_id, "agent_id": scope["agent_id"], "space_id": scope["space_id"],
+             "session_id": scope["session_id"], "payload": payload}, transaction_id=tx,
+        )
+        if len(rows) != 1:
+            raise HTTPException(status_code=409, detail="Association operation conflicts with an existing event")
+        decided_at = datetime.fromisoformat(str(rows[0]["created_at"]).replace("Z", "+00:00"))
+        objects, links = MarvainSemanticLifecycle(store).actor_association_graph(
+            evidence=evidence, actor=animal, author_actor=author, author_principal=principal, basis=body.basis,
+            decided_at=decided_at, policy=policy, owner=owner, readers=readers, association_key=operation_id,
+        )
+        enqueue_semantic_graph(db, transaction_id=tx, agent_id=str(scope["agent_id"]), source_table="events",
+                               source_id=operation_id, objects=objects, links=links, primary_key="association")
+        db.commit(tx)
+    except Exception:
+        db.rollback(tx)
+        raise
+    return {"operation_id": operation_id, "status": "queued"}
+
+
+@api_app.post("/v1/scenes/{scene_euid}/recall")
+def recall_scene(scene_euid: str, body: SceneRecallIn,
+                 device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
+    """Authorize on canonical lineage before retrieving and ranking projections."""
+    require_scope(device, "memories:read")
+    rows = _get_db().query(
+        """SELECT source_id::text AS session_id, agent_id::text AS agent_id
+           FROM semantic_sync_status WHERE target_template_code = :template
+             AND tapdb_euid = :scene_euid AND status = 'written'""",
+        {"template": TEMPLATE_CODES["scene"], "scene_euid": scene_euid},
+    )
+    if len(rows) != 1:
+        raise HTTPException(status_code=404, detail="Scene not found")
+    agent_id, session_id = str(rows[0]["agent_id"]), str(rows[0]["session_id"])
+    _require_device_agent_access(device=device, agent_id=agent_id)
+    _, session_euid = _scene_for_session(session_id=session_id, agent_id=agent_id)
+    store = DaylilyTapdbSemanticStore.from_environment()
+    try:
+        principal = resolve_caller(store=store, device_id=device.device_id, agent_id=agent_id)
+        now = datetime.now(timezone.utc)
+        as_of = body.as_of or now
+        if as_of.tzinfo is None or as_of.utcoffset() is None:
+            raise ValueError("as_of must be timezone-aware")
+        records = MarvainSemanticLifecycle(store).recall_scene(
+            scene_semantic_id=scene_euid, session_semantic_id=session_euid,
+            authenticated_principal_id=principal, access_at=now, as_of=as_of, historical=body.historical,
+        )
+    except (ValueError, KeyError, OSError) as exc:
+        raise HTTPException(status_code=403, detail=f"Scene recall binding or policy is invalid: {exc}") from exc
+    terms = _recall_terms(body.query)
+    def ranking(item: Any) -> tuple[int, float, str]:
+        content = str(item.memory.properties.get("content") or "")
+        matches = len(terms & _recall_terms(content))
+        recorded = str(item.memory.properties.get("effective_at") or "")
+        try:
+            timestamp = datetime.fromisoformat(recorded.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail="Canonical memory has an invalid effective time") from exc
+        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+            raise HTTPException(status_code=409, detail="Canonical memory effective time lacks timezone")
+        return (-matches, -timestamp.timestamp(), item.memory.semantic_id)
+    ranked = sorted((item for item in records if not terms or
+                     terms & _recall_terms(str(item.memory.properties.get("content") or ""))), key=ranking)
+    return {"scene_euid": scene_euid, "session_euid": session_euid, "ranking_method": "canonical_lexical_v1",
+            "memories": [{"semantic_id": item.memory.semantic_id,
+                          "content": item.memory.properties.get("content"),
+                          "episode_euid": item.episode.semantic_id,
+                          "evidence_euids": [e.semantic_id for e in item.evidence],
+                          "effective_at": item.memory.properties.get("effective_at"),
+                          "superseded_by": list(item.superseded_by),
+                          "is_superseded": item.is_superseded} for item in ranked[:body.top_k]]}
 
 
 @api_app.post("/v1/recall", response_model=RecallOut)
@@ -4020,6 +4513,9 @@ def recall_memories(body: RecallIn, device: AuthenticatedDevice = Depends(get_de
           AND memories.embedding IS NOT NULL
           AND memories.lifecycle_state = 'committed'
           AND memories.tombstoned_at IS NULL
+          AND EXISTS (SELECT 1 FROM semantic_sync_status sync WHERE sync.agent_id = memories.agent_id
+                      AND sync.source_table = 'memories' AND sync.source_id = memories.memory_id
+                      AND sync.status = 'written')
           {tier_clause}
           {space_clause}
           {person_clause}
@@ -4132,6 +4628,7 @@ class SpaceEventOut(BaseModel):
     person_id: str | None
     payload: dict[str, Any]
     created_at: str
+    session_id: str | None
 
 
 class SpaceEventsOut(BaseModel):
@@ -4144,6 +4641,7 @@ class SpaceEventsOut(BaseModel):
 def get_space_events(
     space_id: str,
     limit: int = 50,
+    session_id: str | None = None,
     device: AuthenticatedDevice = Depends(get_device),
 ) -> SpaceEventsOut:
     """Get recent events for a space.
@@ -4161,6 +4659,15 @@ def get_space_events(
         mismatch_detail="Space belongs to a different agent",
     )
 
+    if session_id:
+        sessions = _get_db().query(
+            "SELECT agent_id::text AS agent_id FROM sessions WHERE session_id = :session_id::uuid AND space_id = :space_id::uuid",
+            {"session_id": session_id, "space_id": space_id},
+        )
+        if len(sessions) != 1:
+            raise HTTPException(status_code=404, detail="Session not found in space")
+        _require_device_agent_access(device=device, agent_id=str(sessions[0]["agent_id"]))
+
     # Check privacy mode
     if is_privacy_mode(_get_db(), space_id):
         return SpaceEventsOut(events=[])
@@ -4173,13 +4680,15 @@ def get_space_events(
                type,
                person_id::TEXT as person_id,
                payload::TEXT as payload_json,
-               created_at::TEXT as created_at
+               created_at::TEXT as created_at,
+               session_id::TEXT as session_id
         FROM events
         WHERE space_id = :space_id::uuid
+          AND (:session_id = '' OR session_id = NULLIF(:session_id, '')::uuid)
         ORDER BY created_at DESC
         LIMIT :limit
         """,
-        {"space_id": space_id, "limit": limit},
+        {"space_id": space_id, "limit": limit, "session_id": session_id or ""},
     )
 
     events = []
@@ -4195,6 +4704,7 @@ def get_space_events(
                 person_id=r.get("person_id"),
                 payload=payload,
                 created_at=r["created_at"],
+                session_id=r.get("session_id"),
             )
         )
 
@@ -4477,8 +4987,11 @@ def review_recognition_hypothesis(
                 observation=observation,
                 person_id=hypothesis.candidate_person_id,
             )
+        _, reviewer_principal = resolve_human(store=DaylilyTapdbSemanticStore.from_environment(),
+                                               user_id=user.user_id, subject=user.cognito_sub)
         repository.configure_review(
             reviewer_auth_subject=user.cognito_sub,
+            reviewer_principal_euid=reviewer_principal,
             no_match_retention_until=body.no_match_retention_until,
         )
         application = RecognitionLifecycleService(repository).review(
@@ -4557,7 +5070,8 @@ def _resolve_artifact_context(
     )
 
     if body.purpose in {ArtifactPurpose.RECOGNITION, ArtifactPurpose.VISUAL} and source_event_id is None:
-        raise HTTPException(status_code=400, detail=f"source_event_id is required for {body.purpose.value} artifacts")
+        if not (body.upload_via_hub and body.purpose is ArtifactPurpose.RECOGNITION and session_id and space_id):
+            raise HTTPException(status_code=400, detail=f"source_event_id is required for {body.purpose.value} artifacts")
 
     if source_event_id is not None:
         rows = _get_db().query(
@@ -4617,6 +5131,33 @@ def _resolve_artifact_context(
 
     if target_agent_id != str(device.agent_id) and source_event_id is None and space_id is None:
         raise HTTPException(status_code=403, detail="Cross-agent artifacts require owned source context")
+    if body.upload_via_hub and body.purpose is ArtifactPurpose.RECOGNITION and source_event_id is None:
+        session_rows = _get_db().query(
+            "SELECT metadata::text AS metadata_json FROM sessions WHERE session_id = :session_id::uuid AND agent_id = :agent_id::uuid AND space_id = :space_id::uuid",
+            {"session_id": session_id, "agent_id": target_agent_id, "space_id": space_id},
+        )
+        if len(session_rows) != 1:
+            raise HTTPException(status_code=404, detail="Session not found")
+        metadata = _parse_json_obj(session_rows[0].get("metadata_json") or "{}")
+        if metadata.get("actor_type") != "device" or metadata.get("actor_id") != device.device_id:
+            raise HTTPException(status_code=403, detail="Artifact session belongs to a different device")
+        try:
+            route = load_route(device_id=device.device_id, agent_id=target_agent_id, space_id=str(space_id))
+            store = DaylilyTapdbSemanticStore.from_environment()
+            resolve_route(store, route)
+            scene_euid, session_euid = _scene_for_session(session_id=str(session_id), agent_id=target_agent_id)
+            with store.read_view() as view:
+                scene = view.get_object(scene_euid)
+                policy = MarvainSemanticLifecycle._read_policy(view, scene)
+                if not any(x.semantic_id == route.device_euid for x in view.linked_objects(session_euid, relationship_type="USES_DEVICE")):
+                    raise ValueError("session is not linked to this device")
+                if not policy.raw_capture_allowed or not policy.permits(
+                    authenticated_principal_id=route.principal_euid, purpose=MemoryPurpose.DETAIL,
+                    layer=MemoryLayer.RAW_ARTIFACT, at=datetime.now(timezone.utc),
+                ):
+                    raise ValueError("scene policy does not permit capture")
+        except (ValueError, KeyError, OSError) as exc:
+            raise HTTPException(status_code=403, detail=f"Artifact capture is not authorized: {exc}") from exc
     return target_agent_id, space_id, session_id, source_event_id
 
 
@@ -4884,6 +5425,8 @@ def create_artifact_upload_intent(
         return _artifact_intent_payload(intent, upload_url=None, required_headers=None, replayed=True)
     if intent.lifecycle_state is not ArtifactLifecycleState.PENDING_UPLOAD:
         raise HTTPException(status_code=409, detail="Artifact upload intent is not writable")
+    if body.upload_via_hub:
+        return _artifact_intent_payload(intent, upload_url=None, required_headers=None, replayed=replayed)
     upload_url, required_headers = _artifact_presign(intent)
     return _artifact_intent_payload(
         intent,
@@ -4891,6 +5434,49 @@ def create_artifact_upload_intent(
         required_headers=required_headers,
         replayed=replayed,
     )
+
+
+@api_app.put("/v1/artifacts/{artifact_id}/upload")
+async def upload_artifact_through_hub(
+    artifact_id: str, request: Request, device: AuthenticatedDevice = Depends(get_device),
+) -> dict[str, Any]:
+    """Store bytes under a scoped intent using the S3 PUT result as completion evidence."""
+    require_scope(device, "artifacts:write")
+    artifact_id = str(_artifact_uuid(artifact_id, "artifact_id"))
+    repository = RdsArtifactRepository(_get_db())
+    try:
+        intent = repository.get_upload_intent(artifact_id)
+    except ArtifactServiceError as exc:
+        _artifact_http_error(exc)
+        raise AssertionError("unreachable")
+    _require_artifact_record_access(intent, device)
+    if intent.lifecycle_state is ArtifactLifecycleState.AVAILABLE:
+        return _verified_artifact_payload(repository.get_verified_artifact(artifact_id), replayed=True)
+    if intent.lifecycle_state is not ArtifactLifecycleState.PENDING_UPLOAD:
+        raise HTTPException(status_code=409, detail="Artifact upload intent is not writable")
+    if datetime.now(timezone.utc) > intent.upload_expires_at:
+        raise HTTPException(status_code=409, detail="Artifact upload intent has expired")
+    if request.headers.get("content-type", "") != intent.media_type:
+        raise HTTPException(status_code=400, detail="Content-Type must match the artifact intent")
+    data = await request.body()
+    if len(data) != intent.expected_byte_count:
+        raise HTTPException(status_code=400, detail="Request size does not match artifact intent")
+    result = _get_s3().put_object(
+        Bucket=intent.bucket, Key=intent.object_key, Body=data, ContentType=intent.media_type,
+        ContentLength=intent.expected_byte_count, Metadata={"sha256": intent.expected_sha256},
+        ChecksumSHA256=base64.b64encode(bytes.fromhex(intent.expected_sha256)).decode("ascii"),
+    )
+    etag, version_id = str(result.get("ETag") or ""), str(result.get("VersionId") or "")
+    if not etag or not version_id:
+        raise HTTPException(status_code=502, detail="Artifact PUT succeeded but storage did not return the required ETag and version ID")
+    now = datetime.now(timezone.utc)
+    artifact = VerifiedArtifact(
+        intent=replace(intent, lifecycle_state=ArtifactLifecycleState.AVAILABLE),
+        actual_sha256=intent.expected_sha256, actual_byte_count=intent.expected_byte_count,
+        etag=etag, version_id=version_id, verification_observed_at=now, completed_at=now,
+    )
+    repository.persist_verified_completion(artifact)
+    return _verified_artifact_payload(artifact, replayed=False)
 
 
 @api_app.post("/v1/artifacts/{artifact_id}/complete")

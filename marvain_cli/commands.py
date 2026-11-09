@@ -962,6 +962,14 @@ def register(registry: CommandRegistry, spec: CliSpec) -> None:
             ("gui-guide", smoke_gui_guide_cmd, required_policy(supports_json=True)),
         ],
     )
+    from marvain_cli.dot import serve_cmd as dot_serve_cmd
+
+    register_group_commands(
+        registry,
+        "dot",
+        "Dedicated dot MCP service.",
+        [("serve", dot_serve_cmd, required_policy(mutates_state=True, long_running=True))],
+    )
     from marvain_cli.simulate import two_devices_cmd
 
     register_group_commands(

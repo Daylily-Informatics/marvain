@@ -64,7 +64,8 @@ class DotCanonicalBackend(Protocol):
     def load_run(self, run_euid: str) -> SoftwareAgentRun | None: ...
 
     def recall(
-        self, *, binding: DotBinding, scene: DotScene, run: SoftwareAgentRun, query: str, access_at: datetime
+        self, *, binding: DotBinding, scene: DotScene, source_scene: DotScene, run: SoftwareAgentRun,
+        query: str, access_at: datetime,
     ) -> Sequence[DotMemoryHit]: ...
 
     def record_update(
@@ -115,11 +116,17 @@ class DotBridge:
             started_at=datetime.now(UTC),
         )
 
-    def recall(self, principal: DotOAuthPrincipal, *, run_euid: str, query: str) -> Sequence[DotMemoryHit]:
+    def recall(
+        self, principal: DotOAuthPrincipal, *, run_euid: str, source_scene_euid: str, query: str,
+    ) -> Sequence[DotMemoryHit]:
         run, scene = self._require_run(principal, run_euid)
+        source_scene = self._scenes.get(source_scene_euid)
+        if source_scene is None:
+            raise PermissionError("This linked account has no recall access to that source scene.")
         return self.backend.recall(
             binding=self.binding,
             scene=scene,
+            source_scene=source_scene,
             run=run,
             query=_required_text(query, "query"),
             access_at=datetime.now(UTC),

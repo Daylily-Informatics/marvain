@@ -31,8 +31,8 @@ from agent_hub.recognition_service import (
     RecognitionWorkerHeartbeat,
     ReviewDecision,
 )
-from agent_hub.semantic_outbox import enqueue_semantic_record
-from agent_hub.semantic_tapdb import TEMPLATE_CODES
+from agent_hub.semantic_outbox import GraphSourceRef, enqueue_semantic_graph, enqueue_semantic_record
+from agent_hub.semantic_tapdb import TEMPLATE_CODES, GraphLinkWrite, GraphObjectRef, GraphObjectWrite
 
 
 class RecognitionPersistenceError(RuntimeError):
@@ -165,6 +165,7 @@ class RdsRecognitionRepository:
         self._hypothesis_requested_projection = False
         self._hypothesis_consent_id: str | None = None
         self._review_auth_subject: str | None = None
+        self._reviewer_principal_euid: str | None = None
         self._no_match_retention_until: datetime | None = None
 
     def commit(self) -> None:
@@ -327,7 +328,7 @@ class RdsRecognitionRepository:
             uri=expected_uri,
             media_type=expected_media_type,
             sha256=expected_sha256,
-            captured_at=_datetime(row.get("event_created_at"), "source event created_at"),
+            captured_at=_datetime(event_payload.get("captured_at"), "source event payload captured_at"),
             source_event_id=_text(row.get("source_event_id")),
             space_id=event_space_id,
             location_id=authoritative_location_id,
@@ -415,30 +416,20 @@ class RdsRecognitionRepository:
             },
             transaction_id=self.transaction_id,
         )
-        enqueue_semantic_record(
-            self.db,
-            transaction_id=self.transaction_id,
-            agent_id=observation.agent_id,
-            source_table="recognition_observations",
-            source_id=observation.observation_id,
-            target_template_code=TEMPLATE_CODES["recognition_observation"],
-            name=f"recognition-observation:{observation.observation_id}",
-            lifecycle_state=observation.state.value,
-            properties={
-                "agent_id": observation.agent_id,
-                "observation_id": observation.observation_id,
-                "artifact_id": observation.artifact_id,
-                "source_event_id": observation.source_event_id or "",
-                "space_id": observation.space_id or "",
-                "location_id": observation.location_id or "",
-                "session_id": observation.session_id or "",
-                "device_id": observation.device_id,
-                "modality": observation.modality.value,
-                "model_id": observation.model_id,
-                "model_version": observation.model_version,
-                "embedding_sha256": observation.embedding_sha256,
-            },
-        )
+        if not observation.source_event_id:
+            raise RecognitionPersistenceError("canonical observation requires source event identity")
+        source_template = TEMPLATE_CODES["event_sensor"]
+        objects = (GraphObjectWrite("observation", TEMPLATE_CODES["recognition_observation"],
+            f"recognition-observation:{observation.observation_id}",
+            {"observation_id": observation.observation_id, "artifact_id": observation.artifact_id,
+             "modality": observation.modality.value, "model_id": observation.model_id,
+             "model_version": observation.model_version, "embedding_sha256": observation.embedding_sha256,
+             "created_at": observation.created_at.isoformat()}, observation.state.value),)
+        links = (GraphLinkWrite(GraphObjectRef(key="observation"),
+            GraphSourceRef("events", observation.source_event_id, source_template), "BASED_ON"),)
+        enqueue_semantic_graph(self.db, transaction_id=self.transaction_id, agent_id=observation.agent_id,
+            source_table="recognition_observations", source_id=observation.observation_id,
+            objects=objects, links=links, primary_key="observation")
 
     def get_observation(self, observation_id: str) -> RecognitionObservation:
         rows = self.db.query(
@@ -596,27 +587,16 @@ class RdsRecognitionRepository:
             },
             transaction_id=self.transaction_id,
         )
-        enqueue_semantic_record(
-            self.db,
-            transaction_id=self.transaction_id,
-            agent_id=observation.agent_id,
-            source_table="recognition_hypotheses",
-            source_id=hypothesis.hypothesis_id,
-            target_template_code=TEMPLATE_CODES["recognition_hypothesis"],
-            name=f"recognition-hypothesis:{hypothesis.hypothesis_id}",
-            lifecycle_state="proposed",
-            properties={
-                "agent_id": observation.agent_id,
-                "hypothesis_id": hypothesis.hypothesis_id,
-                "observation_id": hypothesis.observation_id,
-                "kind": hypothesis.kind.value,
-                "candidate_person_id": hypothesis.candidate_person_id or "",
-                "confidence": hypothesis.confidence,
-                "distance": hypothesis.distance,
-                "requested_projection": self._hypothesis_requested_projection,
-                "consent_id": self._hypothesis_consent_id or "",
-            },
-        )
+        objects = (GraphObjectWrite("hypothesis", TEMPLATE_CODES["recognition_hypothesis"],
+            f"recognition-hypothesis:{hypothesis.hypothesis_id}",
+            {"kind": hypothesis.kind.value, "confidence": hypothesis.confidence, "distance": hypothesis.distance,
+             "rationale": hypothesis.rationale, "created_at": hypothesis.created_at.isoformat()}, "proposed"),)
+        links = (GraphLinkWrite(GraphObjectRef(key="hypothesis"),
+            GraphSourceRef("recognition_observations", hypothesis.observation_id, TEMPLATE_CODES["recognition_observation"]),
+            "BASED_ON"),)
+        enqueue_semantic_graph(self.db, transaction_id=self.transaction_id, agent_id=observation.agent_id,
+            source_table="recognition_hypotheses", source_id=hypothesis.hypothesis_id,
+            objects=objects, links=links, primary_key="hypothesis")
 
     def get_hypothesis(self, hypothesis_id: str) -> RecognitionHypothesis:
         rows = self.db.query(
@@ -682,14 +662,16 @@ class RdsRecognitionRepository:
         self,
         *,
         reviewer_auth_subject: str,
+        reviewer_principal_euid: str,
         no_match_retention_until: datetime | None,
     ) -> None:
         self._review_auth_subject = _text(reviewer_auth_subject)
+        self._reviewer_principal_euid = _text(reviewer_principal_euid)
         self._no_match_retention_until = no_match_retention_until
 
     def apply_decision(self, application: DecisionApplication) -> None:
-        if not self._review_auth_subject:
-            raise RecognitionPersistenceError("authenticated reviewer subject is required")
+        if not self._review_auth_subject or not self._reviewer_principal_euid:
+            raise RecognitionPersistenceError("authenticated reviewer subject and principal are required")
         observation = application.observation
         hypothesis = application.hypothesis
         decision = application.decision
@@ -900,26 +882,25 @@ class RdsRecognitionRepository:
                 },
             )
 
-        enqueue_semantic_record(
-            self.db,
-            transaction_id=self.transaction_id,
-            agent_id=observation.agent_id,
-            source_table="recognition_decisions",
-            source_id=decision.decision_id,
-            target_template_code=TEMPLATE_CODES["event_sensor"],
-            name=f"recognition-decision:{decision.decision_id}",
-            lifecycle_state=decision.decision.value,
-            properties={
-                "agent_id": observation.agent_id,
-                "recognition_decision_id": decision.decision_id,
-                "hypothesis_id": hypothesis.hypothesis_id,
-                "observation_id": observation.observation_id,
-                "decision": decision.decision.value,
-                "reviewer_actor_type": decision.reviewer.actor_type.value,
-                "reviewer_actor_id": decision.reviewer.actor_id,
-                "consent_id": decision.consent_id or "",
-            },
-        )
+        decision_ref = GraphObjectRef(key="decision")
+        objects = (GraphObjectWrite("decision", TEMPLATE_CODES["event_sensor"],
+            f"recognition-decision:{decision.decision_id}",
+            {"decision": decision.decision.value, "reason": decision.reason,
+             "decided_at": decision.decided_at.isoformat(), "consent_id": decision.consent_id or ""},
+            decision.decision.value),)
+        links = [
+            GraphLinkWrite(decision_ref, GraphSourceRef("recognition_observations", observation.observation_id,
+                                                       TEMPLATE_CODES["recognition_observation"]), "BASED_ON"),
+            GraphLinkWrite(decision_ref, GraphSourceRef("recognition_hypotheses", hypothesis.hypothesis_id,
+                                                       TEMPLATE_CODES["recognition_hypothesis"]), "REVIEWS"),
+            GraphLinkWrite(decision_ref, GraphObjectRef(semantic_id=self._reviewer_principal_euid), "AUTHENTICATED_BY"),
+        ]
+        if decision.decision == ReviewDecision.ACCEPTED and hypothesis.candidate_person_id:
+            links.append(GraphLinkWrite(decision_ref,
+                GraphSourceRef("people", hypothesis.candidate_person_id, TEMPLATE_CODES["person"]), "ASSOCIATES_ACTOR"))
+        enqueue_semantic_graph(self.db, transaction_id=self.transaction_id, agent_id=observation.agent_id,
+            source_table="recognition_decisions", source_id=decision.decision_id,
+            objects=objects, links=tuple(links), primary_key="decision")
 
     def persist_worker_heartbeat(
         self,

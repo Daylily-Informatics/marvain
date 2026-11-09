@@ -176,6 +176,33 @@ class MarvainSemanticLifecycle:
                                    properties={"run_key": run_key, "started_at": _timestamp(started_at, "started_at")},
                                    lifecycle_state="running", edges=edges)
 
+    def scene_session_graph(
+        self, *, space: SemanticObject, device: SemanticObject, session_key: str,
+        started_at: datetime, policy: MemoryAccessPolicy, owner: SemanticObject,
+        readers: tuple[SemanticObject, ...],
+    ) -> tuple[tuple[GraphObjectWrite, ...], tuple[GraphLinkWrite, ...]]:
+        """Build a scene and session graph for the transactional outbox writer."""
+        if space.template_code != TEMPLATE_CODES["space"] or device.template_code != TEMPLATE_CODES["device"]:
+            raise LifecycleError("scene requires an established space and device")
+        session_key = _require_text(session_key, "session_key")
+        timestamp = _timestamp(started_at, "started_at")
+        policy_edges = self._policy_links(policy, owner, readers)
+        objects = (
+            GraphObjectWrite("scene", TEMPLATE_CODES["scene"], f"scene:{session_key}",
+                             {"started_at": timestamp, "access_policy": policy.as_properties()}, "active"),
+            GraphObjectWrite("session", TEMPLATE_CODES["session"], f"session:{session_key}",
+                             {"started_at": timestamp}, "open"),
+        )
+        scene, session = GraphObjectRef(key="scene"), GraphObjectRef(key="session")
+        links = [
+            GraphLinkWrite(scene, GraphObjectRef(semantic_id=space.semantic_id), "IN_SPACE"),
+            GraphLinkWrite(session, scene, "IN_SCENE"),
+            GraphLinkWrite(session, GraphObjectRef(semantic_id=device.semantic_id), "USES_DEVICE"),
+        ]
+        links.extend(GraphLinkWrite(scene, GraphObjectRef(semantic_id=obj.semantic_id), relation)
+                     for obj, relation in policy_edges)
+        return objects, tuple(links)
+
     def record_embodiment(self, *, actor: SemanticObject, device: SemanticObject, name: str) -> SemanticObject:
         if actor.template_code not in {TEMPLATE_CODES["person"], TEMPLATE_CODES["animal"], TEMPLATE_CODES["agent"]}:
             raise LifecycleError("embodiment requires an established actor")
@@ -223,25 +250,39 @@ class MarvainSemanticLifecycle:
             lifecycle_state="recorded", properties={"occurred_at": _timestamp(occurred_at, "occurred_at"),
                 "detail": dict(detail), "access_policy": policy.as_properties()}, edges=edges)
 
-    def record_actor_association(
+    def actor_association_graph(
         self, *, evidence: SemanticObject, actor: SemanticObject, author_actor: SemanticObject,
         author_principal: SemanticObject, basis: str, decided_at: datetime,
         policy: MemoryAccessPolicy, owner: SemanticObject, readers: tuple[SemanticObject, ...],
-    ) -> SemanticObject:
-        """Record a caretaker's explicit animal association after caller authorization."""
+        association_key: str,
+    ) -> tuple[tuple[GraphObjectWrite, ...], tuple[GraphLinkWrite, ...]]:
+        """Prepare an explicit animal association for the transactional writer."""
         if actor.template_code != TEMPLATE_CODES["animal"]:
             raise LifecycleError("caretaker association requires an established animal actor")
         if author_actor.template_code != TEMPLATE_CODES["person"] or author_principal.template_code != TEMPLATE_CODES["principal"]:
             raise LifecycleError("caretaker association requires a human author and authenticated principal")
         if evidence.template_code not in {TEMPLATE_CODES["recognition_observation"], TEMPLATE_CODES["event_sensor"]}:
             raise LifecycleError("association requires source observation evidence")
-        edges = [(evidence, "BASED_ON", False), (actor, "ASSOCIATES_ACTOR", False),
-                 (author_actor, "AUTHORED_BY", False), (author_principal, "AUTHENTICATED_BY", False)]
-        edges.extend((endpoint, relationship, False) for endpoint, relationship in self._policy_links(policy, owner, readers))
-        return self._create_linked(template_code=TEMPLATE_CODES["actor_association"],
-            name=f"actor-association:{uuid.uuid4()}", lifecycle_state="asserted",
-            properties={"basis": _require_text(basis, "basis"), "decided_at": _timestamp(decided_at, "decided_at"),
-                        "access_policy": policy.as_properties()}, edges=edges)
+        edges = [(evidence, "BASED_ON"), (actor, "ASSOCIATES_ACTOR"),
+                 (author_actor, "AUTHORED_BY"), (author_principal, "AUTHENTICATED_BY"),
+                 *self._policy_links(policy, owner, readers)]
+        item = GraphObjectWrite("association", TEMPLATE_CODES["actor_association"],
+            f"actor-association:{_require_text(association_key, 'association_key')}", {"basis": _require_text(basis, "basis"),
+            "decided_at": _timestamp(decided_at, "decided_at"), "access_policy": policy.as_properties()}, "asserted")
+        links = tuple(GraphLinkWrite(GraphObjectRef(key="association"), GraphObjectRef(semantic_id=obj.semantic_id), relation)
+                      for obj, relation in edges)
+        return (item,), links
+
+    def record_actor_association(
+        self, *, evidence: SemanticObject, actor: SemanticObject, author_actor: SemanticObject,
+        author_principal: SemanticObject, basis: str, decided_at: datetime,
+        policy: MemoryAccessPolicy, owner: SemanticObject, readers: tuple[SemanticObject, ...],
+    ) -> SemanticObject:
+        """Record an explicitly authorized caretaker association as one graph."""
+        objects, links = self.actor_association_graph(evidence=evidence, actor=actor, author_actor=author_actor,
+            author_principal=author_principal, basis=basis, decided_at=decided_at, policy=policy, owner=owner, readers=readers,
+            association_key=str(uuid.uuid4()))
+        return self.store.create_graph(objects=objects, links=links)["association"]
 
     def correct_memory(
         self, *, original: SemanticObject, replacement: SemanticObject, author: SemanticObject,

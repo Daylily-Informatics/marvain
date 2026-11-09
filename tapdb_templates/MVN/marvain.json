@@ -207,7 +207,11 @@
           "display_name": "",
           "lifecycle_state": "active"
         },
-        "allowed_lifecycle_states": ["active", "disabled", "deleted"],
+        "allowed_lifecycle_states": [
+          "active",
+          "disabled",
+          "deleted"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -231,7 +235,12 @@
           "aliases": [],
           "lifecycle_state": "active"
         },
-        "allowed_lifecycle_states": ["candidate", "active", "merged", "deleted"],
+        "allowed_lifecycle_states": [
+          "candidate",
+          "active",
+          "merged",
+          "deleted"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -254,7 +263,11 @@
           "email": "",
           "lifecycle_state": "active"
         },
-        "allowed_lifecycle_states": ["active", "revoked", "deleted"],
+        "allowed_lifecycle_states": [
+          "active",
+          "revoked",
+          "deleted"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -278,7 +291,11 @@
           "address_label": "",
           "lifecycle_state": "active"
         },
-        "allowed_lifecycle_states": ["active", "disabled", "deleted"],
+        "allowed_lifecycle_states": [
+          "active",
+          "disabled",
+          "deleted"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -303,7 +320,12 @@
           "livekit_room_mode": "ephemeral",
           "lifecycle_state": "active"
         },
-        "allowed_lifecycle_states": ["active", "private", "disabled", "deleted"],
+        "allowed_lifecycle_states": [
+          "active",
+          "private",
+          "disabled",
+          "deleted"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -328,7 +350,13 @@
           "display_name": "",
           "lifecycle_state": "provisioned"
         },
-        "allowed_lifecycle_states": ["provisioned", "online", "offline", "revoked", "deleted"],
+        "allowed_lifecycle_states": [
+          "provisioned",
+          "online",
+          "offline",
+          "revoked",
+          "deleted"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -352,7 +380,11 @@
           "risk": "low",
           "lifecycle_state": "active"
         },
-        "allowed_lifecycle_states": ["active", "disabled", "deleted"],
+        "allowed_lifecycle_states": [
+          "active",
+          "disabled",
+          "deleted"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -378,7 +410,12 @@
           "livekit_room": "",
           "lifecycle_state": "open"
         },
-        "allowed_lifecycle_states": ["open", "paused", "closed", "failed"],
+        "allowed_lifecycle_states": [
+          "open",
+          "paused",
+          "closed",
+          "failed"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -405,7 +442,11 @@
           "text": "",
           "lifecycle_state": "recorded"
         },
-        "allowed_lifecycle_states": ["recorded", "redacted", "deleted"],
+        "allowed_lifecycle_states": [
+          "recorded",
+          "redacted",
+          "deleted"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -431,7 +472,11 @@
           "event_type": "",
           "lifecycle_state": "recorded"
         },
-        "allowed_lifecycle_states": ["recorded", "redacted", "deleted"],
+        "allowed_lifecycle_states": [
+          "recorded",
+          "redacted",
+          "deleted"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -457,7 +502,12 @@
           "confidence": 0,
           "lifecycle_state": "candidate"
         },
-        "allowed_lifecycle_states": ["candidate", "scored", "rejected", "committed"],
+        "allowed_lifecycle_states": [
+          "candidate",
+          "scored",
+          "rejected",
+          "committed"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -482,7 +532,12 @@
           "tier": "",
           "lifecycle_state": "committed"
         },
-        "allowed_lifecycle_states": ["committed", "edited", "superseded", "tombstoned"],
+        "allowed_lifecycle_states": [
+          "committed",
+          "edited",
+          "superseded",
+          "tombstoned"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -506,7 +561,9 @@
           "reason": "",
           "lifecycle_state": "tombstoned"
         },
-        "allowed_lifecycle_states": ["tombstoned"],
+        "allowed_lifecycle_states": [
+          "tombstoned"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -532,7 +589,13 @@
           "modality": "",
           "lifecycle_state": "observed"
         },
-        "allowed_lifecycle_states": ["observed", "embedded", "matched", "no_match", "expired"],
+        "allowed_lifecycle_states": [
+          "observed",
+          "embedded",
+          "matched",
+          "no_match",
+          "expired"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -556,7 +619,12 @@
           "confidence": 0,
           "lifecycle_state": "proposed"
         },
-        "allowed_lifecycle_states": ["proposed", "accepted", "rejected", "no_match"],
+        "allowed_lifecycle_states": [
+          "proposed",
+          "accepted",
+          "rejected",
+          "no_match"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -581,7 +649,11 @@
           "confidence": 0,
           "lifecycle_state": "asserted"
         },
-        "allowed_lifecycle_states": ["asserted", "expired", "retracted"],
+        "allowed_lifecycle_states": [
+          "asserted",
+          "expired",
+          "retracted"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -605,7 +677,11 @@
           "consent_type": "",
           "lifecycle_state": "granted"
         },
-        "allowed_lifecycle_states": ["granted", "expired", "revoked"],
+        "allowed_lifecycle_states": [
+          "granted",
+          "expired",
+          "revoked"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -630,7 +706,12 @@
           "media_type": "",
           "lifecycle_state": "available"
         },
-        "allowed_lifecycle_states": ["available", "expired", "redacted", "deleted"],
+        "allowed_lifecycle_states": [
+          "available",
+          "expired",
+          "redacted",
+          "deleted"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -654,7 +735,12 @@
           "kind": "",
           "lifecycle_state": "proposed"
         },
-        "allowed_lifecycle_states": ["proposed", "approved", "rejected", "canceled"],
+        "allowed_lifecycle_states": [
+          "proposed",
+          "approved",
+          "rejected",
+          "canceled"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -678,7 +764,11 @@
           "approved_by": "",
           "lifecycle_state": "approved"
         },
-        "allowed_lifecycle_states": ["approved", "rejected", "expired"],
+        "allowed_lifecycle_states": [
+          "approved",
+          "rejected",
+          "expired"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -702,7 +792,13 @@
           "correlation_id": "",
           "lifecycle_state": "executing"
         },
-        "allowed_lifecycle_states": ["dispatching", "awaiting_device_result", "device_acknowledged", "executing", "timed_out"],
+        "allowed_lifecycle_states": [
+          "dispatching",
+          "awaiting_device_result",
+          "device_acknowledged",
+          "executing",
+          "timed_out"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -726,7 +822,11 @@
           "error": "",
           "lifecycle_state": "recorded"
         },
-        "allowed_lifecycle_states": ["recorded", "failed", "redacted"],
+        "allowed_lifecycle_states": [
+          "recorded",
+          "failed",
+          "redacted"
+        ],
         "instantiation_layouts": []
       }
     },
@@ -750,7 +850,35 @@
           "instructions": "",
           "lifecycle_state": "active"
         },
-        "allowed_lifecycle_states": ["draft", "active", "disabled", "deleted"],
+        "allowed_lifecycle_states": [
+          "draft",
+          "active",
+          "disabled",
+          "deleted"
+        ],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Situated Scene",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "scene",
+      "subtype": "situated",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Time-bounded situated scene linked to its space, session and device by lineage.",
+        "default_status": "active",
+        "properties": {
+          "lifecycle_state": "active"
+        },
+        "allowed_lifecycle_states": [
+          "active",
+          "closed"
+        ],
         "instantiation_layouts": []
       }
     }

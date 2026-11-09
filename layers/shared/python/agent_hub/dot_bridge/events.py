@@ -53,6 +53,10 @@ class HandoffReadyEvent:
             return None
         if not any(scene.scene_euid == subscribed_scene_euid for scene in binding.scenes):
             return None
+        return self.envelope()
+
+    def envelope(self) -> dict[str, Any]:
+        """Serialize the pointer after the dispatcher has authorized its exact recipient."""
         return {
             "eventId": self.event_id,
             "name": HANDOFF_READY,
