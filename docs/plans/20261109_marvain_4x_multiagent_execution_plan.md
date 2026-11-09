@@ -1,0 +1,228 @@
+# Marvain 4.x — proposed multi-agent execution plan
+
+**Revision:** 1  
+**Prepared:** 9 November 2026  
+**Status:** awaiting user approval to execute. No execution agent has been launched.
+
+## Current continuation state
+
+Objective: deliver the accepted initial Marvain goal: concurrent situations in two locations; distinct human, animal and software-agent identities; detailed memory and recall across encounters; one selected sensor interface; core dot participation and a deliberate Daylily active-work handoff. Physical actuation is a later milestone.
+
+This document is the versioned execution specification. The native Linear execution-ledger document holds the current approvals, work-package index and receipts; existing issues own their requirement state. Do not create a second backlog in Git. This source document contains no live task export, runtime inventory, private permission transcript or credential.
+
+Repository: /Users/jmajor/projects/marvain. Reuse current branch codex/marvain-operational-100-closure. Planning baseline: 9180503. Pre-existing modified /Users/jmajor/projects/marvain/AGENTS.md and untracked /Users/jmajor/projects/marvain/.playwright-cli/ and /Users/jmajor/projects/marvain/Marvain_Restart_Thread.md are excluded.
+
+Authority: project/requirement creation and this plan preparation were requested. The initial goal is accepted; TapDB is preferred. Execution of this plan is pending. No tests, deployments, data collection, event subscriptions, hardware actions, PRs, merges or release tags are authorized by drafting it.
+
+Next executable action after approval: A0 records the approved scope and model assignments in the native ledger, claims WP-01, and dispatches the three bounded Wave 1 assignments below. Unknown live targets block only the work that needs them.
+
+## 1. Recommended approval scope
+
+Approve **Waves 1–4: design, source implementation and integration preparation**, using TapDB as the canonical-memory baseline, the named specialists and ownership rules below, and existing Daylily project records for progress.
+
+That approval permits:
+- Bounded source/document inspection, requirements-to-source disposition, and design decisions within the accepted product scope.
+- The named subagent assignments, with no more than three active specialists plus the coordinator.
+- In-scope local application, package-contract, plugin, configuration-example and documentation edits; ordinary scoped commits on the current branch.
+- Updating the project's existing issues and the execution ledger with claims, decisions, blockers, results and delivery state.
+- Preparing an exact release/deployment packet and proposed product acceptance scenario.
+
+It does **not** authorize tests or a CI campaign, package benchmarks, cloud/resource changes, purchases, credential creation, live plugin installation, event subscriptions, recurring monitoring, capture/enrollment, hardware operation, PRs, merges or publication. Test execution remains off under the existing twice-explicit-request policy. Approval of this plan is not counted as either test request.
+
+This is one concrete source-work approval, not a request for permission on every edit. Unspecified product/deployment choices are handled by the decisions register; unrelated work continues. No additional operational controls or redundant success gates are introduced.
+
+## 2. Product and architecture baseline
+
+- Marvain owns actor identities, observations, scenes, episodes, relationships, corrections and situated interaction.
+- TapDB is the proposed canonical semantic store. Media/artifact storage, vector/search projections and transport/current-device state have distinct roles. No second authoritative memory store is introduced by default.
+- The intended Daylily-account dot is a core participant and coordinator. Exact principal, account/workspace and supported connection must be bound explicitly. Native dot notes remain distinct.
+- Daylily Linear owns intentionally tracked commitments. Preserve original completion/delivery goals, execution versus attention versus delivery/review, and checkpoint-based Stalled semantics.
+- Two local scenes must retain separate participants, audience and output routing while sharing appropriate identity/memory.
+- Recognition produces observations and identity hypotheses; it does not silently turn similarity into established identity.
+- Physical actuation follows the initial sensor/memory goal using a selected controller and its existing controls.
+- No LSMC synchronization, restricted-data pooling, inferred migration or silent fallback is in scope.
+
+Current source supports reuse of memory contracts, TapDB boundary, action lifecycle, satellite/media and recognition components. Historical scores are not readiness evidence.
+
+Dependency decision: /Users/jmajor/projects/marvain/pyproject.toml pins daylily-tapdb[admin]==6.0.8. The inspected TapDB README names a 9.0.5 Dayhoff pin. A2 must determine the supported API/version contract before source depends on it. Do not silently install the latest version or edit the TapDB repository. A cross-repository change or alternate canonical store requires a scoped plan amendment.
+
+### Proposed ownership and data flow
+
+This diagram describes the intended architecture, not deployed connections. Recognition evidence and identity decisions remain distinct; the TapDB boundary owns canonical semantic writes and typed external references.
+
+```mermaid
+flowchart LR
+  subgraph Locations["Concurrent local scenes"]
+    S1["Location 1: actors + selected inputs"]
+    S2["Location 2: actors + selected inputs"]
+  end
+  S1 --> OBS["Observations and identity hypotheses"]
+  S2 --> OBS
+  OBS --> M["Marvain: actors, scenes, episodes, recall"]
+  M --> TB["Approved TapDB boundary"]
+  TB --> T["TapDB: canonical typed objects, lineage, audit"]
+  M --> MEDIA["Media and evidence artifacts"]
+  M --> SEARCH["Derived search and vector projections"]
+  DOT["Core dot: john@daylilyinformatics.com"] <--> M
+  M <--> WORK["Daylily work bridge"]
+  WORK <--> LINEAR["Linear: authoritative commitments"]
+  WORK --> TB
+  M -. "later, separately scoped" .-> ROBOT["Selected device/controller"]
+```
+
+## 3. Agent assignments
+
+These are proposed execution assignments from the currently enabled model catalog. They are not claims about models already used. A0 is the existing coordinating chat and retains the host-selected model; this plan does not claim to change its model.
+
+| Agent | Role | Model | Reasoning effort | Accountable outcome |
+|---|---|---|---|---|
+| A0 | Coordinator and ledger owner | Existing host-selected model | Inherited | Decomposition, authority, file ownership, dependencies, Linear updates, commits and delivery |
+| A1 | Domain architecture and scenario | gpt-6-astra | xhigh | Actor/episode contracts, exact initial scenario, audience/retention decisions and source-disposition synthesis |
+| A2 | Canonical identity and memory implementation | gpt-6.1-terra | xhigh | TapDB fit, actor/episode persistence, lineage, corrections, recall and lifecycle |
+| A3 | Recognition and distributed interaction | gpt-6.1-terra | xhigh | Human/animal observations, local scenes, satellites, conversation routing and sensor interface |
+| A4 | Core dot and software-agent integration | gpt-6.1-sol | xhigh | Authenticated dot tools/events, agent/run identity and cross-runtime coordination |
+| A5 | Daylily active-work integration | gpt-6.1-sol | high | Canonical Linear references, checkpoints, delivery and acknowledgment |
+| A6 | Shared integration and release preparation | gpt-6.1-terra | high | Shared entrypoints, dependency/configuration contract, CLI wiring and concrete release packet |
+
+A1's xhigh effort addresses cross-domain semantics and tradeoffs; A2/A3 use xhigh for coupled persistence/perception changes; A4 uses xhigh for identity and external-tool boundaries. A5/A6 use high for bounded integration against settled contracts. These are task-fit choices, not comparative benchmark claims.
+
+When executing through the current collaboration tools, explicit model/effort overrides use a fresh bounded assignment with fork_turns="none". Supply the source context listed below. Do not launch grandchildren or additional agents. If a named model/effort is unavailable, record the actual limitation and seek a scoped substitution rather than silently changing it.
+
+The four-slot tool limit governs concurrency: A0 plus at most A1–A6 three at a time. Roles run in waves and finish their assignment before a slot is reused. This is execution coordination, not a new budget or runtime cutoff.
+
+## 4. Disjoint write ownership
+
+All agents share the existing checkout. A0 records exact file ownership before dispatch. No worktree/branch merge is required. If isolation later becomes necessary, choose it explicitly using supported worktree tools and preserve the user's merge policy.
+
+| Owner | Initial exclusive write surface |
+|---|---|
+| A0 | /Users/jmajor/projects/marvain/docs/plans/ execution records; native Linear ledger/issues; Git staging/commits |
+| A1 | /Users/jmajor/projects/marvain/docs/design/ specification documents only |
+| A2 | /Users/jmajor/projects/marvain/layers/shared/python/agent_hub/memory_service.py; /Users/jmajor/projects/marvain/layers/shared/python/agent_hub/memory_learning.py; /Users/jmajor/projects/marvain/layers/shared/python/agent_hub/memory_taxonomy.py; /Users/jmajor/projects/marvain/layers/shared/python/agent_hub/memory_classifier.py; /Users/jmajor/projects/marvain/layers/shared/python/agent_hub/semantic_tapdb.py; /Users/jmajor/projects/marvain/layers/shared/python/agent_hub/semantic_lifecycle.py; /Users/jmajor/projects/marvain/layers/shared/python/agent_hub/semantic_outbox.py |
+| A3 | /Users/jmajor/projects/marvain/layers/shared/python/agent_hub/recognition_service.py; /Users/jmajor/projects/marvain/layers/shared/python/agent_hub/session_lifecycle.py; /Users/jmajor/projects/marvain/apps/recognition_worker/; /Users/jmajor/projects/marvain/apps/remote_satellite/; /Users/jmajor/projects/marvain/apps/agent_worker/ |
+| A4 | /Users/jmajor/projects/marvain/layers/shared/python/agent_hub/agent_lifecycle.py; proposed new /Users/jmajor/projects/marvain/layers/shared/python/agent_hub/dot_bridge/ and /Users/jmajor/projects/marvain/plugins/marvain/ |
+| A5 | /Users/jmajor/projects/marvain/layers/shared/python/agent_hub/tools/linear_comment_create.py; proposed new /Users/jmajor/projects/marvain/layers/shared/python/agent_hub/daylily_work/ |
+| A6 | /Users/jmajor/projects/marvain/functions/hub_api/ shared wiring; /Users/jmajor/projects/marvain/marvain_cli/; /Users/jmajor/projects/marvain/pyproject.toml; /Users/jmajor/projects/marvain/environment.yaml; /Users/jmajor/projects/marvain/template.yaml; /Users/jmajor/projects/marvain/layers/shared/python/agent_hub/contracts/ shared declarations |
+
+Proposed paths above are proposed new source locations, not existing interfaces. Their exact packaging is settled during WP-01. Template-pack, outbox-dispatcher, writer and any other discovered paths remain read-only until A0 assigns an exact non-overlapping owner.
+
+A0 does not co-edit a worker's leased files. Cross-boundary changes go to the owning worker as a concrete request. A6 handles common API/configuration/CLI wiring after interface handoffs, serially where files overlap. No worker commits, rewrites another agent's work, or edits unrelated dirty files. A0 commits intended files only.
+
+## 5. Work-package register
+
+Initial execution status for every package below is OPEN / not started. This is a proposed plan; the completed alternatives assessment is reusable input, not work to rerun. Operational statuses and receipts will be maintained once in Linear after approval.
+
+| Package | Outcome | Owner | Dependencies | Output / completion basis |
+|---|---|---|---|---|
+| WP-01 | Source reuse map, file ownership and TapDB API/version decision | A0 with A1/A2/A4 | Execution approval | Grounded retained/repair/new/superseded map, exact interfaces and dependency choice |
+| WP-02 | Initial scenario, actors/sites/sensor choices and memory policy | A1 | WP-01 inputs | Concrete scenario; unresolved owner-supplied choices named without inventions |
+| WP-03 | Canonical actor/principal/session/embodiment and policy contracts | A1 specifies; A2 implements; A4 owns software binding | WP-01 | Typed identity/relationship contract and application model; permission/lifecycle behavior explicit |
+| WP-04 | Evidence, events, episodes and TapDB lineage | A2 | WP-03 | Supported persistence boundary and artifact references; no duplicate canonical store |
+| WP-05 | Temporal/correctable recall and memory lifecycle | A2 | WP-04 | Current/historical recall semantics, corrections, retention and scoped export/recovery behavior |
+| WP-06 | Human/animal observation and identity-association paths | A3 | WP-03 | Distinct observations/hypotheses/actors, selected recognition path, uncertainty and corrections |
+| WP-07 | Two-location scenes, conversation attribution and continuity | A3 | WP-03 | Independent local context, source freshness, intended-recipient routing and reconnect semantics |
+| WP-08 | Selected sensor interface | A3 | WP-02, WP-07 | Source contract and adapter for chosen sensor; no live capture yet |
+| WP-09 | Core dot principal, tools and agent/run continuity | A4 | WP-03, WP-04 | Authenticated bridge/source implementation; supported connection decision and distinct native notes |
+| WP-10 | Explicit event-delivery contract for the core dot | A4 | WP-09 | Supported subscription/webhook implementation/configuration specification; no live subscription |
+| WP-11 | Canonical Daylily commitment references and intake | A5 | WP-03, WP-04 | Typed external references and intentional one-record task linkage |
+| WP-12 | Daylily checkpoints, delivery/review and attention ownership | A5 | WP-10, WP-11 | Existing workflow semantics preserved; no implicit schedule or notification activation |
+| WP-13 | Shared runtime/CLI/configuration integration | A6 | Relevant WP-04–12 handoffs | In-scope source connected through supported entrypoints; explicit missing-config failures |
+| WP-14 | Code-ready release packet and acceptance script | A6 with A0/A1 | WP-02, WP-05–13 | Exact intended revision/service/configuration inputs, proposed deployment commands and user-visible scenario; no runtime result claimed |
+| WP-15 | Final tagged build and selected-service deployment | A6, A0 owns authority | WP-14 plus named deployment/build target authorization | Controlling build/publish/deploy results for the final numeric annotated release; no extra success probes |
+| WP-16 | Authorized initial demonstration and user review | A0 coordinates A2/A3/A4/A5 as needed | WP-15 plus scenario/capture/acceptance authority | Requested two-scene outcome and delivered evidence; execution and user acceptance distinct |
+| WP-17 | Later controller-backed physical interaction plan | A1/A3/A6 | Initial goal review plus separately chosen scope | Exact controller, action, actor/embodiment and result contract; hardware execution separate |
+
+WP-03 uses sequential handoff for specification and implementation, never concurrent ownership of the same file. A4 does not change A2's canonical schema. WP-12 can implement its domain contract before WP-10 completes, but its event-dependent integration waits for WP-10.
+
+## 6. Wave schedule
+
+| Wave | Active specialists, at most three | Work and stop condition |
+|---|---|---|
+| 1 — source and contracts | A1, A2, A4 | WP-01; WP-02/03 design. A1 maps scenario/policy; A2 resolves persistence/version; A4 maps actual supported dot route. Stop each assignment with a concrete contract or exact unresolved choice. |
+| 2 — canonical foundation and local interaction | A2, A3, A5 | WP-03/04, WP-06/07, WP-11. Start only the portions whose interfaces are settled. |
+| 3 — recall and core-dot continuity | A2, A3, A4 | WP-05, WP-08, WP-09/10. Sensor-specific work waits for the selected sensor; unrelated work continues. |
+| 4 — Daylily and shared integration | A4, A5, A6, then A1 replaces a completed slot if needed | Finish WP-10/12/13; prepare WP-14. End at a code-ready packet with explicit unexecuted checks and live prerequisites. |
+| 5 — selected release and demonstration | A6 with only needed specialists | WP-15/16 only when their exact authority and inputs are satisfied. Finish the requested product scenario, deliver results, and record user review separately. |
+| Later — physical interaction | A1/A3/A6 as needed | WP-17 and any subsequently approved implementation, outside the initial execution approval. |
+
+The coordinator remains active during every wave. It waits on agent updates instead of scheduling heartbeats or background monitoring. No elapsed-time rule manufactures a stall; use agreed substantive checkpoints.
+
+### Execution sequence
+
+Dependencies within each wave remain those in the work-package register. A0 coordinates throughout; each wave uses no more than three specialist slots.
+
+```mermaid
+flowchart LR
+  W1["Wave 1: contracts<br/>A1 + A2 + A4"]
+  W2["Wave 2: foundations<br/>A2 + A3 + A5"]
+  W3["Wave 3: recall, sensor, dot<br/>A2 + A3 + A4"]
+  W4["Wave 4: integration packet<br/>A4 + A5 + A6"]
+  R["Review concrete release/demo packet<br/>resolve named live inputs and authority"]
+  W5["Wave 5: release + demonstration"]
+  P["Later: physical interaction"]
+  W1 --> W2 --> W3 --> W4 --> R --> W5
+  W5 -. "separately chosen scope" .-> P
+```
+
+## 7. Ledger, claims and handoffs
+
+A0 is the sole writer of the execution-ledger document and issue state during this plan. Workers return evidence to A0; they do not send messages to people, mutate independent work systems, or change Linear records themselves.
+
+Each claimed package records:
+- Package and canonical issue references; original outcome and completion/delivery goals.
+- Actual model/effort, owner, exact allowed files, and current substantive checkpoint.
+- Dependency state and the applicable original authority, with unresolved scope marked explicitly.
+- Source inputs, source date/revision, selected interfaces, and known limits.
+- Output paths/commit or owning-service result; no private transcript or credential in Git.
+- Execution result, delivery and acknowledgment separately; next move and any post-review scope change.
+
+Handoff to a new agent contains only its package, relevant contracts/source excerpts, exact write scope, approval exclusions, dependencies, accepted prior results and stop condition. It returns files changed, decisions, controlling results, unfinished requirements and the next dependency. Do not replay successful routine operations as a handoff requirement.
+
+Work-package ledger states follow the existing SOP: OPEN, IN_PROGRESS, ATTEMPTING_BUGFIX; terminal SUCCESS, DUPLICATE, NO_LONGER_NEEDED, FAIL, BLOCKED. FAIL requires a real attempted repair. BLOCKED records the actual missing input/authority and next move. A completed specification does not close a product capability.
+
+Native issues retain the Daylily meanings. Existing specification tickets can finish when their contract is delivered. Implementation completion is tracked through the associated work-package receipt, and the parent capability stays open until its complete requested outcome is met. Do not silently rewrite a specification's original completion goal into implementation. Add a separately scoped implementation sub-issue only where needed during approved decomposition, preserving the original requirement links.
+
+An issue may be Done + Review result when its bounded output is finished but unread. In Review is an unfinished review decision. Checkpoint renewal requires a substantive update; missing checkpoint data is reported as missing, not inferred failure.
+
+## 8. Decisions and existing approval boundaries
+
+| Item | Current position | Needed before |
+|---|---|---|
+| TapDB versus replacement | Recommend TapDB baseline; approved execution phrase below selects it for Waves 1–4 | WP-03/04 implementation; an added engine/replacement needs a scoped amendment |
+| TapDB version | Existing Marvain pin 6.0.8; inspected checkout README names 9.0.5 | New API-dependent code; A2 supplies a concrete supported choice |
+| Core dot | Intended account is specified; runtime identity/connection unknown | Binding live access; source contracts can proceed with explicit configuration requirements |
+| Sites, participants, animal and second agent | Initial goal accepted; exact population unselected | Capture/enrollment and live scenario; no invented identities |
+| Sensor | One required; hardware/interface unselected | Sensor-specific adapter and live observation |
+| Capture/detail/retention | Rich memory required; concrete policy undecided | Live ingestion/retention; policy contract work can proceed |
+| Build/deployment service | No current target adopted from historical clean-room records | Container build, publication and deployment |
+| Product tests/acceptance execution | No present twice-explicit request for a named scope | Any pytest/lint/CI/benchmark or test execution; plan approval does not supply it |
+| Subscriptions and recurring monitoring | Not activated | Any event subscription, schedule or monitor; exact trigger/cadence/stop scope selected separately |
+| Physical action | Later milestone | Named device/controller, exact effect, and required authorization |
+| PRs and merges | Separate later work | User's two explicit requests for the exact action after production acceptance |
+
+Routine local implementation choices within approved scope are recorded and executed. Ask only for missing decisions that materially alter scope or prevent dependent work; do not seek fresh permission already valid for the same scope.
+
+## 9. Release and product evidence
+
+Waves 1–4 run no tests. Source work is reported as implemented but untested. No new QC campaign, duplicate audit, checksum/readback pass, HEAD/size probe or secondary success gate is added. Review of the proposed design and the requested product demonstration do not second-guess a successful routine operation.
+
+For an authorized release:
+- Use the Marvain CLI and explicit configuration; profile daylily and region us-east-1 unless explicitly selected otherwise.
+- Confirm the exact designated EC2 builder for Marvain. Never build containers on the laptop.
+- Commit intended changes, select an unused bare numeric 4.x version, create an immutable annotated tag, and build only the final tagged deployment image. The exact tag is chosen from current release state at that time; this plan does not invent or reserve 4.0.0.
+- Deploy the selected service/revision through its supported controls; record controlling success/failure results. Do not make PR/merge work a prerequisite.
+- Preserve unrelated work and existing production identities. No destructive rollback, resource deletion, reset, budget increase or manual cleanup is authorized by the plan.
+- On actual failure, retain the owning-system error and use its supported reconciliation/retry controls. A source change requiring a new image gets a new immutable release tag when appropriate; never move a pushed tag.
+
+Requested product evidence, when separately authorized, is specific: two concurrent scenes, distinct actors, retained detail, later recall, correction, selected sensor reading, core-dot interaction and one deliberate Daylily handoff. A documented controller result supplies an action outcome; no extra verification layer is assumed.
+
+Source complete, released, deployed, demonstrated, delivered and user-accepted are reported as distinct states. The overall objective is complete only when the accepted scenario is achieved and the user review outcome is recorded.
+
+## 10. Initial approval request
+
+**Recommended approval text:**
+
+> Approve Marvain 4.x execution-plan revision 1, Waves 1–4, with TapDB as the canonical-memory baseline and the listed agent models/efforts. Proceed with scoped source implementation, integration preparation, commits and project-ledger updates. Keep tests and live changes off; bring the concrete release/demo packet and remaining named decisions back for review.
+
+The user explicitly requested presentation before execution. Waiting for this approval follows that request. No subagents or implementation work start while it is pending.
+
