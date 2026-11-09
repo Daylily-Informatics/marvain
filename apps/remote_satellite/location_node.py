@@ -14,11 +14,14 @@ import json
 import logging
 import math
 import time
+import uuid
 import wave
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import aiohttp
+from artifact_upload import upload_artifact
 
 logger = logging.getLogger("marvain.location_node")
 
@@ -28,6 +31,7 @@ class LocationNodeConfig:
     rest_url: str
     device_token: str
     space_id: str
+    artifact_upload_ttl_seconds: int
 
     mode: str = "persistent"  # triggered|persistent
     publish_audio: bool = True
@@ -73,12 +77,23 @@ class LocationNode:
         self._session_tasks: list[asyncio.Task] = []
 
         self._connected = False
+        self._session_id: str | None = None
+        self._agent_id: str | None = None
+        self._scene_euid: str | None = None
+        self._session_euid: str | None = None
+        self._room_name: str | None = None
         self._last_activity_s: float = 0.0
         self._activity_event = asyncio.Event()
 
         # LiveKit publish handles (set while connected).
         self._audio_source: Any | None = None
         self._video_source: Any | None = None
+
+    @property
+    def authenticated_route(self) -> tuple[str, str] | None:
+        if self._session_id and self._agent_id:
+            return self._session_id, self._agent_id
+        return None
 
     async def stop(self) -> None:
         self._stop.set()
@@ -97,17 +112,17 @@ class LocationNode:
         self._video_source = None
 
     async def run(self) -> None:
-        mode = str(self.cfg.mode or "persistent").strip().lower()
+        mode = str(self.cfg.mode).strip().lower()
         if mode not in {"persistent", "triggered"}:
-            logger.warning("LocationNode mode=%s is not supported; using persistent", mode)
-            mode = "persistent"
+            raise ValueError(f"unsupported location node mode: {mode!r}")
 
+        # Resolve the authenticated route before starting either sensor.
+        await self._ensure_connected()
         # Start capture loops once. These loops can feed both monitoring and publishing.
         await self._start_capture_loops()
 
         if mode == "persistent":
             await self._mark_activity()
-            await self._ensure_connected()
             while not self._stop.is_set():
                 await asyncio.sleep(0.5)
             await self.stop()
@@ -145,6 +160,8 @@ class LocationNode:
                 "subscribe_audio": bool(self.cfg.subscribe_audio),
             },
         }
+        if self._session_id is not None:
+            body["session_id"] = self._session_id
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, json=body, timeout=20) as resp:
                 txt = await resp.text()
@@ -165,8 +182,22 @@ class LocationNode:
         lk_token = str(token_out.get("token") or "").strip()
         room_name = str(token_out.get("room") or "").strip()
         identity = str(token_out.get("identity") or "").strip()
-        if not lk_url or not lk_token or not room_name:
-            raise RuntimeError("LiveKit device-token response missing url/token/room")
+        session_id = str(token_out.get("session_id") or "").strip()
+        agent_id = str(token_out.get("agent_id") or "").strip()
+        scene_euid = str(token_out.get("scene_euid") or "").strip()
+        session_euid = str(token_out.get("session_euid") or "").strip()
+        if not all((lk_url, lk_token, room_name, session_id, agent_id, scene_euid, session_euid)):
+            raise RuntimeError("LiveKit device-token response missing bound room, session, or scene")
+        if self._session_id is not None and (
+            session_id != self._session_id or agent_id != self._agent_id or scene_euid != self._scene_euid
+            or session_euid != self._session_euid or room_name != self._room_name
+        ):
+            raise RuntimeError("LiveKit device-token response changed the bound route on reconnect")
+        self._session_id = session_id
+        self._agent_id = agent_id
+        self._scene_euid = scene_euid
+        self._session_euid = session_euid
+        self._room_name = room_name
 
         logger.info("Connecting to LiveKit url=%s room=%s identity=%s", lk_url, room_name, identity)
 
@@ -310,37 +341,28 @@ class LocationNode:
         rms = math.sqrt(mean) / 32768.0
         return float(rms)
 
-    async def _emit_simple_event(self, ev_type: str, payload: dict[str, Any]) -> None:
+    async def _emit_simple_event(
+        self, ev_type: str, payload: dict[str, Any], *, session_id: str | None = None,
+        artifact_id: str | None = None, required: bool = False,
+    ) -> None:
         """Best-effort /v1/events without artifacts."""
         try:
             url = str(self.cfg.rest_url).rstrip("/") + "/v1/events"
             headers = {"Authorization": f"Bearer {self.cfg.device_token}", "Content-Type": "application/json"}
-            body = {"space_id": self.cfg.space_id, "type": ev_type, "payload": payload}
+            body = {"space_id": self.cfg.space_id, "type": ev_type, "payload": payload, "session_id": session_id}
+            if artifact_id is not None:
+                body["artifact_id"] = artifact_id
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, headers=headers, json=body, timeout=10) as resp:
                     if resp.status >= 400:
                         txt = await resp.text()
+                        if required:
+                            raise RuntimeError(f"event ingest failed: type={ev_type} status={resp.status} body={txt[:200]}")
                         logger.debug("emit_event failed: type=%s status=%s body=%s", ev_type, resp.status, txt[:200])
         except Exception as exc:
+            if required:
+                raise
             logger.debug("emit_event failed: %s", exc)
-
-    async def _presign_put(self, *, filename: str, content_type: str, purpose: str = "recognition") -> dict[str, Any]:
-        url = str(self.cfg.rest_url).rstrip("/") + "/v1/artifacts/presign"
-        headers = {"Authorization": f"Bearer {self.cfg.device_token}", "Content-Type": "application/json"}
-        body = {"filename": filename, "content_type": content_type, "purpose": purpose}
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=body, timeout=10) as resp:
-                txt = await resp.text()
-                if resp.status >= 400:
-                    raise RuntimeError(f"presign failed: status={resp.status} body={txt[:200]}")
-                return json.loads(txt or "{}")
-
-    async def _upload_put(self, *, upload_url: str, data: bytes, content_type: str) -> None:
-        async with aiohttp.ClientSession() as session:
-            async with session.put(upload_url, data=data, headers={"Content-Type": content_type}, timeout=30) as resp:
-                if resp.status >= 400:
-                    txt = await resp.text()
-                    raise RuntimeError(f"upload failed: status={resp.status} body={txt[:200]}")
 
     async def _emit_artifact_event(
         self,
@@ -349,31 +371,41 @@ class LocationNode:
         data: bytes,
         filename: str,
         content_type: str,
+        captured_at: str,
+        session_id: str | None,
         extra_payload: dict[str, Any] | None = None,
     ) -> None:
-        """Upload bytes to S3 via presign and ingest a hub event referencing it."""
+        """Upload through the hub and ingest an event referencing its receipt."""
+        source_event_key = str(uuid.uuid4())
         try:
-            presign = await self._presign_put(filename=filename, content_type=content_type, purpose="recognition")
-            upload_url = str(presign.get("upload_url") or "").strip()
-            bucket = str(presign.get("bucket") or "").strip()
-            key = str(presign.get("key") or "").strip()
-            if not upload_url or not bucket or not key:
-                raise RuntimeError("presign response missing upload_url/bucket/key")
-
-            await self._upload_put(upload_url=upload_url, data=data, content_type=content_type)
+            receipt = await upload_artifact(
+                rest_url=self.cfg.rest_url, device_token=self.cfg.device_token,
+                agent_id=self._agent_id or "", space_id=self.cfg.space_id, session_id=session_id or "",
+                upload_ttl_seconds=self.cfg.artifact_upload_ttl_seconds,
+                filename=filename, media_type=content_type, data=data,
+            )
 
             payload: dict[str, Any] = {
-                "artifact_bucket": bucket,
-                "artifact_key": key,
-                "content_type": content_type,
+                "artifact_bucket": receipt["bucket"],
+                "artifact_key": receipt["object_key"],
+                "artifact_uri": receipt["uri"],
+                "content_type": receipt["media_type"],
+                "artifact_sha256": receipt["actual_sha256"],
+                "source_event_key": source_event_key,
+                "captured_at": captured_at,
+                "attribution_state": "unknown",
+                "modality": "audio" if ev_type == "voice.sample" else "video",
             }
             if self.cfg.enroll_person_id:
                 payload["enroll_person_id"] = str(self.cfg.enroll_person_id)
             if extra_payload:
                 payload.update(extra_payload)
-            await self._emit_simple_event(ev_type, payload)
+            await self._emit_simple_event(
+                ev_type, payload, session_id=session_id, artifact_id=receipt["artifact_id"], required=True
+            )
         except Exception as exc:
-            logger.debug("artifact event failed type=%s: %s", ev_type, exc)
+            logger.error("artifact event failed type=%s: %s", ev_type, exc)
+            raise
 
     async def _audio_capture_loop(self) -> None:
         import sounddevice as sd  # type: ignore
@@ -410,6 +442,8 @@ class LocationNode:
         recording = False
         record_buf = bytearray()
         recorded_samples = 0
+        recording_started_at = ""
+        recording_session_id: str | None = None
         target_samples = max(1, int(sample_rate * max(1, int(self.cfg.voice_sample_seconds))))
 
         try:
@@ -445,6 +479,8 @@ class LocationNode:
                             self.cfg.voice_sample_interval_seconds
                         ):
                             recording = True
+                            recording_started_at = datetime.now(timezone.utc).isoformat()
+                            recording_session_id = self._session_id
                             record_buf = bytearray()
                             recorded_samples = 0
                             last_voice_sample_s = now
@@ -464,6 +500,8 @@ class LocationNode:
                                     data=wav_bytes,
                                     filename="voice_sample.wav",
                                     content_type="audio/wav",
+                                    captured_at=recording_started_at,
+                                    session_id=recording_session_id,
                                     extra_payload={"sample_rate": sample_rate, "channels": channels},
                                 )
                             )
@@ -553,6 +591,8 @@ class LocationNode:
                                                 data=bytes(jpg.tobytes()),
                                                 filename="face_snapshot.jpg",
                                                 content_type="image/jpeg",
+                                                captured_at=datetime.now(timezone.utc).isoformat(),
+                                                session_id=self._session_id,
                                                 extra_payload={"motion_score": score},
                                             )
                                         )

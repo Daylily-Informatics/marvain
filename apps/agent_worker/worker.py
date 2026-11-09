@@ -18,7 +18,6 @@ import asyncio
 import inspect
 import json
 import logging
-import math
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -135,10 +134,6 @@ AUTOSAVE_EPISODIC_MEMORIES = str(os.getenv("AUTOSAVE_EPISODIC_MEMORIES", "true")
 # Contextual recall is intentionally not a space filter. The current space,
 # session, and person bias prompt hydration ranking after agent-wide recall.
 CONTEXTUAL_RECALL_K = int(os.getenv("CONTEXTUAL_RECALL_K", "16"))
-CURRENT_SESSION_MEMORY_WEIGHT = 0.35
-CURRENT_SPACE_MEMORY_WEIGHT = 0.2
-CURRENT_PERSON_MEMORY_WEIGHT = 0.15
-GENERIC_MEMORY_WEIGHT = 0.05
 
 # Hub connection settings
 HUB_API_BASE = os.getenv("HUB_API_BASE", "").rstrip("/")
@@ -196,6 +191,8 @@ class WorkerSessionLifecycle:
     livekit_room: str
     status: str
     status_event_id: str | None
+    scene_euid: str
+    session_euid: str
 
 
 @dataclass(frozen=True)
@@ -370,6 +367,7 @@ class CurrentVisualObservation:
     sender_identity: str
     session_id: str
     captured_at: datetime
+    source_event_id: str
 
 
 def _require_runtime_text(value: object, field_name: str) -> str:
@@ -679,6 +677,8 @@ def hub_get_worker_session_lifecycle(session_id: str) -> WorkerSessionLifecycle:
         livekit_room=_require_runtime_text(body.get("livekit_room"), "worker lifecycle livekit_room"),
         status=status,
         status_event_id=status_event_id,
+        scene_euid=_require_runtime_text(body.get("scene_euid"), "worker lifecycle scene_euid"),
+        session_euid=_require_runtime_text(body.get("session_euid"), "worker lifecycle session_euid"),
     )
 
 
@@ -852,56 +852,18 @@ def hub_reconcile_session_state(
     return event_id
 
 
-def _fetch_space_events(space_id: str, limit: int = 50) -> list[dict]:
-    """Fetch recent events for context hydration.
-
-    Returns list of events or empty list on failure.
-    """
-    if not HUB_API_BASE or not HUB_DEVICE_TOKEN:
-        return []
-    try:
-        resp = requests.get(
-            f"{HUB_API_BASE}/v1/spaces/{space_id}/events",
-            headers={"Authorization": f"Bearer {HUB_DEVICE_TOKEN}"},
-            params={"limit": limit},
-            timeout=5,
-        )
-        if resp.ok:
-            return resp.json().get("events", [])
-        logger.warning("Failed to fetch space events: status=%s body=%s", resp.status_code, resp.text[:300])
-    except Exception as e:
-        logger.warning(f"Failed to fetch space events: {e}")
-    return []
-
-
-def _fetch_recall_memories(
-    agent_id: str, space_id: str | None, query: str, k: int = 8, person_id: str | None = None
-) -> list[dict]:
-    """Fetch relevant memories via semantic search.
-
-    Returns list of memories or empty list on failure.
-    """
-    if not HUB_API_BASE or not HUB_DEVICE_TOKEN:
-        return []
-    try:
-        resp = requests.post(
-            f"{HUB_API_BASE}/v1/recall",
-            headers={"Authorization": f"Bearer {HUB_DEVICE_TOKEN}"},
-            json={
-                "agent_id": agent_id,
-                "space_id": space_id,
-                "person_id": person_id,
-                "query": query,
-                "k": k,
-            },
-            timeout=10,
-        )
-        if resp.ok:
-            return resp.json().get("memories", [])
-        logger.warning("Failed to fetch memories: status=%s body=%s", resp.status_code, resp.text[:300])
-    except Exception as e:
-        logger.warning(f"Failed to fetch memories: {e}")
-    return []
+def _fetch_space_events(space_id: str, *, session_id: str, limit: int = 50) -> list[dict]:
+    """Fetch only the bound session's events for context hydration."""
+    space = quote(_require_runtime_text(space_id, "space_id"), safe="")
+    session = quote(_require_runtime_text(session_id, "session_id"), safe="")
+    body = _get_hub_json(
+        path=f"/v1/spaces/{space}/events?limit={limit}&session_id={session}",
+        operation="session.events.read",
+    )
+    events = body.get("events")
+    if not isinstance(events, list) or any(not isinstance(item, dict) for item in events):
+        raise WorkerContractError("session event response must contain an events list")
+    return events
 
 
 @dataclass(frozen=True)
@@ -996,6 +958,9 @@ def _memory_source_context(mem: dict) -> MemorySourceContext:
 def _format_memory_source_note(mem: dict) -> str:
     context = _memory_source_context(mem)
     source_bits = []
+    semantic_id = str(mem.get("semantic_id") or "").strip()
+    if semantic_id:
+        source_bits.append(f"memory {semantic_id}")
     if context.source_event_id:
         source_bits.append(f"event {context.source_event_id}")
     if context.device_id:
@@ -1011,161 +976,30 @@ def _format_memory_source_note(mem: dict) -> str:
     return f" (source: {', '.join(source_bits)})" if source_bits else ""
 
 
-def _memory_recall_distance(mem: dict) -> float:
-    explanation = _dict_or_empty(mem.get("explanation"))
-    ranking = _dict_or_empty(explanation.get("ranking"))
-    for value in (
-        ranking.get("weighted_distance"),
-        ranking.get("embedding_distance"),
-        ranking.get("distance"),
-        mem.get("distance"),
-    ):
-        try:
-            distance = float(value)
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(distance) and distance >= 0:
-            return distance
-    memory_id = str(mem.get("memory_id") or "<unknown>")
-    raise WorkerContractError(f"recall result {memory_id} is missing a valid ranking distance")
-
-
-def _dedupe_memories(memories: list[dict]) -> list[dict]:
-    seen = set()
-    deduped = []
-    for mem in memories:
-        mid = str(mem.get("memory_id") or "").strip()
-        key = mid or f"{mem.get('tier')}\0{mem.get('content')}"
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(mem)
-    return deduped
-
-
-def _rank_contextual_memories(
-    memories: list[dict],
-    *,
-    current_space_id: str | None,
-    current_session_id: str | None,
-    active_person_id: str | None,
-    limit: int = 8,
-) -> list[dict]:
-    current_space_id = str(current_space_id or "").strip() or None
-    current_session_id = str(current_session_id or "").strip() or None
-    active_person_id = str(active_person_id or "").strip() or None
-    ranked = []
-    for index, mem in enumerate(_dedupe_memories(memories)):
-        source = _memory_source_context(mem)
-        distance = _memory_recall_distance(mem)
-        context_weight = 0.0
-        if current_session_id and source.session_id == current_session_id:
-            context_weight += CURRENT_SESSION_MEMORY_WEIGHT
-        if current_space_id and source.space_id == current_space_id:
-            context_weight += CURRENT_SPACE_MEMORY_WEIGHT
-        elif current_space_id and not source.space_id:
-            context_weight += GENERIC_MEMORY_WEIGHT
-        if active_person_id and source.person_id == active_person_id:
-            context_weight += CURRENT_PERSON_MEMORY_WEIGHT
-        ranked.append((distance - context_weight, distance, index, mem))
-    ranked.sort(key=lambda item: (item[0], item[1], item[2]))
-    return [mem for _, _, _, mem in ranked[:limit]]
-
-
-def _contextual_recall_query(
-    base_query: str,
-    *,
-    current_space_id: str | None,
-    current_session_id: str | None,
-    active_person_id: str | None,
-) -> str:
-    context_bits = ["current live conversation"]
-    if current_space_id:
-        context_bits.append(f"current space {current_space_id}")
-    if current_session_id:
-        context_bits.append(f"current session {current_session_id}")
-    if active_person_id:
-        context_bits.append(f"current person {active_person_id}")
-    return f"{base_query}; {'; '.join(context_bits)}"
-
-
-def _fetch_contextual_recall_memories(
-    *,
-    agent_id: str,
-    current_space_id: str,
-    current_session_id: str | None,
-    active_person_id: str | None,
-) -> list[dict]:
-    """Recall agent memories and bias ranking toward the current context.
-
-    Passing ``space_id`` to the Hub recall endpoint filters to that space. Worker
-    hydration needs broader agent memory, so the current space is carried in the
-    query text and applied as local ranking context after recall.
-    """
-    memories: list[dict] = []
-    if active_person_id:
-        memories.extend(
-            _fetch_recall_memories(
-                agent_id=agent_id,
-                space_id=None,
-                person_id=active_person_id,
-                query=_contextual_recall_query(
-                    "facts preferences relationship history about the current speaker",
-                    current_space_id=current_space_id,
-                    current_session_id=current_session_id,
-                    active_person_id=active_person_id,
-                ),
-                k=CONTEXTUAL_RECALL_K,
-            )
-        )
-    memories.extend(
-        _fetch_recall_memories(
-            agent_id=agent_id,
-            space_id=None,
-            query=_contextual_recall_query(
-                "session context recent conversation important facts",
-                current_space_id=current_space_id,
-                current_session_id=current_session_id,
-                active_person_id=active_person_id,
-            ),
-            k=CONTEXTUAL_RECALL_K,
-        )
+def _fetch_scene_recall_memories(*, scene_euid: str, session_euid: str) -> list[dict]:
+    """Ask the authenticated hub for audience-filtered canonical scene recall."""
+    scene = _require_runtime_text(scene_euid, "scene_euid")
+    _require_runtime_text(session_euid, "session_euid")
+    body = _post_hub_json(
+        path=f"/v1/scenes/{quote(scene, safe='')}/recall",
+        operation="scene.recall",
+        payload={
+            "query": "session context recent conversation important facts",
+            "top_k": CONTEXTUAL_RECALL_K,
+            "historical": False,
+        },
     )
-    return _rank_contextual_memories(
-        memories,
-        current_space_id=current_space_id,
-        current_session_id=current_session_id,
-        active_person_id=active_person_id,
-    )
-
-
-def _infer_active_person_id(events: list[dict]) -> str | None:
-    """Best-effort: infer the current human speaker from recent transcript events.
-
-    The Hub can map LiveKit participant identities to people via person_accounts,
-    populating events.person_id for transcript_chunk events. We use the newest
-    user transcript with a person_id as a hint for person-scoped recall.
-    """
-    for ev in events or []:
-        if ev.get("type") != "transcript_chunk":
-            continue
-        payload = ev.get("payload") or {}
-        if isinstance(payload, dict) and payload.get("role") == "user":
-            pid = str(ev.get("person_id") or "").strip()
-            if pid:
-                return pid
-    return None
+    memories = body.get("memories")
+    if not isinstance(memories, list) or any(not isinstance(item, dict) for item in memories):
+        raise WorkerContractError("scene recall response must contain a memories list")
+    return memories
 
 
 def _event_matches_session(ev: dict, current_session_id: str | None) -> bool:
     if not current_session_id:
         return False
     event_session_id = str(ev.get("session_id") or "").strip()
-    if event_session_id == current_session_id:
-        return True
-    payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
-    payload_session_id = str(payload.get("session_id") or "").strip()
-    return payload_session_id == current_session_id
+    return event_session_id == current_session_id
 
 
 def _event_type_is_visual_observation(event_type: str) -> bool:
@@ -1318,7 +1152,7 @@ def _build_current_visual_observation_block(
         payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
         try:
             validate_livekit_message_freshness(
-                payload.get("captured_at") or ev.get("created_at"),
+                payload.get("captured_at"),
                 field_name="captured_at",
                 max_age_seconds=VISUAL_OBSERVATION_MAX_AGE_SECONDS,
                 now=now,
@@ -1328,7 +1162,10 @@ def _build_current_visual_observation_block(
         text = _extract_visual_observation_text(ev)
         if not text:
             continue
-        observations.append(text[:500])
+        event_id = str(ev.get("event_id") or "").strip()
+        if not event_id:
+            continue
+        observations.append(f"{text[:500]} (source event {event_id}, captured {payload['captured_at']})")
         if len(observations) >= 5:
             break
     if not observations:
@@ -1362,7 +1199,8 @@ def _build_context_block(events: list[dict], memories: list[dict], *, current_se
     if events:
         parts.append("\n## Recent Conversation in This Space")
         # Group by role and summarize - show last 10 events max
-        for ev in reversed(events[:10]):
+        session_events = [ev for ev in events if _event_matches_session(ev, current_session_id)]
+        for ev in reversed(session_events[:10]):
             payload = ev.get("payload", {})
             role = payload.get("role", "unknown")
             text = payload.get("text", "")[:200]  # Truncate
@@ -1484,22 +1322,17 @@ async def forge_agent(ctx: agents.JobContext):
         )
 
         # Context hydration: fetch prior events and memories for continuity
-        context_block = ""
-        if agent_id and HUB_API_BASE and HUB_DEVICE_TOKEN:
-            logger.info(f"Fetching context for space {space_id}...")
-            events = _fetch_space_events(space_id, limit=50)
-            active_person_id = _infer_active_person_id(events)
-            memories = _fetch_contextual_recall_memories(
-                agent_id=agent_id,
-                current_space_id=space_id,
-                current_session_id=session_id,
-                active_person_id=active_person_id,
-            )
-            context_block = _build_context_block(events, memories, current_session_id=session_id)
-            if context_block:
-                logger.info(f"Context hydration: {len(events)} events, {len(memories)} memories")
-            else:
-                logger.debug("No prior context found for this space")
+        logger.info("Fetching context for session %s", session_id)
+        events = _fetch_space_events(space_id, session_id=session_id, limit=50)
+        memories = _fetch_scene_recall_memories(
+            scene_euid=persisted_session_lifecycle.scene_euid,
+            session_euid=persisted_session_lifecycle.session_euid,
+        )
+        context_block = _build_context_block(events, memories, current_session_id=session_id)
+        if context_block:
+            logger.info("Context hydration: %d events, %d memories", len(events), len(memories))
+        else:
+            logger.debug("No prior context found for this session")
     except Exception as exc:
         try:
             await lifecycle.transition(to_state="failed", reason="worker_session_initialization_failed")
@@ -1768,7 +1601,10 @@ async def forge_agent(ctx: agents.JobContext):
         if not fresh:
             return ""
         lines = ["Current Session Visual Observations:"]
-        lines.extend(f"- {item.description}" for item in fresh[-3:])
+        lines.extend(
+            f"- {item.description} (source event {item.source_event_id}, captured {_isoformat_utc(item.captured_at)})"
+            for item in fresh[-3:]
+        )
         return "\n".join(lines)
 
     def _worker_participant_identity() -> str:
@@ -1985,16 +1821,7 @@ async def forge_agent(ctx: agents.JobContext):
             return
 
         observation = observation[:800]
-        current_visual_observations.append(
-            CurrentVisualObservation(
-                description=observation,
-                sender_identity=sender,
-                session_id=session_id,
-                captured_at=captured_at_timestamp,
-            )
-        )
-        del current_visual_observations[:-5]
-        hub_ingest_event(
+        source_event_id = hub_ingest_event(
             space_id=space_id,
             event_type="visual.observation",
             payload={
@@ -2009,6 +1836,16 @@ async def forge_agent(ctx: agents.JobContext):
             },
             session_id=session_id,
         )
+        current_visual_observations.append(
+            CurrentVisualObservation(
+                description=observation,
+                sender_identity=sender,
+                session_id=session_id,
+                captured_at=captured_at_timestamp,
+                source_event_id=source_event_id,
+            )
+        )
+        del current_visual_observations[:-5]
         logger.info("Recorded visual observation from %s", sender)
         await _publish_visual_observation_ack(
             {

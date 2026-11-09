@@ -26,12 +26,15 @@ import signal
 import subprocess
 import sys
 import time as time_module
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import click
 import yaml
 from argv_executors import parse_safe_command, run_argv_command
+from artifact_upload import upload_artifact
 from hub_client import HubClient, HubClientConfig
 from location_node import LocationNode, LocationNodeConfig
 from safe_http import perform_http_request
@@ -768,13 +771,23 @@ def _action_file_info(payload: dict[str, Any]) -> dict[str, Any]:
 _HUB_REST_URL: str | None = None
 _HUB_DEVICE_TOKEN: str | None = None
 _DEFAULT_SPACE_ID: str | None = None
+_HUB_CLIENT: HubClient | None = None
+_HUB_LOCATION_NODE: LocationNode | None = None
+_ARTIFACT_UPLOAD_TTL_SECONDS: int | None = None
 
 
-def _set_hub_context(*, hub_rest_url: str | None, device_token: str, default_space_id: str | None) -> None:
-    global _HUB_REST_URL, _HUB_DEVICE_TOKEN, _DEFAULT_SPACE_ID
+def _set_hub_context(
+    *, hub_rest_url: str | None, device_token: str, default_space_id: str | None,
+    client: HubClient, location_node: LocationNode | None, artifact_upload_ttl_seconds: int | None,
+) -> None:
+    global _HUB_REST_URL, _HUB_DEVICE_TOKEN, _DEFAULT_SPACE_ID, _HUB_CLIENT, _HUB_LOCATION_NODE
+    global _ARTIFACT_UPLOAD_TTL_SECONDS
     _HUB_REST_URL = hub_rest_url
     _HUB_DEVICE_TOKEN = device_token
     _DEFAULT_SPACE_ID = default_space_id
+    _HUB_CLIENT = client
+    _HUB_LOCATION_NODE = location_node
+    _ARTIFACT_UPLOAD_TTL_SECONDS = artifact_upload_ttl_seconds
 
 
 def _resolve_space_id(payload: dict[str, Any]) -> str:
@@ -791,40 +804,32 @@ def _resolve_enroll_person_id(payload: dict[str, Any]) -> str:
     return person_id
 
 
-async def _hub_presign_put(*, filename: str, content_type: str, purpose: str = "recognition") -> dict[str, Any]:
-    if not _HUB_REST_URL or not _HUB_DEVICE_TOKEN:
-        raise RuntimeError("hub_rest_url_not_configured (start daemon with --hub-rest-url)")
-    import aiohttp
-
-    url = str(_HUB_REST_URL).rstrip("/") + "/v1/artifacts/presign"
-    headers = {"Authorization": f"Bearer {_HUB_DEVICE_TOKEN}", "Content-Type": "application/json"}
-    body = {"filename": filename, "content_type": content_type, "purpose": purpose}
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, json=body, timeout=15) as resp:
-            txt = await resp.text()
-            if resp.status >= 400:
-                raise RuntimeError(f"presign_failed status={resp.status} body={txt[:300]}")
-            return json.loads(txt or "{}")
-
-
-async def _hub_put_bytes(*, upload_url: str, data: bytes, content_type: str) -> None:
-    import aiohttp
-
-    async with aiohttp.ClientSession() as session:
-        async with session.put(upload_url, data=data, headers={"Content-Type": content_type}, timeout=60) as resp:
-            if resp.status >= 400:
-                txt = await resp.text()
-                raise RuntimeError(f"upload_failed status={resp.status} body={txt[:300]}")
+def _artifact_context(*, session_id: str, space_id: str) -> tuple[str, str, str, int]:
+    agent_id = _HUB_CLIENT.authenticated_agent_id if _HUB_CLIENT else None
+    if not _HUB_REST_URL or not _HUB_DEVICE_TOKEN or not agent_id:
+        raise RuntimeError("authenticated hub and agent are required for recognition capture")
+    if (
+        _HUB_LOCATION_NODE is None
+        or _HUB_LOCATION_NODE.authenticated_route != (session_id, agent_id)
+        or _HUB_LOCATION_NODE.cfg.space_id != space_id
+    ):
+        raise RuntimeError("recognition capture requires the authenticated location session route")
+    if _ARTIFACT_UPLOAD_TTL_SECONDS is None:
+        raise RuntimeError("artifact_upload_ttl_seconds must be explicitly configured")
+    return _HUB_REST_URL, _HUB_DEVICE_TOKEN, agent_id, _ARTIFACT_UPLOAD_TTL_SECONDS
 
 
-async def _hub_ingest_event(*, space_id: str, ev_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+async def _hub_ingest_event(
+    *, space_id: str, ev_type: str, payload: dict[str, Any], session_id: str, artifact_id: str
+) -> dict[str, Any]:
     if not _HUB_REST_URL or not _HUB_DEVICE_TOKEN:
         raise RuntimeError("hub_rest_url_not_configured (start daemon with --hub-rest-url)")
     import aiohttp
 
     url = str(_HUB_REST_URL).rstrip("/") + "/v1/events"
     headers = {"Authorization": f"Bearer {_HUB_DEVICE_TOKEN}", "Content-Type": "application/json"}
-    body = {"space_id": space_id, "type": ev_type, "payload": payload}
+    body = {"space_id": space_id, "type": ev_type, "payload": payload,
+            "session_id": session_id, "artifact_id": artifact_id}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, json=body, timeout=20) as resp:
             txt = await resp.text()
@@ -902,12 +907,17 @@ async def _action_record_audio_clip(payload: dict[str, Any]) -> dict[str, Any]:
     """
     space_id = _resolve_space_id(payload)
     enroll_person_id = _resolve_enroll_person_id(payload)
+    session_id = str(payload.get("session_id") or "").strip()
+    if not session_id:
+        raise ValueError("session_id is required for recognition capture")
+    rest_url, device_token, agent_id, upload_ttl_seconds = _artifact_context(session_id=session_id, space_id=space_id)
 
     seconds = int(payload.get("seconds") or payload.get("duration") or 3)
     sample_rate = int(payload.get("sample_rate") or 16000)
     channels = int(payload.get("channels") or 1)
     audio_device = payload.get("audio_device", None)
 
+    captured_at = datetime.now(timezone.utc).isoformat()
     pcm = await asyncio.to_thread(
         _record_pcm_int16_blocking,
         seconds=seconds,
@@ -919,22 +929,27 @@ async def _action_record_audio_clip(payload: dict[str, Any]) -> dict[str, Any]:
         return {"status": "error", "error": "audio_capture_failed"}
 
     wav_bytes = _pcm_to_wav_bytes(pcm_bytes=pcm, sample_rate=sample_rate, channels=channels)
-    presign = await _hub_presign_put(filename="voice_enroll.wav", content_type="audio/wav", purpose="recognition")
-    upload_url = str(presign.get("upload_url") or "").strip()
-    bucket = str(presign.get("bucket") or "").strip()
-    key = str(presign.get("key") or "").strip()
-    if not upload_url or not bucket or not key:
-        raise RuntimeError("presign_missing_fields")
-
-    await _hub_put_bytes(upload_url=upload_url, data=wav_bytes, content_type="audio/wav")
+    receipt = await upload_artifact(
+        rest_url=rest_url, device_token=device_token, agent_id=agent_id, space_id=space_id,
+        session_id=session_id, upload_ttl_seconds=upload_ttl_seconds,
+        filename="voice_enroll.wav", media_type="audio/wav", data=wav_bytes,
+    )
 
     ingest = await _hub_ingest_event(
         space_id=space_id,
         ev_type="voice.sample",
+        session_id=session_id,
+        artifact_id=receipt["artifact_id"],
         payload={
-            "artifact_bucket": bucket,
-            "artifact_key": key,
-            "content_type": "audio/wav",
+            "artifact_bucket": receipt["bucket"],
+            "artifact_key": receipt["object_key"],
+            "artifact_uri": receipt["uri"],
+            "artifact_sha256": receipt["actual_sha256"],
+            "source_event_key": str(uuid.uuid4()),
+            "captured_at": captured_at,
+            "modality": "audio",
+            "attribution_state": "unknown",
+            "content_type": receipt["media_type"],
             "enroll_person_id": enroll_person_id,
             "sample_rate": sample_rate,
             "channels": channels,
@@ -945,8 +960,8 @@ async def _action_record_audio_clip(payload: dict[str, Any]) -> dict[str, Any]:
         "status": "success",
         "space_id": space_id,
         "person_id": enroll_person_id,
-        "artifact_bucket": bucket,
-        "artifact_key": key,
+        "artifact_bucket": receipt["bucket"],
+        "artifact_key": receipt["object_key"],
         "event_id": ingest.get("event_id"),
     }
 
@@ -964,10 +979,15 @@ async def _action_capture_face_snapshot(payload: dict[str, Any]) -> dict[str, An
 
     space_id = _resolve_space_id(payload)
     enroll_person_id = _resolve_enroll_person_id(payload)
+    session_id = str(payload.get("session_id") or "").strip()
+    if not session_id:
+        raise ValueError("session_id is required for recognition capture")
+    rest_url, device_token, agent_id, upload_ttl_seconds = _artifact_context(session_id=session_id, space_id=space_id)
 
     cam_device = payload.get("device", 0)
     resolution = str(payload.get("resolution") or "1280x720")
 
+    captured_at = datetime.now(timezone.utc).isoformat()
     fd, tmp_path = tempfile.mkstemp(prefix="marvain_face_", suffix=".jpg")
     os.close(fd)
     try:
@@ -983,22 +1003,27 @@ async def _action_capture_face_snapshot(payload: dict[str, Any]) -> dict[str, An
         with contextlib.suppress(Exception):
             os.remove(tmp_path)
 
-    presign = await _hub_presign_put(filename="face_enroll.jpg", content_type="image/jpeg", purpose="recognition")
-    upload_url = str(presign.get("upload_url") or "").strip()
-    bucket = str(presign.get("bucket") or "").strip()
-    key = str(presign.get("key") or "").strip()
-    if not upload_url or not bucket or not key:
-        raise RuntimeError("presign_missing_fields")
-
-    await _hub_put_bytes(upload_url=upload_url, data=jpg_bytes, content_type="image/jpeg")
+    receipt = await upload_artifact(
+        rest_url=rest_url, device_token=device_token, agent_id=agent_id, space_id=space_id,
+        session_id=session_id, upload_ttl_seconds=upload_ttl_seconds,
+        filename="face_enroll.jpg", media_type="image/jpeg", data=jpg_bytes,
+    )
 
     ingest = await _hub_ingest_event(
         space_id=space_id,
         ev_type="face.snapshot",
+        session_id=session_id,
+        artifact_id=receipt["artifact_id"],
         payload={
-            "artifact_bucket": bucket,
-            "artifact_key": key,
-            "content_type": "image/jpeg",
+            "artifact_bucket": receipt["bucket"],
+            "artifact_key": receipt["object_key"],
+            "artifact_uri": receipt["uri"],
+            "artifact_sha256": receipt["actual_sha256"],
+            "source_event_key": str(uuid.uuid4()),
+            "captured_at": captured_at,
+            "modality": "video",
+            "attribution_state": "unknown",
+            "content_type": receipt["media_type"],
             "enroll_person_id": enroll_person_id,
             "resolution": resolution,
         },
@@ -1007,8 +1032,8 @@ async def _action_capture_face_snapshot(payload: dict[str, Any]) -> dict[str, An
         "status": "success",
         "space_id": space_id,
         "person_id": enroll_person_id,
-        "artifact_bucket": bucket,
-        "artifact_key": key,
+        "artifact_bucket": receipt["bucket"],
+        "artifact_key": receipt["object_key"],
         "event_id": ingest.get("event_id"),
     }
 
@@ -1188,6 +1213,13 @@ def load_config_file(path: str) -> dict[str, Any]:
     help="Required durable command receipt file used for replay-safe execution",
 )
 @click.option(
+    "--artifact-upload-ttl-seconds",
+    envvar="MARVAIN_ARTIFACT_UPLOAD_TTL_SECONDS",
+    default=None,
+    type=int,
+    help="Explicit upload intent lifetime for recognition artifacts",
+)
+@click.option(
     "--location-label",
     envvar="MARVAIN_LOCATION_LABEL",
     default=None,
@@ -1305,6 +1337,7 @@ def main(
     heartbeat_interval: int,
     config_file: str | None,
     receipt_store_path: str | None,
+    artifact_upload_ttl_seconds: int | None,
     location_label: str | None,
     space_id: str | None,
     location_mode: str,
@@ -1367,12 +1400,11 @@ def main(
         audio_in_device = file_config.get("audio_in_device", audio_in_device)
         audio_out_device = file_config.get("audio_out_device", audio_out_device)
         receipt_store_path = file_config.get("receipt_store_path", receipt_store_path)
+        configured_upload_ttl = file_config.get("artifact_upload_ttl_seconds", artifact_upload_ttl_seconds)
+        artifact_upload_ttl_seconds = int(configured_upload_ttl) if configured_upload_ttl is not None else None
 
     if not str(receipt_store_path or "").strip():
         raise click.ClickException("--receipt-store-path or MARVAIN_RECEIPT_STORE_PATH is required")
-
-    # Make hub REST URL + token available to device actions that need to upload artifacts/events.
-    _set_hub_context(hub_rest_url=hub_rest_url, device_token=device_token, default_space_id=space_id)
 
     logger.info("Starting Marvain Remote Satellite Daemon")
     logger.info("Hub WebSocket URL: %s", hub_ws_url)
@@ -1398,11 +1430,14 @@ def main(
     if space_id:
         if not hub_rest_url:
             raise click.ClickException("--hub-rest-url is required when --space-id is set")
+        if artifact_upload_ttl_seconds is None:
+            raise click.ClickException("--artifact-upload-ttl-seconds is required when --space-id is set")
         location_node = LocationNode(
             LocationNodeConfig(
                 rest_url=hub_rest_url,
                 device_token=device_token,
                 space_id=space_id,
+                artifact_upload_ttl_seconds=artifact_upload_ttl_seconds,
                 mode=location_mode,
                 publish_audio=publish_audio,
                 publish_video=publish_video,
@@ -1423,6 +1458,11 @@ def main(
                 audio_out_device=audio_out_device,
             )
         )
+
+    _set_hub_context(
+        hub_rest_url=hub_rest_url, device_token=device_token, default_space_id=space_id,
+        client=client, location_node=location_node, artifact_upload_ttl_seconds=artifact_upload_ttl_seconds,
+    )
 
     # Handle shutdown gracefully
     loop = asyncio.new_event_loop()

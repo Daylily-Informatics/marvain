@@ -72,6 +72,10 @@ class HubClient:
         self._receipt_store_path = Path(str(config.receipt_store_path)).expanduser()
         self._command_receipts = self._load_command_receipts()
 
+    @property
+    def authenticated_agent_id(self) -> str | None:
+        return self._agent_id if self._authenticated else None
+
     def _load_command_receipts(self) -> dict[str, dict[str, Any]]:
         if self._receipt_store_path is None or not self._receipt_store_path.exists():
             return {}

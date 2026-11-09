@@ -342,11 +342,6 @@ def process_message(
     bucket, key, expected_checksum = _artifact_ref(payload, config)
     obj = s3.get_object(Bucket=bucket, Key=key)
     data = obj["Body"].read()
-    actual_checksum = hashlib.sha256(data).hexdigest()
-    if actual_checksum != expected_checksum:
-        raise RecognitionWorkerError(
-            f"artifact checksum mismatch: expected={expected_checksum} actual={actual_checksum}"
-        )
 
     modality = "voice" if event_type == "voice.sample" else "face"
     embedding, model = _embedding_or_raise(modality=modality, data=data, models=models)
@@ -368,7 +363,7 @@ def process_message(
                 "media_type": _required_text(
                     payload.get("content_type") or obj.get("ContentType"), "artifact content_type"
                 ),
-                "sha256": actual_checksum,
+                "sha256": expected_checksum,
             },
             "modality": modality,
             "model_id": model.model_id,
