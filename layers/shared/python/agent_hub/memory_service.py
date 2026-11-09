@@ -33,6 +33,192 @@ class MemoryCommitState(StrEnum):
     TOMBSTONED = "tombstoned"
 
 
+class MemoryPurpose(StrEnum):
+    RECALL = "recall"
+    DETAIL = "detail"
+    HISTORY = "history"
+    EXPORT = "export"
+
+
+class MemoryLayer(StrEnum):
+    RAW_ARTIFACT = "raw_artifact"
+    ATTRIBUTED_EVENT = "attributed_event"
+    EPISODE = "episode"
+    KNOWLEDGE = "knowledge"
+
+
+@dataclass(frozen=True)
+class RetentionDecision:
+    """An explicit retention decision; expiry excludes access, not physical deletion."""
+
+    expires_at: datetime | None = None
+    retain_until_revoked: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.retain_until_revoked, bool):
+            raise MemoryServiceError("retention_required", "retain_until_revoked must be explicit")
+        if self.expires_at is not None:
+            _require_aware_datetime(self.expires_at, "expires_at")
+        if (self.expires_at is None) == (not self.retain_until_revoked):
+            raise MemoryServiceError("retention_required", "choose expires_at or retain_until_revoked")
+
+    def permits_at(self, at: datetime) -> bool:
+        at = _require_aware_datetime(at, "at")
+        return self.expires_at is None or at < self.expires_at
+
+
+@dataclass(frozen=True)
+class MemoryAccessPolicy:
+    """Immutable policy values; principal references are backed by TapDB lineage."""
+
+    owner_principal_id: str
+    reader_principal_ids: tuple[str, ...]
+    allowed_purposes: frozenset[MemoryPurpose]
+    raw_capture_allowed: bool
+    retention: tuple[tuple[MemoryLayer, RetentionDecision], ...]
+    revoked_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        _require_text(self.owner_principal_id, "owner_principal_id")
+        if not self.reader_principal_ids or len(set(self.reader_principal_ids)) != len(self.reader_principal_ids):
+            raise MemoryServiceError("readers_required", "explicit, unique reader principals are required")
+        for principal in self.reader_principal_ids:
+            _require_text(principal, "reader_principal_id")
+        if not self.allowed_purposes:
+            raise MemoryServiceError("purposes_required", "explicit allowed purposes are required")
+        try:
+            purposes = frozenset(MemoryPurpose(purpose) for purpose in self.allowed_purposes)
+            layers = tuple((MemoryLayer(layer), decision) for layer, decision in self.retention)
+        except (ValueError, TypeError) as exc:
+            raise MemoryServiceError("invalid_policy", "unknown purpose or retention layer") from exc
+        if not isinstance(self.raw_capture_allowed, bool):
+            raise MemoryServiceError("invalid_policy", "raw_capture_allowed must be explicit")
+        if self.revoked_at is not None:
+            _require_aware_datetime(self.revoked_at, "revoked_at")
+        if len(layers) != len(MemoryLayer) or {layer for layer, _ in layers} != set(MemoryLayer):
+            raise MemoryServiceError("retention_required", "each memory layer needs exactly one retention decision")
+        if not all(isinstance(decision, RetentionDecision) for _, decision in layers):
+            raise MemoryServiceError("retention_required", "invalid retention decision")
+        object.__setattr__(self, "allowed_purposes", purposes)
+        object.__setattr__(self, "retention", layers)
+
+    def permits(self, *, authenticated_principal_id: str, purpose: MemoryPurpose, layer: MemoryLayer, at: datetime) -> bool:
+        """Caller supplies a principal established by the authentication boundary."""
+        principal = _require_text(authenticated_principal_id, "authenticated_principal_id")
+        purpose = MemoryPurpose(purpose)
+        layer = MemoryLayer(layer)
+        decision = dict(self.retention)[layer]
+        return (principal in self.reader_principal_ids and purpose in self.allowed_purposes
+                and (self.revoked_at is None or at < self.revoked_at) and decision.permits_at(at))
+
+    def as_properties(self) -> dict[str, object]:
+        """Only scalar policy values; principal relationships are stored as lineage."""
+        return {
+            "allowed_purposes": sorted(p.value for p in self.allowed_purposes),
+            "raw_capture_allowed": self.raw_capture_allowed,
+            "revoked_at": self.revoked_at.isoformat() if self.revoked_at else None,
+            "retention": {layer.value: {"expires_at": decision.expires_at.isoformat() if decision.expires_at else None,
+                                       "retain_until_revoked": decision.retain_until_revoked}
+                          for layer, decision in self.retention},
+        }
+
+
+@dataclass(frozen=True)
+class MemoryPolicyConstraint:
+    policy: MemoryAccessPolicy
+    layer: MemoryLayer
+
+
+def permits_scoped_memory(
+    *, authenticated_principal_id: str, purpose: MemoryPurpose, layer: MemoryLayer,
+    policies: Iterable[MemoryPolicyConstraint], at: datetime,
+) -> bool:
+    """Require all policies of a derived item and its sources to permit disclosure."""
+    values = tuple(policies)
+    if not values:
+        raise MemoryServiceError("policy_required", "source and item policies are required")
+    if not any(constraint.layer == layer for constraint in values):
+        raise MemoryServiceError("policy_required", "item policy for requested layer is required")
+    return all(constraint.policy.permits(authenticated_principal_id=authenticated_principal_id,
+                                         purpose=purpose, layer=constraint.layer, at=at) for constraint in values)
+
+
+@dataclass(frozen=True)
+class TemporalMemoryVersion:
+    """A canonical assertion and all policies inherited from its source material."""
+
+    memory_id: str
+    recorded_at: datetime
+    effective_at: datetime
+    policies: tuple[MemoryPolicyConstraint, ...]
+    retracted_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        _require_text(self.memory_id, "memory_id")
+        _require_aware_datetime(self.recorded_at, "recorded_at")
+        _require_aware_datetime(self.effective_at, "effective_at")
+        if self.retracted_at is not None:
+            _require_aware_datetime(self.retracted_at, "retracted_at")
+        if not self.policies:
+            raise MemoryServiceError("policy_required", "memory and source policies are required")
+
+
+@dataclass(frozen=True)
+class TemporalMemoryCorrection:
+    correction_id: str
+    target_memory_id: str
+    replacement_memory_id: str
+    recorded_at: datetime
+    effective_at: datetime
+
+    def __post_init__(self) -> None:
+        for field in ("correction_id", "target_memory_id", "replacement_memory_id"):
+            _require_text(getattr(self, field), field)
+        if self.target_memory_id == self.replacement_memory_id:
+            raise MemoryServiceError("invalid_correction", "replacement must differ from target")
+        _require_aware_datetime(self.recorded_at, "recorded_at")
+        _require_aware_datetime(self.effective_at, "effective_at")
+
+
+@dataclass(frozen=True)
+class VisibleMemoryVersion:
+    version: TemporalMemoryVersion
+    superseded_by: tuple[str, ...]
+
+
+def select_temporal_memory(
+    *, versions: Iterable[TemporalMemoryVersion], corrections: Iterable[TemporalMemoryCorrection],
+    authenticated_principal_id: str, as_of: datetime, access_at: datetime, historical: bool = False,
+) -> tuple[VisibleMemoryVersion, ...]:
+    """Select authorized current or historical assertions before ranking.
+
+    The authenticated boundary supplies the principal and complete source policy
+    set; the canonical lineage reader supplies versions and correction edges.
+    Retention is evaluated at access time, including for historical reads.
+    """
+    as_of = _require_aware_datetime(as_of, "as_of")
+    access_at = _require_aware_datetime(access_at, "access_at")
+    if as_of > access_at:
+        raise MemoryServiceError("invalid_timestamp", "as_of cannot be later than access_at")
+    purpose = MemoryPurpose.HISTORY if historical else MemoryPurpose.RECALL
+    active_corrections = tuple(c for c in corrections if c.recorded_at <= as_of and c.effective_at <= as_of)
+    results = []
+    for version in versions:
+        if version.recorded_at > as_of or version.effective_at > as_of:
+            continue
+        if version.retracted_at is not None and version.retracted_at <= as_of:
+            continue
+        if not permits_scoped_memory(authenticated_principal_id=authenticated_principal_id,
+                                     purpose=purpose, layer=MemoryLayer.KNOWLEDGE,
+                                     policies=version.policies, at=access_at):
+            continue
+        superseded = tuple(c.correction_id for c in active_corrections if c.target_memory_id == version.memory_id)
+        if superseded and not historical:
+            continue
+        results.append(VisibleMemoryVersion(version=version, superseded_by=superseded))
+    return tuple(results)
+
+
 _ALLOWED_COMMIT_TRANSITIONS: Final[dict[MemoryCommitState, frozenset[MemoryCommitState]]] = {
     MemoryCommitState.CANDIDATE: frozenset({MemoryCommitState.EMBEDDING_PENDING, MemoryCommitState.REJECTED}),
     MemoryCommitState.EMBEDDING_PENDING: frozenset({MemoryCommitState.EMBEDDED, MemoryCommitState.EMBEDDING_FAILED}),

@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "marvain",
+  "version": "0.1.0",
+  "description": "Participate in an authorized Marvain scene, recall episode detail, and record a deliberate update."
+}

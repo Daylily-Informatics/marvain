@@ -1,8 +1,8 @@
-# Marvain 4.x — proposed multi-agent execution plan
+# Marvain 4.x — multi-agent execution plan
 
 **Revision:** 1  
 **Prepared:** 9 November 2026  
-**Status:** awaiting user approval to execute. No execution agent has been launched.
+**Status:** Waves 1–4 approved on 9 November 2026; source execution beginning. Tests and live changes remain off.
 
 ## Current continuation state
 
@@ -12,11 +12,13 @@ This document is the versioned execution specification. The native Linear execut
 
 Repository: /Users/jmajor/projects/marvain. Reuse current branch codex/marvain-operational-100-closure. Planning baseline: 9180503. Pre-existing modified /Users/jmajor/projects/marvain/AGENTS.md and untracked /Users/jmajor/projects/marvain/.playwright-cli/ and /Users/jmajor/projects/marvain/Marvain_Restart_Thread.md are excluded.
 
-Authority: project/requirement creation and this plan preparation were requested. The initial goal is accepted; TapDB is preferred. Execution of this plan is pending. No tests, deployments, data collection, event subscriptions, hardware actions, PRs, merges or release tags are authorized by drafting it.
+Authority: the user approved Waves 1–4 with TapDB as canonical-memory baseline on 9 November 2026, accepting the presented named model/effort assignments and scoped source implementation, integration preparation, commits and project-ledger updates. No tests, deployments, data collection, event subscriptions, hardware actions, PRs, merges or release tags are authorized.
 
-Next executable action after approval: A0 records the approved scope and model assignments in the native ledger, claims WP-01, and dispatches the three bounded Wave 1 assignments below. Unknown live targets block only the work that needs them.
+Execution baseline: local planning commit 4f85404; initial status retained only the pre-existing excluded files listed above. A0 owns Git and Linear writes. Wave 1 settled the actor/principal/run/embodiment distinctions and explicit evidence/policy lineage. A2 retains the 6.0.8 pin on matching tagged source APIs; the Dayhoff 9.0.5 pin is not a Marvain upgrade requirement. The user selected the existing camera/microphone satellite. A2 also owns both /Users/jmajor/projects/marvain/tapdb_templates/MVN/marvain.json and /Users/jmajor/projects/marvain/layers/shared/tapdb_templates/MVN/marvain.json. Active persistence wiring is an explicit integration task: existing lifecycle helpers lack runtime callers and the active outbox currently only enqueues records. Next action: canonical implementation and dependent scene/bridge/Daylily source work, followed by shared integration. Unknown live targets block only the work that needs them.
 
-## 1. Recommended approval scope
+Current source handoffs: A1 finished /Users/jmajor/projects/marvain/docs/design/20261109_marvain_4x_actor_memory_scene_contract.md. A2 implements atomic canonical graphs and authorized scene recall. A3 owns selected satellite/session/recognition source; A5 owns Daylily handoff/checkpoint source. A4 finished its scoped OAuth MCP and event-source contracts; actual backend integration remains A6 work. Shared integration must carry canonical scene/session binding through device tokens and worker dispatch, preserve session on reconnect, and expose policy-filtered scene recall. No tests, builds, deployment or live observations have occurred. Native Linear remains the current package/receipt ledger.
+
+## 1. Approved execution scope
 
 Approve **Waves 1–4: design, source implementation and integration preparation**, using TapDB as the canonical-memory baseline, the named specialists and ownership rules below, and existing Daylily project records for progress.
 
@@ -192,7 +194,7 @@ An issue may be Done + Review result when its bounded output is finished but unr
 | TapDB version | Existing Marvain pin 6.0.8; inspected checkout README names 9.0.5 | New API-dependent code; A2 supplies a concrete supported choice |
 | Core dot | Intended account is specified; runtime identity/connection unknown | Binding live access; source contracts can proceed with explicit configuration requirements |
 | Sites, participants, animal and second agent | Initial goal accepted; exact population unselected | Capture/enrollment and live scenario; no invented identities |
-| Sensor | One required; hardware/interface unselected | Sensor-specific adapter and live observation |
+| Sensor | User selected existing camera/microphone satellite on 9 November 2026; exact device/site binding remains live input | Adapter uses current satellite media path; real capture requires selected devices and live authority |
 | Capture/detail/retention | Rich memory required; concrete policy undecided | Live ingestion/retention; policy contract work can proceed |
 | Build/deployment service | No current target adopted from historical clean-room records | Container build, publication and deployment |
 | Product tests/acceptance execution | No present twice-explicit request for a named scope | Any pytest/lint/CI/benchmark or test execution; plan approval does not supply it |
@@ -224,5 +226,5 @@ Source complete, released, deployed, demonstrated, delivered and user-accepted a
 
 > Approve Marvain 4.x execution-plan revision 1, Waves 1–4, with TapDB as the canonical-memory baseline and the listed agent models/efforts. Proceed with scoped source implementation, integration preparation, commits and project-ledger updates. Keep tests and live changes off; bring the concrete release/demo packet and remaining named decisions back for review.
 
-The user explicitly requested presentation before execution. Waiting for this approval follows that request. No subagents or implementation work start while it is pending.
+The user approved this scope on 9 November 2026. Waves 1–4 may execute with the listed agents and TapDB baseline. The quoted text preserves the scope presented for that decision; it is not a new permission request.
 

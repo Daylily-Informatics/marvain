@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import os
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Iterator, Protocol
 from urllib.parse import quote_plus
 
 MARVAIN_TAPDB_DOMAIN_CODE = "V"
@@ -42,6 +43,14 @@ MARVAIN_TAPDB_PREFIX_REGISTRY = MARVAIN_TAPDB_TEMPLATE_ROOT / "prefix_ownership_
 TEMPLATE_CODES: dict[str, str] = {
     "agent": "MVN/agent/companion/1.0/",
     "person": "MVN/person/human/1.0/",
+    "animal": "MVN/actor/animal/1.0/",
+    "actor_association": "MVN/recognition/actor_association/1.0/",
+    "principal": "MVN/identity/principal/1.0/",
+    "agent_run": "MVN/identity/agent_run/1.0/",
+    "embodiment": "MVN/identity/embodiment/1.0/",
+    "episode": "MVN/episode/encounter/1.0/",
+    "memory_correction": "MVN/memory/correction/1.0/",
+    "work_handoff": "MVN/work/handoff/1.0/",
     "account": "MVN/account/user/1.0/",
     "location": "MVN/location/physical_site/1.0/",
     "space": "MVN/space/physical_room/1.0/",
@@ -88,6 +97,38 @@ class SemanticEdge:
 
 
 @dataclass(frozen=True)
+class GraphObjectWrite:
+    key: str
+    template_code: str
+    name: str
+    properties: dict[str, Any]
+    lifecycle_state: str
+
+
+@dataclass(frozen=True)
+class GraphObjectRef:
+    key: str | None = None
+    semantic_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if bool(self.key) == bool(self.semantic_id):
+            raise ValueError("graph reference requires exactly one new key or persisted semantic_id")
+
+
+@dataclass(frozen=True)
+class GraphLinkWrite:
+    parent: GraphObjectRef
+    child: GraphObjectRef
+    relationship_type: str
+
+
+class SemanticReadView(Protocol):
+    def get_object(self, semantic_id: str) -> SemanticObject: ...
+    def linked_objects(self, semantic_id: str, *, relationship_type: str,
+                       incoming: bool = False) -> tuple[SemanticObject, ...]: ...
+
+
+@dataclass(frozen=True)
 class TemplateValidationResult:
     templates_loaded: int
     issues: list[str]
@@ -123,6 +164,11 @@ class TapdbSemanticStore(Protocol):
     ) -> SemanticEdge: ...
 
     def graph_for(self, semantic_id: str, *, max_depth: int = 3) -> dict[str, Any]: ...
+
+    def create_graph(self, *, objects: tuple[GraphObjectWrite, ...],
+                     links: tuple[GraphLinkWrite, ...]) -> dict[str, SemanticObject]: ...
+
+    def read_view(self) -> Any: ...
 
 
 def validate_marvain_template_pack() -> TemplateValidationResult:
@@ -290,6 +336,81 @@ class DaylilyTapdbSemanticStore:
                 properties=dict((instance.json_addl or {}).get("properties") or {}),
                 lifecycle_state=str(instance.bstatus),
             )
+
+    def create_graph_in_session(
+        self, session: Any, *, objects: tuple[GraphObjectWrite, ...], links: tuple[GraphLinkWrite, ...],
+    ) -> dict[str, SemanticObject]:
+        """Write a semantic graph in the caller's TapDB transaction.
+
+        Keys are operation-local symbols, never canonical identifiers. The
+        caller owns commit and, when retried, idempotency. Existing endpoints
+        are resolved through TapDB's object lookup service.
+        """
+        from daylily_tapdb.services.object_lookup import find_object_by_euid
+
+        keys = [item.key for item in objects]
+        if not keys or any(not key.strip() for key in keys) or len(set(keys)) != len(keys):
+            raise ValueError("graph requires unique nonempty object keys")
+        instances: dict[str, Any] = {}
+        for item in objects:
+            instance = self.factory.create_instance(
+                session, template_code=item.template_code, name=item.name,
+                properties={**item.properties, "lifecycle_state": item.lifecycle_state}, create_children=False,
+            )
+            instance.bstatus = item.lifecycle_state
+            instances[item.key] = instance
+
+        def resolve(ref: GraphObjectRef) -> Any:
+            if ref.key is not None:
+                if ref.key not in instances:
+                    raise KeyError(f"unknown graph object key: {ref.key}")
+                return instances[ref.key]
+            obj, record_type = find_object_by_euid(session, ref.semantic_id)
+            if obj is None or record_type != "instance":
+                raise KeyError(f"unknown TapDB instance: {ref.semantic_id}")
+            return obj
+
+        for link in links:
+            if not link.relationship_type.strip():
+                raise ValueError("graph relationship_type is required")
+            self.factory.link_instances(session, resolve(link.parent), resolve(link.child),
+                                        relationship_type=link.relationship_type)
+        session.flush()
+        return {key: self._semantic_object_from_instance(instance) for key, instance in instances.items()}
+
+    def create_graph(
+        self, *, objects: tuple[GraphObjectWrite, ...], links: tuple[GraphLinkWrite, ...],
+    ) -> dict[str, SemanticObject]:
+        """Commit one graph atomically; callers handle retry idempotency."""
+        with self.connection.session_scope(commit=True) as session:
+            return self.create_graph_in_session(session, objects=objects, links=links)
+
+    @contextmanager
+    def read_view(self) -> Iterator[SemanticReadView]:
+        """Read related canonical instances through TapDB in one transaction."""
+        from daylily_tapdb.services.object_lookup import find_object_by_euid
+
+        store = self
+        with self.connection.session_scope(commit=False) as session:
+            class View:
+                def _find(self, semantic_id: str) -> Any:
+                    obj, record_type = find_object_by_euid(session, semantic_id)
+                    if obj is None or record_type != "instance":
+                        raise KeyError(f"unknown TapDB instance: {semantic_id}")
+                    return obj
+
+                def get_object(self, semantic_id: str) -> SemanticObject:
+                    return store._semantic_object_from_instance(self._find(semantic_id))
+
+                def linked_objects(self, semantic_id: str, *, relationship_type: str,
+                                   incoming: bool = False) -> tuple[SemanticObject, ...]:
+                    instance = self._find(semantic_id)
+                    relation = instance.child_of_lineages if incoming else instance.parent_of_lineages
+                    edges = relation.filter_by(is_deleted=False, relationship_type=relationship_type)
+                    attr = "parent_instance" if incoming else "child_instance"
+                    return tuple(store._semantic_object_from_instance(getattr(edge, attr)) for edge in edges)
+
+            yield View()
 
     def link_objects(
         self,

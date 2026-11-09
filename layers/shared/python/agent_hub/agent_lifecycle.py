@@ -131,6 +131,19 @@ class LifecycleActor:
     human_role: HumanRole | None = None
 
 
+@dataclass(frozen=True)
+class SoftwareAgentRun:
+    """A Marvain-issued run and its associations resolved from canonical lineage."""
+
+    run_euid: str
+    actor_euid: str
+    principal_euid: str
+    scene_euid: str
+    session_euid: str
+    delegated_from_run_euid: str | None = None
+    embodiment_euid: str | None = None
+
+
 def actor_from_authenticated(
     authenticated: AuthenticatedUser | AuthenticatedAgent,
     *,

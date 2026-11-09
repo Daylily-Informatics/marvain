@@ -1,5 +1,7 @@
 # MARVAIN_TAPDB_FIT_AND_INTEGRATION_SPEC.md
 
+> **Historical design note, 9 November 2026:** The approved Waves 1–4 baseline uses TapDB as the canonical semantic store. The current contract is [/Users/jmajor/projects/marvain/docs/design/20261109_marvain_4x_actor_memory_scene_contract.md](/Users/jmajor/projects/marvain/docs/design/20261109_marvain_4x_actor_memory_scene_contract.md). Statements below that TapDB is absent, that adoption is undecided, or that dual-writing/extra consistency tests are mandatory are superseded. Retained source descriptions are historical, not a current deployment assessment; no migration or test execution is authorized by this document.
+
 ## 1. Executive summary
 
 TapDB should be used, if adopted, as Marvain's durable semantic object graph, provenance, lineage, lifecycle, and relationship-audit substrate. It should not replace pgvector recall, biometric vector tables, SQS queues, DynamoDB WebSocket connection state, S3 media/artifact storage, or LiveKit media transport.

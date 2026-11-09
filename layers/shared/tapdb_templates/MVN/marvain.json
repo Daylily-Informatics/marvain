@@ -2,6 +2,194 @@
   "$comment": "Marvain greenfield semantic object template pack for TapDB.",
   "templates": [
     {
+      "name": "Marvain Animal Actor",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "actor",
+      "subtype": "animal",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Durable animal identity, separate from observations.",
+        "default_status": "active",
+        "properties": {
+          "lifecycle_state": "active"
+        },
+        "allowed_lifecycle_states": [
+          "active",
+          "disabled",
+          "deleted"
+        ],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Authenticated Principal",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "identity",
+      "subtype": "principal",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Authenticated issuer and subject bound to an actor by lineage.",
+        "default_status": "active",
+        "properties": {
+          "lifecycle_state": "active"
+        },
+        "allowed_lifecycle_states": [
+          "active",
+          "revoked"
+        ],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Software Agent Run",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "identity",
+      "subtype": "agent_run",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "An explicitly identified software-agent execution.",
+        "default_status": "running",
+        "properties": {
+          "lifecycle_state": "running"
+        },
+        "allowed_lifecycle_states": [
+          "running",
+          "completed",
+          "failed"
+        ],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Embodiment",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "identity",
+      "subtype": "embodiment",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "A situated actor embodiment linked to a device.",
+        "default_status": "active",
+        "properties": {
+          "lifecycle_state": "active"
+        },
+        "allowed_lifecycle_states": [
+          "active",
+          "inactive"
+        ],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Encounter Episode",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "episode",
+      "subtype": "encounter",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "A situated encounter with evidence, participants and audience lineage.",
+        "default_status": "recorded",
+        "properties": {
+          "lifecycle_state": "recorded"
+        },
+        "allowed_lifecycle_states": [
+          "recorded",
+          "closed",
+          "retracted"
+        ],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Memory Correction",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "memory",
+      "subtype": "correction",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Append-only correction with authorship and evidence lineage.",
+        "default_status": "recorded",
+        "properties": {
+          "lifecycle_state": "recorded"
+        },
+        "allowed_lifecycle_states": [
+          "recorded",
+          "retracted"
+        ],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Actor Association",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "recognition",
+      "subtype": "actor_association",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Explicitly authored observation-to-actor association.",
+        "default_status": "asserted",
+        "properties": {
+          "lifecycle_state": "asserted"
+        },
+        "allowed_lifecycle_states": [
+          "asserted",
+          "retracted"
+        ],
+        "instantiation_layouts": []
+      }
+    },
+    {
+      "name": "Marvain Work Handoff",
+      "polymorphic_discriminator": "generic_template",
+      "category": "MVN",
+      "type": "work",
+      "subtype": "handoff",
+      "version": "1.0",
+      "instance_prefix": "MVN",
+      "is_singleton": false,
+      "bstatus": "active",
+      "json_addl": {
+        "description": "Deliberate work handoff with a typed external commitment reference.",
+        "default_status": "recorded",
+        "properties": {
+          "lifecycle_state": "recorded"
+        },
+        "allowed_lifecycle_states": [
+          "recorded",
+          "acknowledged",
+          "closed"
+        ],
+        "instantiation_layouts": []
+      }
+    },
+    {
       "name": "Marvain Companion Agent",
       "polymorphic_discriminator": "generic_template",
       "category": "MVN",
