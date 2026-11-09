@@ -223,6 +223,29 @@ def deployment_dot_status() -> None:
         raise ClickException(str(exc)) from exc
 
 
+def deployment_repair_builder_push() -> None:
+    """Update the selected builder role for ECR manifest access."""
+    from marvain_cli.deployment import repair_builder_push
+    try:
+        _json(repair_builder_push(ctx=_load()))
+    except (ConfigError, OSError) as exc:
+        raise ClickException(str(exc)) from exc
+
+
+def deployment_publish_built_image(
+    target_profile: str = Option(..., "--target-profile"), target_region: str = Option(..., "--target-region"),
+    repository_uri: str = Option(..., "--repository-uri"), release_version: str = Option(..., "--release-version"),
+    builder_instance_id: str = Option(..., "--builder-instance-id"),
+) -> None:
+    """Push the already-built final image tag on its selected EC2 builder."""
+    from marvain_cli.deployment import publish_built_image
+    try:
+        _json(publish_built_image(profile=target_profile, region=target_region, repository_uri=repository_uri,
+                                  release_version=release_version, builder_instance_id=builder_instance_id))
+    except (ConfigError, OSError) as exc:
+        raise ClickException(str(exc)) from exc
+
+
 def deployment_set_parameter(
     name: str = Option(..., "--name", help="Parameter declared by the selected SAM template."),
     value: str = Option(..., "--value", help="Explicit non-secret parameter value or secret ARN."),
@@ -1024,6 +1047,8 @@ def register(registry: CommandRegistry, spec: CliSpec) -> None:
             ("builder-status", deployment_builder_status, required_policy(supports_json=True)),
             ("complete-target", deployment_complete_target, required_policy(mutates_state=True)),
             ("publish-image", deployment_publish_image, required_policy(mutates_state=True, long_running=True, supports_json=True)),
+            ("repair-builder-push", deployment_repair_builder_push, required_policy(mutates_state=True, supports_json=True)),
+            ("publish-built-image", deployment_publish_built_image, required_policy(mutates_state=True, long_running=True, supports_json=True)),
             ("create-dot-edge", deployment_create_dot_edge, required_policy(mutates_state=True, supports_json=True)),
             ("dot-status", deployment_dot_status, required_policy(supports_json=True)),
             ("set-parameter", deployment_set_parameter, required_policy(mutates_state=True, supports_dry_run=True)),

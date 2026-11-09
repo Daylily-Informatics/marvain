@@ -403,3 +403,66 @@ def dot_status(*, ctx: Any) -> dict[str, Any]:
     return {"stack_id": stack["StackId"], "stack_name": stack["StackName"], "status": stack["StackStatus"],
             "reason": stack.get("StackStatusReason", ""),
             "outputs": {item["OutputKey"]: item["OutputValue"] for item in stack.get("Outputs", [])}}
+
+
+def repair_builder_push(*, ctx: Any) -> dict[str, str]:
+    """Submit the ECR push-permission repair without replacing builder inputs."""
+    if ctx.env.aws_profile != "lsmc" or ctx.env.aws_region != "us-east-2":
+        raise ConfigError("Builder target must explicitly be profile lsmc in us-east-2")
+    deployment = ctx.env.raw.get("deployment")
+    if not isinstance(deployment, dict) or not deployment.get("prerequisite_stack_id"):
+        raise ConfigError("selected config has no prerequisite stack receipt")
+    path = Path(__file__).resolve().parents[1] / "infrastructure" / "deployment_prerequisites.yaml"
+    session = boto3.Session(profile_name=ctx.env.aws_profile, region_name=ctx.env.aws_region)
+    response = session.client("cloudformation").update_stack(
+        StackName=deployment["prerequisite_stack_id"], TemplateBody=path.read_text(encoding="utf-8"),
+        Parameters=[{"ParameterKey": name, "UsePreviousValue": True} for name in
+                    ("BuilderImageId", "BuilderPublicKey", "BuilderSshCidr", "BuilderUserData")],
+        Capabilities=["CAPABILITY_NAMED_IAM"],
+    )
+    return {"stack_id": response["StackId"], "status": "update_submitted"}
+
+
+def publish_built_image(*, profile: str, region: str, repository_uri: str, release_version: str,
+                        builder_instance_id: str) -> dict[str, str]:
+    """Push an already-built final tag on the selected builder, without rebuilding."""
+    import base64
+    import json
+    import platform
+    import subprocess
+    import urllib.request
+
+    if profile != "lsmc" or region != "us-east-2" or platform.system() != "Linux":
+        raise ConfigError("Publication requires profile lsmc on the selected Linux EC2 builder in us-east-2")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", release_version):
+        raise ConfigError("release_version must be an explicit numeric semver tag")
+    if not re.fullmatch(r"[0-9]{12}\.dkr\.ecr\.us-east-2\.amazonaws\.com/[a-z0-9][a-z0-9._/-]*", repository_uri):
+        raise ConfigError("repository_uri must identify the selected us-east-2 ECR repository")
+    try:
+        request = urllib.request.Request("http://169.254.169.254/latest/api/token", method="PUT",
+                  headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            token = response.read().decode("ascii")
+        request = urllib.request.Request("http://169.254.169.254/latest/dynamic/instance-identity/document",
+                  headers={"X-aws-ec2-metadata-token": token})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            identity = json.load(response)
+    except Exception as exc:
+        raise ConfigError("Selected EC2 builder identity is unavailable") from exc
+    if identity.get("instanceId") != builder_instance_id or identity.get("region") != region:
+        raise ConfigError("Current EC2 instance does not match the selected builder and region")
+    session = boto3.Session(profile_name=profile, region_name=region)
+    entry = session.client("ecr").get_authorization_token(registryIds=[repository_uri.split(".", 1)[0]])["authorizationData"][0]
+    username, password = base64.b64decode(entry["authorizationToken"]).decode("utf-8").split(":", 1)
+    login = subprocess.run(["docker", "login", "--username", username, "--password-stdin", entry["proxyEndpoint"]],
+                           input=password, text=True, capture_output=True)
+    if login.returncode != 0:
+        raise ConfigError("Docker registry login failed")
+    pushed = subprocess.run(["docker", "push", f"{repository_uri}:{release_version}"], text=True, capture_output=True)
+    if pushed.returncode != 0:
+        raise ConfigError(f"Existing final image push failed: {pushed.stderr.strip()}")
+    match = re.search(r"digest:\s*(sha256:[0-9a-f]{64})", pushed.stdout)
+    if not match:
+        raise ConfigError("Image push succeeded but did not return a digest")
+    return {"version": release_version, "image_uri": f"{repository_uri}@{match.group(1)}",
+            "builder_instance_id": builder_instance_id, "status": "published"}
