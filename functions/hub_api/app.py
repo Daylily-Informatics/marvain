@@ -7814,6 +7814,87 @@ def api_presign_upload(request: Request, body: ArtifactPresign) -> dict:
     return {"upload_url": url, "key": key, "bucket": _cfg.artifact_bucket, "purpose": purpose}
 
 
+@app.post("/api/session-media", name="api_session_media")
+async def api_session_media(request: Request) -> dict:
+    """Persist a browser-recorded segment under its private canonical session."""
+    from datetime import datetime, timezone
+    from browser_activation import browser_route
+    from api_app import _scene_for_session
+    from agent_hub.semantic_outbox import enqueue_semantic_graph
+    from agent_hub.semantic_tapdb import TEMPLATE_CODES, EXTERNAL_REFERENCE_TEMPLATE, GraphObjectWrite, GraphObjectRef, GraphLinkWrite
+    from agent_hub.memory_service import MemoryLayer, MemoryPurpose
+
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    form = await request.form()
+    sid = str(uuid.UUID(str(form.get("session_id") or "")))
+    segment = str(uuid.UUID(str(form.get("segment_id") or "")))
+    file = form.get("file")
+    if file is None:
+        raise HTTPException(400, "Recording segment is required")
+    db = _get_db()
+    rows = db.query("""SELECT agent_id::text AS agent_id,space_id::text AS space_id,metadata
+        FROM sessions WHERE session_id=:sid::uuid""", {"sid": sid})
+    if len(rows) != 1:
+        raise HTTPException(404, "Session not found")
+    row = rows[0]
+    metadata = row["metadata"] if isinstance(row["metadata"], dict) else json.loads(row["metadata"])
+    if metadata.get("actor_type") != "user" or metadata.get("actor_id") != user.user_id:
+        raise HTTPException(403, "Recording belongs to another principal")
+    route, binding = browser_route(user=user, agent_id=row["agent_id"], space_id=row["space_id"])
+    if not binding["record_media"] or not route.policy.raw_capture_allowed or not route.policy.permits(
+        authenticated_principal_id=route.policy.owner_principal_id, purpose=MemoryPurpose.DETAIL,
+        layer=MemoryLayer.RAW_ARTIFACT, at=datetime.now(timezone.utc)):
+        raise HTTPException(403, "Recording is not permitted by this session policy")
+    scene, canonical_session = _scene_for_session(session_id=sid, agent_id=row["agent_id"])
+    existing = db.query("SELECT payload FROM events WHERE event_id=:id::uuid AND agent_id=:aid::uuid AND space_id=:space::uuid AND type='recording.segment'",
+        {"id": segment, "aid": row["agent_id"], "space": row["space_id"]})
+    if existing:
+        payload = existing[0]["payload"]
+        if isinstance(payload, str): payload = json.loads(payload)
+        if payload["session_id"] != sid:
+            raise HTTPException(409, "Segment identity belongs to another session")
+        return {"status": "stored", "segment_id": segment, "uri": payload["uri"]}
+    content_type = str(file.content_type or "application/octet-stream")
+    if not content_type.startswith(("audio/", "video/", "image/")):
+        raise HTTPException(400, "Only audio, video or image session media is supported")
+    if not _cfg.artifact_bucket:
+        raise HTTPException(503, "Artifact bucket is not configured")
+    key = f"private-session-media/user_id={user.user_id}/session_id={sid}/{segment}"
+    content = await file.read()
+    _get_s3().put_object(Bucket=_cfg.artifact_bucket, Key=key, Body=content, ContentType=content_type)
+    uri = f"s3://{_cfg.artifact_bucket}/{key}"
+    details = {"uri": uri, "media_type": content_type, "byte_count": len(content), "session_id": sid,
+               "recorder_id": str(form.get("recorder_id") or ""), "sequence": int(str(form.get("sequence") or "0")),
+               "source": str(form.get("source") or ""), "captured_at": str(form.get("captured_at") or ""),
+               "access_policy": route.policy.as_properties()}
+    obj = GraphObjectWrite("artifact", TEMPLATE_CODES["artifact_reference"], f"recording:{segment}", details, "stored")
+    source = GraphObjectWrite("source", EXTERNAL_REFERENCE_TEMPLATE, uri,
+        {"root_euid": uri, "external_identifier": {"system": "aws-s3", "target_euid": uri,
+         "href": None, "base_url": None, "graph_data_path": None, "object_detail_path_template": None,
+         "auth_mode": "none"}}, "active")
+    ref = GraphObjectRef(key="artifact")
+    links = [GraphLinkWrite(ref, GraphObjectRef(semantic_id=scene), "IN_SCENE"),
+             GraphLinkWrite(ref, GraphObjectRef(key="source"), "has_external_reference"),
+             GraphLinkWrite(ref, GraphObjectRef(semantic_id=canonical_session), "IN_SESSION"),
+             GraphLinkWrite(ref, GraphObjectRef(semantic_id=route.policy.owner_principal_id), "OWNER_PRINCIPAL")]
+    links.extend(GraphLinkWrite(ref, GraphObjectRef(semantic_id=reader), "READER_PRINCIPAL")
+                 for reader in route.policy.reader_principal_ids)
+    tx = db.begin()
+    try:
+        db.execute("""INSERT INTO events(event_id,agent_id,space_id,type,payload)
+            VALUES (:id::uuid,:aid::uuid,:space::uuid,'recording.segment',:payload::jsonb)""",
+            {"id": segment, "aid": row["agent_id"], "space": row["space_id"], "payload": json.dumps(details)}, transaction_id=tx)
+        enqueue_semantic_graph(db, transaction_id=tx, agent_id=row["agent_id"], source_table="events", source_id=segment,
+                               objects=(obj, source), links=tuple(links), primary_key="artifact")
+        db.commit(tx)
+    except Exception:
+        db.rollback(tx)
+        raise
+    return {"status": "stored", "semantic_status": "queued", "segment_id": segment, "uri": uri}
+
+
 @app.post("/api/artifacts/upload", name="api_upload_artifact")
 async def api_upload_artifact(request: Request) -> dict:
     """Upload an artifact via server-side proxy (avoids CORS issues with S3)."""
@@ -8151,7 +8232,7 @@ async def gui_livekit_token(request: Request, body: LiveKitTokenIn) -> LiveKitTo
     user = _gui_get_user(request)
     if not user:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return await _mint_livekit_token_for_user(user=user, space_id=body.space_id, room_mode=body.room_mode)
+    return await _mint_livekit_token_for_user(user=user, space_id=body.space_id, room_mode=body.room_mode, session_id=body.session_id)
 
 
 @app.get("/agents/{agent_id}", name="gui_agent_detail")

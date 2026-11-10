@@ -565,6 +565,7 @@ class UpdateMemberIn(BaseModel):
 
 class LiveKitTokenIn(BaseModel):
     space_id: str
+    session_id: str | None = None
     room_mode: str | None = Field(
         default=None,
         description="Optional room mode override: 'ephemeral' (default) or 'stable'. If omitted, uses spaces.livekit_room_mode.",
@@ -587,6 +588,7 @@ class LiveKitTokenOut(BaseModel):
     agent_id: str | None = None
     scene_euid: str | None = None
     session_euid: str | None = None
+    record_media: bool = False
 
 
 class PersonaOut(BaseModel):
@@ -924,7 +926,7 @@ def _resolve_space_agent_for_device(
 
 
 async def _mint_livekit_token_for_user(
-    *, user: AuthenticatedUser, space_id: str, room_mode: str | None = None
+    *, user: AuthenticatedUser, space_id: str, room_mode: str | None = None, session_id: str | None = None
 ) -> LiveKitTokenOut:
     """Mint a LiveKit token with a unique room name per session.
 
@@ -953,25 +955,28 @@ async def _mint_livekit_token_for_user(
     if resolved_mode not in {"ephemeral", "stable"}:
         resolved_mode = "ephemeral"
 
-    # Always generate a durable session row, even in stable room mode.
-    session_id = str(uuid.uuid4())
+    from browser_activation import prepare_browser_scene
+    from fastapi.responses import JSONResponse
+    prepared = prepare_browser_scene(db=_get_db(), user=user, agent_id=agent_id, space_id=space_id,
+                                     room_mode=resolved_mode, session_id=session_id)
+    if prepared.get("status") == "queued":
+        return JSONResponse(prepared, status_code=202)
+    session_id = prepared["session_id"]
+    receipt = _get_db().query("""SELECT status,last_error FROM semantic_sync_status
+        WHERE agent_id=:aid::uuid AND source_table='sessions' AND source_id=:sid::uuid
+          AND target_template_code=:template""",
+        {"aid": agent_id, "sid": session_id, "template": TEMPLATE_CODES["scene"]})
+    if len(receipt) != 1:
+        raise HTTPException(409, "Browser scene receipt is missing")
+    if receipt[0]["status"] == "pending":
+        return JSONResponse({"status": "queued", "session_id": session_id}, status_code=202)
+    if receipt[0]["status"] != "written":
+        raise HTTPException(503, f"Scene writer reported {receipt[0]['status']}: {receipt[0].get('last_error')}")
+    scene_euid, session_euid = _scene_for_session(session_id=session_id, agent_id=agent_id)
     room_session_id = session_id.replace("-", "")[:12]
-    if resolved_mode == "stable":
-        room = str(space_id)
-    else:
-        # Ephemeral mode: guarantees a new room per join for reliable dispatch.
-        room = f"{space_id}:{room_session_id}"
+    room = prepared["room"]
 
     identity = f"user:{user.user_id}"
-    _create_session_record(
-        agent_id=str(agent_id),
-        space_id=str(space_id),
-        session_id=session_id,
-        livekit_room=room,
-        room_mode=resolved_mode,
-        actor_type="user",
-        actor_id=user.user_id,
-    )
     token = mint_livekit_join_token(
         api_key=api_key,
         api_secret=api_secret,
@@ -986,7 +991,9 @@ async def _mint_livekit_token_for_user(
             "room_session_id": room_session_id,
         },
     )
-    return LiveKitTokenOut(url=url, token=token, room=room, identity=identity, session_id=session_id)
+    return LiveKitTokenOut(url=url, token=token, room=room, identity=identity, session_id=session_id,
+                           agent_id=agent_id, scene_euid=scene_euid, session_euid=session_euid,
+                           record_media=prepared["record_media"])
 
 
 # -----------------------------
@@ -1402,7 +1409,7 @@ def delete_space(space_id: uuid.UUID, user: AuthenticatedUser = Depends(get_user
 @api_app.post("/v1/livekit/token", response_model=LiveKitTokenOut)
 async def livekit_token(body: LiveKitTokenIn, user: AuthenticatedUser = Depends(get_user)) -> LiveKitTokenOut:
     """Mint a short-lived LiveKit token for a user to join the room for a space."""
-    return await _mint_livekit_token_for_user(user=user, space_id=body.space_id, room_mode=body.room_mode)
+    return await _mint_livekit_token_for_user(user=user, space_id=body.space_id, room_mode=body.room_mode, session_id=body.session_id)
 
 
 class SceneProvisionIn(BaseModel):
@@ -4254,11 +4261,14 @@ def _authorize_daylily_intake(request: Request, *, initiating_evidence_euid: str
 
 from daylily_routes import build_daylily_router
 from identity_routes import build_identity_router
+from browser_activation import build_browser_activation_router
 
 api_app.include_router(build_daylily_router(get_db=_get_db, authorize=_authorize_daylily_intake))
 api_app.include_router(build_identity_router(get_db=_get_db, get_user=get_user,
                                              require_agent_role=_require_agent_role,
                                              cognito_issuer=_cfg.cognito_issuer))
+api_app.include_router(build_browser_activation_router(get_db=_get_db, require_admin=require_admin,
+                                                       cognito_issuer=_cfg.cognito_issuer))
 
 
 @api_app.post("/v1/actors/animal-associations", status_code=202)

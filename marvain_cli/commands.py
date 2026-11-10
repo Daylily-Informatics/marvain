@@ -341,6 +341,19 @@ def deployment_initialize_prefixes(
         raise ClickException(str(exc)) from exc
 
 
+def deployment_browser_activation(
+    phase: str = Option(..., "--phase", help="prepare, status or bind"),
+    agent_id: str | None = Option(None, "--agent-id"),
+    owner_email: str | None = Option(None, "--owner-email"),
+    space_name: str | None = Option(None, "--space-name"),
+    person_name: str | None = Option(None, "--person-name"),
+) -> None:
+    """Prepare/bind a private retain-all browser endpoint for an existing owner."""
+    from marvain_cli.browser_activation import browser_activation
+    _json(browser_activation(_load(), phase=phase, agent_id=agent_id, owner_email=owner_email,
+                             space_name=space_name, person_name=person_name))
+
+
 def deployment_set_parameter(
     name: str = Option(..., "--name", help="Parameter declared by the selected SAM template."),
     value: str = Option(..., "--value", help="Explicit non-secret parameter value or secret ARN."),
@@ -1163,6 +1176,7 @@ def register(registry: CommandRegistry, spec: CliSpec) -> None:
             ("initialize-canonical", deployment_initialize_canonical, required_policy(mutates_state=True, long_running=True, supports_json=True)),
             ("initialize-prefixes", deployment_initialize_prefixes, required_policy(mutates_state=True, long_running=True, supports_json=True)),
             ("set-parameter", deployment_set_parameter, required_policy(mutates_state=True, supports_dry_run=True)),
+            ("browser-activation", deployment_browser_activation, required_policy(mutates_state=True, supports_json=True)),
             ("set-packaging-bucket", deployment_set_packaging_bucket, required_policy(mutates_state=True, supports_dry_run=True)),
         ],
     )

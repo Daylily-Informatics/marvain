@@ -6,7 +6,7 @@
 <div class="page-header">
   <div>
     <h1 class="page-title"><i class="fas fa-video"></i> Live Session</h1>
-    <p class="text-muted">Operate the core V1 loop: room, participants, transcript, memory, recognition, actions, and worker state.</p>
+    <p class="text-muted">Join your space to speak with Marvain. Microphone and enabled camera media are retained under your space policy.</p>
   </div>
   <a class="btn btn-outline" href="{{ url_for('gui_sessions') }}"><i class="fas fa-comments"></i> Sessions</a>
 </div>
@@ -33,8 +33,8 @@
   </div>
   <div class="card">
     <h3 class="card-title">Worker</h3>
-    <p><span class="badge badge-info">{{ worker.status }}</span></p>
-    <p class="text-muted">PID {{ worker.pid or "—" }}</p>
+    <p><span id="worker-live-state" class="badge badge-info">Waiting for session</span></p>
+    <p class="text-muted">The AWS responder joins when your session is ready.</p>
     <a class="btn btn-sm btn-outline" href="{{ url_for('gui_observability') }}">Runtime health</a>
   </div>
 	  <div class="card">
@@ -54,6 +54,8 @@
     <button class="btn btn-outline" id="btn-camera" disabled><i class="fas fa-video"></i> Enable Camera</button>
     <span id="mic-state" class="badge badge-outline">Mic idle</span>
     <span id="speaker-state" class="badge badge-outline">No remote audio</span>
+    <span id="recording-state" class="badge badge-outline">Recording idle</span>
+    <button id="retry-recordings" class="btn btn-outline" hidden>Retry unsaved recordings</button>
   </div>
   <div class="grid grid-3 mb-md">
     <div>
@@ -138,6 +140,77 @@ function appendLog(id, message, kind) {
 function appendError(message) {
   appendLog('lifecycle-log', message, 'error');
 }
+
+let retainSessionMedia = false;
+const mediaRecorders = new Map();
+const unsavedSegments = new Map();
+let mediaUploads = Promise.resolve();
+let savedSegmentCount = 0;
+
+async function uploadSegment(segment) {
+  const form = new FormData();
+  for (const key of ['session_id', 'segment_id', 'recorder_id', 'sequence', 'source', 'captured_at']) {
+    form.append(key, String(segment[key]));
+  }
+  form.append('file', segment.blob, 'recording.webm');
+  const response = await fetch(Marvain.path('/api/session-media'), {method: 'POST', body: form});
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || 'Recording upload failed');
+  }
+  await response.json();
+  unsavedSegments.delete(segment.segment_id);
+  savedSegmentCount += 1;
+  setBadgeText('recording-state', savedSegmentCount + ' segments saved', 'success');
+  document.getElementById('retry-recordings').hidden = unsavedSegments.size === 0;
+}
+
+function queueSegment(segment) {
+  unsavedSegments.set(segment.segment_id, segment);
+  mediaUploads = mediaUploads.then(() => uploadSegment(segment)).catch(error => {
+    appendError(error.message + '. Keep this tab open and retry unsaved recordings.');
+    setBadgeText('recording-state', 'Recording upload needs attention', 'danger');
+    document.getElementById('retry-recordings').hidden = false;
+  });
+}
+
+function recordTrack(track, source) {
+  if (!retainSessionMedia || !activeSession || !track.mediaStreamTrack) return;
+  const native = track.mediaStreamTrack;
+  if (mediaRecorders.has(native.id)) return;
+  const mime = native.kind === 'video' ? 'video/webm;codecs=vp8' : 'audio/webm;codecs=opus';
+  if (!window.MediaRecorder || !MediaRecorder.isTypeSupported(mime)) throw new Error('This browser cannot record the selected media format');
+  const recorder = new MediaRecorder(new MediaStream([native]), {mimeType: mime, videoBitsPerSecond: 1200000, audioBitsPerSecond: 64000});
+  const recorderId = crypto.randomUUID();
+  const sessionId = activeSession;
+  let sequence = 0;
+  recorder.ondataavailable = event => {
+    if (event.data.size) queueSegment({session_id: sessionId, segment_id: crypto.randomUUID(),
+      recorder_id: recorderId, sequence: sequence++, source, captured_at: new Date().toISOString(), blob: event.data});
+  };
+  recorder.onerror = event => appendError('Media recording failed: ' + String(event.error || event));
+  mediaRecorders.set(native.id, recorder);
+  recorder.start(5000);
+  setBadgeText('recording-state', 'Recording enabled media', 'info');
+}
+
+async function stopRecorders() {
+  await Promise.all(Array.from(mediaRecorders.values()).map(recorder => new Promise(resolve => {
+    if (recorder.state === 'inactive') { resolve(); return; }
+    recorder.addEventListener('stop', resolve, {once: true});
+    recorder.stop();
+  })));
+  mediaRecorders.clear();
+  await mediaUploads;
+}
+
+document.getElementById('retry-recordings').addEventListener('click', async () => {
+  await mediaUploads;
+  for (const segment of Array.from(unsavedSegments.values())) queueSegment(segment);
+});
+window.addEventListener('beforeunload', event => {
+  if (room || unsavedSegments.size) { event.preventDefault(); event.returnValue = ''; }
+});
 
 function setVisualState(text, kind) {
   const el = document.getElementById('visual-state');
@@ -280,6 +353,8 @@ function attachRemoteTrack(track, participant) {
   el.setAttribute('data-participant', participant ? participant.identity : 'remote');
   track.attach(el);
   remoteMedia.appendChild(el);
+  recordTrack(track, 'remote:' + (participant ? participant.identity : 'unknown'));
+  setBadgeText('worker-live-state', 'Session media connected', 'success');
   appendLog('lifecycle-log', 'Attached ' + track.kind + ' from ' + (participant ? participant.identity : 'remote'));
 }
 
@@ -320,6 +395,7 @@ async function publishMicrophone() {
   const options = deviceId ? {deviceId: deviceId} : {};
   localAudioTrack = await lk.createLocalAudioTrack(options);
   await room.localParticipant.publishTrack(localAudioTrack);
+  recordTrack(localAudioTrack, 'microphone');
   document.getElementById('btn-mic').innerHTML = '<i class="fas fa-microphone"></i> Mic On';
   setBadgeText('mic-state', 'Mic published', 'success');
   appendLog('lifecycle-log', 'Microphone published from ' + (deviceId || 'default'));
@@ -357,17 +433,27 @@ async function joinLiveSession() {
     Marvain.showToast('warning', 'Space required', 'Select a space first');
     return;
   }
-  await enumerateDevices({requireAudio: true});
-  const resp = await fetch(tokenUrl, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({space_id: spaceId})
-  });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}));
-    throw new Error(err.detail || 'Failed to mint LiveKit token');
+  if (room) throw new Error('Leave the current session before joining again');
+  document.getElementById('btn-join').disabled = true;
+  let data;
+  let pendingSession = null;
+  try {
+    do {
+      const resp = await fetch(tokenUrl, {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({space_id: spaceId, session_id: pendingSession})});
+      data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || 'Session preparation failed');
+      if (resp.status !== 202) break;
+      pendingSession = data.session_id;
+      setBadgeText('worker-live-state', 'Preparing session memory', 'info');
+      await new Promise(resolve => setTimeout(resolve, 1500));
+    } while (true);
+  } catch (error) {
+    document.getElementById('btn-join').disabled = false;
+    throw error;
   }
-  const data = await resp.json();
+  retainSessionMedia = data.record_media === true;
+  await enumerateDevices({requireAudio: true});
   document.getElementById('session-info').innerHTML =
     '<div><strong>Session</strong> <code>' + (data.session_id || '—') + '</code></div>' +
     '<div><strong>Room</strong> <code>' + data.room + '</code></div>';
@@ -423,7 +509,8 @@ async function joinLiveSession() {
 	  startEventPolling();
 	}
 
-function leaveLiveSession() {
+async function leaveLiveSession() {
+  await stopRecorders();
   if (eventsTimer) window.clearInterval(eventsTimer);
   eventsTimer = null;
   seenEvents = new Set();
@@ -439,6 +526,7 @@ function leaveLiveSession() {
 	  document.getElementById('btn-camera').disabled = true;
 	  stopCamera();
   appendLog('lifecycle-log', 'Left live session');
+  document.getElementById('btn-join').disabled = false;
 	}
 
 function cameraVideoHasFrame(video) {
@@ -560,6 +648,7 @@ async function enableCamera() {
   const options = deviceId ? {deviceId: deviceId} : {};
   localVideoTrack = await lk.createLocalVideoTrack(options);
   await room.localParticipant.publishTrack(localVideoTrack);
+  recordTrack(localVideoTrack, 'camera');
   const preview = document.getElementById('local-camera-preview');
   preview.innerHTML = '';
   const video = localVideoTrack.attach();
@@ -659,7 +748,10 @@ async function sendChat() {
   }
 }
 
-document.getElementById('btn-join').addEventListener('click', () => joinLiveSession().catch(e => { appendError(e.message); Marvain.showToast('error', 'Live Session', e.message); }));
+document.getElementById('btn-join').addEventListener('click', () => joinLiveSession().catch(e => {
+  if (!room) document.getElementById('btn-join').disabled = false;
+  appendError(e.message); Marvain.showToast('error', 'Live Session', e.message);
+}));
 document.getElementById('btn-leave').addEventListener('click', leaveLiveSession);
 document.getElementById('btn-mic').addEventListener('click', () => {
   (localAudioTrack ? Promise.resolve(stopMicrophone()) : publishMicrophone()).catch(e => {
