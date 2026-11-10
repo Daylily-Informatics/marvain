@@ -6,14 +6,14 @@
 
 User requested Google sign-in and verified email access for exactly daylilyinformatics.com and lsmc.com. Source uses shared DomainValidator in canonical human admission, maps Google's email_verified claim, and updates the existing Cognito client in place. Existing sessions without a verified-email marker require sign-in again. Administrative provisioning and agent/device identity remain separate; no automatic account linking.
 
-Both named Marvain Google secrets have no current credential version. No credential copy succeeded. Google Cloud requires user account verification; the Chrome handoff is pending. Required callback: https://marvain-prod-108782052779.auth.us-east-2.amazoncognito.com/oauth2/idpresponse. Google OAuth audience must permit both organizations. No actual OAuth client or credential file has been selected yet.
+Google client “Marvain 4 production” was created by the user after explicit confirmation in the authorized supabase-web project. Client ID: 95843944781-ue54ccfrqdcfe31aur8c9lo1jcusekrc.apps.googleusercontent.com. Exact callback: https://marvain-prod-108782052779.auth.us-east-2.amazoncognito.com/oauth2/idpresponse. Project audience is External/In production; shared consent branding is LSMC Atlas. Owning Marvain CLI imported the downloaded web-client JSON into the selected Ohio secret and returned status copied, exit 0. The selected config now enables Google and exactly the two allowed domains. Evidence: /Users/jmajor/projects/marvain/build/releases/4.0.4/google-auth-import.log. No secret values are committed.
 
-Planned 4.0.4 packages Hub/Lambda artifacts, retaining worker/dot 4.0.3 images. Prepared script: /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_google_auth_4_0_4.sh. Production remains 4.0.3; builder stopped. No tests or live sign-in performed.
+Planned 4.0.4 packages Hub/Lambda artifacts, retaining worker/dot 4.0.3 images. Prepared script: /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_google_auth_4_0_4.sh. Production remains 4.0.3; builder start requested. No tests or Marvain Google sign-in performed.
 
 ```mermaid
 flowchart LR
   B[Browser] --> C[Marvain Cognito Hosted UI]
-  C --> G[Google OAuth web client: setup pending]
+  C --> G[Dedicated Marvain web client in supabase-web]
   G --> C
   C --> A[Shared auth: verified email]
   A --> D[Exact allowed domains]
