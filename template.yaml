@@ -571,6 +571,12 @@ Resources:
     Type: AWS::ApiGateway::RestApi
     Properties:
       Name: !Sub ${AWS::StackName}-hub-api
+      BinaryMediaTypes:
+        - multipart/form-data
+        - application/octet-stream
+        - audio/webm
+        - video/webm
+        - image/jpeg
       EndpointConfiguration:
         Types:
           - REGIONAL
