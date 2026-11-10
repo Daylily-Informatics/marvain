@@ -1,6 +1,6 @@
 # Linked recognition and progressive acceptance
 
-Source amendment for 4.0.9. Deployment and user acceptance are recorded in the controlling 9 November ledger. Tests are written, unrun.
+Source amendment for 4.0.9, with Hub corrections in 4.0.10 and deployment-command correction in 4.0.11. Hub 4.0.10 and voice image 4.0.9 are deployed. Deployment and user acceptance are recorded in the controlling 9 November ledger. Tests are written, unrun; live biometric acceptance remains pending.
 
 ```mermaid
 flowchart LR

@@ -2,9 +2,25 @@
 
 **Revision:** 1  
 **Prepared:** 9 November 2026  
-**Status:** 4.0.7 deployed; INITagent/laptop canonical bindings written. One AWS responder is running and registered. John confirms the first Chrome voice conversation works. The two-location demonstration remains unfinished.
+**Status:** Hub 4.0.10 and recognition image 4.0.9 deployed; deployment CLI 4.0.11 published. Linked recognition implementation is complete; user enrollment and biometric acceptance remain pending. The first Chrome voice conversation remains accepted; the two-location demonstration is unfinished.
 
 ## Current continuation state
+
+10 November 2026: scoped recognition repair is deployed. User requested linked voice/face identity, selected private-memory export and sensitive action approvals for corroboration, asked for obsolete-code cleanup and a progressive Chrome voice acceptance test, and chose AWS Rekognition paid per use (call_5b4993a15d634b4098309d53404c6193). Writing the test is authorized; running it is not. No capture or enrollment was performed.
+
+Repo /Users/jmajor/projects/marvain; branch codex/marvain-operational-100-closure. Gate 0 was 1fd4596/tag 4.0.8, production Hub 4.0.7/responder 4.0.3. Current target is lsmc/account 108782052779/us-east-2/marvain4-prod; config /Users/jmajor/.config/marvain/marvain-lsmc-us-east-2.yaml. Preserve unrelated AGENTS.md, .playwright-cli and Marvain_Restart_Thread.md. No tests, lint, PR/merge, destructive cleanup, automatic capture or local container builds.
+
+WP-22 COMPLETE (implementation/publication): canonical reviewed enrollment, retained voice vectors, AWS face reference comparison, one-person lineage across modalities, preserved consent identities, fresh one-use account/browser/operation-bound checks, scoped private-memory export and central sensitive human approval enforcement. Cognito/account permissions remain authoritative; biometric matching makes no liveness claim. Obsolete direct embedding/artifact-key enrollment and direct review/projection mutation paths are removed. Existing policy-driven automation retains its controls.
+
+WP-23 COMPLETE (deployment): source 2762ca0/tag 4.0.9; Hub 36603f1/tag 4.0.10; orchestration-only fix becf77e/tag 4.0.11. Tags are annotated, immutable and pushed. Both EC2 build jobs returned exit 0. The owning operational migration returned exit 0; an initial invalid init-db command failed before mutation. SAM initially rejected a missing image-repository mapping before stack changes. CLI 4.0.11 supplies that mapping from the explicitly selected image URI. Deployment retry returned exit 0 and “Successfully created/updated stack - marvain4-prod in us-east-2.” Hub is 4.0.10, voice image 4.0.9, responder unchanged 4.0.3; no image rebuild for the CLI correction. Builder i-0325430bfec70e41e is stopped by its owning lifecycle result.
+
+Published voice image: 108782052779.dkr.ecr.us-east-2.amazonaws.com/marvain4-prod-release-prerequisites-recognitionrepository-vugm3iqyf4za@sha256:c47ef2d88eb71b4ba64f610227f6613d3054b0e3ce7eaf430b80f84e4cf916fc. Logs: /Users/jmajor/projects/marvain/build/releases/4.0.9/ and /Users/jmajor/projects/marvain/build/releases/4.0.10/; controlling deployment receipt is deploy-with-image-repository.log in the latter directory. No redundant health or storage QC was added.
+
+WP-24 COMPLETE (test source only): /Users/jmajor/projects/marvain/tests/acceptance/test_marvain_journey.py, README.md and marvain_journey.json record sign-in/MFA, prepared activation receipts, real Chrome Join/microphone/speech, human-confirmed audible reply, and Leave. Written, not run. Historical acceptance remains John’s “Connected and Marvain responds” on Hub 4.0.7/responder 4.0.3.
+
+Next user step: https://1kuwpk5zj7.execute-api.us-east-2.amazonaws.com/prod/people → John → Consent → enable intended voice/face grants, then Enroll in laptop and review the resulting enrollment proposals. Read-only People-page observation shows John has recording consent but no voice/face grants. No consent was granted on his behalf. Live identity matches, conflict/revocation behavior, exports/approvals, dogs, later-session recall and WP-16/17 two-location demonstration remain unaccepted. DAY-142 stays Active; DAY-22 second-login linking remains outstanding. Implementation task is complete; broader Marvain demonstration is not.
+
+## Recognition amendment preparation — superseded by deployed receipt
 
 10 November 2026: active scoped amendment. User requested recognition repairs, linked voice/face identity, and selected private-memory export and sensitive action approvals for extra identity corroboration. User also requested removal of obsolete code and a progressive test covering the successful Chrome voice journey; writing that test is authorized, running it is not. User explicitly chose AWS Rekognition paid per use in question call_5b4993a15d634b4098309d53404c6193. No pause is active for this amendment.
 
