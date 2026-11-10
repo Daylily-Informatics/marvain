@@ -1,26 +1,40 @@
 # Marvain 4.x source release and demonstration packet
 
-**Status: release 4.0.3 is deployed to LSMC/us-east-2 with hosted FastAPI/Jinja2 and shared daylily-auth-cognito. Tests and live capture remain off; interactive sign-in and product acceptance are pending.** The user's deployment request supersedes the original source-only boundary for this selected service. The owning execution plan is /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_multiagent_execution_plan.md. Earlier preparation statements below remain historical and are superseded by this receipt.
+**Status: release 4.0.4 is deployed to LSMC/us-east-2 with Google federation, exact verified-email domains, hosted FastAPI/Jinja2 and shared daylily-auth-cognito. Interactive Marvain sign-in and product acceptance remain pending; tests remain off.** The user's deployment request supersedes the original source-only boundary for this selected service. The owning execution plan is /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_multiagent_execution_plan.md. Earlier preparation statements below remain historical and are superseded by this receipt.
 
-## Google federation amendment — prepared, not deployed
+## Google federation deployment receipt — Marvain 4.0.4
 
-User requested Google sign-in and verified email access for exactly daylilyinformatics.com and lsmc.com. Source uses shared DomainValidator in canonical human admission, maps Google's email_verified claim, and updates the existing Cognito client in place. Existing sessions without a verified-email marker require sign-in again. Administrative provisioning and agent/device identity remain separate; no automatic account linking.
+| Item | Owning result |
+|---|---|
+| Release | Annotated 4.0.4 at f9909bf, branch codex/marvain-operational-100-closure pushed |
+| Build | Exact tagged Lambda artifacts packaged on designated EC2 builder; tmux job exit 0 |
+| Deployment | Marvain/SAM successful stack update, exit 0, marvain4-prod / lsmc / us-east-2 |
+| Cognito | Dedicated pool us-east-2_8hIcz3205; existing app client 43inu94iip645t5nd97pc7a2hi updated in place; Google provider created |
+| Google client | Marvain 4 production in supabase-web; created/downloaded by user after explicit approval; credential import returned copied |
+| Human admission | Verified email from exactly daylilyinformatics.com or lsmc.com through shared daylily-auth-cognito 2.1.9 |
+| Consent branding | Existing shared LSMC Atlas branding retained; Google project External/In production |
+| Runtime | Hosted FastAPI/Jinja2; TapDB 7.0.13; existing schema/templates; worker/Dot images retained at 4.0.3 |
+| Builder | i-0325430bfec70e41e stopped normally; owning lifecycle reports stopped |
+| Acceptance | Marvain interactive Google sign-in and two-location demonstration remain pending; no tests or extra probes |
 
-Google client “Marvain 4 production” was created by the user after explicit confirmation in the authorized supabase-web project. Client ID: 95843944781-ue54ccfrqdcfe31aur8c9lo1jcusekrc.apps.googleusercontent.com. Exact callback: https://marvain-prod-108782052779.auth.us-east-2.amazoncognito.com/oauth2/idpresponse. Project audience is External/In production; shared consent branding is LSMC Atlas. Owning Marvain CLI imported the downloaded web-client JSON into the selected Ohio secret and returned status copied, exit 0. The selected config now enables Google and exactly the two allowed domains. Evidence: /Users/jmajor/projects/marvain/build/releases/4.0.4/google-auth-import.log. No secret values are committed.
+Hub: https://1kuwpk5zj7.execute-api.us-east-2.amazonaws.com/prod
 
-Planned 4.0.4 packages Hub/Lambda artifacts, retaining worker/dot 4.0.3 images. Prepared script: /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_google_auth_4_0_4.sh. Production remains 4.0.3; builder start requested. No tests or Marvain Google sign-in performed.
+Google client ID: 95843944781-ue54ccfrqdcfe31aur8c9lo1jcusekrc.apps.googleusercontent.com.
+Google callback: https://marvain-prod-108782052779.auth.us-east-2.amazoncognito.com/oauth2/idpresponse.
+Evidence: /Users/jmajor/projects/marvain/build/releases/4.0.4/.
+No secret values are committed. Existing sessions without verified-email markers require sign-in again; automatic account linking is not introduced. Worker count remains 0; Dot runtime/events remain disabled.
 
 ```mermaid
 flowchart LR
-  B[Browser] --> C[Marvain Cognito Hosted UI]
-  C --> G[Dedicated Marvain web client in supabase-web]
+  B[Browser] --> C[Dedicated Marvain Cognito pool]
+  C --> G[Marvain Google client in supabase-web]
   G --> C
-  C --> A[Shared auth: verified email]
-  A --> D[Exact allowed domains]
-  D --> M[Marvain session and API admission]
+  C --> A[daylily-auth-cognito: verified email]
+  A --> D[Exact domains: daylilyinformatics.com and lsmc.com]
+  D --> M[Marvain FastAPI and Jinja2 session]
 ```
 
-## Current deployment receipt — Marvain 4.0.3
+## Historical deployment receipt — Marvain 4.0.3
 
 | Item | Owning result |
 |---|---|
