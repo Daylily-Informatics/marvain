@@ -238,9 +238,15 @@ def consume_check(db, *, request, user, check_id, purpose, target_id):
         links=[GraphLinkWrite(ref,GraphObjectRef(semantic_id=principal),"AUTHENTICATED_BY"),
                GraphLinkWrite(ref,GraphSourceRef("people",check["expected_person"],TEMPLATE_CODES["person"]),"ASSOCIATES_ACTOR")]
         links.extend(GraphLinkWrite(ref,GraphSourceRef("recognition_observations",oid,TEMPLATE_CODES["recognition_observation"]),"BASED_ON") for oid in observations)
+        table = "actions" if purpose=="sensitive_action_approval" else "sessions"
+        external_id = f"agent/{check['agent']}/{table}/{target_id}"
+        target = GraphObjectWrite("target",EXTERNAL_REFERENCE_TEMPLATE,external_id,
+            {"root_euid":external_id,"external_identifier":{"system":"marvain-postgres","target_euid":external_id,
+             "href":None,"base_url":None,"graph_data_path":None,"object_detail_path_template":None,"auth_mode":"none"}},"active")
+        links.append(GraphLinkWrite(ref,GraphObjectRef(key="target"),"AUTHORIZES_OPERATION_ON"))
         enqueue_semantic_graph(db,transaction_id=tx,agent_id=check["agent"],source_table="identity_checks",source_id=check["id"],primary_key="check",
             objects=(GraphObjectWrite("check",TEMPLATE_CODES["event_sensor"],f"identity-check:{check['id']}",
-                {"purpose":purpose,"target_id":target_id,"modalities":modalities,"result":"matched","not_liveness_proof":True},"consumed"),),links=tuple(links))
+                {"purpose":purpose,"target_id":target_id,"modalities":modalities,"result":"matched","not_liveness_proof":True},"consumed"),target),links=tuple(links))
         db.commit(tx)
     except Exception:
         db.rollback(tx)

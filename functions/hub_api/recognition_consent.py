@@ -15,6 +15,16 @@ def update_consents(db, *, agent_id, person_id, user_id, consents):
         retained=set()
         for grant in active:
             kind=grant["consent_type"]
+            # Earlier browser activation persisted its recording grant without a canonical source record.
+            # Materialize that existing grant as part of its first consent edit; never invent a replacement grant.
+            canonical = db.query("""SELECT status FROM semantic_sync_status WHERE agent_id=:agent::uuid
+                AND source_table='consent_grants' AND source_id=:id::uuid AND target_template_code=:template""",
+                {"agent":agent_id,"id":grant["id"],"template":TEMPLATE_CODES["consent_grant"]},transaction_id=tx)
+            if not canonical:
+                enqueue_semantic_graph(db,transaction_id=tx,agent_id=agent_id,source_table="consent_grants",source_id=grant["id"],primary_key="grant",
+                    objects=(GraphObjectWrite("grant",TEMPLATE_CODES["consent_grant"],f"consent:{grant['id']}",
+                        {"consent_type":kind,"expires_at":grant["expires_at"],"source":"existing_persisted_grant"},"active"),),
+                    links=(GraphLinkWrite(GraphObjectRef(key="grant"),GraphSourceRef("people",person_id,TEMPLATE_CODES["person"]),"CONSENT_SUBJECT"),))
             # Existing UI expiry is day-granular; an unchanged grant keeps its original identity.
             same = kind in desired and ((grant["expires_at"] or "")[:10] == (desired[kind] or "")[:10])
             if same:
