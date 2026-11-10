@@ -1,14 +1,30 @@
 # Marvain 4.x source release and demonstration packet
 
-**Status: release 4.0.4 is deployed to LSMC/us-east-2 with Google federation, exact verified-email domains, hosted FastAPI/Jinja2 and shared daylily-auth-cognito. Interactive Marvain sign-in and product acceptance remain pending; tests remain off.** The user's deployment request supersedes the original source-only boundary for this selected service. The owning execution plan is /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_multiagent_execution_plan.md. Earlier preparation statements below remain historical and are superseded by this receipt.
+**Status: release 4.0.5 is deployed to LSMC/us-east-2. Compact navigation and first-use guidance are observed in Chrome; Google sign-in works. User acceptance and the live two-location demonstration remain pending; tests remain off.** The user's deployment request supersedes the original source-only boundary for this selected service. The owning execution plan is /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_multiagent_execution_plan.md. Earlier preparation statements below remain historical and are superseded by this receipt.
 
-## Navigation and first-use amendment — 4.0.5 prepared
+## Navigation and first-use deployment receipt — Marvain 4.0.5
 
 User reported overlapping navigation and unclear first steps on the authenticated dashboard. Source consolidates setup navigation, places account/profile/logout/connection status in one Account menu, and leads with Agent → Spaces → People and devices → Live session guidance. The full page catalog is optional; empty operational panels are omitted before the first agent exists. Existing routes and access policies are retained. No actor/device creation or runtime activation is performed by this UI change.
 
 The browser is authenticated as johnm@lsmc.com; Google sign-in is observed working. John confirms that this address and john@daylilyinformatics.com belong to the same person. DAY-22 now records multiple login principals for one human actor and the existing GUI account-linking limitation. This is not an account-merge receipt.
 
-Final Lambda packaging will use /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_navigation_4_0_5.sh on the designated EC2 builder. No tests, extra QC, PRs or merges.
+| Item | Owning result |
+|---|---|
+| Release | Annotated 4.0.5 at 28ae2f0; branch codex/marvain-operational-100-closure pushed |
+| Build | Exact tagged Lambda packaging on EC2 i-0325430bfec70e41e; tmux marvain-4-0-5-release exit 0 |
+| Deployment | Marvain/SAM exit 0; marvain4-prod / lsmc / account 108782052779 / us-east-2 |
+| Browser | Compact navigation fits; four-step guidance appears; next prompt is Give your agent a space |
+| User setup | User created INITagent during work; observed one accessible agent, zero spaces/devices |
+| Builder | Normal stop completed; owning lifecycle reports stopped |
+| Retained runtime | Google federation, auth 2.1.9, TapDB 7.0.13; worker/Dot images 4.0.3; worker count 0 and Dot runtime/events disabled |
+| Remaining | User UI acceptance, real spaces/participants/device bindings and live demonstration; DAY-22 multi-principal person binding |
+
+Hub: https://1kuwpk5zj7.execute-api.us-east-2.amazonaws.com/prod/.
+Evidence: /Users/jmajor/projects/marvain/build/releases/4.0.5/ (package/build/job/deploy and builder lifecycle logs; dashboard-after.jpg).
+Final build script: /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_navigation_4_0_5.sh.
+No tests, extra QC, PRs, merges, capture or runtime activation. Updated Home is open separately; the user's Memories page was preserved.
+
+Next step: Set up → Spaces → select INITagent and create one space per intended location, using Stable room mode. People/consent and device registration follow. Creating records alone does not connect satellites or activate the responding agent service.
 
 ## Google federation deployment receipt — Marvain 4.0.4
 
