@@ -1,6 +1,6 @@
 # Marvain 4.x source release and demonstration packet
 
-**Status: release 4.0.7 is deployed to LSMC/us-east-2. INITagent/laptop bindings are written and one AWS responder is running and registered with LiveKit. Chrome is open at the selected Live Session; user Join and actual conversation acceptance remain pending.** Tests remain off. The owning execution plan is /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_multiagent_execution_plan.md. Earlier preparation statements below remain historical and are superseded by this receipt.
+**Status: release 4.0.7 is deployed to LSMC/us-east-2. INITagent/laptop bindings are written and one AWS responder is running and registered with LiveKit. John confirms “Connected and Marvain responds”; first Mac/Chrome voice interaction is accepted.** Tests remain off. The owning execution plan is /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_multiagent_execution_plan.md. Earlier preparation statements below remain historical and are superseded by this receipt.
 
 ## Chrome activation deployment receipt — Marvain 4.0.7
 
@@ -15,15 +15,15 @@ The user selected this Mac/Chrome, approved private retention of all captured me
 | Canonical records | INITagent V-MVN-17; laptop V-MVN-33; John V-MVN-5Z; human principal V-MVN-8S; worker principal V-MVN-7V; all IDs returned by the owning writer |
 | Worker | marvain4-prod-agent-worker desired=1/running=1/pending=0; LiveKit registered worker AW_FviJFqCZqeWG, agent name forge |
 | Builder | Normal stop completed; lifecycle reports stopped |
-| Browser | INITagent/laptop selected, Join enabled, microphone/camera/recording idle |
-| Remaining | User Join/mic permission, actual response, media persistence observation; two-location multi-actor demo and DAY-22 second-login linking remain unfinished |
+| Browser acceptance | John reports “Connected and Marvain responds” after the Join/microphone handoff; WP-21 first voice endpoint SUCCESS |
+| Remaining | Camera perception, media persistence and later-session recall have no separate acceptance receipt; two-location multi-actor demo and DAY-22 second-login linking remain unfinished |
 
 The first identity graph attempt preceded its source records; the existing SQS retry completed it normally. No manual queue replay, database edits or new retry controls were required. 4.0.6 was built but never deployed; 4.0.7 includes required API Gateway binary-media transport. Worker/Dot images remain 4.0.3, Dot disabled. No tests, extra QC, PRs or merges.
 
 Live page: https://1kuwpk5zj7.execute-api.us-east-2.amazonaws.com/prod/live-session?space_id=6375476a-8498-49a0-8a7d-98722392de34.
 Evidence: /Users/jmajor/projects/marvain/build/releases/4.0.7/ (build/install/job, deploy-source.log, activation-prepare.log, activation-status.log, activation-bind.log, deploy-activation.log, worker-status.log, builder-stop.log, builder-state.log, live-session-ready.jpg).
 
-Capture starts through the user's Join/microphone/camera controls. Policy permits raw audio/video, attributed events, episodes and knowledge, private to John and the bound responder until deletion/revocation. Source now stores captured media segments with typed S3 references and session lineage; this deployment receipt is not yet a receipt for an actual captured conversation.
+Capture starts through the user's Join/microphone/camera controls. Policy permits raw audio/video, attributed events, episodes and knowledge, private to John and the bound responder until deletion/revocation. Source now stores captured media segments with typed S3 references and session lineage; John’s response confirms working conversation, while raw media persistence is not separately asserted by that response.
 
 ```mermaid
 flowchart LR
