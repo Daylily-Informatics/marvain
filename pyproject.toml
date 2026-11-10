@@ -14,7 +14,7 @@ dependencies = [
   "cli-core-yo==2.1.1",
   "cryptography",
   "daylily-auth-cognito==2.1.9",
-  "daylily-tapdb[admin]==7.0.11",
+  "daylily-tapdb[admin]==7.0.13",
   "fastapi",
   "httpx",
   "insightface",

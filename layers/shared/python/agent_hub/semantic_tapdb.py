@@ -260,7 +260,7 @@ def write_hosted_tapdb_runtime_config() -> Path:
     names = (
         "MARVAIN_TAPDB_CONFIG_PATH", "TAPDB_DB_HOST", "TAPDB_DB_PORT", "TAPDB_DB_NAME",
         "TAPDB_DB_SECRET_ARN", "TAPDB_DB_USERNAME", "TAPDB_CLUSTER_IDENTIFIER", "AWS_REGION",
-        "MERIDIAN_DOMAIN_CODE", "TAPDB_OWNER_REPO",
+        "MERIDIAN_DOMAIN_CODE", "TAPDB_OWNER_REPO", "TAPDB_SSLROOTCERT",
     )
     values = {name: os.environ.get(name, "").strip() for name in names}
     missing = [name for name, value in values.items() if not value]
@@ -290,6 +290,7 @@ def write_hosted_tapdb_runtime_config() -> Path:
             "secret_arn": values["TAPDB_DB_SECRET_ARN"],
             "cluster_identifier": values["TAPDB_CLUSTER_IDENTIFIER"],
             "ssl": "true",
+            "sslrootcert": values["TAPDB_SSLROOTCERT"],
             "domain_code": values["MERIDIAN_DOMAIN_CODE"],
         },
     }

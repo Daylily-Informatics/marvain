@@ -4,9 +4,9 @@
 
 ## Authentication and hosted GUI amendment — in progress
 
-User selected daylily-auth-cognito with Marvain’s existing Cognito Hosted UI and confirmed FastAPI/Jinja2. Source now targets auth package 2.1.9, public token/session/login APIs, the full GUI Lambda entrypoint, exact /prod stage paths and hosted logout callbacks. Existing pool/client identities are preserved. Planned final release is 4.0.2; 4.0.1 below remains current until deployment succeeds.
+User selected daylily-auth-cognito with Marvain’s existing Cognito Hosted UI and confirmed FastAPI/Jinja2. Source targets auth package 2.1.9, public token/session/login APIs, the full GUI Lambda entrypoint, exact /prod stage paths and hosted logout callbacks. Existing pool/client identities are preserved. Immutable 4.0.2 failed pip dependency installation before image build/deployment; 4.0.3 pins the owning TapDB repair. 4.0.1 below remains current until deployment succeeds.
 
-The native TapDB graph panel has a separate owner-package CA-cache limitation: 7.0.11 uses a fixed home cache and the checksum that failed against AWS's returned bundle during initial setup, with no public engine/CA injection for its web or DAG factory. The main Marvain GUI/auth change does not resolve that panel. No runtime fallback, HOME override or package monkeypatch is introduced.
+TapDB 7.0.13 was published from fd4803f9bb1df463b5cc7129fceeeb10d2f24acf to correct the admin auth pin and consume the already parsed explicit sslrootcert in both native admin/DAG runtimes. Marvain packages the official AWS bundle at /var/task/certs/rds-ca-bundle.pem and retains verify-full TLS. Native graph routes are preserved. No runtime fallback, HOME override, package monkeypatch, database migration or template reseed is introduced. Package build/publish results are retained under /Users/jmajor/projects/marvain/build/releases/tapdb-7.0.13/.
 
 ```mermaid
 flowchart LR

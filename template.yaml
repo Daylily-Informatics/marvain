@@ -601,6 +601,7 @@ Resources:
           TAPDB_DB_PORT: !GetAtt AuroraCluster.Endpoint.Port
           TAPDB_DB_SECRET_ARN: !Ref DbCredentialsSecret
           TAPDB_DB_NAME: !Ref DbName
+          TAPDB_SSLROOTCERT: /var/task/certs/rds-ca-bundle.pem
           TAPDB_DB_USERNAME: !Sub '{{resolve:secretsmanager:${DbCredentialsSecret}:SecretString:username}}'
           TAPDB_CLUSTER_IDENTIFIER: !Ref AuroraCluster
           MARVAIN_TAPDB_CONFIG_PATH: /tmp/marvain-tapdb.json
