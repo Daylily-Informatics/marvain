@@ -6,6 +6,8 @@
 
 ## Current continuation state
 
+10 November 2026 worktree investigation: the chat attachment /Users/jmajor/.codex/worktrees/tapdb-marvain-auth-7-0-13/daylily-tapdb is missing. Both repositories' existing ledgers record that delayed checkout as unused; the TapDB repair was published through GitHub before it appeared. Current remote refs confirm TapDB tag 7.0.13 at fd4803f9bb1df463b5cc7129fceeeb10d2f24acf and its receipt commit 0c441eaefa903931d08909f33074d557dcaa47c2. Marvain remote branch matches local 916234479bcb423bfd7dd8488a14181e892d1e40, with tags 4.0.9/4.0.10/4.0.11 present. No unique source work needing recovery was identified. Remaining local files and the limited cause evidence are recorded below. No checkout was recreated or removed.
+
 10 November 2026: scoped recognition repair is deployed. User requested linked voice/face identity, selected private-memory export and sensitive action approvals for corroboration, asked for obsolete-code cleanup and a progressive Chrome voice acceptance test, and chose AWS Rekognition paid per use (call_5b4993a15d634b4098309d53404c6193). Writing the test is authorized; running it is not. No capture or enrollment was performed.
 
 Repo /Users/jmajor/projects/marvain; branch codex/marvain-operational-100-closure. Gate 0 was 1fd4596/tag 4.0.8, production Hub 4.0.7/responder 4.0.3. Current target is lsmc/account 108782052779/us-east-2/marvain4-prod; config /Users/jmajor/.config/marvain/marvain-lsmc-us-east-2.yaml. Preserve unrelated AGENTS.md, .playwright-cli and Marvain_Restart_Thread.md. No tests, lint, PR/merge, destructive cleanup, automatic capture or local container builds.
@@ -19,6 +21,20 @@ Published voice image: 108782052779.dkr.ecr.us-east-2.amazonaws.com/marvain4-pro
 WP-24 COMPLETE (test source only): /Users/jmajor/projects/marvain/tests/acceptance/test_marvain_journey.py, README.md and marvain_journey.json record sign-in/MFA, prepared activation receipts, real Chrome Join/microphone/speech, human-confirmed audible reply, and Leave. Written, not run. Historical acceptance remains John’s “Connected and Marvain responds” on Hub 4.0.7/responder 4.0.3.
 
 Next user step: https://1kuwpk5zj7.execute-api.us-east-2.amazonaws.com/prod/people → John → Consent → enable intended voice/face grants, then Enroll in laptop and review the resulting enrollment proposals. Read-only People-page observation shows John has recording consent but no voice/face grants. No consent was granted on his behalf. Live identity matches, conflict/revocation behavior, exports/approvals, dogs, later-session recall and WP-16/17 two-location demonstration remain unaccepted. DAY-142 stays Active; DAY-22 second-login linking remains outstanding. Implementation task is complete; broader Marvain demonstration is not.
+
+## Missing-worktree investigation — 10 November 2026
+
+User asked whether the missing current working directory requires work rescue and whether everything was committed. Gate 0: Marvain local 9162344 on codex/marvain-operational-100-closure; TapDB primary checkout /Users/jmajor/projects/daylily/daylily-tapdb on jem-dev at 12351b8. The app attachment still names the absent TapDB worktree and exposes no archived-worktree attachment. Git no longer lists that checkout; its surviving worktree metadata/reflogs contain no matching path. No cleanup, restore, reset, prune, merge, tests, build or deployment was performed.
+
+| Investigation | Result | Evidence / boundary |
+|---|---|---|
+| Marvain published work | SUCCESS | Exact GitHub branch head matches local 916234479bcb423bfd7dd8488a14181e892d1e40. Release tags resolve to 2762ca0 (4.0.9), 36603f1 (4.0.10), and becf77e (4.0.11). These include the new recognition implementation, progressive acceptance test source and deployment receipts. |
+| TapDB published repair | SUCCESS | GitHub tag 7.0.13 resolves to fd4803f9bb1df463b5cc7129fceeeb10d2f24acf; branch codex/marvain-auth-7-0-13 additionally contains 0c441eaefa903931d08909f33074d557dcaa47c2, which records publication/deployment receipts. The owning Git fetch succeeded. |
+| Missing-checkout recovery | NO_LONGER_NEEDED for this work | Both committed ledgers explicitly record the delayed 7.0.12 checkout as unused; the actual repair was published separately. No unique source loss was identified. This does not prove that no unrecorded external edits ever occurred. |
+| Remaining local material | SUCCESS inventory, preserved | /Users/jmajor/projects/marvain/AGENTS.md has 21 lines of user policy/shell guidance; /Users/jmajor/projects/daylily/daylily-tapdb/AGENTS.md has 14 lines of user release policy. /Users/jmajor/projects/marvain/Marvain_Restart_Thread.md is an untracked 24 July historical handoff. /Users/jmajor/projects/marvain/.playwright-cli/ contains 13 untracked July browser snapshots. These were intentionally excluded from the release and remain on disk. TapDB's two existing stashes concern older unrelated May work. |
+| Cause attribution | SUCCESS bounded investigation | Codex log /Users/jmajor/Library/Logs/com.openai.codex/2026/11/10/codex-desktop-04cc0d8b-2141-4f23-83c3-feeacc2d0807-76666-t0-i1-000111-2.log records spawn_failed for the missing directory at 02:03:17 EST. The inspected 9–10 November logs do not establish a deletion/archival cause. No unsupported attribution to automatic cleanup. |
+
+Conclusion: all implementation and release/receipt work from this Marvain effort is committed and pushed; not every local file is committed. The stale chat attachment remains an application workspace issue. Continue explicit Marvain commands from /Users/jmajor/projects/marvain. Historical July restart warnings do not describe today's source or deployment.
 
 ## Recognition amendment preparation — superseded by deployed receipt
 
