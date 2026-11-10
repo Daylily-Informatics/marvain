@@ -2,6 +2,23 @@
 
 **Status: release 4.0.1 is deployed to LSMC/us-east-2, with canonical TapDB templates initialized. Tests and live capture remain off; product acceptance is pending.** The user's deployment request supersedes the original source-only boundary for this selected service. The owning execution plan is /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_multiagent_execution_plan.md. Earlier preparation statements below remain historical and are superseded by this receipt.
 
+## Authentication and hosted GUI amendment — in progress
+
+User selected daylily-auth-cognito with Marvain’s existing Cognito Hosted UI and confirmed FastAPI/Jinja2. Source now targets auth package 2.1.9, public token/session/login APIs, the full GUI Lambda entrypoint, exact /prod stage paths and hosted logout callbacks. Existing pool/client identities are preserved. Planned final release is 4.0.2; 4.0.1 below remains current until deployment succeeds.
+
+The native TapDB graph panel has a separate owner-package CA-cache limitation: 7.0.11 uses a fixed home cache and the checksum that failed against AWS's returned bundle during initial setup, with no public engine/CA injection for its web or DAG factory. The main Marvain GUI/auth change does not resolve that panel. No runtime fallback, HOME override or package monkeypatch is introduced.
+
+```mermaid
+flowchart LR
+  B[Browser] --> GUI[Hosted FastAPI and Jinja2 GUI]
+  GUI --> LOGIN[daylily-auth-cognito login helper]
+  LOGIN --> COG[Existing Marvain Cognito Hosted UI]
+  COG --> CALLBACK[Hosted /prod/auth/callback]
+  CALLBACK --> VERIFY[Shared ID/access-token verifier]
+  VERIFY --> SESSION[Shared signed principal session]
+  SESSION --> GUI
+```
+
 ## Deployment receipt — 9 November 2026
 
 | Item | Controlling result |

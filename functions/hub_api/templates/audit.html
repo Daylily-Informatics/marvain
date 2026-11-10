@@ -158,7 +158,7 @@ async function verifyChain() {
   statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying...';
 
   try {
-    const response = await fetch('/api/audit/verify', { method: 'POST' });
+    const response = await fetch(Marvain.path('/api/audit/verify'), { method: 'POST' });
     const result = await response.json();
 
     if (result.valid) {

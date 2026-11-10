@@ -11,17 +11,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlencode, urlsplit, urlunsplit
 
 if TYPE_CHECKING:
     from agent_hub.config import HubConfig
 
 logger = logging.getLogger(__name__)
-
-_daylily_jwks_cache: Any | None = None
-_daylily_jwks_cache_key: tuple[str, str] | None = None
-
 
 class CognitoAuthError(Exception):
     """Raised when Cognito authentication fails."""
@@ -46,67 +42,21 @@ class CognitoUserInfo:
         return self.name or self.email or self.sub
 
 
-def _get_daylily_jwks_cache(cfg: HubConfig):
-    """Get a reusable daylily-auth-cognito JWKS cache for the configured pool."""
-    global _daylily_jwks_cache, _daylily_jwks_cache_key
+@lru_cache(maxsize=16)
+def _configured_verifier(region: str, user_pool_id: str, app_client_id: str):
+    """Reuse the owning library's verifier and its JWKS cache per pool/client."""
+    from daylily_auth_cognito import CognitoTokenVerifier
 
+    return CognitoTokenVerifier(region=region, user_pool_id=user_pool_id, app_client_id=app_client_id)
+
+
+def _token_verifier(cfg: HubConfig):
     region = str(cfg.cognito_region or "").strip()
-    pool_id = str(cfg.cognito_user_pool_id or "").strip()
-    cache_key = (region, pool_id)
-
-    if _daylily_jwks_cache is None or _daylily_jwks_cache_key != cache_key:
-        from daylily_auth_cognito.runtime.jwks import JWKSCache
-
-        _daylily_jwks_cache = JWKSCache(region, pool_id)
-        _daylily_jwks_cache_key = cache_key
-
-    return _daylily_jwks_cache
-
-
-def _runtime_jwt_modules():
-    """Return JWT helpers through the daylily-auth-cognito runtime boundary."""
-    from daylily_auth_cognito.runtime import verifier
-
-    if verifier.jwt is None or verifier.JWTError is None:
-        raise ImportError(
-            "python-jose is required for JWT verification. Install with: pip install 'python-jose[cryptography]'"
-        )
-    return verifier.jwt, verifier.JWTError
-
-
-def _verify_id_token_with_jwks(cfg: HubConfig, id_token: str) -> dict[str, Any]:
-    """Verify a Cognito ID token without delegating audience validation.
-
-    Cognito ID tokens carry the app client ID in ``aud`` and may include
-    ``at_hash``.  ``python-jose`` raises before returning claims when those are
-    present without an audience/access-token context, so Marvain verifies
-    signature, issuer, and expiration here, then checks the app client and token
-    relationship explicitly in ``validate_id_token`` / ``get_user_info_from_tokens``.
-    """
-    jwt, jwt_error = _runtime_jwt_modules()
-
-    header = jwt.get_unverified_header(id_token)
-    kid = header.get("kid")
-    if not kid:
-        raise jwt_error("JWT header missing 'kid' claim")
-
-    cache = _get_daylily_jwks_cache(cfg)
-    key = cache.get_key(kid)
-    issuer = f"https://cognito-idp.{cfg.cognito_region}.amazonaws.com/{cfg.cognito_user_pool_id}"
-
-    return jwt.decode(
-        id_token,
-        key=key,
-        algorithms=["RS256"],
-        options={
-            "verify_signature": True,
-            "verify_exp": True,
-            "verify_iss": True,
-            "verify_aud": False,
-            "verify_at_hash": False,
-        },
-        issuer=issuer,
-    )
+    user_pool_id = str(cfg.cognito_user_pool_id or "").strip()
+    app_client_id = str(cfg.cognito_user_pool_client_id or "").strip()
+    if not region or not user_pool_id or not app_client_id:
+        raise CognitoAuthError("Cognito token verifier is not fully configured")
+    return _configured_verifier(region, user_pool_id, app_client_id)
 
 
 def _domain(cfg: HubConfig) -> str:
@@ -131,20 +81,16 @@ def build_login_url(cfg: HubConfig, state: str | None = None) -> str:
 
     from daylily_auth_cognito.browser.oauth import build_authorization_url
 
-    url = build_authorization_url(
+    identity_provider = str(getattr(cfg, "cognito_identity_provider", "") or "").strip()
+    return build_authorization_url(
         domain=_domain(cfg),
         client_id=cfg.cognito_user_pool_client_id,
         redirect_uri=cfg.cognito_redirect_uri,
         response_type="code",
         scope="openid email profile aws.cognito.signin.user.admin",
         state=state,
+        identity_provider=identity_provider or None,
     )
-    identity_provider = str(getattr(cfg, "cognito_identity_provider", "") or "").strip()
-    if not identity_provider:
-        return url
-    parts = urlsplit(url)
-    query = f"{parts.query}&{urlencode({'identity_provider': identity_provider})}"
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
 
 
 def build_logout_url(cfg: HubConfig, redirect_uri: str | None = None) -> str:
@@ -208,7 +154,9 @@ async def exchange_code_for_tokens(cfg: HubConfig, code: str) -> dict[str, Any]:
         raise CognitoAuthError(f"Token exchange failed: {exc}") from exc
 
 
-async def validate_id_token(cfg: HubConfig, id_token: str) -> dict[str, Any]:
+async def validate_id_token(
+    cfg: HubConfig, id_token: str, *, access_token: str | None = None,
+) -> dict[str, Any]:
     """Validate a Cognito ID token and return its claims.
 
     Args:
@@ -224,40 +172,13 @@ async def validate_id_token(cfg: HubConfig, id_token: str) -> dict[str, Any]:
     if not cfg.cognito_user_pool_id or not cfg.cognito_issuer or not cfg.cognito_user_pool_client_id:
         raise CognitoAuthError("Cognito is not fully configured")
 
-    expected_client_id = str(cfg.cognito_user_pool_client_id or "").strip()
-
-    def _extract_audiences(claim_value: Any) -> list[str]:
-        if isinstance(claim_value, str):
-            v = claim_value.strip()
-            return [v] if v else []
-        if isinstance(claim_value, list):
-            out: list[str] = []
-            for item in claim_value:
-                if item is None:
-                    continue
-                s = str(item).strip()
-                if s:
-                    out.append(s)
-            return out
-        return []
-
     try:
-        claims = await asyncio.to_thread(_verify_id_token_with_jwks, cfg, id_token)
-        audiences = _extract_audiences(claims.get("aud")) + _extract_audiences(claims.get("client_id"))
-        if expected_client_id not in audiences:
-            raise CognitoAuthError(
-                f"Token validation failed: invalid audience (expected={expected_client_id}, got={audiences})"
-            )
-
-        return claims
-
+        verifier = _token_verifier(cfg)
+        return await asyncio.to_thread(verifier.verify_id_token, id_token, access_token=access_token)
     except CognitoAuthError:
         raise
-    except Exception as e:
-        msg = str(e)
-        if "expired" in msg.lower():
-            raise CognitoAuthError("Token has expired")
-        raise CognitoAuthError(f"Token validation failed: {e}")
+    except Exception as exc:
+        raise CognitoAuthError("ID token validation failed") from exc
 
 
 def extract_cognito_groups(claims: dict[str, Any]) -> list[str]:
@@ -277,7 +198,7 @@ async def get_user_info_from_tokens(cfg: HubConfig, id_token: str, access_token:
     Args:
         cfg: Hub configuration
         id_token: The JWT ID token from Cognito
-        access_token: Optional access token (not currently used)
+        access_token: Access token from the same authorization-code exchange
 
     Returns:
         CognitoUserInfo with all extracted user data
@@ -285,16 +206,12 @@ async def get_user_info_from_tokens(cfg: HubConfig, id_token: str, access_token:
     Raises:
         CognitoAuthError: If token validation fails
     """
-    id_claims = await validate_id_token(cfg, id_token)
+    id_claims = await validate_id_token(cfg, id_token, access_token=access_token)
     if access_token:
-        from daylily_auth_cognito.runtime.verifier import CognitoTokenVerifier
-
-        verifier = CognitoTokenVerifier(
-            region=str(cfg.cognito_region or "us-east-1"),
-            user_pool_id=str(cfg.cognito_user_pool_id or ""),
-            app_client_id=str(cfg.cognito_user_pool_client_id or ""),
-        )
-        access_claims = await asyncio.to_thread(verifier.verify_token, access_token)
+        try:
+            access_claims = await asyncio.to_thread(_token_verifier(cfg).verify_token, access_token)
+        except Exception as exc:
+            raise CognitoAuthError("Access token validation failed") from exc
         if str(access_claims.get("sub") or "") != str(id_claims.get("sub") or ""):
             raise CognitoAuthError("Token validation failed: access token subject mismatch")
 

@@ -194,7 +194,7 @@
         <button class="btn btn-sm btn-outline" onclick="makeDefaultPersona('{{ persona.persona_id }}')">Make Default</button>
         {% endif %}
         {% if persona.tapdb_euid %}
-        <a class="btn btn-sm btn-outline" href="/tapdb/graph?start_euid={{ persona.tapdb_euid }}">TapDB Graph</a>
+        <a class="btn btn-sm btn-outline" href="{{ url_for('tapdb', path='graph') }}?start_euid={{ persona.tapdb_euid }}">TapDB Graph</a>
         {% endif %}
       </div>
     </div>
@@ -251,7 +251,7 @@ async function loadPersonaConstitution() {
   }
   try {
     status.textContent = 'Loading constitution history...';
-    const response = await fetch('/api/agents/' + encodeURIComponent(agentId) + '/constitution');
+    const response = await fetch(Marvain.path('/api/agents/' + encodeURIComponent(agentId) + '/constitution'));
     const data = await readPersonaJson(response, 'Failed to load constitution');
     const revisions = data.revisions || [];
     const active = revisions[0] || {};
@@ -283,7 +283,7 @@ async function savePersonaConstitutionRevision(event) {
   };
   try {
     Marvain.showLoading('Saving constitution revision...');
-    const response = await fetch('/api/agents/' + encodeURIComponent(agentId) + '/constitution/revisions', {
+    const response = await fetch(Marvain.path('/api/agents/' + encodeURIComponent(agentId) + '/constitution/revisions'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body)
@@ -322,7 +322,7 @@ document.getElementById('persona-form').addEventListener('submit', async functio
 });
 
 async function makeDefaultPersona(personaId) {
-  const resp = await fetch('/api/personas/' + encodeURIComponent(personaId) + '/make-default', {method: 'POST'});
+  const resp = await fetch(Marvain.path('/api/personas/' + encodeURIComponent(personaId) + '/make-default'), {method: 'POST'});
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
     Marvain.showToast('error', 'Persona', err.detail || 'Update failed');

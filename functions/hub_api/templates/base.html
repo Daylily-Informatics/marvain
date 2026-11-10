@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-marvain-root-path="{{ root_path.rstrip('/') }}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -106,7 +106,7 @@
           <a href="{{ url_for('gui_recognition') }}" class="{% if active_page == 'recognition' %}active{% endif %}">
             <i class="fas fa-fingerprint"></i> Recognition
           </a>
-          <a href="/tapdb/graph" class="{% if active_page in ('tapdb_lineage', 'lineage', 'tapdb_graph') %}active{% endif %}">
+          <a href="{{ url_for('tapdb', path='graph') }}" class="{% if active_page in ('tapdb_lineage', 'lineage', 'tapdb_graph') %}active{% endif %}">
             <i class="fas fa-diagram-project"></i> TapDB Graph
           </a>
         </div>

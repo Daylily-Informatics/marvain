@@ -262,7 +262,7 @@ async function viewAction(actionId) {
   Marvain.showModal('action-detail-modal');
 
   try {
-    const response = await fetch(`/api/actions/${actionId}`);
+    const response = await fetch(Marvain.path(`/api/actions/${actionId}`));
     if (!response.ok) {
       const err = await response.json();
       throw new Error(err.detail || 'Failed to load action');
@@ -371,7 +371,7 @@ async function approveAction(actionId) {
 
   try {
     Marvain.showLoading('Approving action...');
-    const response = await fetch(`/api/actions/${actionId}/approve`, {
+    const response = await fetch(Marvain.path(`/api/actions/${actionId}/approve`), {
       method: 'POST'
     });
 
@@ -397,7 +397,7 @@ async function rejectAction(actionId) {
 
   try {
     Marvain.showLoading('Rejecting action...');
-    const response = await fetch(`/api/actions/${actionId}/reject`, {
+    const response = await fetch(Marvain.path(`/api/actions/${actionId}/reject`), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({reason: reason || null})
@@ -471,7 +471,7 @@ async function submitCreateAction(event) {
 
   try {
     Marvain.showLoading('Creating action...');
-    const response = await fetch('/api/actions', {
+    const response = await fetch(Marvain.path('/api/actions'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
@@ -519,7 +519,7 @@ async function loadDiagnostics() {
   const el = document.getElementById('diag-content');
   el.innerHTML = '<div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> Loading diagnostics...</div>';
   try {
-    const resp = await fetch('/api/actions/diagnostics');
+    const resp = await fetch(Marvain.path('/api/actions/diagnostics'));
     if (!resp.ok) { const e = await resp.json(); throw new Error(e.detail || 'Failed'); }
     const d = await resp.json();
     renderDiagnostics(d, el);

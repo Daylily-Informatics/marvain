@@ -1,15 +1,14 @@
 """Full Hub application with both API and GUI routes.
 
-This module is for LOCAL DEVELOPMENT ONLY. It includes:
+This module is served locally and through the Lambda entrypoint. It includes:
 - All API routes from api_app.py
 - GUI routes (login, callback, logout, home, profile, livekit-test, agent detail)
 
-For Lambda deployment, use api_app.py instead (via lambda_handler.py).
+Browser authentication is owned by daylily-auth-cognito.
 """
 
 from __future__ import annotations
 
-import dataclasses
 import html
 import json
 import logging
@@ -41,7 +40,6 @@ from agent_hub.broadcast import broadcast_event
 from agent_hub.cognito import (
     CognitoAuthError,
     CognitoUserInfo,  # noqa: F401 — used via module attr in tests
-    build_login_url,
     build_logout_url,
     get_user_info_from_tokens,
 )
@@ -81,6 +79,7 @@ from api_app import (
 )
 from api_app import (
     get_user as canonical_get_user,
+    get_browser_user,
 )
 from daylily_auth_cognito.browser.session import (
     CONFIG_STATE_KEY,
@@ -89,7 +88,7 @@ from daylily_auth_cognito.browser.session import (
     SessionPrincipal,
     clear_session_principal,
     complete_cognito_callback,
-    load_session_principal,
+    start_cognito_login,
 )
 from daylily_tapdb.web import TapdbHostBridge, TapdbHostNavLink, create_tapdb_dag_router, create_tapdb_web_app
 from fastapi import FastAPI as _FastAPI
@@ -214,7 +213,10 @@ _STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 # Setup Jinja2 templates
-templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+templates = Jinja2Templates(
+    directory=str(_TEMPLATES_DIR),
+    context_processors=[lambda request: {"root_path": str(request.scope.get("root_path", ""))}],
+)
 
 
 def _browser_error_response(request: Request) -> bool:
@@ -267,9 +269,8 @@ _TAPDB_MOUNT_PATH = "/tapdb"
 
 
 def _requested_app_path(scope: dict[str, Any]) -> str:
-    root_path = str(scope.get("root_path") or "").rstrip("/")
     path = str(scope.get("path") or "") or "/"
-    target = f"{root_path}{path}" or "/"
+    target = path
     query_string = scope.get("query_string") or b""
     if query_string:
         target = f"{target}?{query_string.decode('utf-8')}"
@@ -323,17 +324,18 @@ def _tapdb_host_user(request: Request) -> dict[str, Any] | None:
 
 
 def _tapdb_host_bridge() -> TapdbHostBridge:
+    base_url = app.state.__dict__[CONFIG_STATE_KEY].effective_public_base_url
     return TapdbHostBridge(
         auth_mode="host_session",
         service_name="marvain",
         app_name="TapDB",
         shell_title="Marvain TapDB",
         shell_subtitle="Native semantic graph",
-        home_url="/",
-        login_url="/login",
-        logout_url="/logout",
+        home_url=f"{base_url}/",
+        login_url=f"{base_url}/login",
+        logout_url=f"{base_url}/logout",
         resolve_user=_tapdb_host_user,
-        nav_links=(TapdbHostNavLink(label="Marvain", href="/"),),
+        nav_links=(TapdbHostNavLink(label="Marvain", href=f"{base_url}/"),),
     )
 
 
@@ -491,10 +493,11 @@ class MarvainTapdbMount:
         request = Request(scope, receive)
         user = _gui_get_user(request)
         if not user:
-            if str(scope.get("path") or "").startswith("/api/"):
+            mount_path = str(scope.get("path") or "")[len(str(scope.get("root_path") or "")):]
+            if mount_path.startswith("/api/"):
                 await JSONResponse(status_code=401, content={"detail": "Not authenticated"})(scope, receive, send)
                 return
-            await RedirectResponse(url="/login", status_code=302)(scope, receive, send)
+            await RedirectResponse(url=f"{_public_base_url(request)}/login", status_code=302)(scope, receive, send)
             return
 
         try:
@@ -569,7 +572,7 @@ async def startup_validate_configuration():
 
 
 # -----------------------------
-# GUI Routes (local development only)
+# GUI Routes (hosted and local)
 # -----------------------------
 
 
@@ -625,43 +628,15 @@ def _cookie_secure(request: Request) -> bool:
 
 
 def _public_base_url(request: Request) -> str:
-    """Resolve the externally-reachable base URL for OAuth redirects.
-
-    For remote access (e.g. via Tailscale serve), the GUI may be reachable at a
-    different hostname/scheme than the local bind address. Set PUBLIC_BASE_URL
-    to the externally reachable origin (no path), e.g.:
-      https://my-host.tailnet-123.ts.net
-    """
-    raw = str(os.getenv("PUBLIC_BASE_URL", "")).strip()
-    if raw:
-        return raw.rstrip("/")
-    return str(request.base_url).rstrip("/")
+    """Return the base URL from the registered shared browser-auth contract."""
+    return _web_session_config(request).effective_public_base_url
 
 
 def _web_session_config(request: Request) -> CognitoWebSessionConfig:
-    base_url = _public_base_url(request)
-    return CognitoWebSessionConfig(
-        domain=str(_cfg.cognito_domain or ""),
-        client_id=str(_cfg.cognito_user_pool_client_id or ""),
-        redirect_uri=f"{base_url}/auth/callback",
-        logout_uri=f"{base_url}/logged-out",
-        session_secret_key=_session_secret,
-        session_cookie_name="marvain_session",
-        session_max_age=3600 * 8,
-        public_base_url=base_url,
-        auth_mode="cognito",
-        scope="openid email profile aws.cognito.signin.user.admin",
-        client_secret=_cfg.cognito_user_pool_client_secret,
-        same_site="lax",
-        allow_insecure_http=base_url.startswith("http://"),
-        server_instance_id=f"marvain-{_cfg.stage}",
-    )
-
-
-def _register_web_session_config(request: Request) -> CognitoWebSessionConfig:
-    session_cfg = _web_session_config(request)
-    request.app.state.__dict__[CONFIG_STATE_KEY] = session_cfg
-    return session_cfg
+    config = request.app.state.__dict__.get(CONFIG_STATE_KEY)
+    if not isinstance(config, CognitoWebSessionConfig):
+        raise RuntimeError("Cognito browser session configuration is not registered")
+    return config
 
 
 def _safe_next_path(next_path: str | None) -> str:
@@ -713,40 +688,13 @@ def _safe_next_app_path(request: Request, next_path: str | None) -> str:
 
 
 def _gui_get_user(request: Request) -> AuthenticatedUser | None:
-    """Get the authenticated user from the session."""
-    if not request.session.get("user_sub") or not request.session.get("email"):
-        return None
-
-    _register_web_session_config(request)
+    """Resolve the shared browser principal through the canonical API boundary."""
     try:
-        principal = load_session_principal(request)
-    except Exception:
-        logger.exception("Invalid GUI session principal")
-        request.session.clear()
-        return None
-    if principal is None:
-        return None
-
-    user_sub = principal.user_sub
-    email = principal.email
-    app_context = dict(principal.app_context or {})
-    user_id = str(app_context.get("user_id") or "").strip()
-
-    if not user_id:
-        # User exists in session but doesn't have a user_id - need to ensure row
-        try:
-            user_id = ensure_user_row(_get_db(), cognito_sub=user_sub, email=email)
-            app_context["user_id"] = user_id
-            request.session["app_context"] = app_context
-        except Exception:
-            logger.exception("Failed to ensure user row")
+        return get_browser_user(request)
+    except HTTPException as exc:
+        if exc.status_code == 401:
             return None
-
-    return AuthenticatedUser(
-        user_id=user_id,
-        cognito_sub=user_sub,
-        email=email,
-    )
+        raise
 
 
 def _gui_redirect_to_login(*, request: Request, next_path: str | None = None, clear_session: bool = False) -> Response:
@@ -784,35 +732,15 @@ def _gui_error_page(*, request: Request, title: str, message: str, status_code: 
 
 @app.get("/login", name="login", response_model=None)
 def gui_login(request: Request, next: str | None = None) -> Response:
-    """Initiate Cognito login flow."""
-    # Check if Cognito is configured
-    if not _cfg.cognito_user_pool_id or not _cfg.cognito_domain:
-        return _gui_error_page(
-            request=request,
-            title="Authentication Not Configured",
-            message="Cognito authentication is not configured. Please set COGNITO_USER_POOL_ID and COGNITO_DOMAIN.",
-            status_code=503,
-        )
-
-    session_cfg = _register_web_session_config(request)
-
-    state = secrets.token_urlsafe(32)
-    request.session[session_cfg.state_session_key] = state
+    """Start Cognito Hosted UI using the shared library's state and redirect flow."""
+    session_cfg = _web_session_config(request)
     stored_next = request.session.pop("_marvain_login_next", None)
-    request.session[session_cfg.next_path_session_key] = _safe_next_app_path(request, next or stored_next)
-
-    try:
-        cfg = dataclasses.replace(_cfg, cognito_redirect_uri=session_cfg.redirect_uri)
-        login_url = build_login_url(cfg, state=state)
-        return RedirectResponse(url=login_url, status_code=302)
-    except CognitoAuthError as e:
-        logger.error(f"Failed to build login URL: {e}")
-        return _gui_error_page(
-            request=request,
-            title="Authentication Error",
-            message=str(e),
-            status_code=500,
-        )
+    response = start_cognito_login(
+        request, session_cfg,
+        next_path=_safe_next_app_path(request, next or stored_next),
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/auth/callback", name="auth_callback")
@@ -843,8 +771,7 @@ async def gui_auth_callback(
         )
 
     try:
-        session_cfg = _register_web_session_config(request)
-        cfg = dataclasses.replace(_cfg, cognito_redirect_uri=session_cfg.redirect_uri)
+        session_cfg = _web_session_config(request)
 
         async def resolve_principal(tokens: dict[str, Any], _request: Request) -> SessionPrincipal:
             id_token = tokens.get("id_token")
@@ -853,7 +780,7 @@ async def gui_auth_callback(
             if not id_token:
                 raise CognitoWebAuthError("missing_id_token", "No ID token in response from identity provider")
 
-            cognito_user = await get_user_info_from_tokens(cfg, str(id_token), str(access_token or ""))
+            cognito_user = await get_user_info_from_tokens(_cfg, str(id_token), str(access_token or ""))
             user_id = ensure_user_row(
                 _get_db(),
                 cognito_sub=cognito_user.sub,
@@ -876,6 +803,7 @@ async def gui_auth_callback(
             state=state,
             resolve_principal=resolve_principal,
         )
+        resp.headers["location"] = _gui_path(request, resp.headers["location"])
         resp.headers["Cache-Control"] = "no-store"
         return resp
 
@@ -911,16 +839,9 @@ def gui_logout(request: Request) -> Response:
     clear_session_principal(request)
     request.session.clear()
 
-    resp: Response
-    if _cfg.cognito_domain and _cfg.cognito_user_pool_client_id:
-        # Redirect to Cognito logout
-        try:
-            logout_url = build_logout_url(_cfg, redirect_uri=f"{_public_base_url(request)}/logged-out")
-            resp = RedirectResponse(url=logout_url, status_code=302)
-        except CognitoAuthError:
-            resp = RedirectResponse(url=_gui_path(request, "/logged-out"), status_code=302)
-    else:
-        resp = RedirectResponse(url=_gui_path(request, "/logged-out"), status_code=302)
+    session_cfg = _web_session_config(request)
+    logout_url = build_logout_url(_cfg, redirect_uri=session_cfg.logout_uri)
+    resp = RedirectResponse(url=logout_url, status_code=302)
 
     resp.headers["Cache-Control"] = "no-store"
     return resp
@@ -1304,15 +1225,17 @@ def gui_dashboard_actions(request: Request) -> Response:
                 ts = (row.get("created_at") or "")[:19]
                 actions_col = ""
                 if status == "proposed":
+                    approve_url = html.escape(_gui_path(request, f"/api/actions/{aid}/approve"))
+                    reject_url = html.escape(_gui_path(request, f"/api/actions/{aid}/reject"))
                     actions_col = (
                         '<button class="btn btn-sm btn-success" '
-                        f'hx-post="/api/actions/{aid}/approve" '
+                        f'hx-post="{approve_url}" '
                         'hx-target="#dashboard-actions" '
                         'hx-swap="innerHTML" '
                         'hx-confirm="Approve this action?">'
                         '<i class="fas fa-check"></i></button> '
                         '<button class="btn btn-sm btn-danger-outline" '
-                        f'hx-post="/api/actions/{aid}/reject" '
+                        f'hx-post="{reject_url}" '
                         'hx-target="#dashboard-actions" '
                         'hx-swap="innerHTML" '
                         'hx-confirm="Reject this action?">'

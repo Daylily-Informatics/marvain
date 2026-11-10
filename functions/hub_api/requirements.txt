@@ -1,7 +1,9 @@
 fastapi
 mangum
 itsdangerous
-daylily-auth-cognito==2.1.5
+daylily-auth-cognito==2.1.9
 httpx
 livekit-api>=1.1.0
 daylily-tapdb[admin]==7.0.11
+jinja2
+python-multipart

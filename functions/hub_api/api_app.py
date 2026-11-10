@@ -1,13 +1,7 @@
-"""API-only FastAPI application for Lambda deployment.
+"""Shared programmatic API and authentication foundation for the Hub.
 
-This module contains ONLY the programmatic API routes (health, bootstrap, agents,
-spaces, devices, memberships, LiveKit tokens). GUI routes are in app.py which
-extends this for local development.
-
-Architecture:
-- api_app.py (this file): API routes only -> deployed to Lambda
-- app.py: API + GUI routes -> local development only
-- lambda_handler.py: imports from api_app.py
+The full app.py adds the Jinja2 GUI and shared Cognito browser routes. Both local
+serving and the Lambda entrypoint use that full application.
 """
 
 from __future__ import annotations
@@ -126,7 +120,9 @@ from agent_hub.v4_runtime import load_bindings, load_route, resolve_caller, reso
 from agent_hub.semantic_tapdb import TEMPLATE_CODES
 from agent_hub.session_lifecycle import SessionLifecycleError, SessionLifecycleState, validate_session_transition
 from artifact_repository import RdsArtifactRepository
-from daylily_auth_cognito.browser.session import CONFIG_STATE_KEY, CognitoWebSessionConfig
+from daylily_auth_cognito.browser.session import (
+    CONFIG_STATE_KEY, CognitoWebSessionConfig, configure_session_middleware,
+)
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from recognition_repository import (
@@ -136,7 +132,6 @@ from recognition_repository import (
     RecognitionPersistenceError,
     get_recognition_hypothesis_detail,
 )
-from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import PlainTextResponse
 
 logger = logging.getLogger(__name__)
@@ -167,32 +162,23 @@ def _get_session_secret() -> str:
     raise RuntimeError("SESSION_SECRET_KEY or SESSION_SECRET_ARN is required")
 
 
-# Add SessionMiddleware (needed for API routes that use sessions)
+# The shared auth package owns session middleware and its cookie contract.
 _session_secret = _get_session_secret()
-_is_https = os.getenv("HTTPS_ENABLED", "true").lower() in ("true", "1", "yes")
 _is_local = os.getenv("ENVIRONMENT", "").lower() in ("local", "dev", "test")
-api_app.add_middleware(
-    SessionMiddleware,
-    secret_key=_session_secret,
-    session_cookie="marvain_session",
-    max_age=3600 * 8,
-    same_site="lax",
-    https_only=_is_https or not _is_local,
-)
 
 
 def _register_browser_session_config() -> None:
     """Register the explicit deployed browser-session contract at startup."""
 
     if not (_cfg.cognito_domain and _cfg.cognito_user_pool_client_id and _cfg.cognito_redirect_uri):
-        return
+        raise RuntimeError("Cognito browser domain, client and callback must be configured")
     redirect = urlsplit(_cfg.cognito_redirect_uri)
     callback_suffix = "/auth/callback"
     if redirect.scheme not in {"http", "https"} or not redirect.netloc or not redirect.path.endswith(callback_suffix):
         raise RuntimeError("COGNITO_REDIRECT_URI must be an absolute /auth/callback URL")
     root_path = redirect.path[: -len(callback_suffix)].rstrip("/")
     public_base_url = urlunsplit((redirect.scheme, redirect.netloc, root_path, "", "")).rstrip("/")
-    api_app.state.__dict__[CONFIG_STATE_KEY] = CognitoWebSessionConfig(
+    session_config = CognitoWebSessionConfig(
         domain=_cfg.cognito_domain,
         client_id=_cfg.cognito_user_pool_client_id,
         redirect_uri=_cfg.cognito_redirect_uri,
@@ -207,7 +193,9 @@ def _register_browser_session_config() -> None:
         same_site="lax",
         allow_insecure_http=redirect.scheme == "http" and _is_local,
         server_instance_id=f"marvain-{_cfg.stage}",
+        identity_provider=_cfg.cognito_identity_provider or None,
     )
+    configure_session_middleware(api_app, session_config)
 
 
 _register_browser_session_config()

@@ -9,7 +9,7 @@
     <p class="text-muted">Diagnostic LiveKit room tooling. Use Live Session for normal space operation.</p>
   </div>
   <div class="page-actions">
-    <a href="/spaces" class="btn btn-outline"><i class="fas fa-arrow-left"></i> Back to Spaces</a>
+    <a href="{{ url_for('gui_spaces') }}" class="btn btn-outline"><i class="fas fa-arrow-left"></i> Back to Spaces</a>
   </div>
 </div>
 
@@ -1022,7 +1022,7 @@ python worker.py dev
         form.append('agent_id', agentId);
         form.append('purpose', 'visual');
         form.append('file', blob, 'camera-frame.jpg');
-        var uploadResp = await fetch('/api/artifacts/upload', { method: 'POST', body: form });
+        var uploadResp = await fetch(Marvain.path('/api/artifacts/upload'), { method: 'POST', body: form });
         if (uploadResp.ok) {
           var upload = await uploadResp.json();
           artifactUri = upload.uri || '';

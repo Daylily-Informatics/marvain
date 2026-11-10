@@ -29,7 +29,7 @@
         <div><span class="stat-value">{{ location.device_count }}</span><span class="stat-label">Devices</span></div>
       </div>
       <div class="mt-md">
-        <a class="btn btn-sm btn-outline" href="/tapdb/graph?start_euid={{ location.tapdb_euid or '' }}">TapDB Graph</a>
+        <a class="btn btn-sm btn-outline" href="{{ url_for('tapdb', path='graph') }}?start_euid={{ location.tapdb_euid or '' }}">TapDB Graph</a>
       </div>
     </div>
   </div>

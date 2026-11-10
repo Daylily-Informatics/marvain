@@ -9,7 +9,7 @@
     <p class="text-muted">Manage people and their consent grants</p>
   </div>
   <div class="page-actions">
-    <a href="/recognition" class="btn btn-outline">
+    <a href="{{ url_for('gui_recognition') }}" class="btn btn-outline">
       <i class="fas fa-fingerprint"></i> Recognition
     </a>
     <button type="button" class="btn btn-primary" onclick="Marvain.showModal('create-person-modal')">
@@ -446,7 +446,7 @@ function filterPeople() {
 async function editPerson(personId) {
   try {
     Marvain.showLoading('Loading person details...');
-    const response = await fetch(`/api/people/${personId}`);
+    const response = await fetch(Marvain.path(`/api/people/${personId}`));
     if (!response.ok) {
       const err = await response.json();
       throw new Error(err.detail || 'Failed to load person');
@@ -471,7 +471,7 @@ async function submitEditPerson(event) {
 
   try {
     Marvain.showLoading('Saving changes...');
-    const response = await fetch(`/api/people/${personId}`, {
+    const response = await fetch(Marvain.path(`/api/people/${personId}`), {
       method: 'PATCH',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({display_name: displayName})
@@ -525,7 +525,7 @@ async function manageConsent(personId, displayName) {
 
   // Prefill from server so users can confirm consent actually saved.
   try {
-    const resp = await fetch(`/api/people/${personId}/consent`, {
+    const resp = await fetch(Marvain.path(`/api/people/${personId}/consent`), {
       method: 'GET',
       headers: {'Accept': 'application/json'}
     });
@@ -565,7 +565,7 @@ async function submitCreatePerson(event) {
 
   try {
     Marvain.showLoading('Adding person...');
-    const response = await fetch('/api/people', {
+    const response = await fetch(Marvain.path('/api/people'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(data)
@@ -608,7 +608,7 @@ async function submitConsent(event) {
 
   try {
     Marvain.showLoading('Saving consent...');
-    const response = await fetch(`/api/people/${personId}/consent`, {
+    const response = await fetch(Marvain.path(`/api/people/${personId}/consent`), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({consents: consents})
@@ -646,7 +646,7 @@ async function submitLinkAccount(event) {
   const email = document.getElementById('link-email').value;
   try {
     Marvain.showLoading('Linking account...');
-    const response = await fetch(`/api/people/${personId}/link-account`, {
+    const response = await fetch(Marvain.path(`/api/people/${personId}/link-account`), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({email: email})
@@ -745,13 +745,13 @@ async function uploadVoiceEnrollment() {
     form.append('agent_id', agentId);
     form.append('purpose', 'recognition');
     form.append('file', _voiceBlob, filename);
-    const uploadResp = await fetch('/api/artifacts/upload', {method: 'POST', body: form});
+    const uploadResp = await fetch(Marvain.path('/api/artifacts/upload'), {method: 'POST', body: form});
     if (!uploadResp.ok) {
       const err = await uploadResp.json().catch(() => ({}));
       throw new Error(err.detail || 'Failed to upload voice sample');
     }
     const upload = await uploadResp.json();
-    const enrollResp = await fetch(`/api/people/${encodeURIComponent(personId)}/enroll/voice`, {
+    const enrollResp = await fetch(Marvain.path(`/api/people/${encodeURIComponent(personId)}/enroll/voice`), {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
@@ -815,13 +815,13 @@ async function uploadFaceEnrollment() {
     form.append('agent_id', agentId);
     form.append('purpose', 'recognition');
     form.append('file', _faceBlob, filename);
-    const uploadResp = await fetch('/api/artifacts/upload', {method: 'POST', body: form});
+    const uploadResp = await fetch(Marvain.path('/api/artifacts/upload'), {method: 'POST', body: form});
     if (!uploadResp.ok) {
       const err = await uploadResp.json().catch(() => ({}));
       throw new Error(err.detail || 'Failed to upload face sample');
     }
     const upload = await uploadResp.json();
-    const enrollResp = await fetch(`/api/people/${encodeURIComponent(personId)}/enroll/face`, {
+    const enrollResp = await fetch(Marvain.path(`/api/people/${encodeURIComponent(personId)}/enroll/face`), {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
@@ -986,7 +986,7 @@ async function startEnrollOnDevice() {
 
   try {
     Marvain.showLoading('Starting enrollment on device...');
-    const resp = await fetch('/api/actions', {
+    const resp = await fetch(Marvain.path('/api/actions'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(actionBody),

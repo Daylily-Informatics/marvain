@@ -37,7 +37,7 @@
     <p class="text-muted">Review recognition observations, identity hypotheses, unknown/no-match records, presence, consent, and artifacts.</p>
   </div>
   <div class="page-actions">
-    <a href="/people" class="btn btn-outline">
+    <a href="{{ url_for('gui_people') }}" class="btn btn-outline">
       <i class="fas fa-users"></i> People
     </a>
   </div>
@@ -547,7 +547,7 @@ function filterRecognitionRows() {
 async function postRecognitionDecision(url, successMessage) {
   try {
     Marvain.showLoading('Updating recognition record...');
-    const response = await fetch(url, {
+    const response = await fetch(Marvain.path(url), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({})

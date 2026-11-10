@@ -566,23 +566,25 @@ function memoryDeletionRequestSection(memoryId, lifecycleState, tombstoneValue) 
 function buildLineageLinks(sourceEventId, sourceActionId, tapdbEuid, explicitLineageUrl) {
   const links = [];
   if (hasDetailValue(sourceEventId)) {
-    links.push(`<a href="/api/events/${encodeURIComponent(sourceEventId)}" target="_blank" rel="noopener">Source event</a>`);
+    links.push(`<a href="${Marvain.path(`/api/events/${encodeURIComponent(sourceEventId)}`)}" target="_blank" rel="noopener">Source event</a>`);
   }
   if (hasDetailValue(sourceActionId)) {
-    links.push(`<a href="/api/actions/${encodeURIComponent(sourceActionId)}" target="_blank" rel="noopener">Source action</a>`);
+    links.push(`<a href="${Marvain.path(`/api/actions/${encodeURIComponent(sourceActionId)}`)}" target="_blank" rel="noopener">Source action</a>`);
   }
   if (hasDetailValue(tapdbEuid)) {
-    links.push(`<a href="/tapdb/graph?start_euid=${encodeURIComponent(tapdbEuid)}" target="_blank" rel="noopener">TapDB graph</a>`);
+    links.push(`<a href="${Marvain.path(`/tapdb/graph?start_euid=${encodeURIComponent(tapdbEuid)}`)}" target="_blank" rel="noopener">TapDB graph</a>`);
   }
   if (hasDetailValue(explicitLineageUrl) && String(explicitLineageUrl).startsWith('/')) {
-    links.push(`<a href="${escapeHtml(explicitLineageUrl)}" target="_blank" rel="noopener">Lineage</a>`);
+    const lineagePath = String(explicitLineageUrl);
+    const lineageHref = lineagePath.startsWith('//') ? lineagePath : Marvain.path(lineagePath);
+    links.push(`<a href="${escapeHtml(lineageHref)}" target="_blank" rel="noopener">Lineage</a>`);
   }
   return links.join(' ');
 }
 
 function candidateSummary(candidate) {
   const sourceEvent = candidate.source_event_id
-    ? `<a href="/api/events/${encodeURIComponent(candidate.source_event_id)}" target="_blank" rel="noopener">Source Event</a>`
+    ? `<a href="${Marvain.path(`/api/events/${encodeURIComponent(candidate.source_event_id)}`)}" target="_blank" rel="noopener">Source Event</a>`
     : '<span class="text-muted">No source evidence</span>';
   return `
     <div class="memory-card card" style="margin-bottom: var(--space-sm);">
@@ -643,7 +645,7 @@ async function loadMemoryCandidates() {
   if (!list) return;
   list.innerHTML = '<div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
   try {
-    const response = await fetch('/api/memory-candidates?state=candidate');
+    const response = await fetch(Marvain.path('/api/memory-candidates?state=candidate'));
     const data = await readMemoryFetchResponse(response, 'Failed to load memory candidates');
     const candidates = data.candidates || [];
     list.innerHTML = candidates.length
@@ -659,7 +661,7 @@ async function viewCandidate(candidateId) {
   content.innerHTML = '<div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> Loading...</div>';
   Marvain.showModal('candidate-detail-modal');
   try {
-    const response = await fetch(`/api/memory-candidates/${candidateId}`);
+    const response = await fetch(Marvain.path(`/api/memory-candidates/${candidateId}`));
     const candidate = await readMemoryFetchResponse(response, 'Failed to load memory candidate');
     const participantsText = (candidate.participants || []).join(', ');
     content.innerHTML = `
@@ -709,7 +711,7 @@ async function saveCandidateEdit(event, candidateId) {
   };
   try {
     Marvain.showLoading('Saving candidate...');
-    const response = await fetch(`/api/memory-candidates/${candidateId}`, {
+    const response = await fetch(Marvain.path(`/api/memory-candidates/${candidateId}`), {
       method: 'PATCH',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body),
@@ -729,7 +731,7 @@ async function saveCandidateEdit(event, candidateId) {
 async function commitCandidate(candidateId) {
   try {
     Marvain.showLoading('Committing candidate...');
-    const response = await fetch(`/api/memory-candidates/${candidateId}/commit`, {
+    const response = await fetch(Marvain.path(`/api/memory-candidates/${candidateId}/commit`), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({}),
@@ -750,7 +752,7 @@ async function rejectCandidate(candidateId) {
   if (reason === null) return;
   try {
     Marvain.showLoading('Rejecting candidate...');
-    const response = await fetch(`/api/memory-candidates/${candidateId}/reject`, {
+    const response = await fetch(Marvain.path(`/api/memory-candidates/${candidateId}/reject`), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({reason}),
@@ -772,7 +774,7 @@ async function viewMemory(memoryId) {
   Marvain.showModal('memory-detail-modal');
 
   try {
-    const response = await fetch(`/api/memories/${memoryId}`);
+    const response = await fetch(Marvain.path(`/api/memories/${memoryId}`));
     const memory = await readMemoryFetchResponse(response, 'Failed to load memory');
 
     const tierBadge = {
@@ -933,7 +935,7 @@ async function submitMemoryAnnotation(event, memoryId) {
   };
   try {
     Marvain.showLoading('Saving annotation...');
-    const response = await fetch(`/api/memories/${memoryId}/annotations`, {
+    const response = await fetch(Marvain.path(`/api/memories/${memoryId}/annotations`), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body),
@@ -954,7 +956,7 @@ async function supersedeMemory(memoryId) {
   const reason = prompt('Supersede reason') || null;
   try {
     Marvain.showLoading('Superseding memory...');
-    const response = await fetch(`/api/memories/${memoryId}/supersede`, {
+    const response = await fetch(Marvain.path(`/api/memories/${memoryId}/supersede`), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({superseded_by_memory_id: supersededByMemoryId, reason}),
@@ -993,7 +995,7 @@ async function createMemory(event) {
 
   try {
     Marvain.showLoading('Creating memory candidate...');
-    const response = await fetch('/api/memories', {
+    const response = await fetch(Marvain.path('/api/memories'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body),

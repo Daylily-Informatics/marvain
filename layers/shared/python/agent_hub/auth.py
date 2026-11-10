@@ -137,17 +137,10 @@ def authenticate_user_access_token(db: RdsData, access_token: str) -> Authentica
 
 
 def _cognito_token_verifier():
-    from daylily_auth_cognito.runtime.verifier import CognitoTokenVerifier
-
+    from agent_hub.cognito import _token_verifier
     from agent_hub.config import load_config
 
-    cfg = load_config()
-    region = str(cfg.cognito_region or "us-east-1")
-    user_pool_id = str(cfg.cognito_user_pool_id or "").strip()
-    app_client_id = str(cfg.cognito_user_pool_client_id or "").strip()
-    if not user_pool_id or not app_client_id:
-        raise PermissionError("Cognito runtime verifier is not configured")
-    return CognitoTokenVerifier(region=region, user_pool_id=user_pool_id, app_client_id=app_client_id)
+    return _token_verifier(load_config())
 
 
 def _cognito_admin_client(*, user_pool_id: str | None = None):
@@ -156,8 +149,10 @@ def _cognito_admin_client(*, user_pool_id: str | None = None):
     from agent_hub.config import load_config
 
     cfg = load_config()
+    if not cfg.cognito_region:
+        raise ValueError("Cognito region is required")
     return CognitoAdminClient(
-        region=str(cfg.cognito_region or "us-east-1"),
+        region=str(cfg.cognito_region),
         user_pool_id=user_pool_id,
     )
 
@@ -187,7 +182,7 @@ def lookup_cognito_user_by_email(*, user_pool_id: str, email: str) -> tuple[str,
         raise LookupError("multiple users matched")
 
     attrs = {a.get("Name"): a.get("Value") for a in (users[0].get("Attributes") or []) if isinstance(a, dict)}
-    sub = attrs.get("sub") or users[0].get("Username")
+    sub = attrs.get("sub")
     if not sub:
         raise LookupError("missing sub attribute")
     em = attrs.get("email")
@@ -202,8 +197,11 @@ def list_cognito_users(*, user_pool_id: str, region: str | None = None) -> list[
     from agent_hub.config import load_config
 
     cfg = load_config()
+    resolved_region = region if region is not None else cfg.cognito_region
+    if not resolved_region:
+        raise ValueError("Cognito region is required")
     admin = CognitoAdminClient(
-        region=str(region or cfg.cognito_region or "us-east-1"),
+        region=str(resolved_region),
         user_pool_id=user_pool_id,
     )
     return list_cognito_admin_users(admin)

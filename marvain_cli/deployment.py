@@ -607,6 +607,21 @@ def initialize_canonical(*, profile: str, region: str, host: str, port: int, dat
             "database": database, "builder_instance_id": builder_instance_id}
 
 
+def start_builder(*, ctx: Any) -> dict[str, str]:
+    """Request a normal start of the selected dedicated builder instance."""
+    if ctx.env.aws_profile != "lsmc" or ctx.env.aws_region != "us-east-2":
+        raise ConfigError("Builder target must explicitly be profile lsmc in us-east-2")
+    deployment = ctx.env.raw.get("deployment")
+    if not isinstance(deployment, dict) or not deployment.get("builder_instance_id"):
+        raise ConfigError("selected config has no builder instance receipt")
+    instance_id = str(deployment["builder_instance_id"])
+    session = boto3.Session(profile_name=ctx.env.aws_profile, region_name=ctx.env.aws_region)
+    response = session.client("ec2").start_instances(InstanceIds=[instance_id])
+    started = response["StartingInstances"][0]
+    return {"instance_id": started["InstanceId"], "previous_state": started["PreviousState"]["Name"],
+            "current_state": started["CurrentState"]["Name"]}
+
+
 def stop_builder(*, ctx: Any) -> dict[str, str]:
     """Request a normal stop of the selected dedicated builder instance."""
     if ctx.env.aws_profile != "lsmc" or ctx.env.aws_region != "us-east-2":
@@ -633,4 +648,5 @@ def builder_power_state(*, ctx: Any) -> dict[str, str]:
     session = boto3.Session(profile_name=ctx.env.aws_profile, region_name=ctx.env.aws_region)
     response = session.client("ec2").describe_instances(InstanceIds=[instance_id])
     instance = response["Reservations"][0]["Instances"][0]
-    return {"instance_id": instance["InstanceId"], "state": instance["State"]["Name"]}
+    return {"instance_id": instance["InstanceId"], "state": instance["State"]["Name"],
+            "public_ip": str(instance.get("PublicIpAddress") or "")}

@@ -601,6 +601,9 @@ Resources:
           TAPDB_DB_PORT: !GetAtt AuroraCluster.Endpoint.Port
           TAPDB_DB_SECRET_ARN: !Ref DbCredentialsSecret
           TAPDB_DB_NAME: !Ref DbName
+          TAPDB_DB_USERNAME: !Sub '{{resolve:secretsmanager:${DbCredentialsSecret}:SecretString:username}}'
+          TAPDB_CLUSTER_IDENTIFIER: !Ref AuroraCluster
+          MARVAIN_TAPDB_CONFIG_PATH: /tmp/marvain-tapdb.json
           MERIDIAN_DOMAIN_CODE: V
           TAPDB_OWNER_REPO: marvain
           OPENAI_EMBED_MODEL: !Ref OpenAIEmbedModel
@@ -617,6 +620,7 @@ Resources:
             - !Sub ${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
             - !Sub marvain-${StageName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com
           COGNITO_REDIRECT_URI: !Sub https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/auth/callback
+          PUBLIC_BASE_URL: !Sub https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
           COGNITO_IDENTITY_PROVIDER: !If [GoogleAuthEnabled, "Google", ""]
           SESSION_SECRET_ARN: !Ref SessionSecret
           STACK_NAME: !Ref AWS::StackName
@@ -1738,7 +1742,14 @@ Resources:
               - - Fn::Join: [",", !Ref GuiCallbackUrls]
                 - !Sub 'https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/auth/callback'
 
-      LogoutURLs: !Ref GuiLogoutUrls
+      LogoutURLs:
+        Fn::Split:
+          - ","
+          - Fn::Join:
+              - ","
+              - - Fn::Join: [",", !Ref GuiLogoutUrls]
+                - !Sub 'https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/logged-out'
+
       SupportedIdentityProviders:
         - COGNITO
       ExplicitAuthFlows:
@@ -1771,7 +1782,14 @@ Resources:
               - - Fn::Join: [",", !Ref GuiCallbackUrls]
                 - !Sub 'https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/auth/callback'
 
-      LogoutURLs: !Ref GuiLogoutUrls
+      LogoutURLs:
+        Fn::Split:
+          - ","
+          - Fn::Join:
+              - ","
+              - - Fn::Join: [",", !Ref GuiLogoutUrls]
+                - !Sub 'https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/logged-out'
+
       SupportedIdentityProviders:
         - COGNITO
         - Google

@@ -9,6 +9,7 @@ EUID lookup, and graph payloads.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from collections.abc import Callable
@@ -250,6 +251,53 @@ def initialize_aurora_prefixes(*, config_path: Path) -> None:
         _sync_identity_prefix_config(Environment.target)
     finally:
         clear_cli_context()
+
+
+def write_hosted_tapdb_runtime_config() -> Path:
+    """Write the mounted TapDB GUI's explicit target without fetching credentials."""
+    from daylily_tapdb.cli import DEFAULT_UI_PORT
+
+    names = (
+        "MARVAIN_TAPDB_CONFIG_PATH", "TAPDB_DB_HOST", "TAPDB_DB_PORT", "TAPDB_DB_NAME",
+        "TAPDB_DB_SECRET_ARN", "TAPDB_DB_USERNAME", "TAPDB_CLUSTER_IDENTIFIER", "AWS_REGION",
+        "MERIDIAN_DOMAIN_CODE", "TAPDB_OWNER_REPO",
+    )
+    values = {name: os.environ.get(name, "").strip() for name in names}
+    missing = [name for name, value in values.items() if not value]
+    if missing:
+        raise RuntimeError(f"TapDB hosted runtime requires: {', '.join(missing)}")
+    database = values["TAPDB_DB_NAME"]
+    config = {
+        "meta": {
+            "config_version": 4,
+            "client_id": "marvain",
+            "database_name": database,
+            "owner_repo_name": values["TAPDB_OWNER_REPO"],
+            "domain_registry_path": str(MARVAIN_TAPDB_DOMAIN_REGISTRY),
+            "prefix_ownership_registry_path": str(MARVAIN_TAPDB_PREFIX_REGISTRY),
+        },
+        "safety": {"safety_tier": "production", "destructive_operations": "blocked"},
+        "target": {
+            "engine_type": "aurora",
+            "host": values["TAPDB_DB_HOST"],
+            "port": values["TAPDB_DB_PORT"],
+            "ui_port": str(DEFAULT_UI_PORT),
+            "database": database,
+            "schema_name": "public",
+            "user": values["TAPDB_DB_USERNAME"],
+            "region": values["AWS_REGION"],
+            "iam_auth": "false",
+            "secret_arn": values["TAPDB_DB_SECRET_ARN"],
+            "cluster_identifier": values["TAPDB_CLUSTER_IDENTIFIER"],
+            "ssl": "true",
+            "domain_code": values["MERIDIAN_DOMAIN_CODE"],
+        },
+    }
+    path = Path(values["MARVAIN_TAPDB_CONFIG_PATH"])
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+        json.dump(config, output)
+    return path
 
 
 class DaylilyTapdbSemanticStore:

@@ -199,7 +199,7 @@ async function createAgentBackup() {
   }
   try {
     Marvain.showLoading('Creating backup manifest...');
-    const response = await fetch('/api/agents/' + encodeURIComponent(agentId) + '/backup', {
+    const response = await fetch(Marvain.path('/api/agents/' + encodeURIComponent(agentId) + '/backup'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
@@ -218,7 +218,7 @@ async function createAgentBackup() {
         <div class="detail-grid">
           <div><span class="detail-label">Backup ID</span><code>${Marvain.escapeHtml(payload.backup_id || '')}</code></div>
           <div><span class="detail-label">Checksum</span><code>${Marvain.escapeHtml(payload.checksum || '')}</code></div>
-          <div><span class="detail-label">Download</span><a href="/api/backups/${encodeURIComponent(payload.backup_id || '')}/download">Manifest JSON</a></div>
+          <div><span class="detail-label">Download</span><a href="${Marvain.path(`/api/backups/${encodeURIComponent(payload.backup_id || '')}/download`)}">Manifest JSON</a></div>
         </div>
       </div>`;
     await loadAgentBackups();
@@ -238,7 +238,7 @@ async function loadAgentBackups() {
   }
   target.innerHTML = '<p class="text-muted">Loading backup manifests...</p>';
   try {
-    const response = await fetch('/api/agents/' + encodeURIComponent(agentId) + '/backups');
+    const response = await fetch(Marvain.path('/api/agents/' + encodeURIComponent(agentId) + '/backups'));
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new Error(payload.detail || 'Failed to load backup manifests');
@@ -254,7 +254,7 @@ async function loadAgentBackups() {
             <div class="detail-grid">
               <div><span class="detail-label">Backup ID</span><code>${Marvain.escapeHtml(backup.backup_id || '')}</code></div>
               <div><span class="detail-label">Checksum</span><code>${Marvain.escapeHtml(backup.checksum || '')}</code></div>
-              <div><span class="detail-label">Download</span><a href="/api/backups/${encodeURIComponent(backup.backup_id || '')}/download">Manifest JSON</a></div>
+              <div><span class="detail-label">Download</span><a href="${Marvain.path(`/api/backups/${encodeURIComponent(backup.backup_id || '')}/download`)}">Manifest JSON</a></div>
             </div>
           </div>`).join('')
       : '<p class="text-muted">No backup manifests recorded for this agent.</p>';
@@ -308,7 +308,7 @@ document.getElementById('upload-form').addEventListener('submit', async function
         }
       };
       xhr.onerror = () => reject(new Error('Upload failed'));
-      xhr.open('POST', '/api/artifacts/upload');
+      xhr.open('POST', Marvain.path('/api/artifacts/upload'));
       xhr.send(formData);
     });
 

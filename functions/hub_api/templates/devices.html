@@ -295,7 +295,7 @@ function filterDevices() {
 }
 
 function viewDevice(deviceId) {
-  window.location.href = `/devices/${deviceId}`;
+  window.location.href = Marvain.path(`/devices/${deviceId}`);
 }
 
 async function revokeDevice(deviceId) {
@@ -305,7 +305,7 @@ async function revokeDevice(deviceId) {
 
   try {
     Marvain.showLoading('Revoking device...');
-    const response = await fetch(`/api/devices/${deviceId}/revoke`, {
+    const response = await fetch(Marvain.path(`/api/devices/${deviceId}/revoke`), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'}
     });
@@ -330,7 +330,7 @@ async function rotateDeviceToken(deviceId) {
   }
   try {
     Marvain.showLoading('Rotating device token...');
-    const response = await fetch(`/api/devices/${deviceId}/rotate-token`, {
+    const response = await fetch(Marvain.path(`/api/devices/${deviceId}/rotate-token`), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'}
     });
@@ -368,7 +368,7 @@ async function submitCreateDevice(event) {
 
   try {
     Marvain.showLoading('Registering device...');
-    const response = await fetch('/api/devices', {
+    const response = await fetch(Marvain.path('/api/devices'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(data)
@@ -478,7 +478,7 @@ async function launchSatellite(deviceId, deviceToken) {
   status.textContent = '';
 
   try {
-    const resp = await fetch(`/api/devices/${deviceId}/launch-satellite`, {
+    const resp = await fetch(Marvain.path(`/api/devices/${deviceId}/launch-satellite`), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({device_token: deviceToken, idempotency_key: crypto.randomUUID()}),

@@ -6,7 +6,7 @@
 <div class="page-header">
   <div>
     <nav class="breadcrumb">
-      <a href="/devices"><i class="fas fa-microchip"></i> Devices</a>
+      <a href="{{ url_for('gui_devices') }}"><i class="fas fa-microchip"></i> Devices</a>
       <span class="separator">/</span>
       <span>{{ device.name }}</span>
     </nav>
@@ -48,7 +48,7 @@
         <div class="info-row">
           <span class="info-label">Agent</span>
           <span class="info-value">
-            <a href="/agents/{{ device.agent_id }}">{{ device.agent_name }}</a>
+            <a href="{{ url_for('gui_agent_detail', agent_id=device.agent_id) }}">{{ device.agent_name }}</a>
           </span>
         </div>
         <div class="info-row">
@@ -182,14 +182,14 @@ source ./activate</code></pre>
         <ul>
           <li><strong>Receive commands</strong> — The hub sends real-time instructions via WebSocket (e.g., play audio, capture data)</li>
           <li><strong>Emit events</strong> — The daemon pushes events (sensor data, voice transcripts, presence changes) back to the hub</li>
-          <li><strong>Execute actions</strong> — Approved actions on the <a href="/actions">Actions</a> page can target this device</li>
+          <li><strong>Execute actions</strong> — Approved actions on the <a href="{{ url_for('gui_actions') }}">Actions</a> page can target this device</li>
         </ul>
         <p><strong>Explore further:</strong></p>
         <ul>
-          <li><a href="/events"><i class="fas fa-bolt"></i> Events</a> — View events emitted by this device</li>
-          <li><a href="/actions"><i class="fas fa-cogs"></i> Actions</a> — Create actions that target this device</li>
-          <li><a href="/memories"><i class="fas fa-brain"></i> Memories</a> — Browse memories derived from device interactions</li>
-          <li><a href="/live-session"><i class="fas fa-microphone"></i> Live Session</a> — Interact with the agent in a real space session</li>
+          <li><a href="{{ url_for('gui_events') }}"><i class="fas fa-bolt"></i> Events</a> — View events emitted by this device</li>
+          <li><a href="{{ url_for('gui_actions') }}"><i class="fas fa-cogs"></i> Actions</a> — Create actions that target this device</li>
+          <li><a href="{{ url_for('gui_memories') }}"><i class="fas fa-brain"></i> Memories</a> — Browse memories derived from device interactions</li>
+          <li><a href="{{ url_for('gui_live_session') }}"><i class="fas fa-microphone"></i> Live Session</a> — Interact with the agent in a real space session</li>
         </ul>
       </div>
     </details>
@@ -258,7 +258,7 @@ function toggleLocationEdit() {
 async function saveLocation(deviceId) {
   const label = document.getElementById('location-label-input').value.trim() || null;
   try {
-    const resp = await fetch(`/api/devices/${deviceId}/location`, {
+    const resp = await fetch(Marvain.path(`/api/devices/${deviceId}/location`), {
       method: 'PATCH',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({location_label: label}),
@@ -351,7 +351,7 @@ async function revokeDevice(deviceId) {
 
   try {
     Marvain.showLoading('Revoking device...');
-    const response = await fetch(`/api/devices/${deviceId}/revoke`, {
+    const response = await fetch(Marvain.path(`/api/devices/${deviceId}/revoke`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     });
@@ -401,7 +401,7 @@ function _awUpdateUI(data) {
 
 async function awRefreshStatus() {
   try {
-    const resp = await fetch('/api/agent-worker/status');
+    const resp = await fetch(Marvain.path('/api/agent-worker/status'));
     if (!resp.ok) throw new Error('Failed to get status');
     const data = await resp.json();
     _awUpdateUI(data);
@@ -416,7 +416,7 @@ async function awLaunch() {
   btn.disabled = true;
   btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Launching…';
   try {
-    const resp = await fetch('/api/agent-worker/launch', {
+    const resp = await fetch(Marvain.path('/api/agent-worker/launch'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({agent_id: '{{ device.agent_id }}', idempotency_key: crypto.randomUUID()}),
@@ -438,7 +438,7 @@ async function awStop() {
   btn.disabled = true;
   btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Stopping…';
   try {
-    const resp = await fetch('/api/agent-worker/stop', {
+    const resp = await fetch(Marvain.path('/api/agent-worker/stop'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({agent_id: '{{ device.agent_id }}', idempotency_key: crypto.randomUUID()}),
@@ -460,7 +460,7 @@ async function awRestart() {
   btn.disabled = true;
   btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Restarting…';
   try {
-    const resp = await fetch('/api/agent-worker/restart', {
+    const resp = await fetch(Marvain.path('/api/agent-worker/restart'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({agent_id: '{{ device.agent_id }}', idempotency_key: crypto.randomUUID()}),

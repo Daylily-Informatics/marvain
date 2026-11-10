@@ -6,7 +6,7 @@
 <div class="page-header">
   <div>
     <nav class="breadcrumb">
-      <a href="/agents">Agents</a> / <span>{{ agent.name }}</span>
+      <a href="{{ url_for('gui_agents') }}">Agents</a> / <span>{{ agent.name }}</span>
     </nav>
     <h1 class="page-title"><i class="fas fa-robot"></i> {{ agent.name }}</h1>
   </div>
@@ -73,23 +73,23 @@
       </div>
       <div class="card-body">
         <div class="quick-actions-grid">
-          <a href="/spaces?agent_id={{ agent.agent_id }}" class="quick-action">
+          <a href="{{ url_for('gui_spaces') }}?agent_id={{ agent.agent_id }}" class="quick-action">
             <i class="fas fa-layer-group"></i>
             <span>View Spaces</span>
           </a>
-          <a href="/devices?agent_id={{ agent.agent_id }}" class="quick-action">
+          <a href="{{ url_for('gui_devices') }}?agent_id={{ agent.agent_id }}" class="quick-action">
             <i class="fas fa-mobile-alt"></i>
             <span>View Devices</span>
           </a>
-          <a href="/memories?agent_id={{ agent.agent_id }}" class="quick-action">
+          <a href="{{ url_for('gui_memories') }}?agent_id={{ agent.agent_id }}" class="quick-action">
             <i class="fas fa-brain"></i>
             <span>View Memories</span>
           </a>
-          <a href="/actions?agent_id={{ agent.agent_id }}" class="quick-action">
+          <a href="{{ url_for('gui_actions') }}?agent_id={{ agent.agent_id }}" class="quick-action">
             <i class="fas fa-tasks"></i>
             <span>View Actions</span>
           </a>
-          <a href="/events?agent_id={{ agent.agent_id }}" class="quick-action">
+          <a href="{{ url_for('gui_events') }}?agent_id={{ agent.agent_id }}" class="quick-action">
             <i class="fas fa-stream"></i>
             <span>View Events</span>
           </a>
@@ -455,17 +455,17 @@ async function readAgentJson(response, defaultMessage) {
 
 async function refreshAgentLifecycle() {
   try {
-    const agentResp = await fetch('/api/agents/' + AGENT_ID);
+    const agentResp = await fetch(Marvain.path('/api/agents/' + AGENT_ID));
     const agent = await readAgentJson(agentResp, 'Failed to load agent lifecycle');
     document.getElementById('agent-lifecycle-current').textContent =
       (agent.lifecycle_state || 'active') + (agent.disabled ? ' / disabled' : '');
 
-    const maturityResp = await fetch('/api/agents/' + AGENT_ID + '/maturity');
+    const maturityResp = await fetch(Marvain.path('/api/agents/' + AGENT_ID + '/maturity'));
     const maturity = await readAgentJson(maturityResp, 'Failed to load maturity evidence');
     document.getElementById('agent-maturity-status').textContent =
       (maturity.mature ? 'Mature' : 'Immature') + ' (' + (maturity.maturity_state || agent.maturity_state || 'unknown') + ')';
 
-    const requestsResp = await fetch('/api/agents/' + AGENT_ID + '/lifecycle-requests');
+    const requestsResp = await fetch(Marvain.path('/api/agents/' + AGENT_ID + '/lifecycle-requests'));
     const requestsPayload = await readAgentJson(requestsResp, 'Failed to load lifecycle requests');
     const requests = requestsPayload.requests || [];
     const latestStasis = requests.find((item) => item.request_type === 'stasis');
@@ -498,7 +498,7 @@ async function submitAgentLifecycleRequest(requestType) {
   if (!rationale) return;
   try {
     Marvain.showLoading('Submitting lifecycle request...');
-    const response = await fetch('/api/agents/' + AGENT_ID + '/lifecycle-requests', {
+    const response = await fetch(Marvain.path('/api/agents/' + AGENT_ID + '/lifecycle-requests'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({request_type: requestType, rationale: rationale, requested_by_type: 'user'})
@@ -535,7 +535,7 @@ async function loadConstitutionHistory() {
   const status = document.getElementById('constitution-history-status');
   try {
     status.textContent = 'Loading constitution history...';
-    const response = await fetch('/api/agents/' + AGENT_ID + '/constitution');
+    const response = await fetch(Marvain.path('/api/agents/' + AGENT_ID + '/constitution'));
     const data = await readAgentJson(response, 'Failed to load constitution');
     const revisions = data.revisions || [];
     const active = revisions[0] || {};
@@ -562,7 +562,7 @@ async function submitConstitutionRevision(event) {
   };
   try {
     Marvain.showLoading('Saving constitution revision...');
-    const response = await fetch('/api/agents/' + AGENT_ID + '/constitution/revisions', {
+    const response = await fetch(Marvain.path('/api/agents/' + AGENT_ID + '/constitution/revisions'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body)
@@ -582,7 +582,7 @@ async function submitConstitutionRevision(event) {
 async function editAgent() {
   try {
     Marvain.showLoading('Loading agent details...');
-    const response = await fetch(`/api/agents/${AGENT_ID}`);
+    const response = await fetch(Marvain.path(`/api/agents/${AGENT_ID}`));
     if (!response.ok) {
       const err = await response.json();
       throw new Error(err.detail || 'Failed to load agent');
@@ -611,7 +611,7 @@ async function submitEditAgent(event) {
 
   try {
     Marvain.showLoading('Saving changes...');
-    const response = await fetch(`/api/agents/${AGENT_ID}`, {
+    const response = await fetch(Marvain.path(`/api/agents/${AGENT_ID}`), {
       method: 'PATCH',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({name: name, disabled: disabled})
@@ -634,7 +634,7 @@ async function submitEditAgent(event) {
 
 async function loadCognitoUsers() {
   try {
-    var resp = await fetch('/api/cognito/users');
+    var resp = await fetch(Marvain.path('/api/cognito/users'));
     if (!resp.ok) throw new Error('Failed to load users');
     cognitoUsers = await resp.json();
     updateUserDropdown();
@@ -675,7 +675,7 @@ async function changeMemberRole(userId) {
     return;
   }
   try {
-    var resp = await fetch('/api/agents/' + AGENT_ID + '/memberships/' + encodeURIComponent(userId), {
+    var resp = await fetch(Marvain.path('/api/agents/' + AGENT_ID + '/memberships/' + encodeURIComponent(userId)), {
       method: 'PATCH',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({role: newRole})
@@ -694,7 +694,7 @@ async function changeMemberRole(userId) {
 async function removeMember(userId) {
   if (!confirm('Remove this member from the agent? They can be invited again later.')) return;
   try {
-    var resp = await fetch('/api/agents/' + AGENT_ID + '/memberships/' + encodeURIComponent(userId), {
+    var resp = await fetch(Marvain.path('/api/agents/' + AGENT_ID + '/memberships/' + encodeURIComponent(userId)), {
       method: 'DELETE'
     });
     if (!resp.ok) {
@@ -729,7 +729,7 @@ async function submitAddMember(event) {
   submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Adding...';
 
   try {
-    var resp = await fetch('/api/agents/' + AGENT_ID + '/memberships', {
+    var resp = await fetch(Marvain.path('/api/agents/' + AGENT_ID + '/memberships'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({email: email, role: role})
@@ -778,7 +778,7 @@ function awUpdateUI(data) {
 
 async function awRefreshStatus() {
   try {
-    var resp = await fetch('/api/agent-worker/status');
+    var resp = await fetch(Marvain.path('/api/agent-worker/status'));
     if (!resp.ok) throw new Error('Failed to fetch status');
     var data = await resp.json();
     awUpdateUI(data);
@@ -790,7 +790,7 @@ async function awRefreshStatus() {
 async function awLaunch() {
   try {
     Marvain.showLoading('Starting agent worker…');
-    var resp = await fetch('/api/agent-worker/launch', {
+    var resp = await fetch(Marvain.path('/api/agent-worker/launch'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({agent_id: AGENT_ID, idempotency_key: crypto.randomUUID()})
@@ -810,7 +810,7 @@ async function awStop() {
   if (!confirm('Stop the agent worker? Voice sessions will be interrupted.')) return;
   try {
     Marvain.showLoading('Stopping agent worker…');
-    var resp = await fetch('/api/agent-worker/stop', {
+    var resp = await fetch(Marvain.path('/api/agent-worker/stop'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({agent_id: AGENT_ID, idempotency_key: crypto.randomUUID()})
@@ -829,7 +829,7 @@ async function awStop() {
 async function awRestart() {
   try {
     Marvain.showLoading('Restarting agent worker…');
-    var resp = await fetch('/api/agent-worker/restart', {
+    var resp = await fetch(Marvain.path('/api/agent-worker/restart'), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({agent_id: AGENT_ID, idempotency_key: crypto.randomUUID()})

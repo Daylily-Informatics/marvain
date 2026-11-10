@@ -386,6 +386,18 @@
       }
     },
 
+    /** Resolve an app-local path against the server-configured ASGI root. */
+    path: function(path) {
+      const rootPath = document.documentElement.dataset.marvainRootPath;
+      if (rootPath === undefined) {
+        throw new Error('Marvain root path is missing from the page');
+      }
+      if (!path.startsWith('/') || path.startsWith('//')) {
+        throw new TypeError('Expected an app-local Marvain path');
+      }
+      return rootPath + path;
+    },
+
     /**
      * Make an authenticated API request
      * @param {string} url - URL to fetch
