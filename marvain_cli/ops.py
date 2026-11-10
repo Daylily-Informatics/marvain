@@ -786,6 +786,10 @@ def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool, no_confirm: bool = Fals
         ctx.env.stack_name,
         "--s3-bucket",
         deployment_bucket,
+        # SAM requires the function mapping even when ImageUri already names
+        # the published ECR digest. Reuse that explicitly selected repository.
+        "--image-repositories",
+        "RecognitionVoiceFunction=" + str(param_overrides["RecognitionImageUri"]).split("@", 1)[0],
         "--no-fail-on-empty-changeset",
         "--tags",
         MARVAIN_PROJECT_TAG,

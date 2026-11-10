@@ -1,3 +1,11 @@
+## 10 November 2026 — recognition repair and progressive acceptance
+
+Source releases 4.0.9 (2762ca0) and Hub-only 4.0.10 (36603f1) are published. Final voice image 4.0.9 is building on the designated EC2 host; source application deployment remains pending. The operational recognition migration returned exit 0 through `marvain init db`. First command spelling `init-db` was rejected before mutation. Existing production is Hub 4.0.7 / responder 4.0.3 until the owning deployment completes.
+
+John selected AWS Rekognition paid per use. New face reference comparison and voice CPU processing run on demand. Human review links both modalities to the same existing person. Private-memory export and sensitive human action approvals require an additional fresh check, while Cognito and existing authorization remain authoritative. No liveness claim. Historical recording grants and unchanged consent identities are preserved.
+
+The attended acceptance test is written at /Users/jmajor/projects/marvain/tests/acceptance/test_marvain_journey.py, with progressive feature state in /Users/jmajor/projects/marvain/tests/acceptance/marvain_journey.json. It covers actual Google/Cognito sign-in, prepared agent/space/activation receipts, Chrome Join, microphone permission, speech, a human-confirmed audible reply, and Leave. It has not run. The prior user statement “Connected and Marvain responds” remains the sole accepted live voice result. Biometric recognition, dogs, persisted-media recall, and the two-location demo are not accepted by that statement.
+
 # Marvain 4.x source release and demonstration packet
 
 ## Git release 4.0.8 — accepted first voice endpoint and overnight checkpoint
