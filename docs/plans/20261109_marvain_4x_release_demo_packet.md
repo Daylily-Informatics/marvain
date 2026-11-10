@@ -1,6 +1,43 @@
 # Marvain 4.x source release and demonstration packet
 
-**Status: release 4.0.5 is deployed to LSMC/us-east-2. Compact navigation and first-use guidance are observed in Chrome; Google sign-in works. User acceptance and the live two-location demonstration remain pending; tests remain off.** The user's deployment request supersedes the original source-only boundary for this selected service. The owning execution plan is /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_multiagent_execution_plan.md. Earlier preparation statements below remain historical and are superseded by this receipt.
+**Status: release 4.0.7 is deployed to LSMC/us-east-2. INITagent/laptop bindings are written and one AWS responder is running and registered with LiveKit. Chrome is open at the selected Live Session; user Join and actual conversation acceptance remain pending.** Tests remain off. The owning execution plan is /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_multiagent_execution_plan.md. Earlier preparation statements below remain historical and are superseded by this receipt.
+
+## Chrome activation deployment receipt — Marvain 4.0.7
+
+The user selected this Mac/Chrome, approved private retention of all captured media and derived memory, and explicitly requested step-by-step activation. Existing INITagent and its stable laptop space were reused. The newly registered worker and authenticated-browser devices are distinct from the user's existing physical device. John is bound to the current Cognito login; linking his second login remains DAY-22 work.
+
+| Item | Owning result |
+|---|---|
+| Release | Annotated 4.0.7 at 1817801 on codex/marvain-operational-100-closure, pushed |
+| Build | Exact tagged Lambda packaging on EC2 i-0325430bfec70e41e, tmux exit 0; transfer/extraction exit 0 |
+| Deployment | Source and worker-count deployments both Marvain/SAM exit 0; marvain4-prod / lsmc / 108782052779 / us-east-2 |
+| Activation | Operation 5c72279f-fdba-41ec-a01d-51387dfc6d06 reports written; bind reports bound, secret version 6cc48ff5-6a41-49b4-a49e-76565b96b7ba |
+| Canonical records | INITagent V-MVN-17; laptop V-MVN-33; John V-MVN-5Z; human principal V-MVN-8S; worker principal V-MVN-7V; all IDs returned by the owning writer |
+| Worker | marvain4-prod-agent-worker desired=1/running=1/pending=0; LiveKit registered worker AW_FviJFqCZqeWG, agent name forge |
+| Builder | Normal stop completed; lifecycle reports stopped |
+| Browser | INITagent/laptop selected, Join enabled, microphone/camera/recording idle |
+| Remaining | User Join/mic permission, actual response, media persistence observation; two-location multi-actor demo and DAY-22 second-login linking remain unfinished |
+
+The first identity graph attempt preceded its source records; the existing SQS retry completed it normally. No manual queue replay, database edits or new retry controls were required. 4.0.6 was built but never deployed; 4.0.7 includes required API Gateway binary-media transport. Worker/Dot images remain 4.0.3, Dot disabled. No tests, extra QC, PRs or merges.
+
+Live page: https://1kuwpk5zj7.execute-api.us-east-2.amazonaws.com/prod/live-session?space_id=6375476a-8498-49a0-8a7d-98722392de34.
+Evidence: /Users/jmajor/projects/marvain/build/releases/4.0.7/ (build/install/job, deploy-source.log, activation-prepare.log, activation-status.log, activation-bind.log, deploy-activation.log, worker-status.log, builder-stop.log, builder-state.log, live-session-ready.jpg).
+
+Capture starts through the user's Join/microphone/camera controls. Policy permits raw audio/video, attributed events, episodes and knowledge, private to John and the bound responder until deletion/revocation. Source now stores captured media segments with typed S3 references and session lineage; this deployment receipt is not yet a receipt for an actual captured conversation.
+
+```mermaid
+flowchart LR
+  J[John in Chrome] -->|Cognito sign-in| H[Marvain Hub 4.0.7]
+  H -->|Scene and identity intents| O[Existing outbox and writer]
+  O --> T[TapDB canonical memory]
+  H -->|Prepared session token| L[LiveKit laptop room]
+  J -->|Join and enabled tracks| L
+  W[AWS responder: forge] <--> L
+  W --> H
+  J -->|Private recorded segments| H
+  H --> S[Private S3 media]
+  T -->|Typed references and lineage| S
+```
 
 ## Navigation and first-use deployment receipt — Marvain 4.0.5
 
