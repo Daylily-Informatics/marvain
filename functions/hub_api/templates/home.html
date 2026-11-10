@@ -6,9 +6,10 @@
 {% block content %}
 <!-- Dashboard Header -->
 <div class="dash-header">
-  <h1 class="dash-title"><i class="fas fa-th"></i> Dashboard</h1>
-  <span class="text-muted text-sm">{% if user.email %}{{ user.email.split('@')[0] }} · {% endif %}Ops Console</span>
+  <h1 class="dash-title">Your Marvain workspace</h1>
 </div>
+
+{% include "_getting_started.html" %}
 
 <!-- KPI Strip — auto-refreshes every 10s -->
 <div id="dashboard-kpi" hx-get="{{ url_for('gui_dashboard_kpi') }}" hx-trigger="every 10s" hx-swap="innerHTML">
@@ -22,8 +23,7 @@
   </div>
 </div>
 
-{% include "_gui_overview.html" %}
-
+{% if agents_count > 0 %}
 <!-- Main 3-column grid: Agent Status | Activity Feed | Quick Actions -->
 <div class="dash-grid-3 mb-md">
 
@@ -147,4 +147,7 @@
     </table>
   </div>
 </div>
+{% endif %}
+
+{% include "_gui_overview.html" %}
 {% endblock %}

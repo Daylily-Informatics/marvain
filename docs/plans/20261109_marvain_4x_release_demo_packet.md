@@ -2,6 +2,14 @@
 
 **Status: release 4.0.4 is deployed to LSMC/us-east-2 with Google federation, exact verified-email domains, hosted FastAPI/Jinja2 and shared daylily-auth-cognito. Interactive Marvain sign-in and product acceptance remain pending; tests remain off.** The user's deployment request supersedes the original source-only boundary for this selected service. The owning execution plan is /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_multiagent_execution_plan.md. Earlier preparation statements below remain historical and are superseded by this receipt.
 
+## Navigation and first-use amendment — 4.0.5 prepared
+
+User reported overlapping navigation and unclear first steps on the authenticated dashboard. Source consolidates setup navigation, places account/profile/logout/connection status in one Account menu, and leads with Agent → Spaces → People and devices → Live session guidance. The full page catalog is optional; empty operational panels are omitted before the first agent exists. Existing routes and access policies are retained. No actor/device creation or runtime activation is performed by this UI change.
+
+The browser is authenticated as johnm@lsmc.com; Google sign-in is observed working. John confirms that this address and john@daylilyinformatics.com belong to the same person. DAY-22 now records multiple login principals for one human actor and the existing GUI account-linking limitation. This is not an account-merge receipt.
+
+Final Lambda packaging will use /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_navigation_4_0_5.sh on the designated EC2 builder. No tests, extra QC, PRs or merges.
+
 ## Google federation deployment receipt — Marvain 4.0.4
 
 | Item | Owning result |

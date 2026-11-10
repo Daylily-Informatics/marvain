@@ -1,0 +1,52 @@
+<section class="getting-started" aria-labelledby="getting-started-title">
+  <div class="getting-started-intro">
+    <div>
+      <p class="setup-eyebrow">Getting started</p>
+      {% if agents_count == 0 %}
+      <h2 id="getting-started-title">Start with an agent</h2>
+      <p>No agents are linked to this sign-in yet: <strong>{{ user.email }}</strong>. Create one to start your workspace, or use Members on an existing agent to give another sign-in access.</p>
+      {% elif spaces_count == 0 %}
+      <h2 id="getting-started-title">Give your agent a space</h2>
+      <p>A space keeps a conversation and its participants together. Set up a space before connecting a camera or microphone.</p>
+      {% else %}
+      <h2 id="getting-started-title">Connect your spaces and participants</h2>
+      <p>Choose a space, add the people who will use it, and connect the devices that will participate.</p>
+      {% endif %}
+    </div>
+    {% if agents_count == 0 %}
+    <a class="btn btn-primary" href="{{ url_for('gui_agents') }}"><i class="fas fa-plus" aria-hidden="true"></i> Set up an agent</a>
+    {% elif spaces_count == 0 %}
+    <a class="btn btn-primary" href="{{ url_for('gui_spaces') }}"><i class="fas fa-plus" aria-hidden="true"></i> Set up a space</a>
+    {% else %}
+    <a class="btn btn-primary" href="{{ url_for('gui_live_session') }}"><i class="fas fa-video" aria-hidden="true"></i> Open live session</a>
+    {% endif %}
+  </div>
+  <ol class="setup-steps">
+    <li>
+      <span class="setup-step-number" aria-hidden="true">1</span>
+      <h3>Create an agent</h3>
+      <p>The assistant you configure. Its owner manages access, spaces and devices.</p>
+      <a href="{{ url_for('gui_agents') }}">Agents <span aria-hidden="true">&rarr;</span></a>
+    </li>
+    <li>
+      <span class="setup-step-number" aria-hidden="true">2</span>
+      <h3>Choose spaces</h3>
+      <p>For the two-location demonstration, create one space per location and select Stable room mode.</p>
+      <a href="{{ url_for('gui_spaces') }}">Spaces <span aria-hidden="true">&rarr;</span></a>
+    </li>
+    <li>
+      <span class="setup-step-number" aria-hidden="true">3</span>
+      <h3>Add participants</h3>
+      <p>Add people and their consent, then register each selected camera/microphone satellite.</p>
+      <div class="setup-step-links"><a href="{{ url_for('gui_people') }}">People <span aria-hidden="true">&rarr;</span></a><a href="{{ url_for('gui_devices') }}">Devices <span aria-hidden="true">&rarr;</span></a></div>
+    </li>
+    <li>
+      <span class="setup-step-number" aria-hidden="true">4</span>
+      <h3>Start a session</h3>
+      <p>Join a chosen space once its participants, devices and responding agent are connected.</p>
+      <a href="{{ url_for('gui_live_session') }}">Live session <span aria-hidden="true">&rarr;</span></a>
+    </li>
+  </ol>
+  <p class="setup-note">Setup creates records. The agent service and satellites also need to be connected before Marvain can see, hear or respond.</p>
+  <p class="setup-follow-through">As you use Marvain, <a href="{{ url_for('gui_actions') }}">Actions</a> shows proposals to review, <a href="{{ url_for('gui_memories') }}">Memories</a> holds recall records, and <a href="{{ url_for('gui_events') }}">Events</a> shows what happened.</p>
+</section>

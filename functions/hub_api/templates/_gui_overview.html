@@ -120,11 +120,8 @@
   }
 ] %}
 
-<section class="gui-overview mb-md" aria-labelledby="gui-overview-title">
-  <div class="gui-overview-header">
-    <h2 id="gui-overview-title">Product Surface</h2>
-    <span class="badge badge-info">V1</span>
-  </div>
+<details class="gui-overview mb-md">
+  <summary class="gui-overview-header">Browse all pages <span class="text-muted text-sm">Setup, memory, activity and administration</span></summary>
   <div class="gui-surface-grid">
     {% for surface in gui_surfaces %}
     <a href="{{ surface.href }}" class="surface-card {% if surface.active %}active{% endif %}">
@@ -136,4 +133,4 @@
     </a>
     {% endfor %}
   </div>
-</section>
+</details>
