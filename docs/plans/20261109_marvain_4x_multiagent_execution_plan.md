@@ -2,9 +2,23 @@
 
 **Revision:** 1  
 **Prepared:** 9 November 2026  
-**Status:** 4.0.1 deployed. Hosted FastAPI/Jinja2 GUI and shared daylily-auth-cognito refactor in progress under the user's follow-up request. Tests remain off.
+**Status:** 4.0.3 deployed with hosted FastAPI/Jinja2 and shared daylily-auth-cognito. Dependency repair complete. Interactive sign-in and product acceptance pending; tests remain off.
 
 ## Current continuation state
+
+Updated 9 November 2026. The requested shared-auth refactor, hosted FastAPI/Jinja2 GUI, and dependency repair are deployed. User selected “Use daylily-auth-cognito with Marvain’s Cognito Hosted UI”; existing pool/client identities are preserved. Existing Waves 1–4 and LSMC deployment authority covered this selected-service release. Tests, PRs/merges, extra QC, capture/enrollment, subscriptions and physical action remain outside this execution.
+
+Production: immutable Marvain 4.0.3 at 55f1266 on codex/marvain-operational-100-closure, repository /Users/jmajor/projects/marvain. Target: lsmc account 108782052779, us-east-2, stack marvain4-prod, config /Users/jmajor/.config/marvain/marvain-lsmc-us-east-2.yaml (prod). Hub https://1kuwpk5zj7.execute-api.us-east-2.amazonaws.com/prod . EC2 final image/SAM job marvain-4-0-3-release exited 0; Marvain/SAM stack update exited 0. Final artifacts/logs: /Users/jmajor/projects/marvain/build/releases/4.0.3/. No further runtime probes or tests were run.
+
+Auth uses daylily-auth-cognito 2.1.9 public token/session/login/callback APIs, Marvain Cognito Hosted UI, hosted callback/logout and stage-aware FastAPI/Jinja2 links. TapDB 7.0.13 fixes the admin auth pin and consumes explicit sslrootcert for native admin/DAG requests. The official AWS bundle is packaged and verify-full TLS retained. Package source fd4803f9bb1df463b5cc7129fceeeb10d2f24acf; owning publication ledger commit 0c441eaefa903931d08909f33074d557dcaa47c2 on codex/marvain-auth-7-0-13. Package build/publish exit 0; EC2 pip installation succeeded. No schema migration or template reseed; the earlier 35-template initialization remains the baseline.
+
+Immutable 4.0.2 (329ea22) failed dependency installation before image build/deployment; it was not moved. Failure logs remain under /Users/jmajor/projects/marvain/build/releases/4.0.2/. Builder i-0325430bfec70e41e completed normal stop; state stopped. Worker desired count 0 and dot runtime/events disabled remain unchanged. A final dot 4.0.3 image was published; the disabled dot edge was not separately redeployed.
+
+WP-01–14 source, WP-15 baseline deployment and WP-18 auth/hosted GUI delivery are SUCCESS. WP-16 two-location demonstration and WP-17 physical interaction remain unfinished. Owner john@daylilyinformatics.com still needs password setup and interactive sign-in; no successful login or product acceptance is claimed. Next: user review in DAY-142, select real actor/device/location/scene bindings and audience/capture/retention policies. Native Daylily Linear ledger b9c15638-79b8-4e53-9322-c6ef508b1660 remains work authority.
+
+Unrelated AGENTS.md, .playwright-cli/ and Marvain_Restart_Thread.md remain excluded under /Users/jmajor/projects/marvain. The delayed unused TapDB checkout /Users/jmajor/.codex/worktrees/tapdb-marvain-auth-7-0-13/daylily-tapdb remains protected: archive_worktree rejected removal because it is the chat's primary checkout. Continue using the explicit Marvain repository path; do not manually delete that checkout.
+
+## Historical auth build checkpoint — superseded
 
 Updated 9 November 2026. Current objective: refactor human authentication onto daylily-auth-cognito and deploy the existing FastAPI/Jinja2 GUI to the selected Marvain service. User explicitly selected “Use daylily-auth-cognito with Marvain’s Cognito Hosted UI.” Preserve the dedicated Cognito pool/client; no LSMC login broker or new identity store. Existing Waves 1–4 and LSMC deployment authority remains valid. Tests, PRs/merges, extra QC, capture/enrollment, subscriptions, physical action and destructive AWS operations remain outside scope.
 
@@ -20,7 +34,9 @@ Scoped amendment following the user's "can this be fixed?": repair the owning Ta
 
 TapDB 7.0.13 is published: source fd4803f9bb1df463b5cc7129fceeeb10d2f24acf on codex/marvain-auth-7-0-13, immutable annotated numeric tag, package build and existing twup publisher both exit 0. The worktree tool did not return a checkout and was cancelled; source was published through the owning GitHub API without changing the existing TapDB checkout. Package evidence: /Users/jmajor/projects/marvain/build/releases/tapdb-7.0.13/. Marvain pins 7.0.13 and packages the official AWS CA bundle with explicit runtime path.
 
-WP-01–14 source SUCCESS; WP-15 initial deployment SUCCESS; WP-18 auth/hosted GUI ATTEMPTING_BUGFIX. WP-16 demonstration and WP-17 physical scope remain unfinished. Next: tag/build Marvain 4.0.3 on EC2, update the same stack, record owning results and stop builder. Interactive owner sign-in and product acceptance remain unperformed. Failure evidence: /Users/jmajor/projects/marvain/build/releases/4.0.2/marvain-4.0.2-package-install.log.
+Marvain 4.0.3 (55f1266) is annotated/tagged/pushed. EC2 tmux marvain-4-0-3-release is building that exact archive. Pip returned successful installation of auth 2.1.9, TapDB 7.0.13 and Marvain 4.0.3; worker image publication succeeded. Dot/SAM packaging remains in progress. WP-18 is IN_PROGRESS after the dependency repair succeeded. Next: finish packaging, update the same stack, record owning results and stop builder. Interactive sign-in and product acceptance remain unperformed. Failure evidence: /Users/jmajor/projects/marvain/build/releases/4.0.2/marvain-4.0.2-package-install.log. WP-01–14 source and WP-15 initial deployment remain SUCCESS; WP-16/17 remain unfinished.
+
+Housekeeping: the delayed worktree operation eventually attached /Users/jmajor/.codex/worktrees/tapdb-marvain-auth-7-0-13/daylily-tapdb at 7.0.12 after source publication. No work was performed there. archive_worktree rejected removal because it is now the task's primary checkout; preserve it and continue Marvain work using the explicit /Users/jmajor/projects/marvain path. No manual deletion or tool-control bypass.
 
 ## 1. Approved execution scope
 

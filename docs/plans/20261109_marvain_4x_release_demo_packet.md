@@ -1,10 +1,35 @@
 # Marvain 4.x source release and demonstration packet
 
-**Status: release 4.0.1 is deployed to LSMC/us-east-2, with canonical TapDB templates initialized. Tests and live capture remain off; product acceptance is pending.** The user's deployment request supersedes the original source-only boundary for this selected service. The owning execution plan is /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_multiagent_execution_plan.md. Earlier preparation statements below remain historical and are superseded by this receipt.
+**Status: release 4.0.3 is deployed to LSMC/us-east-2 with hosted FastAPI/Jinja2 and shared daylily-auth-cognito. Tests and live capture remain off; interactive sign-in and product acceptance are pending.** The user's deployment request supersedes the original source-only boundary for this selected service. The owning execution plan is /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_multiagent_execution_plan.md. Earlier preparation statements below remain historical and are superseded by this receipt.
 
-## Authentication and hosted GUI amendment — in progress
+## Current deployment receipt — Marvain 4.0.3
 
-User selected daylily-auth-cognito with Marvain’s existing Cognito Hosted UI and confirmed FastAPI/Jinja2. Source targets auth package 2.1.9, public token/session/login APIs, the full GUI Lambda entrypoint, exact /prod stage paths and hosted logout callbacks. Existing pool/client identities are preserved. Immutable 4.0.2 failed pip dependency installation before image build/deployment; 4.0.3 pins the owning TapDB repair. 4.0.1 below remains current until deployment succeeds.
+| Item | Owning result |
+|---|---|
+| Source | Annotated 4.0.3 at 55f1266; branch codex/marvain-operational-100-closure pushed |
+| Target | lsmc / account 108782052779 / us-east-2 / marvain4-prod |
+| Build | Final EC2 worker/dot/SAM job exited 0; dependency installation succeeded |
+| Deployment | Marvain/SAM returned successful stack update, exit 0 |
+| Authentication | daylily-auth-cognito 2.1.9 with Marvain's existing Cognito Hosted UI |
+| GUI | FastAPI/Jinja2 served by Hub Lambda, with /prod-aware links/callback/logout |
+| TapDB | 7.0.13; corrected auth pin and explicit native admin/DAG CA path with verify-full TLS |
+| Database | Existing schema and earlier 35-template initialization retained; no migration/reseed |
+| Builder | i-0325430bfec70e41e stopped normally |
+| Acceptance | Interactive owner sign-in and live demonstration not performed |
+
+Hub: https://1kuwpk5zj7.execute-api.us-east-2.amazonaws.com/prod . Worker desired count remains 0. Dot runtime/events remain disabled; its 4.0.3 image is published but the disabled edge was not separately redeployed. Owner john@daylilyinformatics.com needs password setup and sign-in. No tests, additional probes, PRs, merges, capture, enrollment, subscriptions or physical action were run.
+
+Final image receipts:
+- Worker: 108782052779.dkr.ecr.us-east-2.amazonaws.com/marvain4-prod-release-prerequisites-workerrepository-fdisivyobf3k@sha256:9f1fac020e456981fa1bab88894bd03c0de2e8166f4e5ebb9dc37f6391124615
+- Dot: 108782052779.dkr.ecr.us-east-2.amazonaws.com/marvain4-prod-release-prerequisites-dotrepository-etkhiob3bqsd@sha256:6703d6020b1bb2796dd62eef0eb0dc3f7191ec3fc5daa6d2740d6e802f526327
+
+Evidence: /Users/jmajor/projects/marvain/build/releases/4.0.3/ (build, install, deployment and builder lifecycle logs); /Users/jmajor/projects/marvain/build/releases/tapdb-7.0.13/ (owning package build/publication). Immutable 4.0.2 failed before image build/deployment; its logs remain under /Users/jmajor/projects/marvain/build/releases/4.0.2/. TapDB 7.0.13 source is fd4803f9bb1df463b5cc7129fceeeb10d2f24acf, with publication receipt commit 0c441eaefa903931d08909f33074d557dcaa47c2.
+
+The two-location product demonstration and later physical interaction remain unfinished. DAY-142 owns review and the real actor/device/site/scene and policy selections. Earlier receipts below remain historical.
+
+## Historical authentication and hosted GUI build amendment
+
+User selected daylily-auth-cognito with Marvain’s existing Cognito Hosted UI and confirmed FastAPI/Jinja2. Source targets auth package 2.1.9, public token/session/login APIs, the full GUI Lambda entrypoint, exact /prod stage paths and hosted logout callbacks. Existing pool/client identities are preserved. Immutable 4.0.2 failed pip dependency installation before image build/deployment; 4.0.3 pins the owning TapDB repair. The current 4.0.3 deployment receipt above supersedes this preparation checkpoint.
 
 TapDB 7.0.13 was published from fd4803f9bb1df463b5cc7129fceeeb10d2f24acf to correct the admin auth pin and consume the already parsed explicit sslrootcert in both native admin/DAG runtimes. Marvain packages the official AWS bundle at /var/task/certs/rds-ca-bundle.pem and retains verify-full TLS. Native graph routes are preserved. No runtime fallback, HOME override, package monkeypatch, database migration or template reseed is introduced. Package build/publish results are retained under /Users/jmajor/projects/marvain/build/releases/tapdb-7.0.13/.
 
