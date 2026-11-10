@@ -128,7 +128,7 @@ class RecognitionObservation:
     modality: RecognitionModality
     model_id: str
     model_version: str
-    embedding_sha256: str
+    embedding_sha256: str | None
     state: ObservationState
     created_at: datetime
     space_id: str | None = None
@@ -201,7 +201,7 @@ class BiometricProjection:
     consent_id: str
     model_id: str
     model_version: str
-    embedding_sha256: str
+    embedding_sha256: str | None
 
 
 @dataclass(frozen=True)
@@ -294,7 +294,9 @@ class RecognitionLifecycleService:
         created_at: datetime | None = None,
     ) -> RecognitionHypothesis:
         observation = self.repository.get_observation(_required(observation_id, "observation_id"))
-        if observation.state != ObservationState.EMBEDDED:
+        if observation.state != ObservationState.EMBEDDED and not (
+            observation.modality == RecognitionModality.FACE and observation.model_id == "aws-rekognition-comparefaces"
+        ):
             raise RecognitionServiceError("candidate hypotheses require an embedded observation")
         normalized_distance = float(distance)
         if not math.isfinite(normalized_distance) or normalized_distance < 0:
@@ -322,7 +324,9 @@ class RecognitionLifecycleService:
         created_at: datetime | None = None,
     ) -> RecognitionHypothesis:
         observation = self.repository.get_observation(_required(observation_id, "observation_id"))
-        if observation.state != ObservationState.EMBEDDED:
+        if observation.state != ObservationState.EMBEDDED and not (
+            observation.modality == RecognitionModality.FACE and observation.model_id == "aws-rekognition-comparefaces"
+        ):
             raise RecognitionServiceError("no-match hypotheses require an embedded observation")
         hypothesis = RecognitionHypothesis(
             hypothesis_id=str(uuid.uuid4()),

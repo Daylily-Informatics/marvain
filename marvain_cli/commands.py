@@ -341,6 +341,12 @@ def deployment_initialize_prefixes(
         raise ClickException(str(exc)) from exc
 
 
+def deployment_recognition_repository() -> None:
+    """Add recognition image storage to the selected existing prerequisites."""
+    from marvain_cli.deployment import prepare_recognition_repository
+    _json(prepare_recognition_repository(ctx=_load()))
+
+
 def deployment_browser_activation(
     phase: str = Option(..., "--phase", help="prepare, status or bind"),
     agent_id: str | None = Option(None, "--agent-id"),
@@ -1176,6 +1182,7 @@ def register(registry: CommandRegistry, spec: CliSpec) -> None:
             ("initialize-canonical", deployment_initialize_canonical, required_policy(mutates_state=True, long_running=True, supports_json=True)),
             ("initialize-prefixes", deployment_initialize_prefixes, required_policy(mutates_state=True, long_running=True, supports_json=True)),
             ("set-parameter", deployment_set_parameter, required_policy(mutates_state=True, supports_dry_run=True)),
+            ("prepare-recognition-repository", deployment_recognition_repository, required_policy(mutates_state=True, supports_json=True)),
             ("browser-activation", deployment_browser_activation, required_policy(mutates_state=True, supports_json=True)),
             ("set-packaging-bucket", deployment_set_packaging_bucket, required_policy(mutates_state=True, supports_dry_run=True)),
         ],

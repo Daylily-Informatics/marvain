@@ -27,7 +27,7 @@
           <th>Persona</th>
           <th>Status</th>
           <th>Objects</th>
-          <th>Room</th>
+          <th>Room</th><th>Memory</th>
         </tr>
       </thead>
       <tbody>
@@ -41,9 +41,10 @@
           <td><span class="badge badge-info">{{ session.status }}</span></td>
           <td>{{ session.event_count }} events / {{ session.memory_count }} memories / {{ session.action_count }} actions</td>
           <td><code>{{ session.livekit_room or "—" }}</code></td>
+          <td><button class="btn btn-sm" onclick="Marvain.exportSessionMemory('{{ session.session_id }}')">Export private memory</button></td>
         </tr>
         {% else %}
-        <tr><td colspan="8">No sessions yet.</td></tr>
+        <tr><td colspan="9">No sessions yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>

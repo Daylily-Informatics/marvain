@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import subprocess
 import json
 import logging
 import os
@@ -229,7 +230,10 @@ def _try_voice_embedding(audio_bytes: bytes, model: ModelSpec) -> list[float] | 
     except Exception:
         return None
     try:
-        data, sample_rate = sf.read(io.BytesIO(audio_bytes))
+        decoded = subprocess.run(
+            ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", "pipe:0", "-f", "wav", "-ac", "1", "-ar", "16000", "pipe:1"],
+            input=audio_bytes, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        data, sample_rate = sf.read(io.BytesIO(decoded.stdout))
         wav = preprocess_wav(data, source_sr=sample_rate)
         encoder = VoiceEncoder(weights_fpath=model.asset_path)
         embedding = encoder.embed_utterance(wav)
@@ -257,8 +261,8 @@ def _try_face_embedding(image_bytes: bytes, model: ModelSpec) -> list[float] | N
         )
         analyzer.prepare(ctx_id=0, det_size=(640, 640))
         faces = analyzer.get(array)
-        if not faces:
-            return None
+        if len(faces) != 1:
+            raise RecognitionWorkerError("Capture exactly one face per identity sample")
         embedding = faces[0].embedding
         if isinstance(embedding, np.ndarray):
             return embedding.astype("float32").tolist()
@@ -386,7 +390,8 @@ def process_message(
             "idempotency_key": f"recognition-hypothesis:{event_id}",
         }
     else:
-        identify = post(config, f"/v1/identify/{modality}", {"agent_id": agent_id, "embedding": embedding, "k": 1})
+        identify = post(config, f"/v1/identify/{modality}", {"agent_id": agent_id, "embedding": embedding, "k": 1,
+            "model_id": model.model_id, "model_version": model.version})
         best = identify.get("best") if isinstance(identify.get("best"), dict) else None
         if bool(identify.get("matched")) and best and str(best.get("person_id") or "").strip():
             hypothesis_kind = "candidate"

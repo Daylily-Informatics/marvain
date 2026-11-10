@@ -102,7 +102,7 @@ def _observation_from_row(row: Mapping[str, Any]) -> RecognitionObservation:
             modality=RecognitionModality(_text(row.get("modality"))),
             model_id=_text(row.get("model_id")),
             model_version=_text(row.get("model_version")),
-            embedding_sha256=_text(row.get("embedding_sha256")),
+            embedding_sha256=_optional_text(row.get("embedding_sha256")),
             state=ObservationState(_text(row.get("lifecycle_state"))),
             created_at=_datetime(row.get("created_at"), "observation.created_at"),
             space_id=_optional_text(row.get("space_id")),
@@ -192,7 +192,7 @@ class RdsRecognitionRepository:
         modality: RecognitionModality,
         model_id: str,
         model_version: str,
-        embedding_sha256: str,
+        embedding_sha256: str | None,
     ) -> ObservationPreparation:
         rows = self.db.query(
             """
@@ -430,6 +430,15 @@ class RdsRecognitionRepository:
         enqueue_semantic_graph(self.db, transaction_id=self.transaction_id, agent_id=observation.agent_id,
             source_table="recognition_observations", source_id=observation.observation_id,
             objects=objects, links=links, primary_key="observation")
+
+    def store_embedding(self, observation_id: str, embedding: Sequence[float]) -> None:
+        """Keep the worker's vector in the operational projection store for reviewed enrollment."""
+        self.db.execute(
+            """UPDATE recognition_observations SET embedding=CAST(:embedding AS vector)
+               WHERE recognition_observation_id=:id::uuid AND agent_id=:agent::uuid
+                 AND embedding IS NULL""",
+            {"id": observation_id, "agent": self.agent_id,
+             "embedding": json.dumps(list(embedding), allow_nan=False)}, transaction_id=self.transaction_id)
 
     def get_observation(self, observation_id: str) -> RecognitionObservation:
         rows = self.db.query(
@@ -808,6 +817,33 @@ class RdsRecognitionRepository:
                 },
                 transaction_id=self.transaction_id,
             )
+
+            if projection.model_id != "aws-rekognition-comparefaces":
+                table, id_column = ("voiceprints", "voiceprint_id") if projection.modality == RecognitionModality.VOICE else ("faceprints", "faceprint_id")
+                vectors = self.db.query(
+                    """SELECT embedding::text AS embedding FROM recognition_observations
+                       WHERE recognition_observation_id=:id::uuid""",
+                    {"id": observation.observation_id}, transaction_id=self.transaction_id)
+                if not vectors or not vectors[0].get("embedding"):
+                    raise RecognitionConflictError("Enrollment has no stored embedding; capture a new sample")
+                self.db.execute(
+                    f"""INSERT INTO {table}({id_column},agent_id,person_id,embedding,model,consent_id,biometric_projection_id)
+                        VALUES (:id::uuid,:agent::uuid,:person::uuid,CAST(:embedding AS vector),:model,:consent::uuid,:id::uuid)""",
+                    {"id": projection.projection_id, "agent": observation.agent_id, "person": projection.person_id,
+                     "embedding": vectors[0]["embedding"], "model": projection.model_id, "consent": projection.consent_id},
+                    transaction_id=self.transaction_id)
+            ref = GraphObjectRef(key="projection")
+            enqueue_semantic_graph(self.db, transaction_id=self.transaction_id, agent_id=observation.agent_id,
+                source_table="biometric_projections", source_id=projection.projection_id,
+                primary_key="projection",
+                objects=(GraphObjectWrite("projection", TEMPLATE_CODES["actor_association"],
+                    f"biometric-projection:{projection.projection_id}",
+                    {"modality": projection.modality.value, "model_id": projection.model_id,
+                     "model_version": projection.model_version, "embedding_sha256": projection.embedding_sha256}, "active"),),
+                links=(GraphLinkWrite(ref, GraphSourceRef("people", projection.person_id, TEMPLATE_CODES["person"]), "ASSOCIATES_ACTOR"),
+                       GraphLinkWrite(ref, GraphSourceRef("recognition_observations", observation.observation_id, TEMPLATE_CODES["recognition_observation"]), "BASED_ON"),
+                       GraphLinkWrite(ref, GraphSourceRef("recognition_decisions", decision.decision_id, TEMPLATE_CODES["event_sensor"]), "AUTHORIZED_BY"),
+                       GraphLinkWrite(ref, GraphSourceRef("consent_grants", projection.consent_id, TEMPLATE_CODES["consent_grant"]), "CONSENTED_BY")))
 
         if application.presence:
             presence: PresenceAssertion = application.presence

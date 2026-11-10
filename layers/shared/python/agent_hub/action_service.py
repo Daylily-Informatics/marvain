@@ -137,6 +137,11 @@ def prepare_action_request(
     return normalized_payload, merged_scopes
 
 
+def requires_identity_check(required_scopes: list[str]) -> bool:
+    """Human approval of write, communication or control scopes needs corroboration."""
+    return any(scope.rsplit(":", 1)[-1] not in {"read", "list"} for scope in required_scopes)
+
+
 def _determine_initial_decision(
     db: RdsData,
     *,
@@ -161,7 +166,7 @@ def _determine_initial_decision(
             policy_decision_reason=policy.reason,
             approval_reason=policy.reason,
         )
-    if requested_approval_mode == "manual_immediate":
+    if requested_approval_mode == "manual_immediate" and not requires_identity_check(required_scopes):
         return ActionDecision(
             status="approved",
             approval_source="manual",
@@ -444,7 +449,18 @@ def approve_action(
     sqs_client: Any | None = None,
     action_queue_url: str | None = None,
     reason: str = "",
+    identity_check_id: str | None = None,
 ) -> dict[str, Any]:
+    current = load_action(db, action_id)
+    if not current:
+        raise ActionServiceError("action_not_found")
+    if requires_identity_check(current["required_scopes"]):
+        if not identity_check_id or not db.query(
+            """SELECT 1 FROM identity_checks WHERE check_id=:check::uuid AND user_id=:user::uuid
+                AND agent_id=:agent::uuid AND target_id=:target::uuid AND purpose='sensitive_action_approval'
+                AND consumed_at IS NOT NULL AND result='matched' AND expires_at>now()""",
+            {"check": identity_check_id,"user":user_id,"agent":current["agent_id"],"target":action_id}):
+            raise ActionServiceError("identity_check_required", message="Use the browser voice/face check to approve this action")
     rows = db.query(
         """
         UPDATE actions
@@ -480,6 +496,7 @@ def approve_action(
         entry={
             "action_id": action_id,
             "decision": "approved",
+            "identity_check_id": identity_check_id,
             "by_user_id": user_id,
             "reason": reason,
         },

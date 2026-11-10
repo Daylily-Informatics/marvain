@@ -2457,47 +2457,10 @@ def v1_update_consent(
         if ctype not in valid_types:
             raise HTTPException(status_code=400, detail=f"Invalid consent type: {ctype!r}")
 
-    from datetime import datetime, timezone
-
-    now = datetime.now(timezone.utc).isoformat()
-    tx = _get_db().begin()
-    try:
-        # Revoke all active grants and replace with the provided set.
-        _get_db().execute(
-            "UPDATE consent_grants SET revoked_at = :now::timestamptz WHERE person_id = :person_id::uuid AND revoked_at IS NULL",
-            {"person_id": person_id, "now": now},
-            transaction_id=tx,
-        )
-
-        for c in body.consents or []:
-            consent_id = str(uuid.uuid4())
-            expires_at = _parse_consent_expires_at(c.expires_at)
-            _get_db().execute(
-                """
-                INSERT INTO consent_grants(consent_id, agent_id, person_id, consent_type, expires_at)
-                VALUES(
-                  :consent_id::uuid,
-                  :agent_id::uuid,
-                  :person_id::uuid,
-                  :consent_type,
-                  CASE WHEN :expires_at IS NULL THEN NULL ELSE :expires_at::timestamptz END
-                )
-                """,
-                {
-                    "consent_id": consent_id,
-                    "agent_id": agent_id,
-                    "person_id": person_id,
-                    "consent_type": str(c.type).strip().lower(),
-                    "expires_at": expires_at.isoformat() if expires_at else None,
-                },
-                transaction_id=tx,
-            )
-        _get_db().commit(tx)
-    except Exception:
-        _get_db().rollback(tx)
-        raise
-
-    return {"ok": True, "person_id": person_id}
+    from recognition_consent import update_consents
+    return update_consents(_get_db(),agent_id=agent_id,person_id=person_id,user_id=user.user_id,
+        consents=[(str(c.type).strip().lower(),
+                   _parse_consent_expires_at(c.expires_at).isoformat() if c.expires_at else None) for c in body.consents])
 
 
 class LinkPersonAccountV1In(BaseModel):
@@ -2688,236 +2651,33 @@ def _raise_recognition_http_error(exc: Exception) -> None:
     raise exc
 
 
-class VoiceprintCreateIn(BaseModel):
-    embedding: list[float] = Field(..., min_length=256, max_length=256)
-    model: str = Field(default="resemblyzer")
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class FaceprintCreateIn(BaseModel):
-    embedding: list[float] = Field(..., min_length=512, max_length=512)
-    model: str = Field(default="insightface-arcface")
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-@api_app.post("/v1/people/{person_id}/voiceprints")
-def v1_create_voiceprint(
-    person_id: str, body: VoiceprintCreateIn, device: AuthenticatedDevice = Depends(get_device)
-) -> dict[str, Any]:
-    require_scope(device, "biometrics:write")
-    rows = _get_db().query(
-        "SELECT agent_id::TEXT as agent_id FROM people WHERE person_id = :person_id::uuid LIMIT 1",
-        {"person_id": person_id},
-    )
-    if not rows:
-        raise HTTPException(status_code=404, detail="Person not found")
-    agent_id = str(rows[0].get("agent_id") or "")
-    _require_device_agent_access(device=device, agent_id=agent_id)
-    _require_person_consent(agent_id=agent_id, person_id=person_id, consent_type="voice")
-
-    voiceprint_id = str(uuid.uuid4())
-    _get_db().execute(
-        """
-        INSERT INTO voiceprints(voiceprint_id, agent_id, person_id, embedding, model, metadata)
-        VALUES(
-          :voiceprint_id::uuid,
-          :agent_id::uuid,
-          :person_id::uuid,
-          CAST(:embedding AS vector),
-          :model,
-          :metadata::jsonb
-        )
-        """,
-        {
-            "voiceprint_id": voiceprint_id,
-            "agent_id": agent_id,
-            "person_id": person_id,
-            "embedding": _vector_literal(body.embedding, 256),
-            "model": str(body.model or "resemblyzer").strip(),
-            "metadata": json.dumps(body.metadata or {}),
-        },
-    )
-    return {"ok": True, "voiceprint_id": voiceprint_id}
-
-
-@api_app.post("/v1/people/{person_id}/faceprints")
-def v1_create_faceprint(
-    person_id: str, body: FaceprintCreateIn, device: AuthenticatedDevice = Depends(get_device)
-) -> dict[str, Any]:
-    require_scope(device, "biometrics:write")
-    rows = _get_db().query(
-        "SELECT agent_id::TEXT as agent_id FROM people WHERE person_id = :person_id::uuid LIMIT 1",
-        {"person_id": person_id},
-    )
-    if not rows:
-        raise HTTPException(status_code=404, detail="Person not found")
-    agent_id = str(rows[0].get("agent_id") or "")
-    _require_device_agent_access(device=device, agent_id=agent_id)
-    _require_person_consent(agent_id=agent_id, person_id=person_id, consent_type="face")
-
-    faceprint_id = str(uuid.uuid4())
-    _get_db().execute(
-        """
-        INSERT INTO faceprints(faceprint_id, agent_id, person_id, embedding, model, metadata)
-        VALUES(
-          :faceprint_id::uuid,
-          :agent_id::uuid,
-          :person_id::uuid,
-          CAST(:embedding AS vector),
-          :model,
-          :metadata::jsonb
-        )
-        """,
-        {
-            "faceprint_id": faceprint_id,
-            "agent_id": agent_id,
-            "person_id": person_id,
-            "embedding": _vector_literal(body.embedding, 512),
-            "model": str(body.model or "insightface-arcface").strip(),
-            "metadata": json.dumps(body.metadata or {}),
-        },
-    )
-    return {"ok": True, "faceprint_id": faceprint_id}
-
-
-@api_app.delete("/v1/voiceprints/{voiceprint_id}")
-def v1_revoke_voiceprint(voiceprint_id: str, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
-    require_scope(device, "biometrics:write")
-    rows = _get_db().query(
-        "SELECT agent_id::TEXT as agent_id FROM voiceprints WHERE voiceprint_id = :id::uuid LIMIT 1",
-        {"id": voiceprint_id},
-    )
-    if not rows:
-        raise HTTPException(status_code=404, detail="Voiceprint not found")
-    agent_id = str(rows[0].get("agent_id") or "")
-    _require_device_agent_access(device=device, agent_id=agent_id)
-    _get_db().execute(
-        "UPDATE voiceprints SET revoked_at = now() WHERE voiceprint_id = :id::uuid",
-        {"id": voiceprint_id},
-    )
-    return {"ok": True, "voiceprint_id": voiceprint_id, "revoked": True}
-
-
-@api_app.delete("/v1/faceprints/{faceprint_id}")
-def v1_revoke_faceprint(faceprint_id: str, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
-    require_scope(device, "biometrics:write")
-    rows = _get_db().query(
-        "SELECT agent_id::TEXT as agent_id FROM faceprints WHERE faceprint_id = :id::uuid LIMIT 1",
-        {"id": faceprint_id},
-    )
-    if not rows:
-        raise HTTPException(status_code=404, detail="Faceprint not found")
-    agent_id = str(rows[0].get("agent_id") or "")
-    _require_device_agent_access(device=device, agent_id=agent_id)
-    _get_db().execute(
-        "UPDATE faceprints SET revoked_at = now() WHERE faceprint_id = :id::uuid",
-        {"id": faceprint_id},
-    )
-    return {"ok": True, "faceprint_id": faceprint_id, "revoked": True}
-
-
 class IdentifyEmbeddingIn(BaseModel):
     agent_id: str
+    model_id: str = Field(min_length=1)
+    model_version: str = Field(min_length=1)
     embedding: list[float]
     k: int = Field(default=1, ge=1, le=10)
 
 
+def _identify_for_device(body: IdentifyEmbeddingIn, device: AuthenticatedDevice, modality: str) -> dict[str, Any]:
+    from agent_hub.recognition_matching import identify_embedding
+    require_scope(device, "biometrics:read")
+    _require_device_agent_access(device=device, agent_id=body.agent_id)
+    try:
+        return identify_embedding(_get_db(), agent_id=body.agent_id, modality=modality,
+            model_id=body.model_id, model_version=body.model_version, embedding=body.embedding, k=body.k)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @api_app.post("/v1/identify/voice")
 def v1_identify_voice(body: IdentifyEmbeddingIn, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
-    require_scope(device, "biometrics:read")
-    agent_id = str(body.agent_id or "").strip()
-    if not agent_id:
-        raise HTTPException(status_code=400, detail="agent_id is required")
-    _require_device_agent_access(device=device, agent_id=agent_id)
-
-    thr = float(os.getenv("VOICE_MATCH_THRESHOLD", "0.35"))
-    q = _vector_literal([float(x) for x in (body.embedding or [])], 256)
-
-    rows = _get_db().query(
-        """
-        SELECT vp.person_id::TEXT as person_id,
-               p.display_name,
-               (vp.embedding <=> CAST(:q AS vector))::DOUBLE PRECISION as distance
-        FROM voiceprints vp
-        JOIN people p ON p.person_id = vp.person_id
-        WHERE vp.agent_id = :agent_id::uuid
-          AND vp.revoked_at IS NULL
-          AND EXISTS (
-            SELECT 1 FROM consent_grants cg
-            WHERE cg.agent_id = vp.agent_id
-              AND cg.person_id = vp.person_id
-              AND cg.consent_type IN ('voice', 'global')
-              AND cg.revoked_at IS NULL
-              AND (cg.expires_at IS NULL OR cg.expires_at > now())
-          )
-        ORDER BY vp.embedding <=> CAST(:q AS vector)
-        LIMIT :limit
-        """,
-        {"agent_id": agent_id, "q": q, "limit": int(body.k or 1)},
-    )
-    candidates: list[dict[str, Any]] = []
-    for r in rows:
-        d = float(r.get("distance") or 0.0)
-        candidates.append(
-            {
-                "person_id": r.get("person_id"),
-                "display_name": r.get("display_name"),
-                "distance": d,
-                "confidence": max(0.0, min(1.0, 1.0 - d)),
-            }
-        )
-    best = candidates[0] if candidates else None
-    matched = bool(best) and float(best.get("distance") or 999) <= thr
-    return {"matched": matched, "threshold": thr, "best": best, "candidates": candidates}
+    return _identify_for_device(body, device, "voice")
 
 
 @api_app.post("/v1/identify/face")
 def v1_identify_face(body: IdentifyEmbeddingIn, device: AuthenticatedDevice = Depends(get_device)) -> dict[str, Any]:
-    require_scope(device, "biometrics:read")
-    agent_id = str(body.agent_id or "").strip()
-    if not agent_id:
-        raise HTTPException(status_code=400, detail="agent_id is required")
-    _require_device_agent_access(device=device, agent_id=agent_id)
-
-    thr = float(os.getenv("FACE_MATCH_THRESHOLD", "0.50"))
-    q = _vector_literal([float(x) for x in (body.embedding or [])], 512)
-
-    rows = _get_db().query(
-        """
-        SELECT fp.person_id::TEXT as person_id,
-               p.display_name,
-               (fp.embedding <=> CAST(:q AS vector))::DOUBLE PRECISION as distance
-        FROM faceprints fp
-        JOIN people p ON p.person_id = fp.person_id
-        WHERE fp.agent_id = :agent_id::uuid
-          AND fp.revoked_at IS NULL
-          AND EXISTS (
-            SELECT 1 FROM consent_grants cg
-            WHERE cg.agent_id = fp.agent_id
-              AND cg.person_id = fp.person_id
-              AND cg.consent_type IN ('face', 'global')
-              AND cg.revoked_at IS NULL
-              AND (cg.expires_at IS NULL OR cg.expires_at > now())
-          )
-        ORDER BY fp.embedding <=> CAST(:q AS vector)
-        LIMIT :limit
-        """,
-        {"agent_id": agent_id, "q": q, "limit": int(body.k or 1)},
-    )
-    candidates: list[dict[str, Any]] = []
-    for r in rows:
-        d = float(r.get("distance") or 0.0)
-        candidates.append(
-            {
-                "person_id": r.get("person_id"),
-                "display_name": r.get("display_name"),
-                "distance": d,
-                "confidence": max(0.0, min(1.0, 1.0 - d)),
-            }
-        )
-    best = candidates[0] if candidates else None
-    matched = bool(best) and float(best.get("distance") or 999) <= thr
-    return {"matched": matched, "threshold": thr, "best": best, "candidates": candidates}
+    return _identify_for_device(body, device, "face")
 
 
 @api_app.post("/v1/admin/spaces/{space_id}/privacy", dependencies=[Depends(require_admin)])
@@ -4760,6 +4520,8 @@ def create_recognition_observation(
                 model_version=body.model_version,
                 embedding=body.embedding,
             )
+        _vector_literal(body.embedding, 256 if modality == RecognitionModality.VOICE else 512)
+        repository.store_embedding(observation.observation_id, body.embedding)
         repository.commit()
     except Exception as exc:
         if repository is not None:

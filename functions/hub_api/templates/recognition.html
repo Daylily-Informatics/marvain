@@ -173,13 +173,7 @@
               <span class="detail-value">{{ observation.created_at or 'Unknown' }}</span>
             </div>
           </div>
-          {% if observation.lifecycle_state not in ['matched', 'no_match', 'expired'] %}
-          <div class="mt-md">
-            <button type="button" class="btn btn-sm btn-outline" onclick="markObservationNoMatch('{{ observation.observation_id }}')">
-              <i class="fas fa-user-slash"></i> No Match
-            </button>
-          </div>
-          {% endif %}
+
         </article>
         {% endfor %}
       </div>
@@ -244,8 +238,8 @@
           </div>
           {% if hypothesis.decision == 'proposed' %}
           <div class="mt-md" style="display:flex; gap: var(--spacing-sm); flex-wrap: wrap;">
-            <button type="button" class="btn btn-sm btn-primary" onclick="acceptHypothesis('{{ hypothesis.hypothesis_id }}')">
-              <i class="fas fa-check"></i> Accept
+            <button type="button" class="btn btn-sm btn-primary" onclick="acceptHypothesis('{{ hypothesis.hypothesis_id }}', {{ 'true' if hypothesis.requested_projection else 'false' }})">
+              <i class="fas fa-check"></i> {{ 'Approve enrollment' if hypothesis.requested_projection else 'Accept identity' }}
             </button>
             <button type="button" class="btn btn-sm btn-outline" onclick="rejectHypothesis('{{ hypothesis.hypothesis_id }}')">
               <i class="fas fa-xmark"></i> Reject
@@ -544,13 +538,13 @@ function filterRecognitionRows() {
   });
 }
 
-async function postRecognitionDecision(url, successMessage) {
+async function postRecognitionDecision(url, successMessage, body = {}) {
   try {
     Marvain.showLoading('Updating recognition record...');
     const response = await fetch(Marvain.path(url), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({})
+      body: JSON.stringify(body)
     });
     if (!response.ok) {
       const err = await response.json();
@@ -565,16 +559,15 @@ async function postRecognitionDecision(url, successMessage) {
   }
 }
 
-function acceptHypothesis(hypothesisId) {
-  postRecognitionDecision(`/api/recognition/hypotheses/${hypothesisId}/accept`, 'Hypothesis accepted');
+function acceptHypothesis(hypothesisId, enroll) {
+  if (!confirm(enroll ? 'Enroll this sample as the named person? Confirm you know who supplied it.' : 'Accept this identity hypothesis?')) return;
+  postRecognitionDecision(`/api/recognition/hypotheses/${hypothesisId}/review`, 'Hypothesis accepted',
+    {decision: 'accepted', reason: 'Reviewed by signed-in operator', create_biometric_projection: enroll, assert_presence: false});
 }
 
 function rejectHypothesis(hypothesisId) {
-  postRecognitionDecision(`/api/recognition/hypotheses/${hypothesisId}/reject`, 'Hypothesis rejected');
-}
-
-function markObservationNoMatch(observationId) {
-  postRecognitionDecision(`/api/recognition/observations/${observationId}/no-match`, 'Observation marked no-match');
+  postRecognitionDecision(`/api/recognition/hypotheses/${hypothesisId}/review`, 'Hypothesis rejected',
+    {decision: 'rejected', reason: 'Rejected by signed-in operator'});
 }
 
 function revokeBiometricProjection(projectionId) {

@@ -79,6 +79,10 @@ Resources:
     Type: AWS::ECR::Repository
     Properties:
       ImageTagMutability: IMMUTABLE
+  RecognitionRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      ImageTagMutability: IMMUTABLE
   DotRepository:
     Type: AWS::ECR::Repository
     Properties:
@@ -121,7 +125,7 @@ Resources:
                   - ecr:UploadLayerPart
                   - ecr:CompleteLayerUpload
                   - ecr:PutImage
-                Resource: [!GetAtt WorkerRepository.Arn, !GetAtt DotRepository.Arn]
+                Resource: [!GetAtt WorkerRepository.Arn, !GetAtt DotRepository.Arn, !GetAtt RecognitionRepository.Arn]
               - Effect: Allow
                 Action: s3:GetObject
                 Resource: !Sub '${SourceBucket.Arn}/*'
@@ -153,3 +157,5 @@ Outputs:
   SourceBucket: {Value: !Ref SourceBucket}
   WorkerRepositoryUri: {Value: !GetAtt WorkerRepository.RepositoryUri}
   DotRepositoryUri: {Value: !GetAtt DotRepository.RepositoryUri}
+
+  RecognitionRepositoryUri: {Value: !GetAtt RecognitionRepository.RepositoryUri}

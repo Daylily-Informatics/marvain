@@ -1,0 +1,35 @@
+{
+  "schema": "marvain.acceptance.journey.v1",
+  "description": "The actual Chrome-to-Marvain journey; extend only when a feature has a user acceptance receipt.",
+  "proven_features": [
+    {
+      "id": "chrome_voice_reply",
+      "accepted_on": "2026-11-09",
+      "acceptance": "Connected and Marvain responds",
+      "hub_release": "4.0.7",
+      "responder_release": "4.0.3",
+      "steps": [
+        "Deploy the selected tagged Hub to the existing Ohio stack through Marvain CLI.",
+        "Sign in through Marvain Cognito Hosted UI using the allowed Google account.",
+        "Select the existing INITagent and laptop space, with the owner linked to John.",
+        "Prepare the private retain-all browser binding and canonical scene/session using the owning browser-activation operation.",
+        "Activate the AWS responder and use its owning service result.",
+        "Open Live Session in Chrome and select laptop.",
+        "Click Join, allow microphone access, and say Hello Marvain.",
+        "Hear a spoken Marvain response, then click Leave."
+      ],
+      "automated_entrypoint": "test_marvain_journey.py::test_chrome_voice_reply"
+    }
+  ],
+  "pending_features": [
+    {"id": "voice_enrollment", "status": "not_accepted"},
+    {"id": "rekognition_face_enrollment", "status": "not_accepted"},
+    {"id": "either_modality_identifies_same_person", "status": "not_accepted"},
+    {"id": "conflicting_modalities_block_sensitive_operation", "status": "not_accepted"},
+    {"id": "private_memory_export_identity_check", "status": "not_accepted"},
+    {"id": "sensitive_action_approval_identity_check", "status": "not_accepted"},
+    {"id": "consent_and_enrollment_revocation", "status": "not_accepted"},
+    {"id": "dog_identity", "status": "not_accepted"},
+    {"id": "two_location_recall", "status": "not_accepted"}
+  ]
+}

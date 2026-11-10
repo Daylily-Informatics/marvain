@@ -66,6 +66,8 @@ from agent_hub.session_tokens import mint_ws_session_token
 
 # Import the API app and its shared state
 from api_app import (
+    RecognitionReviewIn,
+    review_recognition_hypothesis,
     LiveKitTokenIn,
     LiveKitTokenOut,
     _get_db,
@@ -3776,26 +3778,6 @@ class ConsentUpdate(BaseModel):
     consents: list[ConsentGrant] = Field(default_factory=list, description="List of consent grants")
 
 
-class RecognitionEnrollmentCreate(BaseModel):
-    """Consent-gated recognition enrollment request from the GUI."""
-
-    person_id: str
-    modality: str = Field(..., description="voice or face")
-    artifact_bucket: str | None = None
-    artifact_key: str | None = None
-    artifact_uri: str | None = None
-    content_type: str | None = None
-    embedding: list[float] | None = None
-    model: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class RecognitionDecisionUpdate(BaseModel):
-    """Optional reason supplied when deciding a recognition hypothesis."""
-
-    reason: str | None = None
-
-
 class BiometricProjectionRevoke(BaseModel):
     """Optional reason supplied when revoking a biometric projection."""
 
@@ -3833,23 +3815,6 @@ def _require_active_recognition_consent(db: Any, *, agent_id: str, person_id: st
     return consent
 
 
-def _recognition_vector_literal(values: list[float], expected_dim: int) -> str:
-    if len(values) != expected_dim:
-        raise HTTPException(
-            status_code=400, detail=f"Invalid embedding dim (expected {expected_dim}, got {len(values)})"
-        )
-    return "[" + ",".join(f"{float(x):.6f}" for x in values) + "]"
-
-
-def _projection_table_for_modality(modality: str) -> tuple[str, str, int]:
-    normalized = str(modality or "").strip().lower()
-    if normalized == "voice":
-        return "voiceprints", "voiceprint_id", 256
-    if normalized == "face":
-        return "faceprints", "faceprint_id", 512
-    raise HTTPException(status_code=400, detail="modality must be voice or face")
-
-
 @app.post("/api/people", name="api_create_person")
 def api_create_person(request: Request, body: PersonCreate) -> PersonResponse:
     """Create a new person."""
@@ -3863,22 +3828,19 @@ def api_create_person(request: Request, body: PersonCreate) -> PersonResponse:
     if not check_agent_permission(db, user_id=user.user_id, agent_id=body.agent_id, required_role="admin"):
         raise HTTPException(status_code=403, detail="Requires admin permission on the agent")
 
+    from agent_hub.semantic_outbox import enqueue_semantic_record
+    from agent_hub.semantic_tapdb import TEMPLATE_CODES
     person_id = str(uuid.uuid4())
+    tx = db.begin()
     try:
-        db.execute(
-            """
-            INSERT INTO people (person_id, agent_id, display_name)
-            VALUES (:person_id::uuid, :agent_id::uuid, :display_name)
-        """,
-            {
-                "person_id": person_id,
-                "agent_id": body.agent_id,
-                "display_name": body.display_name,
-            },
-        )
-    except Exception as e:
-        logger.error(f"Failed to create person: {e}")
-        raise HTTPException(status_code=500, detail="Failed to create person")
+        db.execute("INSERT INTO people(person_id,agent_id,display_name) VALUES (:id::uuid,:agent::uuid,:name)",
+            {"id":person_id,"agent":body.agent_id,"name":body.display_name},transaction_id=tx)
+        enqueue_semantic_record(db,transaction_id=tx,agent_id=body.agent_id,source_table="people",source_id=person_id,
+            target_template_code=TEMPLATE_CODES["person"],name=body.display_name,properties={"display_name":body.display_name},lifecycle_state="active")
+        db.commit(tx)
+    except Exception:
+        db.rollback(tx)
+        raise
 
     return PersonResponse(
         person_id=person_id,
@@ -3912,43 +3874,14 @@ def api_update_consent(request: Request, person_id: str, body: ConsentUpdate) ->
 
     agent_id = str(rows[0].get("agent_id", ""))
 
-    try:
-        from datetime import datetime, timezone
-
-        # First, revoke all existing active consents for this person
-        db.execute(
-            """
-            UPDATE consent_grants SET revoked_at = :now::timestamptz
-            WHERE person_id = :person_id::uuid AND revoked_at IS NULL
-        """,
-            {"person_id": person_id, "now": datetime.now(timezone.utc).isoformat()},
-        )
-
-        # Then create new consent grants
-        for consent in body.consents:
-            consent_id = str(uuid.uuid4())
-            expires_at = _parse_expires_at(consent.expires_at)
-
-            db.execute(
-                """
-                INSERT INTO consent_grants (consent_id, agent_id, person_id, consent_type, expires_at)
-                VALUES (:consent_id::uuid, :agent_id::uuid, :person_id::uuid, :consent_type,
-                        CASE WHEN :expires_at IS NULL THEN NULL ELSE :expires_at::timestamptz END)
-            """,
-                {
-                    "consent_id": consent_id,
-                    "agent_id": agent_id,
-                    "person_id": person_id,
-                    "consent_type": str(consent.type or "").strip().lower(),
-                    "expires_at": expires_at.isoformat() if expires_at else None,
-                },
-            )
-
-    except Exception as e:
-        logger.error(f"Failed to update consent: {e}")
-        raise HTTPException(status_code=500, detail="Failed to update consent")
-
-    return {"message": "Consent updated", "person_id": person_id}
+    from recognition_consent import update_consents
+    consents=[]
+    for c in body.consents:
+        kind=str(c.type or "").strip().lower()
+        if kind not in {"voice","face","recording","global"}: raise HTTPException(400,"Invalid consent type")
+        expiry=_parse_expires_at(c.expires_at)
+        consents.append((kind,expiry.isoformat() if expiry else None))
+    return update_consents(db,agent_id=agent_id,person_id=person_id,user_id=user.user_id,consents=consents)
 
 
 @app.get("/api/people/{person_id}/consent", name="api_get_consent")
@@ -4010,341 +3943,72 @@ def api_get_consent(request: Request, person_id: str) -> JSONResponse:
     return resp
 
 
-@app.post("/api/recognition/enrollments", name="api_recognition_create_enrollment")
-def api_recognition_create_enrollment(request: Request, body: RecognitionEnrollmentCreate) -> dict[str, Any]:
-    """Create a consent-gated enrollment observation and optional biometric projection."""
+class IdentityCheckCreate(BaseModel):
+    agent_id: str
+    space_id: str
+    purpose: str
+    target_id: str
+    modalities: list[str]
+
+
+@app.post("/api/identity-checks", name="api_identity_check_create")
+def api_identity_check_create(request: Request, body: IdentityCheckCreate) -> dict:
+    from recognition_browser import create_check
+    user = _gui_get_user(request)
+    if not user: raise HTTPException(401, "Not authenticated")
+    return create_check(_get_db(), request=request, user=user, **body.model_dump())
+
+
+@app.post("/api/recognition/captures", name="api_recognition_capture")
+async def api_recognition_capture(request: Request) -> dict:
+    from recognition_browser import capture
+    user = _gui_get_user(request)
+    if not user: raise HTTPException(401, "Not authenticated")
+    return await capture(_get_db(), request=request, user=user, cfg=_cfg, s3=_get_s3(), sqs=_get_sqs())
+
+
+def _require_identity_check(*, request, user, agent_id, purpose, target_id):
+    from recognition_browser import consume_check
+    check_id = request.headers.get("X-Marvain-Identity-Check")
+    if not check_id:
+        spaces = list_spaces_for_user(_get_db(), user_id=user.user_id)
+        raise HTTPException(428, {"code":"identity_check_required","agent_id":agent_id,
+            "purpose":purpose,"target_id":target_id,
+            "spaces":[{"space_id":s.space_id,"name":s.name} for s in spaces if s.agent_id==agent_id]})
+    return consume_check(_get_db(), request=request, user=user, check_id=check_id,purpose=purpose,target_id=target_id)
+
+
+@app.post("/api/sessions/{session_id}/memory-export", name="api_private_memory_export")
+def api_private_memory_export(request: Request, session_id: str) -> Response:
+    from datetime import datetime, timezone
+    from dataclasses import asdict
+    from api_app import _scene_for_session
+    from agent_hub.semantic_tapdb import DaylilyTapdbSemanticStore
+    from agent_hub.semantic_lifecycle import MarvainSemanticLifecycle
+    from agent_hub.v4_runtime import resolve_human
+    user = _gui_get_user(request)
+    if not user: raise HTTPException(401,"Not authenticated")
+    rows = _get_db().query("SELECT agent_id::text AS agent FROM sessions WHERE session_id=:id::uuid",{"id":session_id})
+    if not rows: raise HTTPException(404,"Session not found")
+    agent_id = rows[0]["agent"]
+    _require_gui_admin_for_agent(_get_db(),user=user,agent_id=agent_id)
+    _require_identity_check(request=request,user=user,agent_id=agent_id,purpose="private_memory_export",target_id=session_id)
+    scene, session = _scene_for_session(session_id=session_id,agent_id=agent_id)
+    store = DaylilyTapdbSemanticStore.from_environment()
+    _, principal = resolve_human(store=store,user_id=user.user_id,subject=user.cognito_sub)
+    now = datetime.now(timezone.utc)
+    export = MarvainSemanticLifecycle(store).prepare_scoped_export(scene_semantic_id=scene,session_semantic_id=session,
+        authenticated_principal_id=principal,access_at=now,as_of=now)
+    return Response(json.dumps(asdict(export),default=str),media_type="application/json",
+        headers={"Content-Disposition":f'attachment; filename="marvain-memory-{session_id}.json"',"Cache-Control":"no-store"})
+
+
+@app.post("/api/recognition/hypotheses/{hypothesis_id}/review", name="api_recognition_review")
+def api_recognition_review(request: Request, hypothesis_id: str, body: RecognitionReviewIn) -> dict[str, Any]:
     user = _gui_get_user(request)
     if not user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    modality = str(body.modality or "").strip().lower()
-    table_name, id_column, expected_dim = _projection_table_for_modality(modality)
-    if body.embedding is None and not (body.artifact_key or body.artifact_uri):
-        raise HTTPException(status_code=400, detail="Enrollment requires an artifact or embedding")
-
-    db = _get_db()
-    person_rows = db.query(
-        """
-        SELECT person_id::TEXT AS person_id, agent_id::TEXT AS agent_id
-        FROM people
-        WHERE person_id = :person_id::uuid
-        LIMIT 1
-        """,
-        {"person_id": body.person_id},
-    )
-    if not person_rows:
-        raise HTTPException(status_code=404, detail="Person not found")
-
-    agent_id = str(person_rows[0].get("agent_id") or "")
-    _require_gui_admin_for_agent(db, user=user, agent_id=agent_id)
-    consent = _require_active_recognition_consent(db, agent_id=agent_id, person_id=body.person_id, modality=modality)
-    consent_id = str(consent.get("consent_id") or "")
-
-    artifact_id: str | None = None
-    if body.artifact_key or body.artifact_uri:
-        artifact_id = str(uuid.uuid4())
-        uri = body.artifact_uri or (
-            f"s3://{body.artifact_bucket}/{body.artifact_key}" if body.artifact_bucket and body.artifact_key else None
-        )
-        db.execute(
-            """
-            INSERT INTO artifact_references (
-              artifact_id, agent_id, bucket, object_key, uri, media_type, lifecycle_state
-            )
-            VALUES (
-              :artifact_id::uuid, :agent_id::uuid, :bucket, :object_key, :uri, :media_type, 'available'
-            )
-            """,
-            {
-                "artifact_id": artifact_id,
-                "agent_id": agent_id,
-                "bucket": body.artifact_bucket,
-                "object_key": body.artifact_key,
-                "uri": uri,
-                "media_type": body.content_type or ("audio/webm" if modality == "voice" else "image/jpeg"),
-            },
-        )
-
-    observation_id = str(uuid.uuid4())
-    db.execute(
-        """
-        INSERT INTO recognition_observations (
-          recognition_observation_id, agent_id, artifact_id, modality, lifecycle_state, model
-        )
-        VALUES (
-          :observation_id::uuid, :agent_id::uuid,
-          CASE WHEN :artifact_id IS NULL THEN NULL ELSE :artifact_id::uuid END,
-          :modality, :lifecycle_state, :model
-        )
-        """,
-        {
-            "observation_id": observation_id,
-            "agent_id": agent_id,
-            "artifact_id": artifact_id,
-            "modality": modality,
-            "lifecycle_state": "embedded" if body.embedding is not None else "observed",
-            "model": body.model,
-        },
-    )
-
-    hypothesis_id = str(uuid.uuid4())
-    db.execute(
-        """
-        INSERT INTO recognition_hypotheses (
-          identity_hypothesis_id, recognition_observation_id, candidate_person_id, consent_id,
-          confidence, decision, reason, decided_at
-        )
-        VALUES (
-          :hypothesis_id::uuid, :observation_id::uuid, :person_id::uuid, :consent_id::uuid,
-          :confidence, 'accepted', 'consented enrollment', now()
-        )
-        """,
-        {
-            "hypothesis_id": hypothesis_id,
-            "observation_id": observation_id,
-            "person_id": body.person_id,
-            "consent_id": consent_id,
-            "confidence": 1.0,
-        },
-    )
-
-    projection_id: str | None = None
-    if body.embedding is not None:
-        projection_id = str(uuid.uuid4())
-        db.execute(
-            f"""
-            INSERT INTO {table_name} (
-              {id_column}, agent_id, person_id, embedding, model, consent_id, metadata
-            )
-            VALUES (
-              :projection_id::uuid, :agent_id::uuid, :person_id::uuid,
-              CAST(:embedding AS vector), :model, :consent_id::uuid, :metadata::jsonb
-            )
-            """,
-            {
-                "projection_id": projection_id,
-                "agent_id": agent_id,
-                "person_id": body.person_id,
-                "embedding": _recognition_vector_literal(body.embedding, expected_dim),
-                "model": body.model or ("resemblyzer" if modality == "voice" else "insightface-arcface"),
-                "consent_id": consent_id,
-                "metadata": json.dumps(body.metadata or {}),
-            },
-        )
-
-    return {
-        "ok": True,
-        "person_id": body.person_id,
-        "agent_id": agent_id,
-        "modality": modality,
-        "consent_id": consent_id,
-        "artifact_id": artifact_id,
-        "observation_id": observation_id,
-        "hypothesis_id": hypothesis_id,
-        "projection_id": projection_id,
-    }
-
-
-@app.post("/api/recognition/hypotheses/{hypothesis_id}/accept", name="api_recognition_accept_hypothesis")
-def api_recognition_accept_hypothesis(
-    request: Request, hypothesis_id: str, body: RecognitionDecisionUpdate | None = None
-) -> dict[str, Any]:
-    """Accept a proposed recognition hypothesis with active consent."""
-    user = _gui_get_user(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    db = _get_db()
-    rows = db.query(
-        """
-        SELECT rh.identity_hypothesis_id::TEXT AS hypothesis_id,
-               rh.recognition_observation_id::TEXT AS observation_id,
-               rh.candidate_person_id::TEXT AS person_id,
-               rh.confidence,
-               ro.agent_id::TEXT AS agent_id,
-               ro.space_id::TEXT AS space_id,
-               ro.location_id::TEXT AS location_id,
-               ro.modality
-        FROM recognition_hypotheses rh
-        JOIN recognition_observations ro ON ro.recognition_observation_id = rh.recognition_observation_id
-        WHERE rh.identity_hypothesis_id = :hypothesis_id::uuid
-        LIMIT 1
-        """,
-        {"hypothesis_id": hypothesis_id},
-    )
-    if not rows:
-        raise HTTPException(status_code=404, detail="Hypothesis not found")
-
-    row = rows[0]
-    agent_id = str(row.get("agent_id") or "")
-    person_id = str(row.get("person_id") or "")
-    modality = str(row.get("modality") or "").strip().lower()
-    if not person_id:
-        raise HTTPException(status_code=400, detail="No candidate person to accept")
-
-    _require_gui_admin_for_agent(db, user=user, agent_id=agent_id)
-    consent = _require_active_recognition_consent(db, agent_id=agent_id, person_id=person_id, modality=modality)
-    consent_id = str(consent.get("consent_id") or "")
-    reason = (body.reason if body else None) or "accepted by operator"
-
-    db.execute(
-        """
-        UPDATE recognition_hypotheses
-        SET decision = 'accepted', consent_id = :consent_id::uuid, reason = :reason, decided_at = now()
-        WHERE identity_hypothesis_id = :hypothesis_id::uuid
-        """,
-        {"hypothesis_id": hypothesis_id, "consent_id": consent_id, "reason": reason},
-    )
-    db.execute(
-        """
-        UPDATE recognition_hypotheses
-        SET decision = 'rejected', reason = 'superseded by accepted hypothesis', decided_at = now()
-        WHERE recognition_observation_id = :observation_id::uuid
-          AND identity_hypothesis_id <> :hypothesis_id::uuid
-          AND decision = 'proposed'
-        """,
-        {"observation_id": row.get("observation_id"), "hypothesis_id": hypothesis_id},
-    )
-    db.execute(
-        """
-        UPDATE recognition_observations
-        SET lifecycle_state = 'matched'
-        WHERE recognition_observation_id = :observation_id::uuid
-        """,
-        {"observation_id": row.get("observation_id")},
-    )
-
-    presence_id = str(uuid.uuid4())
-    db.execute(
-        """
-        INSERT INTO presence_assertions (
-          presence_assertion_id, agent_id, space_id, location_id, person_id,
-          identity_hypothesis_id, confidence, status
-        )
-        VALUES (
-          :presence_id::uuid, :agent_id::uuid,
-          CASE WHEN :space_id IS NULL THEN NULL ELSE :space_id::uuid END,
-          CASE WHEN :location_id IS NULL THEN NULL ELSE :location_id::uuid END,
-          :person_id::uuid, :hypothesis_id::uuid, :confidence, 'present'
-        )
-        """,
-        {
-            "presence_id": presence_id,
-            "agent_id": agent_id,
-            "space_id": row.get("space_id"),
-            "location_id": row.get("location_id"),
-            "person_id": person_id,
-            "hypothesis_id": hypothesis_id,
-            "confidence": float(row.get("confidence") or 0.0),
-        },
-    )
-    return {
-        "ok": True,
-        "hypothesis_id": hypothesis_id,
-        "decision": "accepted",
-        "consent_id": consent_id,
-        "presence_assertion_id": presence_id,
-    }
-
-
-@app.post("/api/recognition/hypotheses/{hypothesis_id}/reject", name="api_recognition_reject_hypothesis")
-def api_recognition_reject_hypothesis(
-    request: Request, hypothesis_id: str, body: RecognitionDecisionUpdate | None = None
-) -> dict[str, Any]:
-    """Reject a recognition hypothesis without creating a person."""
-    user = _gui_get_user(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    db = _get_db()
-    rows = db.query(
-        """
-        SELECT ro.agent_id::TEXT AS agent_id
-        FROM recognition_hypotheses rh
-        JOIN recognition_observations ro ON ro.recognition_observation_id = rh.recognition_observation_id
-        WHERE rh.identity_hypothesis_id = :hypothesis_id::uuid
-        LIMIT 1
-        """,
-        {"hypothesis_id": hypothesis_id},
-    )
-    if not rows:
-        raise HTTPException(status_code=404, detail="Hypothesis not found")
-
-    agent_id = str(rows[0].get("agent_id") or "")
-    _require_gui_admin_for_agent(db, user=user, agent_id=agent_id)
-    db.execute(
-        """
-        UPDATE recognition_hypotheses
-        SET decision = 'rejected', reason = :reason, decided_at = now()
-        WHERE identity_hypothesis_id = :hypothesis_id::uuid
-        """,
-        {"hypothesis_id": hypothesis_id, "reason": (body.reason if body else None) or "rejected by operator"},
-    )
-    return {"ok": True, "hypothesis_id": hypothesis_id, "decision": "rejected"}
-
-
-@app.post("/api/recognition/observations/{observation_id}/no-match", name="api_recognition_observation_no_match")
-def api_recognition_observation_no_match(
-    request: Request, observation_id: str, body: RecognitionDecisionUpdate | None = None
-) -> dict[str, Any]:
-    """Mark an observation as no-match without creating a person."""
-    user = _gui_get_user(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    db = _get_db()
-    rows = db.query(
-        """
-        SELECT recognition_observation_id::TEXT AS observation_id, agent_id::TEXT AS agent_id
-        FROM recognition_observations
-        WHERE recognition_observation_id = :observation_id::uuid
-        LIMIT 1
-        """,
-        {"observation_id": observation_id},
-    )
-    if not rows:
-        raise HTTPException(status_code=404, detail="Observation not found")
-
-    agent_id = str(rows[0].get("agent_id") or "")
-    _require_gui_admin_for_agent(db, user=user, agent_id=agent_id)
-    reason = (body.reason if body else None) or "marked no-match by operator"
-    db.execute(
-        """
-        UPDATE recognition_observations
-        SET lifecycle_state = 'no_match'
-        WHERE recognition_observation_id = :observation_id::uuid
-        """,
-        {"observation_id": observation_id},
-    )
-    db.execute(
-        """
-        UPDATE recognition_hypotheses
-        SET decision = 'rejected', reason = :reason, decided_at = now()
-        WHERE recognition_observation_id = :observation_id::uuid
-          AND decision = 'proposed'
-        """,
-        {"observation_id": observation_id, "reason": reason},
-    )
-    no_match_hypothesis_id = str(uuid.uuid4())
-    db.execute(
-        """
-        INSERT INTO recognition_hypotheses (
-          identity_hypothesis_id, recognition_observation_id, candidate_person_id,
-          confidence, decision, reason, decided_at
-        )
-        VALUES (
-          :hypothesis_id::uuid, :observation_id::uuid, NULL,
-          0, 'no_match', :reason, now()
-        )
-        """,
-        {"hypothesis_id": no_match_hypothesis_id, "observation_id": observation_id, "reason": reason},
-    )
-    return {
-        "ok": True,
-        "observation_id": observation_id,
-        "decision": "no_match",
-        "hypothesis_id": no_match_hypothesis_id,
-    }
+        raise HTTPException(401, "Not authenticated")
+    return review_recognition_hypothesis(hypothesis_id=hypothesis_id, body=body, user=user)
 
 
 @app.post("/api/recognition/biometrics/{projection_id}/revoke", name="api_recognition_revoke_biometric")
@@ -4357,40 +4021,9 @@ def api_recognition_revoke_biometric(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     db = _get_db()
-    rows = db.query(
-        """
-        SELECT 'voice' AS modality, voiceprint_id::TEXT AS projection_id,
-               agent_id::TEXT AS agent_id, person_id::TEXT AS person_id
-        FROM voiceprints
-        WHERE voiceprint_id = :projection_id::uuid
-        UNION ALL
-        SELECT 'face' AS modality, faceprint_id::TEXT AS projection_id,
-               agent_id::TEXT AS agent_id, person_id::TEXT AS person_id
-        FROM faceprints
-        WHERE faceprint_id = :projection_id::uuid
-        LIMIT 1
-        """,
-        {"projection_id": projection_id},
-    )
-    if not rows:
-        raise HTTPException(status_code=404, detail="Biometric projection not found")
-
-    row = rows[0]
-    modality = str(row.get("modality") or "")
-    table_name, id_column, _expected_dim = _projection_table_for_modality(modality)
-    agent_id = str(row.get("agent_id") or "")
-    _require_gui_admin_for_agent(db, user=user, agent_id=agent_id)
-    metadata = {"revocation_reason": (body.reason if body else None) or "revoked by operator"}
-    db.execute(
-        f"""
-        UPDATE {table_name}
-        SET revoked_at = now(),
-            metadata = COALESCE(metadata, '{{}}'::jsonb) || :metadata::jsonb
-        WHERE {id_column} = :projection_id::uuid
-        """,
-        {"projection_id": projection_id, "metadata": json.dumps(metadata)},
-    )
-    return {"ok": True, "projection_id": projection_id, "modality": modality, "revoked": True}
+    from recognition_browser import revoke_projection
+    return revoke_projection(db=db, user=user, projection_id=projection_id,
+                             reason=(body.reason if body else None) or "Revoked by signed-in operator")
 
 
 class PersonUpdate(BaseModel):
@@ -4551,165 +4184,6 @@ def api_link_person_account(request: Request, person_id: str, body: PersonLinkAc
         )
 
     return {"ok": True, "agent_id": agent_id, "person_id": person_id, "user_id": link_user_id}
-
-
-class EnrollmentArtifactIn(BaseModel):
-    artifact_key: str
-    artifact_bucket: str | None = None
-    content_type: str | None = None
-    space_id: str | None = None
-
-
-def _pick_space_for_agent(*, db, agent_id: str) -> str:
-    rows = db.query(
-        "SELECT space_id::TEXT as space_id FROM spaces WHERE agent_id = :agent_id::uuid ORDER BY created_at ASC LIMIT 1",
-        {"agent_id": agent_id},
-    )
-    if not rows or not rows[0].get("space_id"):
-        raise HTTPException(status_code=400, detail="Agent has no spaces (create a space first)")
-    return str(rows[0]["space_id"])
-
-
-def _enqueue_recognition_event(
-    *, event_id: str, agent_id: str, space_id: str, person_id: str, event_type: str, payload: dict
-) -> bool:
-    qurl = str(os.getenv("RECOGNITION_QUEUE_URL", "")).strip()
-    if not qurl:
-        return False
-    try:
-        _get_sqs().send_message(
-            QueueUrl=qurl,
-            MessageBody=json.dumps(
-                {
-                    "event_id": event_id,
-                    "agent_id": agent_id,
-                    "space_id": space_id,
-                    "device_id": None,
-                    "person_id": person_id,
-                    "type": event_type,
-                    "payload": payload,
-                }
-            ),
-        )
-        return True
-    except Exception as exc:
-        logger.warning("Failed to enqueue recognition event: %s", exc)
-        return False
-
-
-def _create_recognition_event(
-    *, request: Request, person_id: str, event_type: str, artifact: EnrollmentArtifactIn
-) -> dict[str, Any]:
-    """Server-side ingestion for enrollment events (browser -> S3 -> queue)."""
-    user = _gui_get_user(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    db = _get_db()
-    rows = db.query(
-        """
-        SELECT p.person_id::TEXT as person_id,
-               p.agent_id::TEXT as agent_id
-        FROM people p
-        JOIN agent_memberships m ON p.agent_id = m.agent_id
-        WHERE p.person_id = :person_id::uuid
-          AND m.user_id = :user_id::uuid
-          AND m.role IN ('admin', 'owner')
-          AND m.revoked_at IS NULL
-        LIMIT 1
-        """,
-        {"person_id": person_id, "user_id": str(user.user_id)},
-    )
-    if not rows:
-        raise HTTPException(status_code=404, detail="Person not found or permission denied")
-    agent_id = str(rows[0].get("agent_id") or "").strip()
-    modality = "voice" if event_type == "voice.sample" else "face" if event_type == "face.snapshot" else ""
-    if modality:
-        _require_active_recognition_consent(db, agent_id=agent_id, person_id=person_id, modality=modality)
-
-    # Choose a space for anchoring the event (events require space_id).
-    space_id = str(artifact.space_id or "").strip()
-    if space_id:
-        # Ensure the space belongs to the same agent and the user can access it.
-        srows = db.query(
-            """
-            SELECT 1
-            FROM spaces s
-            JOIN agent_memberships m ON s.agent_id = m.agent_id
-            WHERE s.space_id = :space_id::uuid
-              AND s.agent_id = :agent_id::uuid
-              AND m.user_id = :user_id::uuid
-              AND m.revoked_at IS NULL
-            LIMIT 1
-            """,
-            {"space_id": space_id, "agent_id": agent_id, "user_id": str(user.user_id)},
-        )
-        if not srows:
-            raise HTTPException(status_code=404, detail="Space not found")
-    else:
-        space_id = _pick_space_for_agent(db=db, agent_id=agent_id)
-
-    artifact_key = str(artifact.artifact_key or "").strip()
-    if not artifact_key:
-        raise HTTPException(status_code=400, detail="artifact_key is required")
-    artifact_bucket = str(artifact.artifact_bucket or "").strip() or str(_cfg.artifact_bucket or "").strip()
-    if not artifact_bucket:
-        raise HTTPException(status_code=500, detail="Artifact bucket not configured")
-
-    payload = {
-        "artifact_bucket": artifact_bucket,
-        "artifact_key": artifact_key,
-        "content_type": artifact.content_type,
-        "enroll_person_id": person_id,
-        "source": "browser_enrollment",
-    }
-
-    event_id = str(uuid.uuid4())
-    db.execute(
-        """
-        INSERT INTO events(event_id, agent_id, space_id, person_id, type, payload)
-        VALUES(:event_id::uuid, :agent_id::uuid, :space_id::uuid, :person_id::uuid, :type, :payload::jsonb)
-        """,
-        {
-            "event_id": event_id,
-            "agent_id": agent_id,
-            "space_id": space_id,
-            "person_id": person_id,
-            "type": event_type,
-            "payload": json.dumps(payload),
-        },
-    )
-
-    queued = _enqueue_recognition_event(
-        event_id=event_id,
-        agent_id=agent_id,
-        space_id=space_id,
-        person_id=person_id,
-        event_type=event_type,
-        payload=payload,
-    )
-
-    try:
-        broadcast_event(
-            event_type="events.new",
-            agent_id=agent_id,
-            space_id=space_id,
-            payload={"event": {"event_id": event_id, "type": event_type, "payload": payload, "person_id": person_id}},
-        )
-    except Exception:
-        pass
-
-    return {"ok": True, "event_id": event_id, "queued": queued, "space_id": space_id}
-
-
-@app.post("/api/people/{person_id}/enroll/voice", name="api_enroll_voice")
-def api_enroll_voice(request: Request, person_id: str, body: EnrollmentArtifactIn) -> dict[str, Any]:
-    return _create_recognition_event(request=request, person_id=person_id, event_type="voice.sample", artifact=body)
-
-
-@app.post("/api/people/{person_id}/enroll/face", name="api_enroll_face")
-def api_enroll_face(request: Request, person_id: str, body: EnrollmentArtifactIn) -> dict[str, Any]:
-    return _create_recognition_event(request=request, person_id=person_id, event_type="face.snapshot", artifact=body)
 
 
 @app.get("/people", name="gui_people")
@@ -5304,10 +4778,18 @@ def api_approve_action(request: Request, action_id: str) -> dict:
             status_code=400, detail=f"Action is not in proposed status (current: {action.get('status')})"
         )
 
+    from agent_hub.action_service import requires_identity_check
+    full_action = load_action(db, action_id)
+    identity_check_id = None
+    if requires_identity_check(full_action["required_scopes"]):
+        identity_check_id = _require_identity_check(request=request, user=user, agent_id=str(action["agent_id"]),
+            purpose="sensitive_action_approval", target_id=action_id)
+
     try:
         approve_action(
             db,
             action_id=action_id,
+            identity_check_id=identity_check_id,
             user_id=str(user.user_id),
             audit_bucket=_cfg.audit_bucket,
             sqs_client=_get_sqs(),
@@ -6358,7 +5840,7 @@ def gui_recognition(request: Request) -> Response:
                    ro.agent_id::TEXT AS agent_id, ro.space_id::TEXT AS space_id,
                    ro.location_id::TEXT AS location_id, ro.device_id::TEXT AS device_id,
                    ro.session_id::TEXT AS session_id, ro.artifact_id::TEXT AS artifact_id,
-                   ro.modality, ro.lifecycle_state, ro.model AS model_name, ro.created_at::TEXT AS created_at,
+                   ro.modality, ro.lifecycle_state, ro.model_id || '@' || ro.model_version AS model_name, ro.created_at::TEXT AS created_at,
                    a.name AS agent_name, s.name AS space_name, l.name AS location_name, d.name AS device_name
             FROM recognition_observations ro
             JOIN agents a ON a.agent_id = ro.agent_id
@@ -6373,7 +5855,7 @@ def gui_recognition(request: Request) -> Response:
         )
         hypotheses = _query_for_agent_ids(
             """
-            SELECT rh.identity_hypothesis_id::TEXT AS hypothesis_id,
+            SELECT rh.requested_projection, rh.identity_hypothesis_id::TEXT AS hypothesis_id,
                    rh.recognition_observation_id::TEXT AS observation_id,
                    ro.agent_id::TEXT AS agent_id, rh.candidate_person_id::TEXT AS candidate_person_id,
                    p.display_name AS person_name, rh.confidence AS score, rh.decision, rh.consent_id::TEXT AS consent_id,
@@ -6404,7 +5886,7 @@ def gui_recognition(request: Request) -> Response:
             """
             SELECT rh.identity_hypothesis_id::TEXT AS hypothesis_id,
                    rh.recognition_observation_id::TEXT AS observation_id,
-                   ro.agent_id::TEXT AS agent_id, rh.decision, rh.confidence AS score, rh.reason
+                   ro.agent_id::TEXT AS agent_id, rh.decision, rh.confidence AS score, rh.rationale AS reason
             FROM recognition_hypotheses rh
             JOIN recognition_observations ro ON ro.recognition_observation_id = rh.recognition_observation_id
             WHERE ro.agent_id::TEXT IN (__AGENT_IDS__)
@@ -6469,61 +5951,19 @@ def gui_recognition(request: Request) -> Response:
             agent_ids,
         )
         revocation_statuses = _query_for_agent_ids(
-            """
-            SELECT vp.agent_id::TEXT AS agent_id,
-                   p.display_name || ' voice enrollment' AS subject,
-                   CASE
-                     WHEN vp.revoked_at IS NOT NULL THEN 'revoked'
-                     WHEN NOT EXISTS (
-                       SELECT 1 FROM consent_grants cg
-                       WHERE cg.agent_id = vp.agent_id
-                         AND cg.person_id = vp.person_id
-                         AND cg.consent_type IN ('voice', 'global')
-                         AND cg.revoked_at IS NULL
-                         AND (cg.expires_at IS NULL OR cg.expires_at > now())
-                     ) THEN 'stale'
-                     ELSE 'not revoked'
-                   END AS status,
-                   COALESCE(vp.revoked_at::TEXT, vp.created_at::TEXT) AS updated_at,
-                   vp.voiceprint_id::TEXT AS projection_id,
-                   'voice' AS modality
-            FROM voiceprints vp
-            JOIN people p ON p.person_id = vp.person_id
-            WHERE vp.agent_id::TEXT IN (__AGENT_IDS__)
-            UNION ALL
-            SELECT fp.agent_id::TEXT AS agent_id,
-                   p.display_name || ' face enrollment' AS subject,
-                   CASE
-                     WHEN fp.revoked_at IS NOT NULL THEN 'revoked'
-                     WHEN NOT EXISTS (
-                       SELECT 1 FROM consent_grants cg
-                       WHERE cg.agent_id = fp.agent_id
-                         AND cg.person_id = fp.person_id
-                         AND cg.consent_type IN ('face', 'global')
-                         AND cg.revoked_at IS NULL
-                         AND (cg.expires_at IS NULL OR cg.expires_at > now())
-                     ) THEN 'stale'
-                     ELSE 'not revoked'
-                   END AS status,
-                   COALESCE(fp.revoked_at::TEXT, fp.created_at::TEXT) AS updated_at,
-                   fp.faceprint_id::TEXT AS projection_id,
-                   'face' AS modality
-            FROM faceprints fp
-            JOIN people p ON p.person_id = fp.person_id
-            WHERE fp.agent_id::TEXT IN (__AGENT_IDS__)
-            ORDER BY updated_at DESC
-            LIMIT 100
-            """,
-            agent_ids,
-        )
-        readiness_statuses = [
-            {
-                "name": "Consent-gated recognition controls",
-                "agent_id": agent_ids[0] if agent_ids else "",
-                "status": "ready",
-                "detail": "Enrollment, hypothesis decisions, no-match, and projection revocation are available.",
-            }
-        ]
+            """SELECT bp.agent_id::text AS agent_id, p.display_name || ' ' || bp.modality || ' enrollment' AS subject,
+                      CASE WHEN bp.lifecycle_state<>'active' THEN bp.lifecycle_state
+                           WHEN cg.revoked_at IS NOT NULL OR cg.expires_at<=now() THEN 'stale'
+                           ELSE 'not revoked' END AS status,
+                      COALESCE(bp.revoked_at,bp.created_at)::text AS updated_at,
+                      bp.biometric_projection_id::text AS projection_id,bp.modality
+               FROM biometric_projections bp JOIN people p ON p.person_id=bp.person_id
+               JOIN consent_grants cg ON cg.consent_id=bp.consent_id
+               WHERE bp.agent_id::text IN (__AGENT_IDS__) ORDER BY bp.created_at DESC LIMIT 100""", agent_ids)
+        readiness_statuses = [{"name":"Voice recognition","agent_id":"","status":"on demand" if os.environ.get("RECOGNITION_EXECUTION_MODE")=="lambda_on_demand" else "not configured",
+            "detail":"SQS-triggered CPU service; capture processing is recorded in observations."},
+            {"name":"Face recognition","agent_id":"","status":"on demand" if os.environ.get("RECOGNITION_EXECUTION_MODE")=="lambda_on_demand" else "not configured",
+            "detail":"AWS Rekognition; one-face detection and comparison to reviewed references."}]
     except Exception as exc:
         error = _gui_error_text(exc)
 

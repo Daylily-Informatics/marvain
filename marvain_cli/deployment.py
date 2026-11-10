@@ -316,8 +316,8 @@ def publish_image(*, profile: str, region: str, repository_uri: str, release_ver
         raise ConfigError("Container images may be built only on the selected Linux EC2 builder")
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", release_version):
         raise ConfigError("release_version must be an explicit numeric semver tag")
-    if image_kind not in {"worker", "dot"}:
-        raise ConfigError("image_kind must be worker or dot")
+    if image_kind not in {"worker", "dot", "recognition"}:
+        raise ConfigError("image_kind must be worker, dot or recognition")
     if not re.fullmatch(r"[0-9]{12}\.dkr\.ecr\.us-east-2\.amazonaws\.com/[a-z0-9][a-z0-9._/-]*", repository_uri):
         raise ConfigError("repository_uri must identify the selected us-east-2 ECR repository")
     root = Path(source_dir)
@@ -336,7 +336,8 @@ def publish_image(*, profile: str, region: str, repository_uri: str, release_ver
         raise ConfigError("Selected EC2 builder identity is unavailable") from exc
     if identity.get("instanceId") != builder_instance_id or identity.get("region") != region:
         raise ConfigError("Current EC2 instance does not match the selected builder and region")
-    dockerfile = "apps/agent_worker/Dockerfile" if image_kind == "worker" else "apps/dot_service/Dockerfile"
+    dockerfile = {"worker":"apps/agent_worker/Dockerfile", "dot":"apps/dot_service/Dockerfile",
+                  "recognition":"functions/recognition_voice/Dockerfile"}[image_kind]
     argument = "MARVAIN_WORKER_VERSION" if image_kind == "worker" else "MARVAIN_RELEASE_VERSION"
     image_tag = f"{repository_uri}:{release_version}"
     session = boto3.Session(profile_name=profile, region_name=region)
@@ -755,3 +756,16 @@ def builder_power_state(*, ctx: Any) -> dict[str, str]:
     instance = response["Reservations"][0]["Instances"][0]
     return {"instance_id": instance["InstanceId"], "state": instance["State"]["Name"],
             "public_ip": str(instance.get("PublicIpAddress") or "")}
+
+
+def prepare_recognition_repository(*, ctx: Any) -> dict[str, str]:
+    """Add the recognition ECR repository through the existing prerequisite stack."""
+    deployment=ctx.env.raw["deployment"]
+    session=boto3.Session(profile_name=ctx.env.aws_profile,region_name=ctx.env.aws_region)
+    client=session.client("cloudformation")
+    stack=client.describe_stacks(StackName=deployment["prerequisite_stack_id"])["Stacks"][0]
+    parameters=[{"ParameterKey":p["ParameterKey"],"UsePreviousValue":True} for p in stack["Parameters"]]
+    response=client.update_stack(StackName=stack["StackId"],
+        TemplateBody=(Path(__file__).resolve().parents[1]/"infrastructure"/"deployment_prerequisites.yaml").read_text(),
+        Parameters=parameters,Capabilities=["CAPABILITY_NAMED_IAM"])
+    return {"status":"update_submitted","stack_id":response["StackId"]}

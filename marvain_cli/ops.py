@@ -40,6 +40,8 @@ REQUIRED_SAM_DEPLOY_PARAMETERS = (
     "ArtifactCorsAllowedOrigins",
     "OpenAICredentialsSecretArn",
     "LiveKitCredentialsSecretArn",
+    "RecognitionImageUri",
+    "RecognitionAgentId",
     "AgentWorkerImageUri",
     "AgentWorkerVersion",
     "AgentWorkerHubDeviceTokenSecretArn",

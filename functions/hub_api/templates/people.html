@@ -313,6 +313,8 @@
     <div class="modal-body">
       <input type="hidden" id="enroll-person-id">
       <input type="hidden" id="enroll-agent-id">
+      <p>Voice and face enrollments both identify this person. Grant each modality's consent first, capture one person, then review the proposal in Recognition.</p>
+      <label for="enroll-space-id">Capture space</label><select id="enroll-space-id" required></select>
 
       <div class="card" style="background: var(--color-gray-800); margin-bottom: var(--spacing-md);">
         <div class="card-header">
@@ -674,6 +676,9 @@ function openEnrollModal(personId, agentId, displayName) {
   document.getElementById('enroll-person-id').value = personId;
   document.getElementById('enroll-agent-id').value = agentId;
   document.getElementById('enroll-person-name').textContent = displayName;
+  const spaceSelect = document.getElementById('enroll-space-id');
+  spaceSelect.replaceChildren(new Option('Choose a space', ''));
+  (agentSpaces[agentId] || []).forEach(s => spaceSelect.add(new Option(s.name, s.space_id)));
   document.getElementById('voice-status').textContent = '';
   document.getElementById('face-status').textContent = '';
   document.getElementById('voice-start-btn').disabled = false;
@@ -741,32 +746,19 @@ async function uploadVoiceEnrollment() {
   const filename = `voice_enroll_${personId}_${Date.now()}.webm`;
   try {
     Marvain.showLoading('Uploading voice clip...');
+    const space = document.getElementById('enroll-space-id').value;
+    if (!space) throw new Error('Choose the capture space');
     const form = new FormData();
     form.append('agent_id', agentId);
-    form.append('purpose', 'recognition');
+    form.append('space_id', space);
+    form.append('person_id', personId);
+    form.append('modality', 'voice');
     form.append('file', _voiceBlob, filename);
-    const uploadResp = await fetch(Marvain.path('/api/artifacts/upload'), {method: 'POST', body: form});
-    if (!uploadResp.ok) {
-      const err = await uploadResp.json().catch(() => ({}));
-      throw new Error(err.detail || 'Failed to upload voice sample');
-    }
-    const upload = await uploadResp.json();
-    const enrollResp = await fetch(Marvain.path(`/api/people/${encodeURIComponent(personId)}/enroll/voice`), {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({
-        artifact_key: upload.key,
-        artifact_bucket: upload.bucket,
-        content_type: contentType
-      })
-    });
-    if (!enrollResp.ok) {
-      const err = await enrollResp.json();
-      throw new Error(err.detail || 'Failed to enqueue enrollment');
-    }
+    const response = await fetch(Marvain.path('/api/recognition/captures'), {method:'POST',body:form});
+    if (!response.ok) throw new Error((await response.json()).detail || 'Capture failed');
     Marvain.hideLoading();
     document.getElementById('voice-status').textContent = 'Uploaded and queued';
-    Marvain.showToast('success', 'Queued', 'Voice enrollment queued');
+    Marvain.showToast('success', 'Queued', 'Voice sample submitted. Review its proposal in Recognition.');
     document.getElementById('voice-upload-btn').disabled = true;
   } catch (error) {
     Marvain.hideLoading();
@@ -811,32 +803,19 @@ async function uploadFaceEnrollment() {
   const filename = `face_enroll_${personId}_${Date.now()}.jpg`;
   try {
     Marvain.showLoading('Uploading snapshot...');
+    const space = document.getElementById('enroll-space-id').value;
+    if (!space) throw new Error('Choose the capture space');
     const form = new FormData();
     form.append('agent_id', agentId);
-    form.append('purpose', 'recognition');
+    form.append('space_id', space);
+    form.append('person_id', personId);
+    form.append('modality', 'face');
     form.append('file', _faceBlob, filename);
-    const uploadResp = await fetch(Marvain.path('/api/artifacts/upload'), {method: 'POST', body: form});
-    if (!uploadResp.ok) {
-      const err = await uploadResp.json().catch(() => ({}));
-      throw new Error(err.detail || 'Failed to upload face sample');
-    }
-    const upload = await uploadResp.json();
-    const enrollResp = await fetch(Marvain.path(`/api/people/${encodeURIComponent(personId)}/enroll/face`), {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({
-        artifact_key: upload.key,
-        artifact_bucket: upload.bucket,
-        content_type: contentType
-      })
-    });
-    if (!enrollResp.ok) {
-      const err = await enrollResp.json();
-      throw new Error(err.detail || 'Failed to enqueue enrollment');
-    }
+    const response = await fetch(Marvain.path('/api/recognition/captures'), {method:'POST',body:form});
+    if (!response.ok) throw new Error((await response.json()).detail || 'Capture failed');
     Marvain.hideLoading();
     document.getElementById('face-status').textContent = 'Uploaded and queued';
-    Marvain.showToast('success', 'Queued', 'Face enrollment queued');
+    Marvain.showToast('success', 'Queued', 'Face sample submitted. Review its proposal in Recognition.');
     document.getElementById('face-upload-btn').disabled = true;
   } catch (error) {
     Marvain.hideLoading();

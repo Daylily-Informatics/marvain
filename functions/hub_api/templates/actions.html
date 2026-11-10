@@ -371,7 +371,7 @@ async function approveAction(actionId) {
 
   try {
     Marvain.showLoading('Approving action...');
-    const response = await fetch(Marvain.path(`/api/actions/${actionId}/approve`), {
+    const response = await Marvain.sensitiveFetch(`/api/actions/${actionId}/approve`, {
       method: 'POST'
     });
 

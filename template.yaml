@@ -56,6 +56,12 @@ Parameters:
     Description: Required pre-provisioned Secrets Manager ARN containing LiveKit api_key and api_secret.
     AllowedPattern: '^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$'
 
+  RecognitionImageUri:
+    Type: String
+    Description: Exact tagged voice recognition image pinned by ECR digest
+  RecognitionAgentId:
+    Type: String
+    Description: Existing agent authorized for this recognition queue
   AgentWorkerImageUri:
     Type: String
     Description: Required ECR image URI pinned by sha256 digest for the Marvain agent worker.
@@ -131,7 +137,6 @@ Conditions:
 
 Globals:
   Function:
-    Runtime: python3.12
     Timeout: 30
     MemorySize: 512
     Tracing: Active
@@ -474,7 +479,7 @@ Resources:
   RecognitionQueue:
     Type: AWS::SQS::Queue
     Properties:
-      VisibilityTimeout: 60
+      VisibilityTimeout: 720
 
   IntegrationQueue:
     Type: AWS::SQS::Queue
@@ -581,9 +586,49 @@ Resources:
         Types:
           - REGIONAL
 
+  RecognitionVoiceFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      SkipBuild: true
+    Properties:
+      PackageType: Image
+      ImageUri: !Ref RecognitionImageUri
+      Architectures: [x86_64]
+      MemorySize: 2048
+      Timeout: 120
+      Environment:
+        Variables:
+          DB_RESOURCE_ARN: !GetAtt AuroraCluster.DBClusterArn
+          DB_SECRET_ARN: !Ref DbCredentialsSecret
+          DB_NAME: !Ref DbName
+          ARTIFACT_BUCKET: !Ref ArtifactBucket
+          RECOGNITION_AGENT_ID: !Ref RecognitionAgentId
+          VOICE_MATCH_THRESHOLD: '0.35'
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - S3ReadPolicy:
+            BucketName: !Ref ArtifactBucket
+        - SQSPollerPolicy:
+            QueueName: !GetAtt RecognitionQueue.QueueName
+        - Statement:
+            - Effect: Allow
+              Action: [rds-data:ExecuteStatement, rds-data:BeginTransaction, rds-data:CommitTransaction, rds-data:RollbackTransaction]
+              Resource: !GetAtt AuroraCluster.DBClusterArn
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref DbCredentialsSecret
+      Events:
+        Capture:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt RecognitionQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes: [ReportBatchItemFailures]
+
   HubApiFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Runtime: python3.12
       CodeUri: functions/hub_api/
       Handler: lambda_handler.handler
       Layers:
@@ -601,6 +646,8 @@ Resources:
           DB_NAME: !Ref DbName
           TRANSCRIPT_QUEUE_URL: !Ref TranscriptQueue
           ACTION_QUEUE_URL: !Ref ActionQueue
+          REKOGNITION_FACE_THRESHOLD: '98'
+          RECOGNITION_EXECUTION_MODE: lambda_on_demand
           RECOGNITION_QUEUE_URL: !Ref RecognitionQueue
           TAPDB_WRITER_QUEUE_URL: !Ref TapdbWriterQueue
           INTEGRATION_QUEUE_URL: !Ref IntegrationQueue
@@ -649,6 +696,11 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: !Ref WsSubscriptionsTable
         - Statement:
+            - Effect: Allow
+              Action:
+                - rekognition:DetectFaces
+                - rekognition:CompareFaces
+              Resource: '*'
             - Effect: Allow
               Action:
                 - rds-data:ExecuteStatement
@@ -1009,6 +1061,7 @@ Resources:
   SemanticOutboxDispatcherFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Runtime: python3.12
       CodeUri: functions/semantic_outbox_dispatcher/
       Handler: handler.handler
       Timeout: 60
@@ -1160,6 +1213,7 @@ Resources:
   TapdbWriterFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Runtime: python3.12
       CodeUri: functions/tapdb_writer/
       Handler: handler.handler
       Timeout: 60
@@ -1212,6 +1266,7 @@ Resources:
   PlannerFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Runtime: python3.12
       CodeUri: functions/planner/
       Handler: handler.handler
       Timeout: 60
@@ -1295,6 +1350,7 @@ Resources:
   ToolRunnerFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Runtime: python3.12
       CodeUri: functions/tool_runner/
       Handler: handler.handler
       Timeout: 60
@@ -1354,6 +1410,7 @@ Resources:
   GmailPollFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Runtime: python3.12
       CodeUri: functions/gmail_poll/
       Handler: handler.handler
       Timeout: 60
@@ -1405,6 +1462,7 @@ Resources:
   ActionTimeoutSweeperFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Runtime: python3.12
       CodeUri: functions/action_timeout_sweeper/
       Handler: handler.handler
       Timeout: 30
@@ -1451,6 +1509,7 @@ Resources:
   RetentionSweeperFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Runtime: python3.12
       CodeUri: functions/retention_sweeper/
       Handler: handler.handler
       Timeout: 60
@@ -1504,6 +1563,7 @@ Resources:
   WsConnectFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Runtime: python3.12
       CodeUri: functions/ws_connect/
       Handler: handler.handler
       Layers:
@@ -1522,6 +1582,7 @@ Resources:
   WsDisconnectFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Runtime: python3.12
       CodeUri: functions/ws_disconnect/
       Handler: handler.handler
       Layers:
@@ -1552,6 +1613,7 @@ Resources:
   WsMessageFunction:
     Type: AWS::Serverless::Function
     Properties:
+      Runtime: python3.12
       CodeUri: functions/ws_message/
       Handler: handler.handler
       Layers:
