@@ -6,6 +6,8 @@
 
 ## Current continuation state
 
+Git release checkpoint, 9 November 2026: John requested “commit and oush this all to. anew tagged git release” after accepting the overnight pause. Numeric annotated release 4.0.8 captures the completed implementation, deployment receipts, successful first voice interaction and cost/pause handoff on codex/marvain-operational-100-closure. The application source is unchanged from deployed 4.0.7; this publication does not build or deploy anything. Tests, PRs and merges remain off. Existing unrelated local instructions, browser artifacts and restart notes remain outside the release scope.
+
 WP-21 is SUCCESS for the first Mac/Chrome voice endpoint and AWS responder. John replied **“Connected and Marvain responds”** to the Join/microphone/“Hello Marvain” handoff question (call_bca08cf48165486795cf52a68a0d3c39). This direct user result is the conversation acceptance receipt. Camera perception, raw-recording persistence and later-session recall are not separately accepted by that statement. WP-16/17 two-location multi-actor demonstration and physical interaction remain unfinished; DAY-22 second-login binding also remains outstanding.
 
 Immutable annotated release 4.0.7 at 1817801 is deployed to lsmc/account 108782052779/us-east-2/marvain4-prod. Exact tagged EC2 packaging, artifact transfer/extraction, source deployment and worker-count deployment returned exit 0. Worker image remains 4.0.3; desired=1/running=1/pending=0 and LiveKit registration AW_FviJFqCZqeWG (forge) were returned at activation. Dot remains disabled. Builder i-0325430bfec70e41e lifecycle reports stopped. 4.0.6 was built but never deployed; 4.0.7 adds required binary-media transport using ApiDeploymentVersion=2.

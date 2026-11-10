@@ -1,5 +1,11 @@
 # Marvain 4.x source release and demonstration packet
 
+## Git release 4.0.8 — accepted first voice endpoint and overnight checkpoint
+
+Requested by John on 9 November 2026. This numeric annotated Git release includes all implementation through 4.0.7 plus the deployment, voice-acceptance and overnight-cost records committed afterward. Application source is unchanged from 4.0.7. The first Mac/Chrome voice endpoint is accepted by John's “Connected and Marvain responds” result. Development remains paused for the night.
+
+This is Git publication only: production remains Hub 4.0.7 with worker image 4.0.3. No build, deployment, test campaign, PR, merge or resource shutdown accompanies this release. Camera perception, media-persistence acceptance, later-session recall, second-login person linking and the two-location demonstration remain outstanding as recorded below.
+
 **Status: release 4.0.7 is deployed to LSMC/us-east-2. INITagent/laptop bindings are written and one AWS responder is running and registered with LiveKit. John confirms “Connected and Marvain responds”; first Mac/Chrome voice interaction is accepted.** Tests remain off. The owning execution plan is /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_multiagent_execution_plan.md. Earlier preparation statements below remain historical and are superseded by this receipt.
 
 ## Chrome activation deployment receipt — Marvain 4.0.7
