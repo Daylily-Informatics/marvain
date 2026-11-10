@@ -2264,6 +2264,11 @@ def gui_start(
             env[env_key] = str(resources[res_key])
 
     sam_params = ctx.cfg.get("envs", {}).get(ctx.env.env, {}).get("sam", {}).get("parameter_overrides", {})
+    allowed_email_domains = str(sam_params.get("AuthAllowedEmailDomains") or "").strip()
+    if not allowed_email_domains:
+        _eprint("ERROR: sam.parameter_overrides.AuthAllowedEmailDomains is required for human sign-in.")
+        return 2
+    env["AUTH_ALLOWED_EMAIL_DOMAINS"] = allowed_email_domains
     classifier_model = str(sam_params.get("PlannerModel") or "").strip()
     if not classifier_model:
         _eprint("ERROR: sam.parameter_overrides.PlannerModel is required for memory classification.")

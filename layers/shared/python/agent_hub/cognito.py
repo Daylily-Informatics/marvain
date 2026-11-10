@@ -220,6 +220,13 @@ async def get_user_info_from_tokens(cfg: HubConfig, id_token: str, access_token:
     email = id_claims.get("email", "")
     name = id_claims.get("name") or id_claims.get("cognito:username")
     email_verified = id_claims.get("email_verified", False)
+    from agent_hub.auth_policy import require_allowed_human_email
+
+    try:
+        email = require_allowed_human_email(email=email, email_verified=email_verified,
+                                            allowed_domains=cfg.auth_allowed_email_domains)
+    except PermissionError as exc:
+        raise CognitoAuthError("A verified email in an allowed domain is required") from exc
 
     # Extract Cognito groups
     cognito_groups = extract_cognito_groups(id_claims)

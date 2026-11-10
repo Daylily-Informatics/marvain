@@ -2,6 +2,24 @@
 
 **Status: release 4.0.3 is deployed to LSMC/us-east-2 with hosted FastAPI/Jinja2 and shared daylily-auth-cognito. Tests and live capture remain off; interactive sign-in and product acceptance are pending.** The user's deployment request supersedes the original source-only boundary for this selected service. The owning execution plan is /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_multiagent_execution_plan.md. Earlier preparation statements below remain historical and are superseded by this receipt.
 
+## Google federation amendment — prepared, not deployed
+
+User requested Google sign-in and verified email access for exactly daylilyinformatics.com and lsmc.com. Source uses shared DomainValidator in canonical human admission, maps Google's email_verified claim, and updates the existing Cognito client in place. Existing sessions without a verified-email marker require sign-in again. Administrative provisioning and agent/device identity remain separate; no automatic account linking.
+
+Both named Marvain Google secrets have no current credential version. No credential copy succeeded. Google Cloud requires user account verification; the Chrome handoff is pending. Required callback: https://marvain-prod-108782052779.auth.us-east-2.amazoncognito.com/oauth2/idpresponse. Google OAuth audience must permit both organizations. No actual OAuth client or credential file has been selected yet.
+
+Planned 4.0.4 packages Hub/Lambda artifacts, retaining worker/dot 4.0.3 images. Prepared script: /Users/jmajor/projects/marvain/docs/plans/20261109_marvain_4x_google_auth_4_0_4.sh. Production remains 4.0.3; builder stopped. No tests or live sign-in performed.
+
+```mermaid
+flowchart LR
+  B[Browser] --> C[Marvain Cognito Hosted UI]
+  C --> G[Google OAuth web client: setup pending]
+  G --> C
+  C --> A[Shared auth: verified email]
+  A --> D[Exact allowed domains]
+  D --> M[Marvain session and API admission]
+```
+
 ## Current deployment receipt — Marvain 4.0.3
 
 | Item | Owning result |

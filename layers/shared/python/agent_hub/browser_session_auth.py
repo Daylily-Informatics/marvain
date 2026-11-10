@@ -15,6 +15,8 @@ from daylily_auth_cognito.browser.session import (
 from starlette.requests import Request
 
 from agent_hub.auth import AuthenticatedUser
+from agent_hub.auth_policy import require_allowed_human_email
+from agent_hub.config import load_config
 
 EnsureUser = Callable[..., str]
 
@@ -163,6 +165,21 @@ def resolve_browser_session_user(
             "Browser session app_context must be a mapping",
         )
     _reject_token_like_keys(app_context)
+
+    try:
+        require_allowed_human_email(
+            email=email,
+            email_verified=app_context.get("email_verified"),
+            allowed_domains=load_config().auth_allowed_email_domains,
+        )
+    except PermissionError as exc:
+        raise BrowserSessionAuthenticationError(
+            "browser_session_email_not_allowed", "A verified email in an allowed domain is required"
+        ) from exc
+    except RuntimeError as exc:
+        raise BrowserSessionConfigurationError(
+            "browser_session_email_policy_unconfigured", "Human email-domain policy is not configured"
+        ) from exc
 
     if "user_id" in app_context:
         user_id = _clean_required_string(app_context["user_id"], field="app_context.user_id")

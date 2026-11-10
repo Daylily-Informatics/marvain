@@ -124,13 +124,21 @@ def authenticate_user_access_token(db: RdsData, access_token: str) -> Authentica
     sub = claims.get("sub")
     if not isinstance(sub, str) or not sub or sub != sub.strip():
         raise PermissionError("Cognito token missing sub")
-    raw_email = claims.get("email")
-    if raw_email is None:
-        email = None
-    elif not isinstance(raw_email, str) or not raw_email or raw_email != raw_email.strip():
-        raise PermissionError("Cognito token contains malformed email")
-    else:
-        email = raw_email
+    from agent_hub.auth_policy import require_allowed_human_email
+    from agent_hub.config import load_config
+
+    cfg = load_config()
+    try:
+        attributes = _cognito_admin_client(user_pool_id=cfg.cognito_user_pool_id).cognito.get_user(
+            AccessToken=access_token
+        )["UserAttributes"]
+    except Exception as exc:
+        raise PermissionError("Unable to resolve Cognito user attributes") from exc
+    by_name = {item["Name"]: item["Value"] for item in attributes}
+    email = require_allowed_human_email(
+        email=by_name.get("email"), email_verified=by_name.get("email_verified") == "true",
+        allowed_domains=cfg.auth_allowed_email_domains,
+    )
 
     user_id = ensure_user_row(db, cognito_sub=sub, email=email)
     return AuthenticatedUser(user_id=user_id, cognito_sub=sub, email=email)

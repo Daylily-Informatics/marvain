@@ -279,6 +279,25 @@ def deployment_initialize_canonical(
         raise ClickException(str(exc)) from exc
 
 
+def deployment_prepare_google_auth(source_secret_arn: str | None = Option(None, "--source-secret-arn"),
+                                   credentials_file: str | None = Option(None, "--credentials-file")) -> None:
+    """Import a selected secret or Google web client JSON credentials file."""
+    from marvain_cli.deployment import prepare_google_auth
+    try:
+        _json(prepare_google_auth(ctx=_load(), source_secret_arn=source_secret_arn, credentials_file=credentials_file))
+    except (ConfigError, OSError) as exc:
+        raise ClickException(str(exc)) from exc
+
+
+def deployment_google_auth_status(source_secret_arn: str | None = Option(None, "--source-secret-arn")) -> None:
+    """Inspect selected Google OAuth and Cognito configuration without secret values."""
+    from marvain_cli.deployment import google_auth_status
+    try:
+        _json(google_auth_status(ctx=_load(), source_secret_arn=source_secret_arn))
+    except (ConfigError, OSError) as exc:
+        raise ClickException(str(exc)) from exc
+
+
 def deployment_start_builder() -> None:
     """Request a normal start of the selected dedicated EC2 builder."""
     from marvain_cli.deployment import start_builder
@@ -1125,6 +1144,8 @@ def register(registry: CommandRegistry, spec: CliSpec) -> None:
         "Read-only deployment target inspection.",
         [
             ("inspect", deployment_inspect, required_policy(supports_json=True)),
+            ("google-auth-status", deployment_google_auth_status, required_policy(supports_json=True)),
+            ("prepare-google-auth", deployment_prepare_google_auth, required_policy(mutates_state=True, supports_json=True)),
             ("source-inputs", deployment_source_inputs, required_policy(supports_json=True)),
             ("launch-builder", deployment_launch_builder, required_policy(mutates_state=True)),
             ("builder-status", deployment_builder_status, required_policy(supports_json=True)),

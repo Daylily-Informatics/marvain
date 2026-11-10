@@ -793,7 +793,7 @@ async def gui_auth_callback(
                 name=cognito_user.name,
                 roles=cognito_user.roles,
                 cognito_groups=cognito_user.cognito_groups,
-                app_context={"user_id": user_id},
+                app_context={"user_id": user_id, "email_verified": cognito_user.email_verified},
             )
 
         resp = await complete_cognito_callback(

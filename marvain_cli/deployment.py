@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+import json
 import re
 from pathlib import Path
 
@@ -605,6 +606,110 @@ def initialize_canonical(*, profile: str, region: str, host: str, port: int, dat
                     os.environ[key] = value
     return {"status": "schema_initialized" if stage == "schema" else "prefixes_initialized",
             "database": database, "builder_instance_id": builder_instance_id}
+
+
+def prepare_google_auth(*, ctx: Any, source_secret_arn: str | None, credentials_file: str | None) -> dict[str, str]:
+    """Import one explicitly selected source of Google OAuth credentials."""
+    if (ctx.env.aws_profile, ctx.env.aws_region, ctx.env.stack_name) != ("lsmc", "us-east-2", "marvain4-prod"):
+        raise ConfigError("Google auth preparation requires lsmc/us-east-2 and stack marvain4-prod")
+    if bool(source_secret_arn) == bool(credentials_file):
+        raise ConfigError("select exactly one of --source-secret-arn or --credentials-file")
+    session = boto3.Session(profile_name=ctx.env.aws_profile, region_name=ctx.env.aws_region)
+    stack = session.client("cloudformation").describe_stacks(StackName=ctx.env.stack_name)["Stacks"][0]
+    outputs = {item["OutputKey"]: item["OutputValue"] for item in stack.get("Outputs", [])}
+    if not outputs.get("GoogleOAuthSecretArn") or not outputs.get("CognitoIdpResponseUrl"):
+        raise ConfigError("selected stack must expose GoogleOAuthSecretArn and CognitoIdpResponseUrl")
+    if source_secret_arn:
+        match = re.fullmatch(r"arn:aws:secretsmanager:([a-z0-9-]+):([0-9]{12}):secret:.+", source_secret_arn)
+        if not match:
+            raise ConfigError("source secret must be an explicit Secrets Manager ARN")
+        if match.group(2) != session.client("sts").get_caller_identity()["Account"]:
+            raise ConfigError("source secret must belong to the selected target account")
+        try:
+            source = session.client("secretsmanager", region_name=match.group(1)).get_secret_value(SecretId=source_secret_arn)
+        except (ClientError, BotoCoreError) as exc:
+            code = exc.response.get("Error", {}).get("Code", type(exc).__name__) if isinstance(exc, ClientError) else type(exc).__name__
+            raise ConfigError(f"Cannot retrieve selected Google OAuth source secret: {code}") from exc
+        try:
+            payload = json.loads(source.get("SecretString", ""))
+        except (TypeError, ValueError) as exc:
+            raise ConfigError("Google OAuth source secret must contain a JSON object") from exc
+        source_receipt = {"source_secret_arn": source_secret_arn}
+    else:
+        path = Path(credentials_file).expanduser().resolve()
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (ValueError, UnicodeError) as exc:
+            raise ConfigError("Google credentials file must contain valid JSON") from exc
+        payload = document.get("web") if isinstance(document, dict) else None
+        if not isinstance(payload, dict):
+            raise ConfigError("Google credentials file must contain a web client object")
+        source_receipt = {"credentials_file": str(path)}
+    if not isinstance(payload, dict) or any(not isinstance(payload.get(key), str) or not payload[key].strip() for key in ("client_id", "client_secret")):
+        raise ConfigError("Google OAuth credentials require nonempty client_id and client_secret")
+    secret = {key: payload[key] for key in ("client_id", "client_secret")}
+    session.client("secretsmanager").put_secret_value(SecretId=outputs["GoogleOAuthSecretArn"], SecretString=json.dumps(secret))
+    return {"status": "copied", **source_receipt,
+            "destination_secret_arn": outputs["GoogleOAuthSecretArn"], "client_id": payload["client_id"],
+            "idp_response_url": outputs["CognitoIdpResponseUrl"]}
+
+
+def google_auth_status(*, ctx: Any, source_secret_arn: str | None = None) -> dict[str, Any]:
+    """Inspect the selected Cognito and Google secret configuration without exposing values."""
+    if (ctx.env.aws_profile, ctx.env.aws_region, ctx.env.stack_name) != ("lsmc", "us-east-2", "marvain4-prod"):
+        raise ConfigError("Google auth inspection requires lsmc/us-east-2 and stack marvain4-prod")
+    session = boto3.Session(profile_name=ctx.env.aws_profile, region_name=ctx.env.aws_region)
+    stack = session.client("cloudformation").describe_stacks(StackName=ctx.env.stack_name)["Stacks"][0]
+    outputs = {item["OutputKey"]: item["OutputValue"] for item in stack.get("Outputs", [])}
+    required = ("GoogleOAuthSecretArn", "CognitoUserPoolId", "CognitoAppClientId", "CognitoDomain", "CognitoIdpResponseUrl")
+    missing = [name for name in required if not outputs.get(name)]
+    if missing:
+        raise ConfigError(f"Selected stack is missing outputs: {', '.join(missing)}")
+    secrets = session.client("secretsmanager")
+    metadata = secrets.describe_secret(SecretId=outputs["GoogleOAuthSecretArn"])
+    current = any("AWSCURRENT" in stages for stages in metadata.get("VersionIdsToStages", {}).values())
+    fields: list[str] = []
+    present = {"client_id": False, "client_secret": False}
+    if current:
+        result = secrets.get_secret_value(SecretId=outputs["GoogleOAuthSecretArn"], VersionStage="AWSCURRENT")
+        try:
+            payload = json.loads(result.get("SecretString", ""))
+        except (TypeError, ValueError) as exc:
+            raise ConfigError("Google OAuth secret must contain a JSON object") from exc
+        if not isinstance(payload, dict):
+            raise ConfigError("Google OAuth secret must contain a JSON object")
+        fields = sorted(str(key) for key in payload)
+        present = {key: isinstance(payload.get(key), str) and bool(payload[key].strip()) for key in present}
+    cognito = session.client("cognito-idp")
+    providers = []
+    for page in cognito.get_paginator("list_identity_providers").paginate(UserPoolId=outputs["CognitoUserPoolId"]):
+        providers.extend(item["ProviderName"] for item in page.get("Providers", []))
+    client = cognito.describe_user_pool_client(UserPoolId=outputs["CognitoUserPoolId"], ClientId=outputs["CognitoAppClientId"])["UserPoolClient"]
+    status = {"secret_arn": outputs["GoogleOAuthSecretArn"], "secret_current_version": current,
+            "secret_fields": fields, "required_fields_present": present,
+            "user_pool_id": outputs["CognitoUserPoolId"], "app_client_id": outputs["CognitoAppClientId"],
+            "domain": outputs["CognitoDomain"], "idp_response_url": outputs["CognitoIdpResponseUrl"],
+            "identity_providers": sorted(providers),
+            "client_supported_identity_providers": client.get("SupportedIdentityProviders", [])}
+    if source_secret_arn is not None:
+        match = re.fullmatch(r"arn:aws:secretsmanager:([a-z0-9-]+):([0-9]{12}):secret:.+", source_secret_arn)
+        if not match:
+            raise ConfigError("source secret must be an explicit Secrets Manager ARN")
+        account = session.client("sts").get_caller_identity()["Account"]
+        if match.group(2) != account:
+            raise ConfigError("source secret must belong to the selected target account")
+        try:
+            source_metadata = session.client("secretsmanager", region_name=match.group(1)).describe_secret(SecretId=source_secret_arn)
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+                raise
+            status["source_secret"] = {"arn": source_secret_arn, "exists": False}
+        else:
+            deleted = source_metadata.get("DeletedDate")
+            status["source_secret"] = {"arn": source_secret_arn, "exists": True,
+                "deleted_date": deleted.isoformat() if deleted else None,
+                "current_version": any("AWSCURRENT" in stages for stages in source_metadata.get("VersionIdsToStages", {}).values())}
+    return status
 
 
 def start_builder(*, ctx: Any) -> dict[str, str]:

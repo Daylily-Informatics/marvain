@@ -95,6 +95,10 @@ Parameters:
       - "false"
     Default: "false"
 
+  AuthAllowedEmailDomains:
+    Type: String
+    Description: Explicit comma-separated domains permitted for verified human sign-in.
+
   GuiCallbackUrls:
     Type: CommaDelimitedList
     Description: Allowed Cognito callback URLs for the (local) GUI OAuth flow
@@ -122,7 +126,6 @@ Conditions:
   IsDeploymentV2: !Equals [!Ref ApiDeploymentVersion, "2"]
   HasCognitoDomainPrefix: !Not [!Equals [!Ref CognitoDomainPrefix, ""]]
   GoogleAuthEnabled: !Equals [!Ref EnableGoogleAuth, "true"]
-  GoogleAuthDisabled: !Equals [!Ref EnableGoogleAuth, "false"]
   AgentWorkerEnabled: !Not [!Equals [!Ref AgentWorkerDesiredCount, 0]]
   DotEventsEnabled: !Equals [!Ref DotEventsMode, "enabled"]
 
@@ -137,6 +140,7 @@ Globals:
     Environment:
       Variables:
         STAGE: !Ref StageName
+        AUTH_ALLOWED_EMAIL_DOMAINS: !Ref AuthAllowedEmailDomains
 
 Resources:
   # -----------------------------
@@ -615,7 +619,7 @@ Resources:
           # Cognito settings
           COGNITO_REGION: !Ref AWS::Region
           COGNITO_USER_POOL_ID: !Ref CognitoUserPool
-          COGNITO_APP_CLIENT_ID: !If [GoogleAuthEnabled, !Ref CognitoUserPoolClientGoogle, !Ref CognitoUserPoolClientNative]
+          COGNITO_APP_CLIENT_ID: !Ref CognitoUserPoolClientNative
           COGNITO_DOMAIN: !If
             - HasCognitoDomainPrefix
             - !Sub ${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
@@ -1558,7 +1562,7 @@ Resources:
           ACTION_QUEUE_URL: !Ref ActionQueue
           COGNITO_REGION: !Ref AWS::Region
           COGNITO_USER_POOL_ID: !Ref CognitoUserPool
-          COGNITO_APP_CLIENT_ID: !If [GoogleAuthEnabled, !Ref CognitoUserPoolClientGoogle, !Ref CognitoUserPoolClientNative]
+          COGNITO_APP_CLIENT_ID: !Ref CognitoUserPoolClientNative
           WS_API_ENDPOINT: !Sub https://${WsApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}
           MARVAIN_METRICS_NAMESPACE: "Marvain"
       Policies:
@@ -1714,6 +1718,7 @@ Resources:
         authorize_scopes: "openid email profile"
       AttributeMapping:
         email: email
+        email_verified: email_verified
         name: name
         username: sub
         given_name: given_name
@@ -1722,7 +1727,6 @@ Resources:
 
   CognitoUserPoolClientNative:
     Type: AWS::Cognito::UserPoolClient
-    Condition: GoogleAuthDisabled
     Properties:
       ClientName: !Sub ${AWS::StackName}-app
       UserPoolId: !Ref CognitoUserPool
@@ -1751,49 +1755,10 @@ Resources:
               - - Fn::Join: [",", !Ref GuiLogoutUrls]
                 - !Sub 'https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/logged-out'
 
-      SupportedIdentityProviders:
-        - COGNITO
-      ExplicitAuthFlows:
-        - ALLOW_USER_PASSWORD_AUTH
-        - ALLOW_USER_SRP_AUTH
-        - ALLOW_REFRESH_TOKEN_AUTH
-
-  CognitoUserPoolClientGoogle:
-    Type: AWS::Cognito::UserPoolClient
-    Condition: GoogleAuthEnabled
-    DependsOn:
-      - CognitoGoogleIdentityProvider
-    Properties:
-      ClientName: !Sub ${AWS::StackName}-app
-      UserPoolId: !Ref CognitoUserPool
-      GenerateSecret: false
-      AllowedOAuthFlows:
-        - code
-      AllowedOAuthFlowsUserPoolClient: true
-      AllowedOAuthScopes:
-        - openid
-        - email
-        - profile
-        - aws.cognito.signin.user.admin
-      CallbackURLs:
-        Fn::Split:
-          - ","
-          - Fn::Join:
-              - ","
-              - - Fn::Join: [",", !Ref GuiCallbackUrls]
-                - !Sub 'https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/auth/callback'
-
-      LogoutURLs:
-        Fn::Split:
-          - ","
-          - Fn::Join:
-              - ","
-              - - Fn::Join: [",", !Ref GuiLogoutUrls]
-                - !Sub 'https://${HubApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/logged-out'
-
-      SupportedIdentityProviders:
-        - COGNITO
-        - Google
+      SupportedIdentityProviders: !If
+        - GoogleAuthEnabled
+        - [COGNITO, !Ref CognitoGoogleIdentityProvider]
+        - [COGNITO]
       ExplicitAuthFlows:
         - ALLOW_USER_PASSWORD_AUTH
         - ALLOW_USER_SRP_AUTH
@@ -1982,7 +1947,7 @@ Outputs:
     Value: !Ref CognitoUserPool
   CognitoAppClientId:
     Description: Cognito App Client ID
-    Value: !If [GoogleAuthEnabled, !Ref CognitoUserPoolClientGoogle, !Ref CognitoUserPoolClientNative]
+    Value: !Ref CognitoUserPoolClientNative
   CognitoIdentityProvider:
     Description: Optional forced identity provider for Hosted UI authorization (e.g. Google)
     Value: !If [GoogleAuthEnabled, "Google", ""]
@@ -2005,11 +1970,11 @@ Outputs:
       - !Sub
           - https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com/login?client_id=${ClientId}&response_type=code&scope=openid+email+profile&redirect_uri=${RedirectUri}
           - RedirectUri: !Select [0, !Ref GuiCallbackUrls]
-            ClientId: !If [GoogleAuthEnabled, !Ref CognitoUserPoolClientGoogle, !Ref CognitoUserPoolClientNative]
+            ClientId: !Ref CognitoUserPoolClientNative
       - !Sub
           - https://marvain-${StageName}-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com/login?client_id=${ClientId}&response_type=code&scope=openid+email+profile&redirect_uri=${RedirectUri}
           - RedirectUri: !Select [0, !Ref GuiCallbackUrls]
-            ClientId: !If [GoogleAuthEnabled, !Ref CognitoUserPoolClientGoogle, !Ref CognitoUserPoolClientNative]
+            ClientId: !Ref CognitoUserPoolClientNative
   SessionSecretArn:
     Description: Secrets Manager ARN containing session secret key
     Value: !Ref SessionSecret
