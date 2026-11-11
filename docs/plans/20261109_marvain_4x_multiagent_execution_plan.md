@@ -2,11 +2,11 @@
 
 **Revision:** 1  
 **Prepared:** 9 November 2026  
-**Status:** Quiet typed face recognition ACCEPTED on Hub 4.0.18 / responder 4.0.17: fresh reference match returned John, and user confirmed the audible reply with Mic Off. Broader recognition work remains incomplete.
+**Status:** Quiet single-person face recognition ACCEPTED. Multi-person conversational attribution is an explicit core requirement and remains unaccepted; Hub 4.0.18 / responder 4.0.17 unchanged.
 
 ## Current continuation state
 
-10 November 2026: RESUMED by John for quiet interaction: “i have to be quiet so i cant be speaking, but i can type and listen!” Stop condition: microphone-off typed conversation with audible replies and a fresh face comparison to John's approved reference. User later asked about pets; Chunk individual recognition remains unimplemented and tracked in WP-32. No tests, lint, CI, PR/merge, local container builds, destructive cleanup, schedules, or automatic future resumption.
+10 November 2026: quiet face interaction is accepted. John clarifies: “the intention of face and voice is also so you can participate in multi-person conversations and track who is saying what.” This adds explicit group-conversation acceptance criteria to existing DAY-31/DAY-23, alongside the animal and sensitive-action requirements. Current action is requirement/plan reconciliation; no new runtime execution is claimed or initiated. Mic Off remains the user's current interaction preference. No tests, lint, CI, PR/merge, local container builds, destructive cleanup, schedules or automatic future resumption.
 
 Workspace /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain; branch codex/marvain-interactive-resume. Hub 4.0.18 source 0b052b0 deployed; responder 4.0.17 source 15f69d6 and recognition image 4.0.16 source d29891b retained. Target lsmc/account 108782052779/us-east-2/marvain4-prod, config /Users/jmajor/.config/marvain/marvain-lsmc-us-east-2.yaml. Builder i-0325430bfec70e41e stopped after 4.0.18 artifact transfer through the owning CLI (running -> stopping). Last IP 3.144.9.33; resolve on next restart. Both worker image parameters retained.
 
@@ -14,7 +14,41 @@ User granted John GLOBAL consent without expiry and personally approved both enr
 
 Chrome Live Session tab 762569089 is connected with Mic Off and camera off, session 3ae26881-c572-48d8-83fa-3e08b76d36a4. User reports “redbox error.” UI shows classification_unavailable: provider_not_configured when sending typed “hi,” before dispatch to the responder; no fresh face comparison occurred. Hub lacked the memory classifier provider/model, SDK dependency, and explicit injection of the existing Secrets Manager OpenAI credential. Source repair adds these without changing classifier semantics, deterministic fallback, or worker images. Existing classifier test fixture updated for the credential argument; no tests run.
 
-4.0.18 annotated tag and branch pushed. Final EC2 build returned pane_dead=1/status=0 and Build Succeeded. Artifact transfer/extraction completed, builder stop accepted, and owning deployment session 70274 returned exit 0 and stack success. Typed chat retry succeeded in the same Mic Off session: request at 11:24:22 PM ET, transcript reply at 11:24:42 PM ET. User enabled camera; worker acknowledged a fresh visual observation at 11:24:49 PM ET. Fresh face request submitted at 11:24:57 PM ET. UI lifecycle reports face.snapshot and Fresh face comparison: John at 11:25:10 PM ET; spoken-reply transcript at 11:25:22 PM ET. User explicitly answered “Yes, I heard it” to hearing the reply with Mic Off. Quiet face objective accepted. No additional capture or infrastructure change required. Next broader work: fresh voice comparison, mismatch/conflict handling and Chunk; these are not accepted. Evidence under /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/build/releases/4.0.18/. DAY-142 remains Active; fresh voice matching, Join/Leave timing, second-login binding, fresh voice quality, sensitive checks, Chunk and the broader two-location demonstration remain incomplete. Recall and changed-view/camera-off acceptance are retained.
+4.0.18 annotated tag and branch pushed. Final EC2 build returned pane_dead=1/status=0 and Build Succeeded. Artifact transfer/extraction completed, builder stop accepted, and owning deployment session 70274 returned exit 0 and stack success. Typed chat retry succeeded in the same Mic Off session: request at 11:24:22 PM ET, transcript reply at 11:24:42 PM ET. User enabled camera; worker acknowledged a fresh visual observation at 11:24:49 PM ET. Fresh face request submitted at 11:24:57 PM ET. UI lifecycle reports face.snapshot and Fresh face comparison: John at 11:25:10 PM ET; spoken-reply transcript at 11:25:22 PM ET. User explicitly answered “Yes, I heard it” to hearing the reply with Mic Off. Quiet face objective accepted. No additional capture or infrastructure change required. Next group milestone: two people plus Marvain with attributed turns and recall (DAY-31/WP-36); fresh voice comparison, mismatch/conflict handling and Chunk remain unaccepted. Evidence under /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/build/releases/4.0.18/. DAY-142 remains Active; fresh voice matching, Join/Leave timing, second-login binding, fresh voice quality, sensitive checks, Chunk and the broader two-location demonstration remain incomplete. Recall and changed-view/camera-off acceptance are retained.
+
+## Multi-person conversational attribution — clarified 10 November 2026
+
+John: “the intention of face and voice is also so you can participate in multi-person conversations and track who is saying what.” This explicitly connects recognition to the existing conversation and memory requirements. Canonical work records: [DAY-31](https://linear.app/daylilyinformatics/issue/DAY-31/specify-multi-actor-conversation-and-intended-recipient-routing), [DAY-23](https://linear.app/daylilyinformatics/issue/DAY-23/specify-human-voice-appearance-and-cross-encounter-association), and activation/acceptance DAY-142. WP-36 is planned; this section does not claim an implemented group capability.
+
+| Required behavior | Product meaning |
+|---|---|
+| Speaker turns | Timestamped speech spans and stable local speaker tracks, including speaker changes, off-camera speech and overlap. Diarization distinguishes tracks; recognition associates supported tracks with known actors. |
+| Linked identity | Voice and visual evidence can support the same persistent human actor. A visible face, signed-in user or room owner alone does not establish who spoke. Presence and active-speaker evidence remain distinct. |
+| Conversation roles | Record speaker/source, addressee, audience, scene, session and source media span separately, with evidence basis and uncertainty. Unknown or conflicting attribution stays unresolved. |
+| Agent participation | Marvain and other agents retain their own actor/run provenance. Respond in the intended local exchange, support turn-taking and interruptions, and preserve separate simultaneous scenes. |
+| Person-attributed memory | Recall who said what, when, where and to whom. Distinguish a speaker from a person they mention; do not assign everyone's claims, preferences or commitments to John. |
+| Corrections | Preserve original evidence and attribution history; corrected attribution governs later recall through canonical TapDB typed objects and lineage. Existing consent/audience/action contracts remain in force. |
+
+```mermaid
+flowchart LR
+  Audio[Scene audio] --> Turns[Timestamped speaker turns]
+  Video[Scene video] --> Faces[Face and presence observations]
+  Turns --> Association[Evidence-based actor association]
+  Faces --> Association
+  Known[Reviewed voice and face references] --> Association
+  Association --> Conversation[Speaker, addressee, audience and scene]
+  Agents[Agent messages with actor and run provenance] --> Conversation
+  Conversation --> Participation[Marvain replies to the appropriate exchange]
+  Conversation --> Memory[TapDB attributed evidence and episodes]
+  Correction[Human attribution correction] --> Memory
+  Memory --> Recall[Recall each participant's contribution]
+```
+
+This diagram specifies the intended group flow. The accepted single-person face tool supplies one building block; a camera preview, a greeting using John's name or a room participant identity does not prove per-utterance speaker association.
+
+Proposed attended group milestone: two people plus Marvain in one scene. Alternate turns, switch seats, include an off-camera turn and overlapping/ambiguous speech, and correct an attribution. Show speaker-attributed turns and Marvain's own replies; later recall must distinguish each person's contribution. Unknown evidence must remain unknown. Extend this same contract to the planned second location afterward. No group capture or automated test was run for this clarification.
+
+Individual animal recognition remains related but separate: animal sounds/observations must not become invented human speech or intent. Sensitive-action authorization remains separately scoped. No runtime provider, new library or deployment was selected in this requirements update.
 
 ## Hub typed-chat repair — 10 November 2026
 
@@ -74,6 +108,7 @@ Recommendation for one night: retain the deployment. Scaling the responder to ze
 | WP-30 | Fresh camera observations in spoken conversation | SUCCESS | A0 | observe_camera function tool and enabled-camera browser RPC deployed in 4.0.14; user accepted two changed views and camera-off behavior. |
 | WP-31 | John linked voice/face enrollment and fresh recognition | IN_PROGRESS | John + A0 | Both enrollment proposals accepted and active. Fresh face reference comparison accepted on Hub 4.0.18/responder 4.0.17; fresh voice comparison remains pending. |
 | WP-35 | Quiet typed conversation and live face matching | SUCCESS | John + A0 | 4.0.17 deployed with microphone-off Join and fresh face tool. Typed chat failed before responder dispatch because Hub classifier config was absent. Hub-only 4.0.18 repair deployed; lifecycle returned fresh reference match John and user confirmed audible reply with Mic Off (“Yes, I heard it”). |
+| WP-36 | Multi-person conversation and speaker-attributed recall | PLANNED | John + A0 | DAY-31/DAY-23: distinguish speaker turns, associate voice/face evidence with persistent actors, retain unknown/overlap, route replies and recall each participant's contributions. One-person face acceptance does not close this requirement. |
 | WP-32 | Chunk individual dog recognition | IN_PROGRESS | John + A0 | Canonical animal and caretaker objects exist as supported types; current human biometric projections do not implement dog identity. Inspect reference matching options and add explicit animal enrollment/recognition path with unknown handling. |
 | WP-33 | Voice sample suitability and reading prompt | IN_PROGRESS | A0 | Explicit user request; >=5 seconds detected enrollment speech and clipping rejection, user-visible reasons, canonical source-linked decision. Deployed in 4.0.16; fresh user sample pending. |
 | WP-34 | Repair attended biometric and account-link failures | IN_PROGRESS | A0 | Face version-read and Cognito ListUsers permission defects confirmed; voice processor timed out. Replacement 4.0.16 deployed; Cognito retry accepted (“Account linked”). Face/voice attended acceptance pending. 4.0.15 never deployed. |

@@ -140,6 +140,11 @@
     {
       "id": "two_location_recall",
       "status": "not_accepted"
+    },
+    {
+      "id": "multi_person_speaker_attribution",
+      "status": "not_accepted",
+      "requirement": "DAY-31: attributed turns, linked voice/face identity, addressees, unknown/overlap handling, corrections and per-person recall"
     }
   ]
 }
