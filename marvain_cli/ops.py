@@ -790,6 +790,8 @@ def sam_deploy(ctx: Ctx, *, dry_run: bool, guided: bool, no_confirm: bool = Fals
         # the published ECR digest. Reuse that explicitly selected repository.
         "--image-repositories",
         "RecognitionVoiceFunction=" + str(param_overrides["RecognitionImageUri"]).split("@", 1)[0],
+        "--image-repositories",
+        "RecognitionDogFunction=" + str(param_overrides["RecognitionImageUri"]).split("@", 1)[0],
         "--no-fail-on-empty-changeset",
         "--tags",
         MARVAIN_PROJECT_TAG,
