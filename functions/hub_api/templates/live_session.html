@@ -520,6 +520,33 @@ async function joinLiveSession() {
     appendLog('lifecycle-log', 'Fresh face comparison: ' + label);
     return JSON.stringify({ok: true, ...result});
   });
+  cameraRoom.localParticipant.registerRpcMethod('marvain.recognize_dogs', async function(data) {
+    const caller = cameraRoom.remoteParticipants.get(data.callerIdentity);
+    if (!caller || caller.isAgent !== true) return JSON.stringify({ok:false, error:'dog_request_requires_agent'});
+    const request = JSON.parse(data.payload);
+    if (room !== cameraRoom || activeSession !== cameraSession || request.session_id !== cameraSession) {
+      return JSON.stringify({ok:false, error:'stale_session'});
+    }
+    const cameraTrack = localVideoTrack;
+    if (!cameraTrack) return JSON.stringify({ok:false, error:'camera_is_off'});
+    const blob = await captureCameraBlob();
+    if (!blob) throw new Error('Camera produced an empty frame');
+    const selected = document.getElementById('space_id').selectedOptions[0];
+    const form = new FormData();
+    form.append('agent_id', selected.getAttribute('data-agent-id'));
+    form.append('space_id', selected.value);
+    form.append('session_id', cameraSession);
+    form.append('file', blob, 'live-dogs.jpg');
+    const response = await fetch(Marvain.path('/api/dogs/captures'), {method:'POST', body:form});
+    const result = await response.json();
+    if (!response.ok) return JSON.stringify({ok:false, error:result.detail || 'Dog recognition failed'});
+    if (room !== cameraRoom || activeSession !== cameraSession || localVideoTrack !== cameraTrack) {
+      return JSON.stringify({ok:false, error:'camera_or_session_changed'});
+    }
+    const labels = result.dogs.map(dog => dog.candidate ? 'possible match to ' + dog.candidate.display_name : dog.result);
+    appendLog('lifecycle-log', 'Fresh dog comparison: ' + (labels.join('; ') || 'no dog detected'));
+    return JSON.stringify({ok:true, ...result});
+  });
   room.on(lk.RoomEvent.Disconnected, function(reason) {
     appendLog('lifecycle-log', 'LiveKit disconnected' + (reason ? ': ' + reason : ''));
   });

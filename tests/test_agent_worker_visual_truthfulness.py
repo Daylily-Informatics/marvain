@@ -44,6 +44,7 @@ def test_visual_guard_is_always_added_to_agent_instructions() -> None:
             session_euid="test-session",
             camera_observer=mock.AsyncMock(return_value={"ok": False, "error": "camera_is_off"}),
             face_recognizer=mock.AsyncMock(return_value={"ok": False, "error": "camera_is_off"}),
+            dog_recognizer=mock.AsyncMock(return_value={"ok": False, "error": "camera_is_off"}),
         )
 
     assert "Vision / Sensor Truthfulness" in captured["text"]

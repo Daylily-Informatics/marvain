@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block title %}Dogs - Marvain{% endblock %}
+{% block content %}
+<div class="page-header"><div><h1 class="page-title"><i class="fas fa-dog"></i> Dogs</h1>
+  <p class="text-muted">Give each dog a name and reviewed reference photos. Marvain can then compare the live camera with those references.</p></div></div>
+<div class="card mb-lg"><div class="card-body">
+  <label for="dog-space">Space</label>
+  <select id="dog-space"><option value="">Choose a space</option>{% for space in spaces %}
+    <option value="{{ space.space_id }}" data-agent-id="{{ space.agent_id }}">{{ space.name }} — {{ space.agent_name }}</option>
+  {% endfor %}</select>
+  <p id="dog-status" role="status" aria-live="polite">Choose the space you use for Live Session.</p>
+</div></div>
+<div class="card mb-lg"><div class="card-header"><h2>1. Register a dog</h2></div><div class="card-body">
+  <form id="dog-create"><label for="dog-name">Name</label> <input id="dog-name" maxlength="200" required placeholder="Dog’s name">
+    <p><label><input type="checkbox" id="dog-caretaker" required> I am this dog’s caretaker or have permission to register its photos.</label></p>
+    <button class="btn btn-primary" type="submit">Register dog</button>
+  </form>
+</div></div>
+<div class="card mb-lg"><div class="card-header"><h2>2. Add and review reference photos</h2></div><div class="card-body">
+  <label for="dog-select">Dog</label> <select id="dog-select"><option value="">Choose a dog</option></select>
+  <p>Use clear photos with only this dog in view. Add several views across separate photos, including its face and body. No speech is needed.</p>
+  <label for="dog-file">Choose a JPEG or PNG</label> <input id="dog-file" type="file" accept="image/jpeg,image/png">
+  <button id="dog-file-upload" type="button" class="btn btn-primary">Upload photo</button>
+  <p>Or use this device’s camera:</p>
+  <button id="dog-camera-start" type="button" class="btn btn-outline">Start camera</button>
+  <button id="dog-camera-snapshot" type="button" class="btn btn-outline" disabled>Snapshot</button>
+  <button id="dog-camera-upload" type="button" class="btn btn-primary" disabled>Upload snapshot</button>
+  <button id="dog-camera-stop" type="button" class="btn btn-outline" disabled>Stop camera</button>
+  <div style="display:flex;flex-wrap:wrap;gap:1rem;margin-top:1rem">
+    <video id="dog-camera" autoplay playsinline muted style="max-width:360px;width:100%" hidden></video>
+    <canvas id="dog-snapshot" style="max-width:360px;width:100%" hidden></canvas>
+  </div>
+  <p>After upload, check the outlined dog in the reference and click <strong>Approve reference</strong>. Only approved photos are used for matching.</p>
+  <div id="dog-references" style="display:flex;flex-wrap:wrap;gap:1rem"></div>
+</div></div>
+<div class="card"><div class="card-header"><h2>3. Recognize a dog in Live Session</h2></div><div class="card-body">
+  <p>Join the same space, enable Camera, and type or say “Recognize the dog from the camera.” You can leave Mic Off and listen to the reply.</p>
+  <p class="text-muted">This first version compares visual references. A possible match is not certainty. An unknown or ambiguous dog stays unresolved.</p>
+  <a class="btn btn-primary" href="{{ url_for('gui_live_session') }}">Open Live Session</a>
+</div></div>
+{% endblock %}
+{% block scripts %}
+<script>
+(() => {
+  const el = id => document.getElementById(id);
+  let dogs = [], stream = null, snapshot = null, busy = false;
+  function status(message, error=false) { el('dog-status').textContent = message; el('dog-status').className = error ? 'text-danger' : ''; }
+  function scope() {
+    const option = el('dog-space').selectedOptions[0];
+    if (!option || !option.value) throw new Error('Choose a space first.');
+    return {space_id: option.value, agent_id: option.dataset.agentId};
+  }
+  async function api(path, options={}) {
+    const response = await fetch(Marvain.path(path), options);
+    const result = await response.json();
+    if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'The request failed.');
+    return result;
+  }
+  async function action(message, fn) {
+    if (busy) return;
+    busy = true; status(message);
+    const controls = [...document.querySelectorAll('#dog-create input, #dog-create button, #dog-space, #dog-select, #dog-file-upload, #dog-camera-upload')];
+    const previous = controls.map(control => control.disabled);
+    controls.forEach(control => control.disabled = true);
+    try { await fn(); } catch (error) { status(error.message, true); }
+    finally { controls.forEach((control, index) => control.disabled = previous[index]); busy = false; }
+  }
+  async function loadDogs(selectedId) {
+    const data = await api('/api/dogs?' + new URLSearchParams(scope())); dogs = data.dogs;
+    el('dog-select').replaceChildren(new Option('Choose a dog', ''));
+    dogs.forEach(dog => el('dog-select').add(new Option(dog.display_name, dog.dog_id)));
+    if (selectedId) el('dog-select').value = selectedId;
+    renderReferences();
+  }
+  function renderReferences() {
+    el('dog-references').replaceChildren();
+    const dog = dogs.find(item => item.dog_id === el('dog-select').value);
+    if (!dog) return;
+    if (!dog.references.length) { el('dog-references').textContent = 'No reference photos yet.'; return; }
+    dog.references.forEach(reference => {
+      const card = document.createElement('div'); card.style.width = '280px';
+      const photo = document.createElement('div'); photo.style.position = 'relative';
+      const img = document.createElement('img'); img.src = reference.photo_url; img.alt = dog.display_name + ' reference'; img.style.cssText = 'width:100%;display:block';
+      photo.append(img);
+      const [left, top, right, bottom] = reference.box;
+      const box = document.createElement('div'); box.style.cssText = `position:absolute;border:3px solid #38bdf8;box-sizing:border-box;left:${left*100}%;top:${top*100}%;width:${(right-left)*100}%;height:${(bottom-top)*100}%`;
+      photo.append(box); card.append(photo);
+      const label = document.createElement('p'); label.textContent = reference.state === 'active' ? 'Approved reference' : reference.state.replaceAll('_', ' '); card.append(label);
+      const review = decision => action('Saving reference review…', async () => {
+        await api('/api/dogs/references/' + encodeURIComponent(reference.reference_id) + '/review', {
+          method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({...scope(), decision})});
+        await loadDogs(dog.dog_id); status(decision === 'approve' ? 'Reference approved. It is now available for matching.' : 'Reference revoked. It will no longer be used for matching.');
+      });
+      if (reference.state === 'review_required') {
+        const button = document.createElement('button'); button.className = 'btn btn-primary'; button.textContent = 'Approve reference'; button.onclick = () => review('approve'); card.append(button);
+      }
+      if (reference.state !== 'revoked') {
+        const button = document.createElement('button'); button.className = 'btn btn-outline'; button.textContent = 'Revoke reference'; button.onclick = () => review('revoke'); card.append(button);
+      }
+      el('dog-references').append(card);
+    });
+  }
+  async function upload(blob) {
+    const dogId = el('dog-select').value;
+    if (!dogId) throw new Error('Choose a dog first.');
+    if (!blob) throw new Error('Choose a photo or take a snapshot first.');
+    const form = new FormData(); Object.entries(scope()).forEach(([key, value]) => form.append(key, value));
+    form.append('file', blob, blob.type === 'image/png' ? 'dog.png' : 'dog.jpg');
+    await api('/api/dogs/' + encodeURIComponent(dogId) + '/references', {method:'POST', body:form});
+    await loadDogs(dogId); status('Photo uploaded. Review the outlined dog below and approve the reference.');
+  }
+  el('dog-space').onchange = () => action('Loading dogs…', async () => { await loadDogs(); status('Choose or register a dog.'); });
+  el('dog-select').onchange = renderReferences;
+  el('dog-create').onsubmit = event => {
+    event.preventDefault(); action('Registering dog…', async () => {
+      const result = await api('/api/dogs', {method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({...scope(), name:el('dog-name').value, caretaker_confirmed:el('dog-caretaker').checked})});
+      await loadDogs(result.dog_id); status('Dog registered. Add a clear reference photo.');
+    });
+  };
+  el('dog-file-upload').onclick = () => action('Processing dog photo…', () => upload(el('dog-file').files[0]));
+  el('dog-camera-start').onclick = async () => {
+    try {
+      if (stream) return;
+      stream = await navigator.mediaDevices.getUserMedia({video:true, audio:false});
+      el('dog-camera').srcObject = stream; el('dog-camera').hidden = false;
+      el('dog-camera-snapshot').disabled = false; el('dog-camera-stop').disabled = false;
+    } catch (error) { status(error.message, true); }
+  };
+  el('dog-camera-snapshot').onclick = async () => {
+    const video = el('dog-camera'), canvas = el('dog-snapshot');
+    if (!video.videoWidth) { status('Wait for the camera preview.', true); return; }
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0); canvas.hidden = false;
+    snapshot = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9));
+    el('dog-camera-upload').disabled = !snapshot;
+  };
+  el('dog-camera-upload').onclick = () => action('Processing dog snapshot…', () => upload(snapshot));
+  function stopCamera() {
+    if (stream) stream.getTracks().forEach(track => track.stop());
+    stream = null; el('dog-camera').srcObject = null; el('dog-camera').hidden = true;
+    el('dog-camera-snapshot').disabled = true; el('dog-camera-stop').disabled = true;
+  }
+  el('dog-camera-stop').onclick = stopCamera;
+  window.addEventListener('pagehide', stopCamera);
+})();
+</script>
+{% endblock %}

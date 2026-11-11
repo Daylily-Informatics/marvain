@@ -6070,6 +6070,67 @@ def api_observability_failure_scenarios(request: Request) -> JSONResponse:
     return JSONResponse({"failure_scenarios": failure_catalog()})
 
 
+@app.get("/dogs", name="gui_dogs")
+def gui_dogs(request: Request) -> Response:
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/dogs")
+    spaces = list_spaces_for_user(_get_db(), user_id=user.user_id)
+    return templates.TemplateResponse(request, "dogs.html", {
+        "user": {"email": user.email, "user_id": str(user.user_id)},
+        "stage": _cfg.stage, "active_page": "dogs",
+        "spaces": [{"space_id": sp.space_id, "agent_id": sp.agent_id,
+                    "name": sp.name, "agent_name": sp.agent_name} for sp in spaces],
+        **_get_ws_context(request),
+    })
+
+
+def _dog_request_user(request: Request):
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    return user
+
+
+@app.get("/api/dogs")
+def api_dogs(request: Request, agent_id: str, space_id: str):
+    from dog_recognition import context, list_dogs
+    user = _dog_request_user(request)
+    ctx = context(_get_db(), user=user, agent_id=agent_id, space_id=space_id)
+    return list_dogs(ctx, bucket=_cfg.artifact_bucket, s3=_get_s3())
+
+
+@app.post("/api/dogs")
+async def api_dog_create(request: Request):
+    from dog_recognition import context, create_dog
+    user = _dog_request_user(request)
+    body = await request.json()
+    ctx = context(_get_db(), user=user, agent_id=body.get("agent_id"), space_id=body.get("space_id"))
+    return create_dog(ctx, name=body.get("name"), caretaker_confirmed=body.get("caretaker_confirmed"))
+
+
+@app.post("/api/dogs/{dog_id}/references")
+async def api_dog_reference(request: Request, dog_id: str):
+    from dog_recognition import capture
+    return await capture(_get_db(), request=request, user=_dog_request_user(request),
+                         cfg=_cfg, s3=_get_s3(), dog_id=dog_id)
+
+
+@app.post("/api/dogs/references/{reference_id}/review")
+async def api_dog_reference_review(request: Request, reference_id: str):
+    from dog_recognition import context, review_reference
+    user = _dog_request_user(request)
+    body = await request.json()
+    ctx = context(_get_db(), user=user, agent_id=body.get("agent_id"), space_id=body.get("space_id"))
+    return review_reference(ctx, reference_id=reference_id, decision=body.get("decision"))
+
+
+@app.post("/api/dogs/captures")
+async def api_dog_capture(request: Request):
+    from dog_recognition import capture
+    return await capture(_get_db(), request=request, user=_dog_request_user(request), cfg=_cfg, s3=_get_s3())
+
+
 @app.get("/live-session", name="gui_live_session")
 def gui_live_session(request: Request, space_id: str | None = None) -> Response:
     user = _gui_get_user(request)

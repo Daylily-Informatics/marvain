@@ -625,6 +625,29 @@ Resources:
             BatchSize: 1
             FunctionResponseTypes: [ReportBatchItemFailures]
 
+  RecognitionDogFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      SkipBuild: true
+    Properties:
+      PackageType: Image
+      ImageUri: !Ref RecognitionImageUri
+      ImageConfig:
+        Command: [dog_handler.handler]
+      Architectures: [x86_64]
+      MemorySize: 3072
+      Timeout: 120
+      Environment:
+        Variables:
+          ARTIFACT_BUCKET: !Ref ArtifactBucket
+          DOG_DETECTION_THRESHOLD: '0.5'
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action: [s3:GetObject, s3:GetObjectVersion]
+              Resource: !Sub ${ArtifactBucket.Arn}/private-dogs/*
+
   HubApiFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -649,6 +672,9 @@ Resources:
           REKOGNITION_FACE_THRESHOLD: '98'
           RECOGNITION_EXECUTION_MODE: lambda_on_demand
           RECOGNITION_QUEUE_URL: !Ref RecognitionQueue
+          DOG_RECOGNITION_FUNCTION_NAME: !Ref RecognitionDogFunction
+          DOG_MATCH_SIMILARITY: '0.70'
+          DOG_MATCH_MARGIN: '0.05'
           TAPDB_WRITER_QUEUE_URL: !Ref TapdbWriterQueue
           SEMANTIC_OUTBOX_DISPATCHER_FUNCTION_NAME: !Ref SemanticOutboxDispatcherFunction
           INTEGRATION_QUEUE_URL: !Ref IntegrationQueue
@@ -700,10 +726,14 @@ Resources:
               Resource: !GetAtt CognitoUserPool.Arn
             - Effect: Allow
               Action: s3:GetObjectVersion
-              Resource: !Sub ${ArtifactBucket.Arn}/private-recognition/*
+              Resource:
+                - !Sub ${ArtifactBucket.Arn}/private-recognition/*
+                - !Sub ${ArtifactBucket.Arn}/private-dogs/*
             - Effect: Allow
               Action: lambda:InvokeFunction
-              Resource: !GetAtt SemanticOutboxDispatcherFunction.Arn
+              Resource:
+                - !GetAtt SemanticOutboxDispatcherFunction.Arn
+                - !GetAtt RecognitionDogFunction.Arn
         - DynamoDBCrudPolicy:
             TableName: !Ref WsConnectionsTable
         - DynamoDBCrudPolicy:

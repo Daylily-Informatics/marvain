@@ -59,7 +59,7 @@
       </a>
 
       <div class="nav-dropdown">
-        <button type="button" class="nav-dropdown-toggle {% if active_page in ('agents', 'people', 'personas', 'locations', 'spaces', 'devices') %}active{% endif %}" aria-haspopup="true">
+        <button type="button" class="nav-dropdown-toggle {% if active_page in ('agents', 'people', 'dogs', 'personas', 'locations', 'spaces', 'devices') %}active{% endif %}" aria-haspopup="true">
           <i class="fas fa-sliders"></i> Set up
         </button>
         <div class="nav-dropdown-menu">
@@ -71,6 +71,9 @@
           </a>
           <a href="{{ url_for('gui_people') }}" class="{% if active_page == 'people' %}active{% endif %}">
             <i class="fas fa-users"></i> People and consent
+          </a>
+          <a href="{{ url_for('gui_dogs') }}" class="{% if active_page == 'dogs' %}active{% endif %}">
+            <i class="fas fa-dog"></i> Dogs
           </a>
           <a href="{{ url_for('gui_devices') }}" class="{% if active_page == 'devices' %}active{% endif %}">
             <i class="fas fa-microchip"></i> Devices

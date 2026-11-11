@@ -135,7 +135,16 @@
     },
     {
       "id": "dog_identity",
-      "status": "not_accepted"
+      "status": "not_accepted",
+      "steps": [
+        "Open Dogs, select laptop, and register the dog with caretaker permission.",
+        "Upload clear individual-dog photos from several views and explicitly approve the outlined reference dog.",
+        "Join Live Session with Mic Off, enable Camera, and type Recognize the dog from the camera.",
+        "Confirm the fresh comparison and audible tentative match on a different view of the enrolled dog.",
+        "Show a different dog and an absent or obscured dog; unsupported identities must remain unknown.",
+        "Rejoin and ask about the dog encounter; recall must retain its time, evidence, and uncertainty."
+      ],
+      "execution": "Pending attended enrollment and acceptance; no automated run"
     },
     {
       "id": "two_location_recall",
