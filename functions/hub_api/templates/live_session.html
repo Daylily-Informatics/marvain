@@ -22,7 +22,7 @@
       <option value="">Select a space</option>
       {% for space in spaces %}
       <option value="{{ space.space_id }}" data-agent-id="{{ space.agent_id }}" {% if selected_space == space.space_id|string %}selected{% endif %}>
-        {{ space.agent_name }} / {{ space.name }} ({{ space.livekit_room_mode }})
+        {{ space.agent_name }} / {{ space.name }}
       </option>
       {% endfor %}
     </select>
@@ -602,6 +602,7 @@ async function joinLiveSession() {
     }
     appendLog('transcript-log', (participant ? participant.identity : 'room') + ': ' + text);
   });
+  setBadgeText('worker-live-state', 'Waiting for responder', 'info');
   await room.connect(data.url, data.token);
   appendLog('lifecycle-log', 'Joined LiveKit room ' + data.room);
   wireExistingRemoteTracks();
@@ -808,6 +809,17 @@ function eventText(event) {
 function renderSessionEvent(event) {
   if (!event || !event.event_id || seenEvents.has(event.event_id)) return;
   seenEvents.add(event.event_id);
+  const payload = event.payload || {};
+  if (event.type === 'worker.health') {
+    const states = {starting: ['Responder starting', 'info'], ready: ['Responder ready', 'success'],
+      closing: ['Responder closing', 'outline'], failed: ['Responder failed', 'danger']};
+    const status = states[payload.state];
+    if (status) setBadgeText('worker-live-state', status[0], status[1]);
+  }
+  if (event.type === 'session.state_transition' && payload.to_state === 'failed') {
+    setBadgeText('worker-live-state', 'Responder failed — leave and rejoin', 'danger');
+    appendError('Session failed: ' + payload.reason);
+  }
   const target = String(event.type || '').includes('chat') || String(event.type || '').includes('transcript')
     ? 'transcript-log'
     : 'lifecycle-log';

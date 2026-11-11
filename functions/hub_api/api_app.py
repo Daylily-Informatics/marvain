@@ -951,9 +951,11 @@ async def _mint_livekit_token_for_user(
         raise HTTPException(status_code=403, detail="Forbidden")
     url, api_key, api_secret = _require_livekit_config()
 
-    resolved_mode = str(room_mode or _space_livekit_room_mode(space_id=space_id) or "ephemeral").strip().lower()
-    if resolved_mode not in {"ephemeral", "stable"}:
-        resolved_mode = "ephemeral"
+    # Browser joins create distinct durable sessions. Reusing a satellite's
+    # stable room also reuses its token-time dispatch, including a failed job.
+    resolved_mode = "ephemeral" if room_mode is None else room_mode.strip().lower()
+    if resolved_mode != "ephemeral":
+        raise HTTPException(status_code=400, detail="Browser sessions require ephemeral media rooms")
 
     from browser_activation import prepare_browser_scene
     from fastapi.responses import JSONResponse

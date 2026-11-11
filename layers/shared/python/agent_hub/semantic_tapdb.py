@@ -570,14 +570,25 @@ class DaylilyTapdbSemanticStore:
             yield self._read_view_for_session(session)
 
     def _read_view_for_session(self, session: Any) -> SemanticReadView:
+        from daylily_tapdb.models.lineage import generic_instance_lineage
         from daylily_tapdb.services.object_lookup import find_object_by_euid
+        from sqlalchemy.orm import joinedload
 
         store = self
         class View:
+            def __init__(self) -> None:
+                # A view lives only for this transaction. Recall repeatedly follows
+                # the same objects and policy edges; retain that resolved graph here.
+                self.instances: dict[str, Any] = {}
+                self.relations: dict[tuple[str, bool], dict[str, tuple[SemanticObject, ...]]] = {}
+
             def _find(self, semantic_id: str) -> Any:
+                if semantic_id in self.instances:
+                    return self.instances[semantic_id]
                 obj, record_type = find_object_by_euid(session, semantic_id)
                 if obj is None or record_type != "instance":
                     raise KeyError(f"unknown TapDB instance: {semantic_id}")
+                self.instances[semantic_id] = obj
                 return obj
 
             def get_object(self, semantic_id: str) -> SemanticObject:
@@ -585,11 +596,22 @@ class DaylilyTapdbSemanticStore:
 
             def linked_objects(self, semantic_id: str, *, relationship_type: str,
                                incoming: bool = False) -> tuple[SemanticObject, ...]:
-                instance = self._find(semantic_id)
-                relation = instance.child_of_lineages if incoming else instance.parent_of_lineages
-                edges = relation.filter_by(is_deleted=False, relationship_type=relationship_type)
-                attr = "parent_instance" if incoming else "child_instance"
-                return tuple(store._semantic_object_from_instance(getattr(edge, attr)) for edge in edges)
+                key = (semantic_id, incoming)
+                if key not in self.relations:
+                    instance = self._find(semantic_id)
+                    relation = instance.child_of_lineages if incoming else instance.parent_of_lineages
+                    attr = "parent_instance" if incoming else "child_instance"
+                    edges = relation.filter_by(is_deleted=False).options(
+                        joinedload(getattr(generic_instance_lineage, attr)))
+                    grouped: dict[str, list[SemanticObject]] = {}
+                    for edge in edges:
+                        related = getattr(edge, attr)
+                        if not related.is_deleted:
+                            self.instances[str(related.euid)] = related
+                        grouped.setdefault(edge.relationship_type, []).append(
+                            store._semantic_object_from_instance(related))
+                    self.relations[key] = {kind: tuple(items) for kind, items in grouped.items()}
+                return self.relations[key].get(relationship_type, ())
 
             def operational_session_status(self, *, session_id: str, agent_id: str, space_id: str) -> str | None:
                 from sqlalchemy import text

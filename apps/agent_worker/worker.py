@@ -1367,7 +1367,7 @@ async def forge_agent(ctx: agents.JobContext):
     room_session_id = metadata.room_session_id
     expected_participant_identity = metadata.participant_identity
     worker_version = _require_worker_version()
-    persisted_session_lifecycle = hub_get_worker_session_lifecycle(session_id)
+    persisted_session_lifecycle = await asyncio.to_thread(hub_get_worker_session_lifecycle, session_id)
     session_state = hydrate_session_state(
         lifecycle=persisted_session_lifecycle,
         metadata=metadata,
@@ -1385,15 +1385,17 @@ async def forge_agent(ctx: agents.JobContext):
         await ctx.connect()
 
         logger.info(f"Agent dispatched to space: {space_id} (room: {ctx.room.name}, session: {room_session_id})")
-        persona = _resolve_persona(agent_id=agent_id, space_id=space_id, session_id=session_id)
+        persona = await asyncio.to_thread(
+            _resolve_persona, agent_id=agent_id, space_id=space_id, session_id=session_id)
         logger.info(
             "Resolved persona %s for session %s from %s", persona.name, session_id or room_session_id, persona.source
         )
 
         # Context hydration: fetch prior events and memories for continuity
         logger.info("Fetching context for session %s", session_id)
-        events = _fetch_space_events(space_id, session_id=session_id, limit=50)
-        memories = _fetch_scene_recall_memories(
+        events = await asyncio.to_thread(_fetch_space_events, space_id, session_id=session_id, limit=50)
+        memories = await asyncio.to_thread(
+            _fetch_scene_recall_memories,
             scene_euid=persisted_session_lifecycle.scene_euid,
             session_euid=persisted_session_lifecycle.session_euid,
         )

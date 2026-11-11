@@ -412,14 +412,14 @@ class MarvainSemanticLifecycle:
                 if len(sessions) != 1:
                     raise LifecycleError("recall source requires one canonical session")
                 scopes.append((source_id, sessions[0].semantic_id))
-        records = []
-        for source_id, session_id in scopes:
-            records.extend(self.recall_scene(
-                scene_semantic_id=source_id, session_semantic_id=session_id,
-                authenticated_principal_id=authenticated_principal_id,
-                audience_principal_ids=audience, access_at=access_at, as_of=as_of, historical=historical,
-            ))
-        return tuple(records)
+            records = []
+            for source_id, session_id in scopes:
+                records.extend(self._recall_scene(
+                    view, scene_semantic_id=source_id, session_semantic_id=session_id,
+                    authenticated_principal_id=authenticated_principal_id,
+                    audience_principal_ids=audience, access_at=access_at, as_of=as_of, historical=historical,
+                ))
+            return tuple(records)
 
     def recall_scene(
         self, *, scene_semantic_id: str, session_semantic_id: str, authenticated_principal_id: str,
@@ -434,120 +434,134 @@ class MarvainSemanticLifecycle:
         policy for each disclosed memory at access time.
         """
         with self.store.read_view() as view:
-            scene = view.get_object(scene_semantic_id)
-            view.get_object(session_semantic_id)
-            principal = view.get_object(authenticated_principal_id)
-            if principal.template_code != TEMPLATE_CODES["principal"] or principal.lifecycle_state != "active":
-                raise LifecycleError("recall requires an active authenticated principal")
-            audience = tuple(dict.fromkeys((authenticated_principal_id, *audience_principal_ids)))
-            for principal_id in audience:
-                recipient = view.get_object(principal_id)
-                if recipient.template_code != TEMPLATE_CODES["principal"] or recipient.lifecycle_state != "active":
-                    raise LifecycleError("recall audience requires active principals")
-            episodes = view.linked_objects(scene_semantic_id, relationship_type="IN_SCENE", incoming=True)
-            output: list[SemanticRecallRecord] = []
-            for episode in episodes:
-                if episode.template_code != TEMPLATE_CODES["episode"]:
+            return self._recall_scene(
+                view, scene_semantic_id=scene_semantic_id, session_semantic_id=session_semantic_id,
+                authenticated_principal_id=authenticated_principal_id, access_at=access_at, as_of=as_of,
+                historical=historical, require_export=require_export,
+                audience_principal_ids=audience_principal_ids,
+            )
+
+    def _recall_scene(
+        self, view: Any, *, scene_semantic_id: str, session_semantic_id: str, authenticated_principal_id: str,
+        access_at: datetime, as_of: datetime, historical: bool = False,
+        require_export: bool = False,
+        audience_principal_ids: tuple[str, ...] = (),
+    ) -> tuple[SemanticRecallRecord, ...]:
+        """Resolve one scene using the caller's transaction-local canonical view."""
+        scene = view.get_object(scene_semantic_id)
+        view.get_object(session_semantic_id)
+        principal = view.get_object(authenticated_principal_id)
+        if principal.template_code != TEMPLATE_CODES["principal"] or principal.lifecycle_state != "active":
+            raise LifecycleError("recall requires an active authenticated principal")
+        audience = tuple(dict.fromkeys((authenticated_principal_id, *audience_principal_ids)))
+        for principal_id in audience:
+            recipient = view.get_object(principal_id)
+            if recipient.template_code != TEMPLATE_CODES["principal"] or recipient.lifecycle_state != "active":
+                raise LifecycleError("recall audience requires active principals")
+        episodes = view.linked_objects(scene_semantic_id, relationship_type="IN_SCENE", incoming=True)
+        output: list[SemanticRecallRecord] = []
+        for episode in episodes:
+            if episode.template_code != TEMPLATE_CODES["episode"]:
+                continue
+            sessions = view.linked_objects(episode.semantic_id, relationship_type="IN_SESSION")
+            if not any(item.semantic_id == session_semantic_id for item in sessions):
+                continue
+            episode_sources = view.linked_objects(episode.semantic_id, relationship_type="DERIVED_FROM")
+            if not episode_sources:
+                raise LifecycleError(f"episode {episode.semantic_id} has no source evidence")
+            memories = view.linked_objects(episode.semantic_id, relationship_type="IN_EPISODE", incoming=True)
+            for memory in memories:
+                if memory.template_code != TEMPLATE_CODES["memory_committed"]:
                     continue
-                sessions = view.linked_objects(episode.semantic_id, relationship_type="IN_SESSION")
-                if not any(item.semantic_id == session_semantic_id for item in sessions):
+                candidates = view.linked_objects(memory.semantic_id, relationship_type="COMMITTED_AS", incoming=True)
+                if len(candidates) != 1:
+                    raise LifecycleError(f"memory {memory.semantic_id} requires one candidate")
+                sources = view.linked_objects(candidates[0].semantic_id, relationship_type="DERIVED_FROM")
+                if not sources:
+                    raise LifecycleError(f"memory {memory.semantic_id} has no source evidence")
+                constraints = [MemoryPolicyConstraint(self._read_policy(view, scene), MemoryLayer.KNOWLEDGE),
+                               MemoryPolicyConstraint(self._read_policy(view, memory), MemoryLayer.KNOWLEDGE),
+                               MemoryPolicyConstraint(self._read_policy(view, candidates[0]), MemoryLayer.KNOWLEDGE),
+                               MemoryPolicyConstraint(self._read_policy(view, episode), MemoryLayer.EPISODE)]
+                all_sources = {source.semantic_id: source for source in (*episode_sources, *sources)}
+                for source in all_sources.values():
+                    constraints.append(MemoryPolicyConstraint(self._read_policy(view, source), MemoryLayer.ATTRIBUTED_EVENT))
+                # Replacement assertions inherit original and correction source restrictions.
+                pending = [memory]
+                seen: set[str] = set()
+                while pending:
+                    current = pending.pop()
+                    if current.semantic_id in seen:
+                        raise LifecycleError("cyclic or repeated correction lineage")
+                    seen.add(current.semantic_id)
+                    incoming = view.linked_objects(current.semantic_id, relationship_type="REPLACEMENT", incoming=True)
+                    for correction in incoming:
+                        originals = view.linked_objects(correction.semantic_id, relationship_type="CORRECTS")
+                        supporting = view.linked_objects(correction.semantic_id, relationship_type="DERIVED_FROM")
+                        if len(originals) != 1 or not supporting:
+                            raise LifecycleError("correction has incomplete source lineage")
+                        constraints.append(MemoryPolicyConstraint(self._read_policy(view, correction), MemoryLayer.KNOWLEDGE))
+                        constraints.append(MemoryPolicyConstraint(self._read_policy(view, originals[0]), MemoryLayer.KNOWLEDGE))
+                        original_episodes = view.linked_objects(originals[0].semantic_id, relationship_type="IN_EPISODE")
+                        original_candidates = view.linked_objects(originals[0].semantic_id,
+                                                                  relationship_type="COMMITTED_AS", incoming=True)
+                        if len(original_episodes) != 1 or len(original_candidates) != 1:
+                            raise LifecycleError("original memory has incomplete episode or candidate lineage")
+                        constraints.append(MemoryPolicyConstraint(self._read_policy(view, original_episodes[0]), MemoryLayer.EPISODE))
+                        constraints.append(MemoryPolicyConstraint(self._read_policy(view, original_candidates[0]), MemoryLayer.KNOWLEDGE))
+                        original_sources = (
+                            *view.linked_objects(original_episodes[0].semantic_id, relationship_type="DERIVED_FROM"),
+                            *view.linked_objects(original_candidates[0].semantic_id, relationship_type="DERIVED_FROM"),
+                        )
+                        if not original_sources:
+                            raise LifecycleError("original memory has no source evidence")
+                        for source in original_sources:
+                            constraints.append(MemoryPolicyConstraint(self._read_policy(view, source), MemoryLayer.ATTRIBUTED_EVENT))
+                        for source in supporting:
+                            constraints.append(MemoryPolicyConstraint(self._read_policy(view, source), MemoryLayer.ATTRIBUTED_EVENT))
+                        pending.append(originals[0])
+                tombstones = view.linked_objects(memory.semantic_id, relationship_type="TOMBSTONED_BY")
+                retracted_at = None
+                if tombstones:
+                    retracted_at = min(_parse_timestamp(item.properties.get("recorded_at"), "recorded_at")
+                                       for item in tombstones)
+                version = TemporalMemoryVersion(memory.semantic_id,
+                    _parse_timestamp(memory.properties.get("recorded_at"), "recorded_at"),
+                    _parse_timestamp(memory.properties.get("effective_at"), "effective_at"),
+                    tuple(constraints), retracted_at)
+                purpose = MemoryPurpose.HISTORY if historical else MemoryPurpose.RECALL
+                if not all(permits_scoped_memory(
+                    authenticated_principal_id=recipient, purpose=purpose, layer=MemoryLayer.KNOWLEDGE,
+                    policies=constraints, at=access_at,
+                ) for recipient in audience):
                     continue
-                episode_sources = view.linked_objects(episode.semantic_id, relationship_type="DERIVED_FROM")
-                if not episode_sources:
-                    raise LifecycleError(f"episode {episode.semantic_id} has no source evidence")
-                memories = view.linked_objects(episode.semantic_id, relationship_type="IN_EPISODE", incoming=True)
-                for memory in memories:
-                    if memory.template_code != TEMPLATE_CODES["memory_committed"]:
-                        continue
-                    candidates = view.linked_objects(memory.semantic_id, relationship_type="COMMITTED_AS", incoming=True)
-                    if len(candidates) != 1:
-                        raise LifecycleError(f"memory {memory.semantic_id} requires one candidate")
-                    sources = view.linked_objects(candidates[0].semantic_id, relationship_type="DERIVED_FROM")
-                    if not sources:
-                        raise LifecycleError(f"memory {memory.semantic_id} has no source evidence")
-                    constraints = [MemoryPolicyConstraint(self._read_policy(view, scene), MemoryLayer.KNOWLEDGE),
-                                   MemoryPolicyConstraint(self._read_policy(view, memory), MemoryLayer.KNOWLEDGE),
-                                   MemoryPolicyConstraint(self._read_policy(view, candidates[0]), MemoryLayer.KNOWLEDGE),
-                                   MemoryPolicyConstraint(self._read_policy(view, episode), MemoryLayer.EPISODE)]
-                    all_sources = {source.semantic_id: source for source in (*episode_sources, *sources)}
-                    for source in all_sources.values():
-                        constraints.append(MemoryPolicyConstraint(self._read_policy(view, source), MemoryLayer.ATTRIBUTED_EVENT))
-                    # Replacement assertions inherit original and correction source restrictions.
-                    pending = [memory]
-                    seen: set[str] = set()
-                    while pending:
-                        current = pending.pop()
-                        if current.semantic_id in seen:
-                            raise LifecycleError("cyclic or repeated correction lineage")
-                        seen.add(current.semantic_id)
-                        incoming = view.linked_objects(current.semantic_id, relationship_type="REPLACEMENT", incoming=True)
-                        for correction in incoming:
-                            originals = view.linked_objects(correction.semantic_id, relationship_type="CORRECTS")
-                            supporting = view.linked_objects(correction.semantic_id, relationship_type="DERIVED_FROM")
-                            if len(originals) != 1 or not supporting:
-                                raise LifecycleError("correction has incomplete source lineage")
-                            constraints.append(MemoryPolicyConstraint(self._read_policy(view, correction), MemoryLayer.KNOWLEDGE))
-                            constraints.append(MemoryPolicyConstraint(self._read_policy(view, originals[0]), MemoryLayer.KNOWLEDGE))
-                            original_episodes = view.linked_objects(originals[0].semantic_id, relationship_type="IN_EPISODE")
-                            original_candidates = view.linked_objects(originals[0].semantic_id,
-                                                                      relationship_type="COMMITTED_AS", incoming=True)
-                            if len(original_episodes) != 1 or len(original_candidates) != 1:
-                                raise LifecycleError("original memory has incomplete episode or candidate lineage")
-                            constraints.append(MemoryPolicyConstraint(self._read_policy(view, original_episodes[0]), MemoryLayer.EPISODE))
-                            constraints.append(MemoryPolicyConstraint(self._read_policy(view, original_candidates[0]), MemoryLayer.KNOWLEDGE))
-                            original_sources = (
-                                *view.linked_objects(original_episodes[0].semantic_id, relationship_type="DERIVED_FROM"),
-                                *view.linked_objects(original_candidates[0].semantic_id, relationship_type="DERIVED_FROM"),
-                            )
-                            if not original_sources:
-                                raise LifecycleError("original memory has no source evidence")
-                            for source in original_sources:
-                                constraints.append(MemoryPolicyConstraint(self._read_policy(view, source), MemoryLayer.ATTRIBUTED_EVENT))
-                            for source in supporting:
-                                constraints.append(MemoryPolicyConstraint(self._read_policy(view, source), MemoryLayer.ATTRIBUTED_EVENT))
-                            pending.append(originals[0])
-                    tombstones = view.linked_objects(memory.semantic_id, relationship_type="TOMBSTONED_BY")
-                    retracted_at = None
-                    if tombstones:
-                        retracted_at = min(_parse_timestamp(item.properties.get("recorded_at"), "recorded_at")
-                                           for item in tombstones)
-                    version = TemporalMemoryVersion(memory.semantic_id,
-                        _parse_timestamp(memory.properties.get("recorded_at"), "recorded_at"),
-                        _parse_timestamp(memory.properties.get("effective_at"), "effective_at"),
-                        tuple(constraints), retracted_at)
+                if require_export and not permits_scoped_memory(
+                    authenticated_principal_id=authenticated_principal_id, purpose=MemoryPurpose.EXPORT,
+                    layer=MemoryLayer.KNOWLEDGE, policies=constraints, at=access_at,
+                ):
+                    continue
+                corrections = []
+                visible_corrections = set()
+                for correction in view.linked_objects(memory.semantic_id, relationship_type="CORRECTS", incoming=True):
+                    replacements = view.linked_objects(correction.semantic_id, relationship_type="REPLACEMENT")
+                    if len(replacements) != 1:
+                        raise LifecycleError("correction requires one replacement")
+                    corrections.append(TemporalMemoryCorrection(correction.semantic_id, memory.semantic_id,
+                        replacements[0].semantic_id, _parse_timestamp(correction.properties.get("recorded_at"), "recorded_at"),
+                        _parse_timestamp(correction.properties.get("effective_at"), "effective_at")))
+                    correction_policy = MemoryPolicyConstraint(self._read_policy(view, correction), MemoryLayer.KNOWLEDGE)
                     purpose = MemoryPurpose.HISTORY if historical else MemoryPurpose.RECALL
-                    if not all(permits_scoped_memory(
-                        authenticated_principal_id=recipient, purpose=purpose, layer=MemoryLayer.KNOWLEDGE,
-                        policies=constraints, at=access_at,
-                    ) for recipient in audience):
-                        continue
-                    if require_export and not permits_scoped_memory(
-                        authenticated_principal_id=authenticated_principal_id, purpose=MemoryPurpose.EXPORT,
-                        layer=MemoryLayer.KNOWLEDGE, policies=constraints, at=access_at,
-                    ):
-                        continue
-                    corrections = []
-                    visible_corrections = set()
-                    for correction in view.linked_objects(memory.semantic_id, relationship_type="CORRECTS", incoming=True):
-                        replacements = view.linked_objects(correction.semantic_id, relationship_type="REPLACEMENT")
-                        if len(replacements) != 1:
-                            raise LifecycleError("correction requires one replacement")
-                        corrections.append(TemporalMemoryCorrection(correction.semantic_id, memory.semantic_id,
-                            replacements[0].semantic_id, _parse_timestamp(correction.properties.get("recorded_at"), "recorded_at"),
-                            _parse_timestamp(correction.properties.get("effective_at"), "effective_at")))
-                        correction_policy = MemoryPolicyConstraint(self._read_policy(view, correction), MemoryLayer.KNOWLEDGE)
-                        purpose = MemoryPurpose.HISTORY if historical else MemoryPurpose.RECALL
-                        if permits_scoped_memory(authenticated_principal_id=authenticated_principal_id, purpose=purpose,
-                                                 layer=MemoryLayer.KNOWLEDGE, policies=(correction_policy,), at=access_at):
-                            visible_corrections.add(correction.semantic_id)
-                    selected = select_temporal_memory(versions=(version,), corrections=corrections,
-                        authenticated_principal_id=authenticated_principal_id, as_of=as_of,
-                        access_at=access_at, historical=historical)
-                    for item in selected:
-                        output.append(SemanticRecallRecord(memory, episode, tuple(all_sources.values()),
-                            tuple(key for key in item.superseded_by if key in visible_corrections),
-                            bool(item.superseded_by)))
-            return tuple(output)
+                    if permits_scoped_memory(authenticated_principal_id=authenticated_principal_id, purpose=purpose,
+                                             layer=MemoryLayer.KNOWLEDGE, policies=(correction_policy,), at=access_at):
+                        visible_corrections.add(correction.semantic_id)
+                selected = select_temporal_memory(versions=(version,), corrections=corrections,
+                    authenticated_principal_id=authenticated_principal_id, as_of=as_of,
+                    access_at=access_at, historical=historical)
+                for item in selected:
+                    output.append(SemanticRecallRecord(memory, episode, tuple(all_sources.values()),
+                        tuple(key for key in item.superseded_by if key in visible_corrections),
+                        bool(item.superseded_by)))
+        return tuple(output)
 
     def prepare_scoped_export(
         self, *, scene_semantic_id: str, session_semantic_id: str, authenticated_principal_id: str,
