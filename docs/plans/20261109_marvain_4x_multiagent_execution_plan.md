@@ -2,7 +2,7 @@
 
 **Revision:** 1  
 **Prepared:** 9 November 2026  
-**Status:** Quiet single-person face recognition ACCEPTED. Multi-person conversational attribution is an explicit core requirement and remains unaccepted; Hub 4.0.18 / responder 4.0.17 unchanged.
+**Status:** Quiet single-person face recognition ACCEPTED. Multi-person attribution and individual dog identification are required and remain unaccepted; other animal species are optional. Hub 4.0.18 / responder 4.0.17 unchanged.
 
 ## Current continuation state
 
@@ -15,6 +15,37 @@ User granted John GLOBAL consent without expiry and personally approved both enr
 Chrome Live Session tab 762569089 is connected with Mic Off and camera off, session 3ae26881-c572-48d8-83fa-3e08b76d36a4. User reports “redbox error.” UI shows classification_unavailable: provider_not_configured when sending typed “hi,” before dispatch to the responder; no fresh face comparison occurred. Hub lacked the memory classifier provider/model, SDK dependency, and explicit injection of the existing Secrets Manager OpenAI credential. Source repair adds these without changing classifier semantics, deterministic fallback, or worker images. Existing classifier test fixture updated for the credential argument; no tests run.
 
 4.0.18 annotated tag and branch pushed. Final EC2 build returned pane_dead=1/status=0 and Build Succeeded. Artifact transfer/extraction completed, builder stop accepted, and owning deployment session 70274 returned exit 0 and stack success. Typed chat retry succeeded in the same Mic Off session: request at 11:24:22 PM ET, transcript reply at 11:24:42 PM ET. User enabled camera; worker acknowledged a fresh visual observation at 11:24:49 PM ET. Fresh face request submitted at 11:24:57 PM ET. UI lifecycle reports face.snapshot and Fresh face comparison: John at 11:25:10 PM ET; spoken-reply transcript at 11:25:22 PM ET. User explicitly answered “Yes, I heard it” to hearing the reply with Mic Off. Quiet face objective accepted. No additional capture or infrastructure change required. Next group milestone: two people plus Marvain with attributed turns and recall (DAY-31/WP-36); fresh voice comparison, mismatch/conflict handling and Chunk remain unaccepted. Evidence under /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/build/releases/4.0.18/. DAY-142 remains Active; fresh voice matching, Join/Leave timing, second-login binding, fresh voice quality, sensitive checks, Chunk and the broader two-location demonstration remain incomplete. Recall and changed-view/camera-off acceptance are retained.
+
+## Required dog identity and public-model assessment — 10 November 2026
+
+John clarified: **dogs are required; all other animals are nice to have.** Completion requires individual dog identity (including Chunk), not just dog detection or breed classification. Other species must not delay this deliverable.
+
+Public individual-identification building blocks exist. Recommendation: reuse a dog re-identification embedding model and build Marvain's reference enrollment, fresh-crop matching, unknown/ambiguous decision, scene association and canonical TapDB memory integration. Registering a new dog can add reference embeddings without retraining the backbone; fine-tuning is a later option only if the selected model is inadequate for the actual camera use case.
+
+Candidates reviewed from primary sources:
+- [Open Noodle pet-recognition-base](https://huggingface.co/open-noodle/pet-recognition-base): published Apache-2.0 ONNX weights; DINOv2 backbone plus trained 512-dimensional identity projection for dogs/cats. Concrete first integration candidate, not yet selected or accepted. Author-reported dog Top-1 is 94.3% on aligned DogFaceNet faces but 61.2% on the larger whole-animal Dogs-World benchmark; neither is a guarantee for Chunk or live video.
+- [wildlife-tools](https://github.com/WildlifeDatasets/wildlife-tools): MIT toolkit for training, feature extraction and individual retrieval. Its [MegaDescriptor-L-384 weights](https://huggingface.co/BVRA/MegaDescriptor-L-384) are separately CC-BY-NC-4.0. Do not infer weight permissions from toolkit licensing.
+- [PetFace](https://github.com/mapooon/PetFace): pretrained animal-face models and training/alignment code, expressly non-commercial research only for code, weights and dataset.
+- [DogFaceNet](https://github.com/GuillaumeMougeot/DogFaceNet): genuine dog identification research code under MIT, but the documented runtime uses TensorFlow 1.12 and the README does not offer ready trained models; useful reference, less attractive direct runtime.
+- [Pet-ReID-IMAG](https://github.com/muzishen/Pet-ReID-IMAG): public dog nose-print re-identification research with code and linked weights; close-up nose imagery is a different capture requirement from ambient room-camera views.
+- [MiewID](https://www.wildme.org/miewid.html): individual animal re-identification, but current publisher terms restrict model use to Conservation X Labs-hosted applications; not a default self-hosted Marvain dependency.
+
+Build scope: camera dog detection/crop -> reusable identity encoder -> reviewed per-dog reference gallery -> candidate/unknown result -> scene presence and attributed animal episodes in TapDB. Canonical animal/reference relationships remain typed lineage; vectors are derived. Across-frame tracking and across-session identity are separate responsibilities. Individual bark recognition remains unproven and is not required to establish the initial visual dog-recognition slice.
+
+No model downloaded, dependency installed, runtime changed, benchmark run or new test campaign started. Proposed attended acceptance remains a fresh Chunk view, another dog and an absent/uncertain case, including changed views.
+
+```mermaid
+flowchart LR
+  Frame[Fresh camera image] --> Crop[Detect and crop dog]
+  Crop --> Encoder[Reusable dog identity model]
+  Encoder --> Match[Compare reference embeddings]
+  Gallery[Reviewed photos per dog] --> Match
+  Match --> Decision[Candidate or unknown]
+  Decision --> Scene[Scene presence and encounters]
+  Scene --> Memory[Canonical TapDB dog identity and lineage]
+```
+
+This is a proposed integration. It supersedes the earlier generic-vision comparison proposal as the recommended first implementation direction, without claiming a selected or running model. Dogs are required; other species are optional.
 
 ## Multi-person conversational attribution — clarified 10 November 2026
 
