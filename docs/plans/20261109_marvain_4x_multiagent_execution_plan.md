@@ -2,19 +2,37 @@
 
 **Revision:** 1  
 **Prepared:** 9 November 2026  
-**Status:** RESUMED for quiet typed face-recognition interaction. Voice and face enrollments approved; fresh comparison pending. Preparing 4.0.17 Hub/responder.
+**Status:** RESUMED for quiet typed face-recognition interaction. Voice and face enrollments approved; fresh comparison pending. 4.0.17 Hub/responder deployed; quiet face comparison pending.
 
 ## Current continuation state
 
 10 November 2026: RESUMED by John: “wait! start marvain and lets do face recognition. i have to be quiet so i cant be speaking, but i can type and listen!” This revokes the overnight pause for quiet face interaction. User later asks about pets; Chunk individual recognition remains in scope but is unimplemented. No tests, lint, CI, PR/merge, local container builds, destructive cleanup, schedules, or automatic future resumption. Current stop condition: microphone-off typed conversation with audible replies and a fresh camera face comparison to John's approved reference.
 
-Workspace /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain; branch codex/marvain-interactive-resume. Published pause receipt d451a80. Hub/recognition 4.0.16 source d29891b deployed; responder 4.0.14 source 0b0bf80. Target lsmc/account 108782052779/us-east-2/marvain4-prod, config /Users/jmajor/.config/marvain/marvain-lsmc-us-east-2.yaml. CLI reports responder desired/running=1, pending=0. Builder i-0325430bfec70e41e last owning state stopped; resolve its current IP after starting. Preserve unrelated work. Release receipts /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/build/releases/4.0.16/.
+Workspace /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain; branch codex/marvain-interactive-resume. Published pause receipt d451a80. Hub/responder 4.0.17 source 15f69d6 deployed; recognition image remains 4.0.16 source d29891b. Target lsmc/account 108782052779/us-east-2/marvain4-prod, config /Users/jmajor/.config/marvain/marvain-lsmc-us-east-2.yaml. CLI reports responder desired/running=1, pending=0. Builder i-0325430bfec70e41e stop accepted after final artifact transfer (running -> stopping); last IP 3.145.36.91, resolve current IP after any restart. Preserve unrelated work. Release receipts /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/build/releases/4.0.16/.
 
 User personally granted John GLOBAL consent without expiry. The johnm@lsmc.com account-link retry succeeded after 4.0.16. Fresh face upload succeeded (“uploaded photo, green success box!”). User personally approved both voice and face (“i approved both voice and face enrollment”); Recognition UI confirms both accepted and active. Face observation a21a0f64-149f-4c8b-8efb-e5f5e9fcee31, hypothesis 1cf71759-6e40-4833-bbfe-963db1292e33, projection 1971e978-4189-49a0-b4fd-f7c9739492b8. Voice observation e24b857c-d255-4318-a1ea-1cf0775252d1, hypothesis e850d15a-c011-42d5-8c5d-f19b902b61d6, projection 66c52c87-0cbc-40b7-ada8-5e8a7762f42d. Voice is the earlier submitted sample, which completed after initial timeouts; it does not prove the newly deployed quality gate or CPU optimization. Both modalities reference John person 3c0014ac-3146-4eb9-9214-f7bf1eb29d01. Fresh matching remains unaccepted.
 
-Chrome Recognition tab 762569047 is retained; prior People tab closed. Live Session tab 762569003 was disconnected. Source inspection found Join automatically requested and published the microphone, and the responder had no live face-recognition tool. Preparing final 4.0.17: Join defaults to microphone off with an explicit opt-in checkbox; typed input and remote audio remain. New recognize_face tool requests a fresh frame only from the enabled camera, using the authenticated browser/session capture path. AWS Rekognition compares against reviewed references with active consent; candidate/unknown results are recorded through the existing recognition lifecycle. Session/artifact/source lineage remains TapDB canonical. No result satisfies sensitive-action checks or claims liveness. No dog matcher is introduced. Next: publish tagged final 4.0.17 Hub/responder on EC2, deploy, then attended quiet face comparison.
+Chrome Recognition tab 762569047 shows both enrollments accepted. Fresh Live Session tab 762569089 has laptop selected and microphone checkbox off; Join has been clicked. Prior Live Session tab is closed. Source inspection found Join automatically requested and published the microphone, and the responder had no live face-recognition tool. Published final 4.0.17 / 15f69d6; EC2 build is running in tmux marvain-4-0-17-release on i-0325430bfec70e41e at 3.145.36.91: Join defaults to microphone off with an explicit opt-in checkbox; typed input and remote audio remain. New recognize_face tool requests a fresh frame only from the enabled camera, using the authenticated browser/session capture path. AWS Rekognition compares against reviewed references with active consent; candidate/unknown results are recorded through the existing recognition lifecycle. Session/artifact/source lineage remains TapDB canonical. No result satisfies sensitive-action checks or claims liveness. No dog matcher is introduced. Responder image publisher returned success for 4.0.17, digest sha256:e3b10737a94e77879fe48855471b6c44a1a6f8df300d38e58d455b0f09dc567f; Final EC2 build returned pane_dead=1 / status=0; transfer/extraction completed and builder stop succeeded before deploy. Owning deployment session 8573 returned exit 0 and “Successfully created/updated stack - marvain4-prod in us-east-2”; log /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/build/releases/4.0.17/deploy.log. Hub/responder 4.0.17 now deployed with recognition image 4.0.16 retained. Next: attended quiet face comparison; no extra health probes or automated tests.
 
 Recall and changed-view/camera-off acceptance are retained. DAY-142 remains Active. DAY-22 second-login binding, Join/Leave timing, fresh voice match, sensitive checks, Chunk and the broader two-location demonstration remain incomplete. No pet identity is inferred from generic vision or the spoken name Chunk.
+
+## Quiet face interaction — 10 November 2026
+
+```mermaid
+flowchart LR
+  User[Typed recognition request] --> Worker[Responder tool]
+  Worker --> Browser[Already enabled camera]
+  Browser --> Hub[Authenticated session capture]
+  Hub --> AWS[AWS Rekognition comparison]
+  Ref[Reviewed face reference] --> AWS
+  AWS --> Result[Candidate or unknown]
+  Result --> Speech[Spoken reply]
+  Hub --> Store[TapDB artifact and session lineage]
+  Result --> Store
+  Mic[Microphone off unless enabled]
+```
+
+Approved enrollment records identify the reference person; a fresh comparison supplies a candidate for this frame. This does not establish liveness, approve a sensitive action, or identify a pet. Source tests are updated but unrun.
 
 ## 24-hour idle cost and pause — 10 November 2026
 
@@ -49,7 +67,7 @@ Recommendation for one night: retain the deployment. Scaling the responder to ze
 | WP-29 | Prompt Leave and Join | IN_PROGRESS | A0 | Hub-only 4.0.13 deployed successfully; immediate outbox dispatch and prompt media disconnection implemented. User timing acceptance pending new page load. |
 | WP-30 | Fresh camera observations in spoken conversation | SUCCESS | A0 | observe_camera function tool and enabled-camera browser RPC deployed in 4.0.14; user accepted two changed views and camera-off behavior. |
 | WP-31 | John linked voice/face enrollment and fresh recognition | IN_PROGRESS | John + A0 | Both enrollment proposals accepted by John and active in UI; fresh comparison remains pending. 4.0.17 adds live face-recognition tool. |
-| WP-35 | Quiet typed conversation and live face matching | IN_PROGRESS | John + A0 | Source for 4.0.17: microphone-off Join and explicit fresh face comparison to reviewed references. Build/deployment and attended outcome pending. |
+| WP-35 | Quiet typed conversation and live face matching | IN_PROGRESS | John + A0 | 4.0.17 built and deployed successfully: microphone-off Join and explicit fresh face comparison to reviewed references. Attended outcome pending. |
 | WP-32 | Chunk individual dog recognition | IN_PROGRESS | John + A0 | Canonical animal and caretaker objects exist as supported types; current human biometric projections do not implement dog identity. Inspect reference matching options and add explicit animal enrollment/recognition path with unknown handling. |
 | WP-33 | Voice sample suitability and reading prompt | IN_PROGRESS | A0 | Explicit user request; >=5 seconds detected enrollment speech and clipping rejection, user-visible reasons, canonical source-linked decision. Deployed in 4.0.16; fresh user sample pending. |
 | WP-34 | Repair attended biometric and account-link failures | IN_PROGRESS | A0 | Face version-read and Cognito ListUsers permission defects confirmed; voice processor timed out. Replacement 4.0.16 deployed; Cognito retry accepted (“Account linked”). Face/voice attended acceptance pending. 4.0.15 never deployed. |
