@@ -414,18 +414,21 @@ def _claim_from_row(row: Mapping[str, Any]) -> OutboxClaim:
     )
 
 
-def claim_pending(db: DispatcherDatabase, config: DispatcherConfig) -> list[OutboxClaim]:
+def claim_pending(db: DispatcherDatabase, config: DispatcherConfig, *, semantic_outbox_id: str | None = None) -> list[OutboxClaim]:
     claim_token = str(uuid.uuid4())
+    sql = _CLAIM_SQL
+    parameters = {
+        "batch_size": config.batch_size, "claim_token": claim_token,
+        "dispatcher_id": config.dispatcher_id, "lease_seconds": config.lease_seconds,
+        "max_attempts": config.max_attempts,
+    }
+    if semantic_outbox_id is not None:
+        parameters["semantic_outbox_id"] = _required_uuid(semantic_outbox_id, "semantic_outbox_id")
+        sql = sql.replace("AND next_attempt_at <= now()",
+                          "AND next_attempt_at <= now() AND semantic_outbox_id = CAST(:semantic_outbox_id AS uuid)")
     with _transaction(db) as transaction_id:
         rows = db.query(
-            _CLAIM_SQL,
-            {
-                "batch_size": config.batch_size,
-                "claim_token": claim_token,
-                "dispatcher_id": config.dispatcher_id,
-                "lease_seconds": config.lease_seconds,
-                "max_attempts": config.max_attempts,
-            },
+            sql, parameters,
             transaction_id=transaction_id,
         )
         claims = [_claim_from_row(row) for row in rows]
@@ -493,8 +496,9 @@ def dispatch_once(
     config: DispatcherConfig,
     *,
     raise_on_failure: bool = True,
+    semantic_outbox_id: str | None = None,
 ) -> DispatchBatchResult:
-    claims = claim_pending(db, config)
+    claims = claim_pending(db, config, semantic_outbox_id=semantic_outbox_id)
     published = 0
     failed = 0
     dead_lettered = 0
@@ -578,6 +582,10 @@ def handler(
     if action == "dispatch" or is_scheduled_event:
         queue = queue or boto3.client("sqs")
         return dispatch_once(db, queue, config).as_dict()
+    if action == "dispatch_one":
+        queue = queue or boto3.client("sqs")
+        return dispatch_once(db, queue, config,
+                             semantic_outbox_id=_required_uuid(event.get("semantic_outbox_id"), "semantic_outbox_id")).as_dict()
     if action == "reconcile_dead_letter":
         raw_ids = event.get("semantic_outbox_ids")
         if not isinstance(raw_ids, list):

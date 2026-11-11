@@ -650,6 +650,7 @@ Resources:
           RECOGNITION_EXECUTION_MODE: lambda_on_demand
           RECOGNITION_QUEUE_URL: !Ref RecognitionQueue
           TAPDB_WRITER_QUEUE_URL: !Ref TapdbWriterQueue
+          SEMANTIC_OUTBOX_DISPATCHER_FUNCTION_NAME: !Ref SemanticOutboxDispatcherFunction
           INTEGRATION_QUEUE_URL: !Ref IntegrationQueue
           AUDIT_BUCKET: !Ref AuditBucket
           ARTIFACT_BUCKET: !Ref ArtifactBucket
@@ -691,6 +692,10 @@ Resources:
       Policies:
         - AWSLambdaBasicExecutionRole
         - VPCAccessPolicy: {}
+        - Statement:
+            - Effect: Allow
+              Action: lambda:InvokeFunction
+              Resource: !GetAtt SemanticOutboxDispatcherFunction.Arn
         - DynamoDBCrudPolicy:
             TableName: !Ref WsConnectionsTable
         - DynamoDBCrudPolicy:

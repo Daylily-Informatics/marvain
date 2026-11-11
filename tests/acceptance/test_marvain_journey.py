@@ -24,6 +24,14 @@ def _required(name: str) -> str:
 
 
 def test_chrome_voice_reply() -> None:
+    _run_attended_journey(feature="chrome_voice_reply")
+
+
+def test_cross_session_recall() -> None:
+    _run_attended_journey(feature="cross_session_recall")
+
+
+def _run_attended_journey(*, feature: str) -> None:
     if os.environ.get("MARVAIN_ATTENDED_ACCEPTANCE") != "1":
         pytest.skip("Real microphone acceptance requires explicit attended opt-in")
     from playwright.sync_api import sync_playwright, expect
@@ -70,16 +78,35 @@ def test_chrome_voice_reply() -> None:
             assert input("Did you hear Marvain reply? Type HEARD MARVAIN REPLY only if yes: ").strip() == "HEARD MARVAIN REPLY"
             steps.append("human_heard_spoken_reply")
             assert page.locator("#btn-camera").inner_text().strip().endswith("Enable Camera")
+            human_acceptance = "HEARD MARVAIN REPLY"
+            session_ids = []
+            if feature == "cross_session_recall":
+                session_ids.append(page.locator("#session-info code").first.inner_text())
+                assert input("Tell Marvain a new distinctive fact or marker. After its reply, type FACT SPOKEN: ").strip() == "FACT SPOKEN"
+                steps.append("human_spoke_distinctive_fact")
             page.locator("#btn-leave").click()
             joined = False
             expect(page.locator("#btn-join")).to_be_enabled()
             steps.append("left_session")
-            receipt = {"schema":"marvain.acceptance.receipt.v1","feature":"chrome_voice_reply",
+            if feature == "cross_session_recall":
+                page.locator("#btn-join").click()
+                joined = True
+                assert input("Wait for the new greeting, then ask for the fact without saying the answer. Type ASKED: ").strip() == "ASKED"
+                session_ids.append(page.locator("#session-info code").first.inner_text())
+                assert session_ids[1] != session_ids[0], "Recall must occur in a distinct session"
+                human_acceptance = input("Only if Marvain correctly recalled it, type RECALLED ACROSS SESSIONS: ").strip()
+                assert human_acceptance == "RECALLED ACROSS SESSIONS"
+                steps.append("human_confirmed_recall_in_distinct_session")
+                page.locator("#btn-leave").click()
+                joined = False
+                expect(page.locator("#btn-join")).to_be_enabled()
+            receipt = {"schema":"marvain.acceptance.receipt.v1","feature":feature,
                 "result":"accepted","accepted_at":datetime.now(timezone.utc).isoformat(),
                 "base_url":base,"agent_id":agent_id,"space_id":space_id,
                 "hub_release":preparation["hub_release"],"responder_release":preparation["responder_release"],
-                "steps":steps,"human_acceptance":"HEARD MARVAIN REPLY",
-                "not_proven":["face","voice_identity","dogs","recording_persistence","recall","two_locations"]}
+                "steps":steps,"human_acceptance":human_acceptance,"session_ids":session_ids,
+                "not_proven":["face","voice_identity","dogs","recording_persistence","two_locations"]
+                             + (["recall"] if feature == "chrome_voice_reply" else [])}
             output.parent.mkdir(parents=True,exist_ok=True)
             output.write_text(json.dumps(receipt,indent=2)+"\n")
         finally:

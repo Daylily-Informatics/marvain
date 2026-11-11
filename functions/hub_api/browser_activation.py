@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import secrets
 from datetime import datetime, timezone
 from typing import Any, Callable, Literal
 from uuid import UUID, uuid4
 
+import boto3
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -241,6 +243,9 @@ def prepare_browser_scene(*, db: Any, user: Any, agent_id: str, space_id: str,
         if rows[0]["status"] in {"closed", "ended", "failed"}:
             raise HTTPException(409, "Session has ended; start a new session")
         return {"session_id": sid, "room": rows[0]["livekit_room"], "record_media": binding["record_media"]}
+    dispatcher = os.environ.get("SEMANTIC_OUTBOX_DISPATCHER_FUNCTION_NAME", "").strip()
+    if not dispatcher:
+        raise HTTPException(503, "Session memory dispatcher is not configured")
     store = DaylilyTapdbSemanticStore.from_environment()
     space, device, owner, readers = resolve_route(store, route)
     sid = str(uuid4())
@@ -256,10 +261,17 @@ def prepare_browser_scene(*, db: Any, user: Any, agent_id: str, space_id: str,
             {"sid": sid, "aid": agent_id, "space": space_id, "room": room,
              "metadata": json.dumps({"room_mode": room_mode, "actor_type": "user", "actor_id": user.user_id,
                                       "record_media": binding["record_media"]})}, transaction_id=tx)
-        enqueue_semantic_graph(db, transaction_id=tx, agent_id=agent_id, source_table="sessions",
-                               source_id=sid, objects=objects, links=links, primary_key="scene")
+        queued = enqueue_semantic_graph(db, transaction_id=tx, agent_id=agent_id, source_table="sessions",
+                                        source_id=sid, objects=objects, links=links, primary_key="scene")
         db.commit(tx)
     except Exception:
         db.rollback(tx)
         raise
+    response = boto3.client("lambda").invoke(
+        FunctionName=dispatcher, InvocationType="RequestResponse",
+        Payload=json.dumps({"action": "dispatch_one", "semantic_outbox_id": queued.semantic_outbox_id}).encode(),
+    )
+    response["Payload"].close()
+    if response.get("FunctionError"):
+        raise HTTPException(503, "Session memory dispatch failed; inspect the semantic dispatcher result")
     return {"session_id": sid, "status": "queued"}

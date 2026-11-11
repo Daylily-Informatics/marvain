@@ -19,17 +19,63 @@
         "Hear a spoken Marvain response, then click Leave."
       ],
       "automated_entrypoint": "test_marvain_journey.py::test_chrome_voice_reply"
+    },
+    {
+      "id": "cross_session_recall",
+      "accepted_on": "2026-11-10",
+      "acceptance": "this works great. however, the leave and join processes are really slow",
+      "hub_release": "4.0.12",
+      "responder_release": "4.0.12",
+      "session_ids": [
+        "1badf345-7fdc-4682-a38a-5c189ea2630f",
+        "c14ea07a-2435-4339-aeaa-3bfd4e30d477"
+      ],
+      "steps": [
+        "Join the existing laptop space and speak a distinctive recall marker.",
+        "Click Leave, then Join to create a different session.",
+        "Ask for the marker without repeating the answer.",
+        "Hear the correct marker recalled, confirmed by the human."
+      ],
+      "automated_entrypoint": "test_marvain_journey.py::test_cross_session_recall",
+      "execution": "attended browser interaction; automated test source written, not run"
     }
   ],
   "pending_features": [
-    {"id": "voice_enrollment", "status": "not_accepted"},
-    {"id": "rekognition_face_enrollment", "status": "not_accepted"},
-    {"id": "either_modality_identifies_same_person", "status": "not_accepted"},
-    {"id": "conflicting_modalities_block_sensitive_operation", "status": "not_accepted"},
-    {"id": "private_memory_export_identity_check", "status": "not_accepted"},
-    {"id": "sensitive_action_approval_identity_check", "status": "not_accepted"},
-    {"id": "consent_and_enrollment_revocation", "status": "not_accepted"},
-    {"id": "dog_identity", "status": "not_accepted"},
-    {"id": "two_location_recall", "status": "not_accepted"}
+    {
+      "id": "voice_enrollment",
+      "status": "not_accepted"
+    },
+    {
+      "id": "rekognition_face_enrollment",
+      "status": "not_accepted"
+    },
+    {
+      "id": "either_modality_identifies_same_person",
+      "status": "not_accepted"
+    },
+    {
+      "id": "conflicting_modalities_block_sensitive_operation",
+      "status": "not_accepted"
+    },
+    {
+      "id": "private_memory_export_identity_check",
+      "status": "not_accepted"
+    },
+    {
+      "id": "sensitive_action_approval_identity_check",
+      "status": "not_accepted"
+    },
+    {
+      "id": "consent_and_enrollment_revocation",
+      "status": "not_accepted"
+    },
+    {
+      "id": "dog_identity",
+      "status": "not_accepted"
+    },
+    {
+      "id": "two_location_recall",
+      "status": "not_accepted"
+    }
   ]
 }

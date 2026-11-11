@@ -195,12 +195,13 @@ function recordTrack(track, source) {
 }
 
 async function stopRecorders() {
-  await Promise.all(Array.from(mediaRecorders.values()).map(recorder => new Promise(resolve => {
+  const stopping = Array.from(mediaRecorders.values());
+  mediaRecorders.clear();
+  await Promise.all(stopping.map(recorder => new Promise(resolve => {
     if (recorder.state === 'inactive') { resolve(); return; }
     recorder.addEventListener('stop', resolve, {once: true});
     recorder.stop();
   })));
-  mediaRecorders.clear();
   await mediaUploads;
 }
 
@@ -510,7 +511,8 @@ async function joinLiveSession() {
 	}
 
 async function leaveLiveSession() {
-  await stopRecorders();
+  document.getElementById('btn-leave').disabled = true;
+  const finalRecordings = stopRecorders();
   if (eventsTimer) window.clearInterval(eventsTimer);
   eventsTimer = null;
   seenEvents = new Set();
@@ -525,8 +527,10 @@ async function leaveLiveSession() {
   document.getElementById('btn-mic').disabled = true;
 	  document.getElementById('btn-camera').disabled = true;
 	  stopCamera();
-  appendLog('lifecycle-log', 'Left live session');
+  setBadgeText('worker-live-state', 'Disconnected', 'outline');
+  appendLog('lifecycle-log', 'Left live session; final recording uploads continue in this tab');
   document.getElementById('btn-join').disabled = false;
+	  await finalRecordings;
 	}
 
 function cameraVideoHasFrame(video) {
