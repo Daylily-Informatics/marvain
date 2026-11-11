@@ -275,8 +275,9 @@ class DeterministicMemoryClassifier:
 class OpenAIMemoryClassifier:
     provider_id = "openai"
 
-    def __init__(self, *, model: str) -> None:
+    def __init__(self, *, model: str, api_key: str | None = None) -> None:
         self.model = _require_text(model, "model")
+        self._api_key = _require_text(api_key, "api_key") if api_key is not None else None
 
     def classify(
         self,
@@ -328,7 +329,7 @@ class OpenAIMemoryClassifier:
             },
         }
         try:
-            client = OpenAI()
+            client = OpenAI(api_key=self._api_key)
             response = client.responses.create(
                 model=self.model,
                 input=[
@@ -417,7 +418,7 @@ class OpenAIMemoryClassifier:
         return classifications
 
 
-def memory_classifier_from_environment() -> MemoryClassifierProvider:
+def memory_classifier_from_environment(*, api_key: str | None = None) -> MemoryClassifierProvider:
     provider = str(os.getenv("MARVAIN_MEMORY_CLASSIFIER_PROVIDER") or "").strip().lower()
     if provider in {"deterministic", "test", "smoke"}:
         return DeterministicMemoryClassifier()
@@ -432,7 +433,7 @@ def memory_classifier_from_environment() -> MemoryClassifierProvider:
                 provider_id="openai",
                 retryable=False,
             )
-        return OpenAIMemoryClassifier(model=model)
+        return OpenAIMemoryClassifier(model=model, api_key=api_key)
     _raise_failure(
         MemoryClassifierFailureCode.PROVIDER_NOT_CONFIGURED,
         message=("set MARVAIN_MEMORY_CLASSIFIER_PROVIDER=openai or use deterministic only in explicit test/smoke mode"),

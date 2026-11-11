@@ -27,7 +27,7 @@ def _install_fake_openai(monkeypatch, *, output: dict | None = None, error: Exce
             return SimpleNamespace(output_text=json.dumps(output))
 
     class FakeOpenAI:
-        def __init__(self):
+        def __init__(self, *, api_key=None):
             self.responses = FakeResponses()
 
     module = ModuleType("openai")

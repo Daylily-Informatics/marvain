@@ -53,7 +53,11 @@ from agent_hub.memberships import (
     revoke_membership,
     update_membership,
 )
-from agent_hub.memory_classifier import MemoryClassifierUnavailable, classify_memory_event
+from agent_hub.memory_classifier import (
+    MemoryClassifierUnavailable,
+    classify_memory_event,
+    memory_classifier_from_environment,
+)
 from agent_hub.memory_taxonomy import (
     memory_kind_options,
     memory_provenance_options,
@@ -6441,6 +6445,7 @@ def _create_live_session_memory_candidate(
             source_evidence_id=event_id,
             actor_type="user",
             source="live_session_chat",
+            provider=memory_classifier_from_environment(api_key=get_secret_json(_cfg.openai_secret_arn)["api_key"]),
         )
     except MemoryClassifierUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

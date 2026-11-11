@@ -666,6 +666,8 @@ Resources:
           MERIDIAN_DOMAIN_CODE: V
           TAPDB_OWNER_REPO: marvain
           OPENAI_EMBED_MODEL: !Ref OpenAIEmbedModel
+          MARVAIN_MEMORY_CLASSIFIER_PROVIDER: openai
+          MARVAIN_MEMORY_CLASSIFIER_MODEL: !Ref PlannerModel
           ADMIN_SECRET_ARN: !Ref AdminApiKeySecret
           OPENAI_SECRET_ARN: !Ref OpenAICredentialsSecretArn
           LIVEKIT_URL: !Ref LiveKitUrl

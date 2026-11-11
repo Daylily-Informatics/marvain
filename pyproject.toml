@@ -27,6 +27,7 @@ dependencies = [
   "numpy",
   "onnxruntime",
   "opencv-python",
+  "openai",
   "pillow",
   "python-dateutil",
   "python-dotenv",
