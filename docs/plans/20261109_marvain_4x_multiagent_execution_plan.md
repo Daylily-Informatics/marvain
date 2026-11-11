@@ -2,7 +2,7 @@
 
 **Revision:** 1  
 **Prepared:** 9 November 2026  
-**Status:** Hub 4.0.10 and recognition image 4.0.9 deployed; deployment CLI 4.0.11 published. Linked recognition implementation is complete; user enrollment and biometric acceptance remain pending. The first Chrome voice conversation remains accepted; the two-location demonstration is unfinished.
+**Status:** Hub/responder 4.0.12 (3de4989) deployed successfully; recognition image remains 4.0.9. Attended cross-session, camera and linked-recognition acceptance pending.
 
 ## Current continuation state
 
@@ -16,16 +16,16 @@ Confirmed defects: camera worker logs report ModuleNotFoundError during frame de
 
 Diagnostics source repair complete: add owning deployment worker-logs (SAM logs cannot read ECS logical log group) and propagate SAM child failure exit codes. Editable install now targets this worktree. Pip returned success with a pre-existing SAM/click dependency conflict warning (SAM requires click 8.1.8, installed 8.4.2); This warning did not fail installation; retain the existing SAM tool contract unless an owning operation fails. Log evidence /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/build/interactions/20261110_join/agent-worker.json. No credentials printed.
 
-Next: implement audience-scoped recall across canonical sessions and a LiveKit recall tool; constrain classifier quotes to source text; declare vision dependency/IAM/model. Publish next annotated numeric release and build only its final worker image/Hub package on designated EC2. Deploy, stop builder, then user Leave/rejoin and attended recall/camera/enrollment. DAY-142 remains Active; DAY-22 second login binding and two-location demo remain incomplete. Prior recognition implementation/deployment is complete, user acceptance pending.
+Source 3de4989 / annotated immutable tag 4.0.12 is pushed. EC2 tmux marvain-4-0-12-release completed exit 0; final worker image published and Hub packaging succeeded. Marvain deploy returned exit 0 and “Successfully created/updated stack - marvain4-prod in us-east-2”. Hub and responder are 4.0.12; recognition image remains 4.0.9. Builder stop accepted (running → stopping). Evidence /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/build/releases/4.0.12/. Chrome Live Session reloaded, laptop selected, capture idle. User handoff asks for a distinctive recall marker, Leave/rejoin, then recall without repeating the answer. Next: consume attended result, camera observation and explicit enrollment/check flow. DAY-142 remains Active; DAY-22 second login binding and two-location demo remain incomplete. Prior recognition implementation/deployment is complete, user acceptance pending.
 
 ## Interactive recall and camera repair — 10 November 2026
 
 | ID | Requirement | Status | Owner | Evidence / next action |
 |---|---|---|---|---|
-| WP-25 | Repair past-session recall | IN_PROGRESS | A0 | Agent-scoped canonical scene search, current-reader intersection, attributed memory context and LiveKit recall tool implemented; publish/deploy 4.0.12. |
-| WP-26 | Repair camera analysis | IN_PROGRESS | A0 | Actual ModuleNotFoundError; boto3 requirement, S3 visual-prefix read policy, explicit model/bucket/region and agent-scoped artifact path implemented; deploy 4.0.12. |
-| WP-27 | Preserve grounded memory extraction | IN_PROGRESS | A0 | Two actual ungrounded-quote failures; model now chooses exact source quotes through Structured Outputs enum; no deterministic fallback or relaxed grounding. |
-| WP-28 | Attended continuity and linked recognition | OPEN | John + A0 | After deployment: join, say a distinctive fact; Leave/rejoin and ask for it without repeating it; enable camera and ask for visible details; then explicit voice/face enrollment and separate identity checks for the same John actor. Record human/result receipts before extending proven acceptance manifest. |
+| WP-25 | Repair past-session recall | SUCCESS | A0 | Source and deployment 4.0.12 complete; attended behavior tracked separately in WP-28. |
+| WP-26 | Repair camera analysis | SUCCESS | A0 | Source and deployment 4.0.12 complete; attended camera behavior tracked in WP-28. |
+| WP-27 | Preserve grounded memory extraction | SUCCESS | A0 | Deployed source quote selection through Structured Outputs enum; no deterministic fallback or relaxed grounding. Live capture acceptance remains WP-28. |
+| WP-28 | Attended continuity and linked recognition | IN_PROGRESS | John + A0 | After deployment: join, say a distinctive fact; Leave/rejoin and ask for it without repeating it; enable camera and ask for visible details; then explicit voice/face enrollment and separate identity checks for the same John actor. Record human/result receipts before extending proven acceptance manifest. |
 
 ```mermaid
 flowchart LR
@@ -45,6 +45,8 @@ flowchart LR
 Recall remains lexical topic search with recent-memory startup context; wider Codex/Daylily ingestion is separate. Prior assistant statements remain attributed historical text, not current system instructions or evidence of user approval. Full-source policy/retention/correction rules remain in force. Cross-session recall does not grant a wider audience.
 
 Implementation references: LiveKit function tool documentation https://docs.livekit.io/agents/logic/tools/definition/ and OpenAI Structured Outputs https://developers.openai.com/api/docs/guides/structured-outputs. No automated tests, lint or CI were run. Existing successful voice interaction and reported defects are the attended baseline.
+
+4.0.12 publication/deployment receipt: source 3de4989, immutable annotated numeric tag pushed with feature branch. Worker image 108782052779.dkr.ecr.us-east-2.amazonaws.com/marvain4-prod-release-prerequisites-workerrepository-fdisivyobf3k@sha256:640f1e1c1525309069a2fc5533a134cd7d796fe3c67cf11241a4c84bdea57eaa. EC2 build tmux returned exit 0; SAM build and image publisher succeeded. Owning deployment returned exit 0 and stack success. No test suite, lint, CI, PR, merge or extra QC. Builder stop returned stopping; no additional completion gate was added. Requested live acceptance remains pending.
 
 ## Historical workspace and recognition checkpoint
 
