@@ -2,9 +2,11 @@
 
 **Revision:** 1  
 **Prepared:** 9 November 2026  
-**Status:** Hub/responder 4.0.20 and recognition image 4.0.19 DEPLOYED. Upload success is independent of dog detection; attended upload and identity acceptance remain pending. Quiet single-person face recognition remains ACCEPTED; group attribution and other outstanding scenarios are incomplete.
+**Status:** Hub/responder 4.0.20 and recognition image 4.0.19 DEPLOYED. User upload completed: Chunk2 shows Photo uploaded successfully, Detection complete, and Approved reference. Fresh live dog identity acceptance remains pending. Quiet single-person face recognition remains ACCEPTED; group attribution and other outstanding scenarios are incomplete.
 
 ## Current continuation state
+
+11 November 2026 attended outcome: user replied "done" to the independent-upload handoff. Chrome LSMC Dogs tab 762569109, laptop space, Chunk2 selected, shows "Photo uploaded successfully", "Detection complete.", and "Approved reference" with Revoke reference available. The original Chunk record has no uploaded photos. The user created/approved Chunk2; the agent only read the resulting states and selected the existing records. No rename, merge, deletion, capture, upload or approval was performed by the agent. This supersedes the pending-upload handoff below. New live identity matching, unknown/absent dog behavior and later encounter recall remain pending; upload-to-detection timing was not measured. Live Session tab 762569106 remains open with Mic Off, camera off, session f68589c1-ad75-4de4-baaa-c59fc494aa9b; do not navigate it away. Next user action: enable Camera with the dog visible and type "Recognize the dog from the camera." Expect a supported candidate for the approved Chunk2 reference, preserving uncertainty. Dogs result tab and Live Session tab were kept open.
 
 11 November 2026: user reports Upload snapshot appears to do nothing, then explicitly requests upload success independent of dog detection. Chrome LSMC tab 762569098 shows Chunk registered (actual TapDB EUID V-MVN-2MQ2), a retained snapshot, "The request failed", and no references. Camera is off. Do not register Chunk again or approve a reference on the user's behalf.
 
