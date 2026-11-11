@@ -76,7 +76,7 @@ def process(event):
     duration=len(waveform)/rate
     clipped=float(np.mean(np.abs(waveform)>=0.999)) if len(waveform) else 0.0
     # ffmpeg already produces the encoder's 16 kHz input; avoid resampling it again.
-    wav=preprocess_wav(waveform) if len(waveform) and np.any(waveform) else waveform
+    wav=preprocess_wav(waveform) if len(waveform) and np.any(waveform) else np.empty(0,dtype=np.float32)
     speech_seconds=len(wav)/16000
     minimum_speech=5.0 if payload.get("enroll_person_id") else 1.5
     reasons=[]
