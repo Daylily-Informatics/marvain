@@ -2,9 +2,33 @@
 
 **Revision:** 1  
 **Prepared:** 9 November 2026  
-**Status:** Hub/responder 4.0.20 and recognition image 4.0.19 DEPLOYED. Chunk2 upload/detection/reference approval succeeded. Live acceptance is blocked by startup recall timeout and reused browser room; 4.0.21 repair prepared for release. Quiet single-person face recognition remains ACCEPTED; group attribution and other outstanding scenarios are incomplete.
+**Status:** Hub/responder 4.0.21 and recognition image 4.0.19 DEPLOYED. Responder ready and current camera acknowledgment observed after repair. Chunk2 upload/detection/reference approval succeeded; fresh dog matching remains pending. Quiet single-person face recognition remains ACCEPTED; group attribution and other outstanding scenarios are incomplete.
 
 ## Current continuation state
+
+11 November 2026: user reported a live camera error while trying dog recognition. The approved Chunk2 reference remains successful. Objective: restore responder startup and camera acknowledgment, then hand the fresh dog comparison to John with Mic Off.
+
+Production target: profile lsmc, account 108782052779, us-east-2, stack marvain4-prod; config /Users/jmajor/.config/marvain/marvain-lsmc-us-east-2.yaml. Repo /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain, branch codex/marvain-interactive-resume. Production was Hub/responder 4.0.20, recognition image 4.0.19 before this repair.
+
+Failure: worker job AJ_wWeibPhuTkyp crashed after a 25-second recall client timeout; corresponding Hub request e693f260-65ec-40dc-8c61-5bbea45d461e completed in 26,644.67 ms. Later joins reused a stable media room without a new token-time dispatch. Chrome LSMC tab 762569109 has failed session c49f827b-ed1e-4da7-8649-e623339eb1c0, Mic Off and camera off. Native diagnostic logs are under /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/build/releases/4.0.20/ as worker-camera-error.json and hub-camera-error.log.
+
+Repair source: immutable annotated 4.0.21 at 064d1a9, branch/tag pushed. Canonical recall shares one transaction-local TapDB view and reuses resolved instances/lineage; source permissions, corrections, retention and timeouts unchanged. Blocking startup HTTP moved off the audio loop. Browser sessions now require unique ephemeral media rooms, independently of satellite space settings. UI shows existing worker health and failure events. Comparison source contracts: TapDB models/object lookup and Bloom typed-lineage usage; documented LiveKit token dispatch only applies when a room is first created (https://docs.livekit.io/agents/server/agent-dispatch/).
+
+Final build: EC2 i-0325430bfec70e41e, tmux marvain-4-0-21-release, native pane exit 0. Worker publication returned published with digest sha256:0167e60decf3c647feaa46588e076581f4b9192b08bd4f6265f3fcb85d5ea0b8 in the existing worker ECR repository. SAM build succeeded. Artifact transfer succeeded; builder stop returned running -> stopping. Deployment session 6896 exited 0 and SAM reported Successfully created/updated stack - marvain4-prod in us-east-2. Build/deploy receipts are under /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/build/releases/4.0.21/.
+
+Authorization remains the ongoing user-directed fix/release/deploy and attended recognition effort. No tests/lint/CI, PR/merge, local container build, automatic camera/mic capture, reference approval, alternate model, new schedules or added controls. Attended recovery succeeded: fresh session 924ae059-14ff-4383-86b3-32f58bdc0703 joined at 01:56:29 EST, worker 4.0.21 reported ready at 01:56:37 EST and greeted John. John enabled Camera; the page reported Agent vision ready and worker acknowledgment at 01:56:49 EST. Mic Off remains enabled. Next: John types "Recognize the dog from the camera" with the dog visible; no further enrollment is needed. Unknown/absent dog cases, later recall, fresh voice identity, multi-person attribution and the broader two-location objective remain pending.
+
+## 4.0.21 startup repair deployment receipt — 11 November 2026
+
+- Source: annotated immutable 4.0.21 at 064d1a9, pushed with codex/marvain-interactive-resume.
+- Final EC2 build: i-0325430bfec70e41e, tmux marvain-4-0-21-release, native pane exit 0. Worker publish returned published; SAM build succeeded.
+- Worker image: 108782052779.dkr.ecr.us-east-2.amazonaws.com/marvain4-prod-release-prerequisites-workerrepository-fdisivyobf3k@sha256:0167e60decf3c647feaa46588e076581f4b9192b08bd4f6265f3fcb85d5ea0b8
+- Artifact transfer succeeded; builder stop accepted running -> stopping. Recognition image remains the exact 4.0.19 digest.
+- Owning deploy session 6896 exited 0; native SAM result: Successfully created/updated stack - marvain4-prod in us-east-2. Receipt: /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/build/releases/4.0.21/deploy.log.
+- Browser recovery: left failed session, reloaded repaired Live Session, selected laptop and joined with Mic Off/camera off. New session 924ae059-14ff-4383-86b3-32f58bdc0703 has unique room 6375476a-8498-49a0-8a7d-98722392de34:924ae05914ff. New responder agent-AJ_wW3B583abo2Y joined immediately and worker 4.0.21 emitted ready at 01:56:37 EST, eight seconds after browser join. Transcript greeting: "Hi John! Great to connect again. How can I assist you today?" User then enabled Camera: Agent vision ready and Worker acknowledged current visual observation at 01:56:49 EST. Mic Off remained enabled. Agent did not enable or capture camera itself. Fresh dog comparison remains pending user interaction.
+- No tests/lint/CI/PR/merge or additional verification campaign. No memory-authorization rule or runtime limit changed.
+
+## Earlier 4.0.20 handoff and failure notes — superseded by current state
 
 11 November 2026 new attended blocker: user reports "error" during live dog acceptance. Chrome LSMC tab 762569109 now contains Live Session c49f827b-ed1e-4da7-8649-e623339eb1c0 in stable room 6375476a-8498-49a0-8a7d-98722392de34, Mic Off, no remote audio, camera stopped after "agent did not acknowledge visual access". Worker job AJ_wWeibPhuTkyp for an earlier session in the same room crashed during scene recall: 25-second client ReadTimeout; corresponding Hub request e693f260-65ec-40dc-8c61-5bbea45d461e completed in 26,644.67 ms. Later joins reused the room without a new job. Native logs: build/releases/4.0.20/worker-camera-error.json and hub-camera-error.log under this repo. Repair scope: transaction-local TapDB object/lineage reuse across recall scenes, move blocking startup HTTP off the audio event loop, and require fresh ephemeral rooms for browser sessions independently of satellite room settings. Preserve memory access/lineage semantics and existing timeouts. Prepare tagged 4.0.21 for the same selected EC2 builder and production service; no tests or extra QC. Chunk2 upload and approved reference remain successful. Fresh dog recognition remains pending.
 
