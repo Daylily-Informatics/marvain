@@ -2,7 +2,7 @@
 
 **Revision:** 1  
 **Prepared:** 9 November 2026  
-**Status:** Hub, responder and recognition 4.0.19 DEPLOYED. Dog enrollment and fresh identity acceptance remain pending. Quiet single-person face recognition remains ACCEPTED; group attribution and other outstanding scenarios are incomplete.
+**Status:** Hub/responder 4.0.20 and recognition image 4.0.19 DEPLOYED. Upload success is independent of dog detection; attended upload and identity acceptance remain pending. Quiet single-person face recognition remains ACCEPTED; group attribution and other outstanding scenarios are incomplete.
 
 ## Current continuation state
 
@@ -12,7 +12,16 @@ Root cause: HubApiFunction native reports timeout at 30,000 ms. Corresponding Re
 
 Local 4.0.20 repair: persist private S3 photo plus canonical artifact/animal lineage first, return upload success, start a native Standard Step Functions execution invoking the existing dog Lambda. Canonical typed external reference plus HAS_PROCESSING_EXECUTION links the actual returned AWS execution ARN to the photo. Native DescribeExecution supplies pending/success/failure; no custom queue, watchdog, new runtime cap or idle server. Photos remain visible for zero dogs, multiple dogs or processing errors. Explicit reference approval is available only for one detected dog and persists the embedding and review lineage. Existing model/thresholds unchanged. Live dog requests use the same asynchronous processing flow and a 180-second RPC response window; camera/session changes cancel delivery. Encounter time retains the original snapshot timestamp. Status appears beside upload controls and each photo.
 
-Production baseline: Hub/responder/recognition 4.0.19 in lsmc/account 108782052779/us-east-2/stack marvain4-prod; config /Users/jmajor/.config/marvain/marvain-lsmc-us-east-2.yaml. Repo /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain, branch codex/marvain-interactive-resume, baseline 7f58191. Builder i-0325430bfec70e41e currently stopped per owning CLI. Next: commit/tag/push 4.0.20; build final responder image and Hub package only on EC2, retaining the exact 4.0.19 recognition image; deploy through repaired CLI; reopen Dogs with existing Chunk selected for a user-controlled upload. No tests/lint/CI/PR/merge, fallback model, automated capture, new schedules, cleanup or extra verification gates. Dog acceptance, fresh voice match, multi-person attribution and the broader two-location goal remain pending.
+Production baseline: Hub/responder/recognition 4.0.19 in lsmc/account 108782052779/us-east-2/stack marvain4-prod; config /Users/jmajor/.config/marvain/marvain-lsmc-us-east-2.yaml. Repo /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain, branch codex/marvain-interactive-resume, baseline 7f58191. Annotated 4.0.20 at 4baaf67 and feature branch pushed. Final EC2 build in tmux marvain-4-0-20-release completed with exit 0; responder image published; SAM package/log transfer succeeded. Builder stop returned running -> stopping. Exact 4.0.19 recognition image retained. Deployment session 72923 exited 0: Successfully created/updated stack - marvain4-prod in us-east-2. New Dogs tab 762569106 is open in Chrome LSMC, with laptop and existing Chunk selected; the user's original snapshot remains in old tab 762569098. Native dog list loaded; no new upload, detection or reference approval was performed by the agent. Next: user-controlled snapshot upload must show saved-photo success independently of detection, then review detected dog and approve. User outcome question is pending. No tests/lint/CI/PR/merge, fallback model, automated capture, new schedules, cleanup or extra verification gates. Dog acceptance, fresh voice match, multi-person attribution and the broader two-location goal remain pending.
+
+## 4.0.20 deployment receipt — 11 November 2026
+
+Annotated immutable tag 4.0.20 at 4baaf67 and feature branch published. Final responder image and Hub package built on EC2 i-0325430bfec70e41e only; tmux pane exit 0. Responder publication returned published:
+108782052779.dkr.ecr.us-east-2.amazonaws.com/marvain4-prod-release-prerequisites-workerrepository-fdisivyobf3k@sha256:d63f79fd8dfe4dd0164b05b6a0b6585af6107bd64f702af9cb1ed5adfe3e276b
+
+Recognition image remains the exact 4.0.19 digest recorded below. CLI set AgentWorkerVersion=4.0.20 and the published digest, then deployed the EC2-built template. Session 72923 exited 0; SAM reported Successfully created/updated stack - marvain4-prod in us-east-2. Native deployment receipt: /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/build/releases/4.0.20/deploy.log. Build/package logs are beside it. Builder stop request returned running -> stopping after successful transfer.
+
+Browser delivery: new Chrome LSMC tab 762569106 at https://1kuwpk5zj7.execute-api.us-east-2.amazonaws.com/prod/dogs, laptop and actual existing Chunk V-MVN-2MQ2 selected; current photo list empty. Old tab 762569098 retains the user's original snapshot. New upload/result and reference approval are pending user action. No synthetic photo, automated capture, benchmark, test, lint, CI, PR, merge or secondary success gate was run.
 
 ## Upload independence repair — 11 November 2026
 
