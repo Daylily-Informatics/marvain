@@ -382,10 +382,50 @@ class MarvainSemanticLifecycle:
             raw_capture_allowed=properties.get("raw_capture_allowed"), retention=tuple(decisions),
             revoked_at=_parse_timestamp(revoked, "revoked_at") if revoked is not None else None)
 
+    def recall_in_context(
+        self, *, scene_semantic_id: str, source_scene_ids: tuple[str, ...],
+        authenticated_principal_id: str, access_at: datetime, as_of: datetime,
+        historical: bool = False,
+    ) -> tuple[SemanticRecallRecord, ...]:
+        """Recall prior scenes only when every current audience member may hear them.
+
+        The caller supplies scenes from its authorized agent's persisted index;
+        sessions, audience, and source permissions are resolved from TapDB lineage.
+        """
+        with self.store.read_view() as view:
+            scene = view.get_object(scene_semantic_id)
+            if scene.template_code != TEMPLATE_CODES["scene"]:
+                raise LifecycleError("recall context must be a scene")
+            policy = self._read_policy(view, scene)
+            audience = policy.reader_principal_ids
+            purpose = MemoryPurpose.HISTORY if historical else MemoryPurpose.RECALL
+            if not policy.permits(authenticated_principal_id=authenticated_principal_id,
+                                  purpose=purpose, layer=MemoryLayer.KNOWLEDGE, at=access_at):
+                raise LifecycleError("caller cannot recall into this scene")
+            scopes = []
+            for source_id in dict.fromkeys(source_scene_ids):
+                source = view.get_object(source_id)
+                if source.template_code != TEMPLATE_CODES["scene"]:
+                    raise LifecycleError("recall source must be a scene")
+                sessions = [item for item in view.linked_objects(source_id, relationship_type="IN_SCENE", incoming=True)
+                            if item.template_code == TEMPLATE_CODES["session"]]
+                if len(sessions) != 1:
+                    raise LifecycleError("recall source requires one canonical session")
+                scopes.append((source_id, sessions[0].semantic_id))
+        records = []
+        for source_id, session_id in scopes:
+            records.extend(self.recall_scene(
+                scene_semantic_id=source_id, session_semantic_id=session_id,
+                authenticated_principal_id=authenticated_principal_id,
+                audience_principal_ids=audience, access_at=access_at, as_of=as_of, historical=historical,
+            ))
+        return tuple(records)
+
     def recall_scene(
         self, *, scene_semantic_id: str, session_semantic_id: str, authenticated_principal_id: str,
         access_at: datetime, as_of: datetime, historical: bool = False,
         require_export: bool = False,
+        audience_principal_ids: tuple[str, ...] = (),
     ) -> tuple[SemanticRecallRecord, ...]:
         """Read scene/session memory, resolving policy and corrections from lineage.
 
@@ -394,11 +434,16 @@ class MarvainSemanticLifecycle:
         policy for each disclosed memory at access time.
         """
         with self.store.read_view() as view:
-            view.get_object(scene_semantic_id)
+            scene = view.get_object(scene_semantic_id)
             view.get_object(session_semantic_id)
             principal = view.get_object(authenticated_principal_id)
             if principal.template_code != TEMPLATE_CODES["principal"] or principal.lifecycle_state != "active":
                 raise LifecycleError("recall requires an active authenticated principal")
+            audience = tuple(dict.fromkeys((authenticated_principal_id, *audience_principal_ids)))
+            for principal_id in audience:
+                recipient = view.get_object(principal_id)
+                if recipient.template_code != TEMPLATE_CODES["principal"] or recipient.lifecycle_state != "active":
+                    raise LifecycleError("recall audience requires active principals")
             episodes = view.linked_objects(scene_semantic_id, relationship_type="IN_SCENE", incoming=True)
             output: list[SemanticRecallRecord] = []
             for episode in episodes:
@@ -420,7 +465,8 @@ class MarvainSemanticLifecycle:
                     sources = view.linked_objects(candidates[0].semantic_id, relationship_type="DERIVED_FROM")
                     if not sources:
                         raise LifecycleError(f"memory {memory.semantic_id} has no source evidence")
-                    constraints = [MemoryPolicyConstraint(self._read_policy(view, memory), MemoryLayer.KNOWLEDGE),
+                    constraints = [MemoryPolicyConstraint(self._read_policy(view, scene), MemoryLayer.KNOWLEDGE),
+                                   MemoryPolicyConstraint(self._read_policy(view, memory), MemoryLayer.KNOWLEDGE),
                                    MemoryPolicyConstraint(self._read_policy(view, candidates[0]), MemoryLayer.KNOWLEDGE),
                                    MemoryPolicyConstraint(self._read_policy(view, episode), MemoryLayer.EPISODE)]
                     all_sources = {source.semantic_id: source for source in (*episode_sources, *sources)}
@@ -469,6 +515,12 @@ class MarvainSemanticLifecycle:
                         _parse_timestamp(memory.properties.get("recorded_at"), "recorded_at"),
                         _parse_timestamp(memory.properties.get("effective_at"), "effective_at"),
                         tuple(constraints), retracted_at)
+                    purpose = MemoryPurpose.HISTORY if historical else MemoryPurpose.RECALL
+                    if not all(permits_scoped_memory(
+                        authenticated_principal_id=recipient, purpose=purpose, layer=MemoryLayer.KNOWLEDGE,
+                        policies=constraints, at=access_at,
+                    ) for recipient in audience):
+                        continue
                     if require_export and not permits_scoped_memory(
                         authenticated_principal_id=authenticated_principal_id, purpose=MemoryPurpose.EXPORT,
                         layer=MemoryLayer.KNOWLEDGE, policies=constraints, at=access_at,

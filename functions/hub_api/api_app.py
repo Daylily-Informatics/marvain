@@ -17,7 +17,7 @@ import time
 import uuid
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 import boto3
@@ -3946,6 +3946,7 @@ class SceneRecallIn(BaseModel):
     top_k: int = Field(default=10, ge=1, le=200)
     as_of: datetime | None = None
     historical: bool = False
+    scope: Literal["session", "agent"] = "session"
 
 
 class CaretakerAssociationIn(BaseModel):
@@ -4136,10 +4137,24 @@ def recall_scene(scene_euid: str, body: SceneRecallIn,
         as_of = body.as_of or now
         if as_of.tzinfo is None or as_of.utcoffset() is None:
             raise ValueError("as_of must be timezone-aware")
-        records = MarvainSemanticLifecycle(store).recall_scene(
-            scene_semantic_id=scene_euid, session_semantic_id=session_euid,
-            authenticated_principal_id=principal, access_at=now, as_of=as_of, historical=body.historical,
-        )
+        lifecycle = MarvainSemanticLifecycle(store)
+        if body.scope == "agent":
+            sources = _get_db().query(
+                """SELECT tapdb_euid FROM semantic_sync_status
+                   WHERE agent_id = :agent_id::uuid AND source_table = 'sessions'
+                     AND target_template_code = :template AND status = 'written'""",
+                {"agent_id": agent_id, "template": TEMPLATE_CODES["scene"]},
+            )
+            records = lifecycle.recall_in_context(
+                scene_semantic_id=scene_euid,
+                source_scene_ids=tuple(str(row["tapdb_euid"]) for row in sources),
+                authenticated_principal_id=principal, access_at=now, as_of=as_of, historical=body.historical,
+            )
+        else:
+            records = lifecycle.recall_scene(
+                scene_semantic_id=scene_euid, session_semantic_id=session_euid,
+                authenticated_principal_id=principal, access_at=now, as_of=as_of, historical=body.historical,
+            )
     except (ValueError, KeyError, OSError) as exc:
         raise HTTPException(status_code=403, detail=f"Scene recall binding or policy is invalid: {exc}") from exc
     terms = _recall_terms(body.query)
@@ -4156,9 +4171,13 @@ def recall_scene(scene_euid: str, body: SceneRecallIn,
         return (-matches, -timestamp.timestamp(), item.memory.semantic_id)
     ranked = sorted((item for item in records if not terms or
                      terms & _recall_terms(str(item.memory.properties.get("content") or ""))), key=ranking)
-    return {"scene_euid": scene_euid, "session_euid": session_euid, "ranking_method": "canonical_lexical_v1",
+    return {"scene_euid": scene_euid, "session_euid": session_euid, "scope": body.scope,
+            "ranking_method": "canonical_lexical_v1",
             "memories": [{"semantic_id": item.memory.semantic_id,
                           "content": item.memory.properties.get("content"),
+                          "tier": item.memory.properties.get("tier"),
+                          "role": item.episode.properties.get("detail", {}).get("role", "unknown"),
+                          "provenance_class": item.memory.properties.get("provenance_class"),
                           "episode_euid": item.episode.semantic_id,
                           "evidence_euids": [e.semantic_id for e in item.evidence],
                           "effective_at": item.memory.properties.get("effective_at"),

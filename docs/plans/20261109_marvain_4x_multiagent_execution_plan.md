@@ -6,6 +6,48 @@
 
 ## Current continuation state
 
+10 November 2026: interactive repair is ACTIVE. John reports working voice, camera failure, and no past-session recall. Explicit latest scope: “fix this, ad the camera, and after fix is in place we test recall of memories across sessions and voice/facce recog”. Stop condition: tagged fixes deployed, then attended cross-session recall, camera and linked voice/face results recorded. User controls capture/consent; biometric enrollment is not yet accepted. No automated suite, lint, PR/merge, destructive cleanup or local container builds.
+
+Workspace /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain, branch codex/marvain-interactive-resume; Gate 0 75507f0, pushed. Owning app create_worktree completed from 663861b; old TapDB attachment is no longer used. Original /Users/jmajor/projects/marvain retains unrelated AGENTS.md, .playwright-cli, Marvain_Restart_Thread.md and release build receipts. No unique lost source was identified.
+
+Target: lsmc / account 108782052779 / us-east-2 / marvain4-prod. Config /Users/jmajor/.config/marvain/marvain-lsmc-us-east-2.yaml. Production baseline Hub 4.0.10, recognition image 4.0.9, responder 4.0.3; CLI 4.0.11. Builder i-0325430bfec70e41e last stopped. Earlier deployment succeeded; no redundant QC. Activation status returned written and ECS desired/running 1/1. Current Chrome LSMC profile user confirmed voice response; session b578a99e-0079-4b8d-afef-1a9a6be8fd68.
+
+Confirmed defects: camera worker logs report ModuleNotFoundError during frame description; worker requirements omit boto3 and task role has no S3 read grant. Recall calls current scene/session only, filters a generic startup phrase lexically, and exposes no dynamic recall tool. Browser Memories shows 15 retained memories including prior conversation, so storage is not universally absent. Two classification failures rejected ungrounded model quotes. Transcript capture is separate from derived memory. Codex history and external Daylily sources are not automatically imported.
+
+Diagnostics source repair complete: add owning deployment worker-logs (SAM logs cannot read ECS logical log group) and propagate SAM child failure exit codes. Editable install now targets this worktree. Pip returned success with a pre-existing SAM/click dependency conflict warning (SAM requires click 8.1.8, installed 8.4.2); This warning did not fail installation; retain the existing SAM tool contract unless an owning operation fails. Log evidence /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/build/interactions/20261110_join/agent-worker.json. No credentials printed.
+
+Next: implement audience-scoped recall across canonical sessions and a LiveKit recall tool; constrain classifier quotes to source text; declare vision dependency/IAM/model. Publish next annotated numeric release and build only its final worker image/Hub package on designated EC2. Deploy, stop builder, then user Leave/rejoin and attended recall/camera/enrollment. DAY-142 remains Active; DAY-22 second login binding and two-location demo remain incomplete. Prior recognition implementation/deployment is complete, user acceptance pending.
+
+## Interactive recall and camera repair — 10 November 2026
+
+| ID | Requirement | Status | Owner | Evidence / next action |
+|---|---|---|---|---|
+| WP-25 | Repair past-session recall | IN_PROGRESS | A0 | Agent-scoped canonical scene search, current-reader intersection, attributed memory context and LiveKit recall tool implemented; publish/deploy 4.0.12. |
+| WP-26 | Repair camera analysis | IN_PROGRESS | A0 | Actual ModuleNotFoundError; boto3 requirement, S3 visual-prefix read policy, explicit model/bucket/region and agent-scoped artifact path implemented; deploy 4.0.12. |
+| WP-27 | Preserve grounded memory extraction | IN_PROGRESS | A0 | Two actual ungrounded-quote failures; model now chooses exact source quotes through Structured Outputs enum; no deterministic fallback or relaxed grounding. |
+| WP-28 | Attended continuity and linked recognition | OPEN | John + A0 | After deployment: join, say a distinctive fact; Leave/rejoin and ask for it without repeating it; enable camera and ask for visible details; then explicit voice/face enrollment and separate identity checks for the same John actor. Record human/result receipts before extending proven acceptance manifest. |
+
+```mermaid
+flowchart LR
+  Talk[Current voice session] --> Tool[Recall tool]
+  Tool --> Hub[Authenticated Hub]
+  Hub --> Index[Agent session index]
+  Index --> TapDB[TapDB memories and lineage]
+  TapDB --> Policy[Current audience and source policies]
+  Policy --> Context[Attributed historical context]
+  Context --> Talk
+  Camera[User enables camera] --> Frame[Private visual artifact]
+  Frame --> Worker[Worker reads agent frame]
+  Worker --> Vision[Vision description]
+  Vision --> Talk
+```
+
+Recall remains lexical topic search with recent-memory startup context; wider Codex/Daylily ingestion is separate. Prior assistant statements remain attributed historical text, not current system instructions or evidence of user approval. Full-source policy/retention/correction rules remain in force. Cross-session recall does not grant a wider audience.
+
+Implementation references: LiveKit function tool documentation https://docs.livekit.io/agents/logic/tools/definition/ and OpenAI Structured Outputs https://developers.openai.com/api/docs/guides/structured-outputs. No automated tests, lint or CI were run. Existing successful voice interaction and reported defects are the attended baseline.
+
+## Historical workspace and recognition checkpoint
+
 10 November 2026 workspace change: John explicitly requested a new working directory because the old attachment is missing. The owning Codex create_worktree operation completed and attached /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain from committed 663861b. Current branch is codex/marvain-interactive-resume. Use this workspace for subsequent source work; /Users/jmajor/projects/marvain retains the prior checkout, local notes and build receipts. No uncommitted files were moved or deleted. Production/config identities are unchanged. The LSMC Chrome profile (Profile 10, johnm@lsmc.com) was explicitly launched on the laptop Live Session URL; voice-result feedback remains pending.
 
 10 November 2026 interactive resumption: John requests “lets start testing again” and asks to boot Marvain for interaction from the stopping point. Owning browser-activation worker-status returns desired=1, running=1, pending=0 (registration-log result empty); owning Hub activation status responds successfully with status=written for operation 5c72279f-fdba-41ec-a01d-51387dfc6d06 and the existing INITagent/laptop bindings. No service restart or redeployment was needed. macOS open returned exit 0 for Chrome People and laptop Live Session URLs. Human Join/microphone/“Hello Marvain” feedback is pending via the current question. This resumes attended product interaction; the automated acceptance suite has not run. Next: handle the user's actual voice result, then user-controlled voice/face consent, capture and enrollment review.

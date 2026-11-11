@@ -304,11 +304,20 @@ class OpenAIMemoryClassifier:
                 details=(("exception_type", type(exc).__name__),),
             )
 
+        # Let the model select evidence; do not ask it to regenerate a verbatim
+        # quote, which caused valid captures to fail on paraphrased output.
+        quote_choices = list(dict.fromkeys(
+            text[offset:offset + 240].strip() for offset in range(0, len(text), 240)
+            if text[offset:offset + 240].strip()
+        ))
+        schema = MemoryClassifierOutput.model_json_schema()
+        schema["$defs"]["MemoryClassifierOutputItem"]["properties"]["evidence_quote"]["enum"] = quote_choices
         prompt = {
             "task": "Classify a Marvain memory capture event.",
             "allowed_memory_kinds": list(MEMORY_KIND_VALUES),
             "allowed_provenance_classes": list(MEMORY_PROVENANCE_VALUES),
             "grounding_requirement": "evidence_quote must be an exact contiguous quote from event.text",
+            "allowed_evidence_quotes": quote_choices,
             "event": {
                 "text": text,
                 "modality": modality,
@@ -328,6 +337,8 @@ class OpenAIMemoryClassifier:
                         "content": (
                             "Classify only from the supplied event. Do not invent memory kinds, "
                             "provenance classes, or evidence quotes."
+                            " Select evidence_quote from allowed_evidence_quotes. Greetings, acknowledgments, "
+                            "and assistant offers of help are episodic exchanges, not user preferences."
                         ),
                     },
                     {"role": "user", "content": json.dumps(prompt, sort_keys=True)},
@@ -338,7 +349,7 @@ class OpenAIMemoryClassifier:
                         "name": "marvain_memory_classification",
                         "description": "Evidence-grounded Marvain memory classifications.",
                         "strict": True,
-                        "schema": MemoryClassifierOutput.model_json_schema(),
+                        "schema": schema,
                     }
                 },
             )

@@ -164,6 +164,17 @@ def deployment_launch_builder(
         raise ClickException(str(exc)) from exc
 
 
+def deployment_worker_logs(
+    since_minutes: int = Option(..., "--since-minutes", min=1, help="Read worker logs from this many minutes ago."),
+) -> None:
+    """Read hosted responder logs for the selected stack."""
+    from marvain_cli.deployment import worker_logs
+    try:
+        _json(worker_logs(ctx=_load(), since_minutes=since_minutes))
+    except (ConfigError, OSError) as exc:
+        raise ClickException(str(exc)) from exc
+
+
 def deployment_builder_status() -> None:
     """Read the prerequisite stack status and returned builder outputs."""
     from marvain_cli.deployment import builder_status
@@ -1168,6 +1179,7 @@ def register(registry: CommandRegistry, spec: CliSpec) -> None:
             ("source-inputs", deployment_source_inputs, required_policy(supports_json=True)),
             ("launch-builder", deployment_launch_builder, required_policy(mutates_state=True)),
             ("builder-status", deployment_builder_status, required_policy(supports_json=True)),
+            ("worker-logs", deployment_worker_logs, required_policy(supports_json=True)),
             ("start-builder", deployment_start_builder, required_policy(mutates_state=True, supports_json=True)),
             ("stop-builder", deployment_stop_builder, required_policy(mutates_state=True, supports_json=True)),
             ("builder-power-state", deployment_builder_power_state, required_policy(supports_json=True)),

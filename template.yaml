@@ -928,6 +928,14 @@ Resources:
                 - ecs-tasks.amazonaws.com
             Action:
               - sts:AssumeRole
+      Policies:
+        - PolicyName: ReadCameraFrames
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub ${ArtifactBucket.Arn}/visual/*
 
   AgentWorkerLogGroup:
     Type: AWS::Logs::LogGroup
@@ -975,6 +983,12 @@ Resources:
               Value: gpt-realtime
             - Name: OPENAI_VOICE
               Value: marin
+            - Name: OPENAI_VISION_MODEL
+              Value: gpt-4.1-mini
+            - Name: ARTIFACT_BUCKET
+              Value: !Ref ArtifactBucket
+            - Name: AWS_DEFAULT_REGION
+              Value: !Ref AWS::Region
           Secrets:
             - Name: OPENAI_API_KEY
               ValueFrom: !Sub '${OpenAICredentialsSecretArn}:api_key::'

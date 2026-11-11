@@ -1455,17 +1455,6 @@ def _stream_process(
     return p.wait()
 
 
-def _tail_one(
-    function_name: str,
-    cmd: list[str],
-    env: dict[str, str],
-    *,
-    log_fh: TextIO | None,
-    log_lock: threading.Lock | None,
-) -> None:
-    _stream_process(prefix=function_name, cmd=cmd, env=env, log_fh=log_fh, log_lock=log_lock)
-
-
 def _since_to_sam_start_time(since: str) -> str:
     """Convert our compact --since (e.g. 10m, 1h) into `sam logs -s` format.
 
@@ -1543,19 +1532,24 @@ def sam_logs(
 
         # If functions were specified, tail each explicitly (repeatable --function).
         threads: list[threading.Thread] = []
+        results: dict[str, int] = {}
+
+        def stream_named(name: str, command: list[str]) -> None:
+            results[name] = _stream_process(prefix=name, cmd=command, env=env,
+                                            log_fh=log_fh, log_lock=log_lock)
+
         for f in functions:
             cmd = [*base, "--name", f]
             t = threading.Thread(
-                target=_tail_one,
-                args=(f, cmd, env),
-                kwargs={"log_fh": log_fh, "log_lock": log_lock},
+                target=stream_named,
+                args=(f, cmd),
                 daemon=True,
             )
             threads.append(t)
             t.start()
         for t in threads:
             t.join()
-        return 0
+        return next((results.get(name, 1) for name in functions if results.get(name, 1) != 0), 0)
     finally:
         if log_fh is not None:
             try:

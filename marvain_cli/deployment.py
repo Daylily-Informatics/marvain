@@ -20,6 +20,26 @@ _REQUIRED_SOURCE_PARAMETERS = (
 )
 
 
+def worker_logs(*, ctx: Any, since_minutes: int) -> dict[str, Any]:
+    """Read the selected ECS worker's CloudWatch log group."""
+    from datetime import datetime, timedelta, timezone
+    from marvain_cli.ops import aws_stack_outputs
+
+    outputs = aws_stack_outputs(ctx, dry_run=False)
+    group = outputs.get("AgentWorkerLogGroupName")
+    if not group:
+        raise ConfigError("Selected stack has no AgentWorkerLogGroupName output")
+    client = boto3.Session(profile_name=ctx.env.aws_profile, region_name=ctx.env.aws_region).client("logs")
+    start = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
+    events = []
+    for page in client.get_paginator("filter_log_events").paginate(
+        logGroupName=group, startTime=int(start.timestamp() * 1000),
+    ):
+        events.extend({"timestamp": event["timestamp"], "message": event["message"],
+                       "stream": event["logStreamName"]} for event in page["events"])
+    return {"log_group": group, "events": events}
+
+
 def inspect_target(*, profile: str, region: str, stack_name: str | None) -> dict[str, Any]:
     """Inspect only the selected account and region; never fetch secret values."""
     if profile != "lsmc" or region != "us-east-2":
