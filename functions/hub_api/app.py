@@ -6109,7 +6109,7 @@ async def api_dog_create(request: Request):
     return create_dog(ctx, name=body.get("name"), caretaker_confirmed=body.get("caretaker_confirmed"))
 
 
-@app.post("/api/dogs/{dog_id}/references")
+@app.post("/api/dogs/{dog_id}/photos")
 async def api_dog_reference(request: Request, dog_id: str):
     from dog_recognition import capture
     return await capture(_get_db(), request=request, user=_dog_request_user(request),
@@ -6129,6 +6129,39 @@ async def api_dog_reference_review(request: Request, reference_id: str):
 async def api_dog_capture(request: Request):
     from dog_recognition import capture
     return await capture(_get_db(), request=request, user=_dog_request_user(request), cfg=_cfg, s3=_get_s3())
+
+
+@app.get("/api/dogs/photos/{photo_id}")
+def api_dog_photo_status(request: Request, photo_id: str, agent_id: str, space_id: str):
+    from dog_recognition import context, photo_status
+    ctx = context(_get_db(), user=_dog_request_user(request), agent_id=agent_id, space_id=space_id)
+    return photo_status(ctx, photo_id=photo_id)
+
+
+@app.post("/api/dogs/photos/{photo_id}/process")
+async def api_dog_photo_process(request: Request, photo_id: str):
+    from dog_recognition import context, start_processing
+    body = await request.json()
+    ctx = context(_get_db(), user=_dog_request_user(request), agent_id=body.get("agent_id"), space_id=body.get("space_id"))
+    return start_processing(ctx, photo_id=photo_id, bucket=_cfg.artifact_bucket)
+
+
+@app.post("/api/dogs/photos/{photo_id}/approve")
+async def api_dog_photo_approve(request: Request, photo_id: str):
+    from dog_recognition import context, approve_photo
+    body = await request.json()
+    ctx = context(_get_db(), user=_dog_request_user(request), agent_id=body.get("agent_id"), space_id=body.get("space_id"))
+    return approve_photo(ctx, photo_id=photo_id, bucket=_cfg.artifact_bucket, s3=_get_s3())
+
+
+@app.post("/api/dogs/captures/{photo_id}/result")
+async def api_dog_capture_result(request: Request, photo_id: str):
+    from dog_recognition import context, finish_capture
+    user = _dog_request_user(request)
+    body = await request.json()
+    ctx = context(_get_db(), user=user, agent_id=body.get("agent_id"), space_id=body.get("space_id"))
+    return finish_capture(_get_db(), ctx=ctx, user=user, photo_id=photo_id, session_id=body.get("session_id"),
+                          bucket=_cfg.artifact_bucket, s3=_get_s3())
 
 
 @app.get("/live-session", name="gui_live_session")

@@ -18,6 +18,7 @@
 </div></div>
 <div class="card mb-lg"><div class="card-header"><h2>2. Add and review reference photos</h2></div><div class="card-body">
   <label for="dog-select">Dog</label> <select id="dog-select"><option value="">Choose a dog</option></select>
+  <p id="dog-upload-status" role="status" aria-live="polite">Uploaded photos are saved independently of dog detection.</p>
   <p>Use clear photos with only this dog in view. Add several views across separate photos, including its face and body. No speech is needed.</p>
   <label for="dog-file">Choose a JPEG or PNG</label> <input id="dog-file" type="file" accept="image/jpeg,image/png">
   <button id="dog-file-upload" type="button" class="btn btn-primary">Upload photo</button>
@@ -43,8 +44,13 @@
 <script>
 (() => {
   const el = id => document.getElementById(id);
-  let dogs = [], stream = null, snapshot = null, busy = false;
-  function status(message, error=false) { el('dog-status').textContent = message; el('dog-status').className = error ? 'text-danger' : ''; }
+  let dogs = [], stream = null, snapshot = null, busy = false, pollTimer = null, pageActive = true;
+  function status(message, error=false) {
+    ['dog-status', 'dog-upload-status'].forEach(id => {
+      el(id).textContent = message;
+      el(id).style.cssText = 'padding:0.75rem;border-left:3px solid ' + (error ? '#f87171' : '#38bdf8');
+    });
+  }
   function scope() {
     const option = el('dog-space').selectedOptions[0];
     if (!option || !option.value) throw new Error('Choose a space first.');
@@ -53,7 +59,7 @@
   async function api(path, options={}) {
     const response = await fetch(Marvain.path(path), options);
     const result = await response.json();
-    if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'The request failed.');
+    if (!response.ok) throw new Error('HTTP ' + response.status + ': ' + (typeof result.detail === 'string' ? result.detail : result.message || response.statusText));
     return result;
   }
   async function action(message, fn) {
@@ -66,48 +72,70 @@
     finally { controls.forEach((control, index) => control.disabled = previous[index]); busy = false; }
   }
   async function loadDogs(selectedId) {
+    clearTimeout(pollTimer);
     const data = await api('/api/dogs?' + new URLSearchParams(scope())); dogs = data.dogs;
     el('dog-select').replaceChildren(new Option('Choose a dog', ''));
     dogs.forEach(dog => el('dog-select').add(new Option(dog.display_name, dog.dog_id)));
     if (selectedId) el('dog-select').value = selectedId;
     renderReferences();
+    if (pageActive && dogs.some(dog => dog.photos.some(photo => photo.processing.status === 'processing'))) scheduleRefresh();
+  }
+  function scheduleRefresh() {
+    pollTimer = setTimeout(async () => {
+      if (!pageActive) return;
+      if (busy) { scheduleRefresh(); return; }
+      try { await loadDogs(el('dog-select').value); }
+      catch (error) { status('Could not refresh detection status: ' + error.message, true); }
+    }, 3000);
   }
   function renderReferences() {
     el('dog-references').replaceChildren();
     const dog = dogs.find(item => item.dog_id === el('dog-select').value);
     if (!dog) return;
-    if (!dog.references.length) { el('dog-references').textContent = 'No reference photos yet.'; return; }
-    dog.references.forEach(reference => {
+    if (!dog.photos.length) { el('dog-references').textContent = 'No photos uploaded yet.'; return; }
+    dog.photos.forEach(photo => {
       const card = document.createElement('div'); card.style.width = '280px';
-      const photo = document.createElement('div'); photo.style.position = 'relative';
-      const img = document.createElement('img'); img.src = reference.photo_url; img.alt = dog.display_name + ' reference'; img.style.cssText = 'width:100%;display:block';
-      photo.append(img);
-      const [left, top, right, bottom] = reference.box;
-      const box = document.createElement('div'); box.style.cssText = `position:absolute;border:3px solid #38bdf8;box-sizing:border-box;left:${left*100}%;top:${top*100}%;width:${(right-left)*100}%;height:${(bottom-top)*100}%`;
-      photo.append(box); card.append(photo);
-      const label = document.createElement('p'); label.textContent = reference.state === 'active' ? 'Approved reference' : reference.state.replaceAll('_', ' '); card.append(label);
-      const review = decision => action('Saving reference review…', async () => {
-        await api('/api/dogs/references/' + encodeURIComponent(reference.reference_id) + '/review', {
-          method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({...scope(), decision})});
-        await loadDogs(dog.dog_id); status(decision === 'approve' ? 'Reference approved. It is now available for matching.' : 'Reference revoked. It will no longer be used for matching.');
-      });
-      if (reference.state === 'review_required') {
-        const button = document.createElement('button'); button.className = 'btn btn-primary'; button.textContent = 'Approve reference'; button.onclick = () => review('approve'); card.append(button);
+      const image = document.createElement('div'); image.style.position = 'relative';
+      const img = document.createElement('img'); img.src = photo.photo_url; img.alt = dog.display_name + ' uploaded photo'; img.style.cssText = 'width:100%;display:block'; image.append(img);
+      if (photo.box) {
+        const [left, top, right, bottom] = photo.box;
+        const box = document.createElement('div'); box.style.cssText = `position:absolute;border:3px solid #38bdf8;box-sizing:border-box;left:${left*100}%;top:${top*100}%;width:${(right-left)*100}%;height:${(bottom-top)*100}%`;
+        image.append(box);
       }
-      if (reference.state !== 'revoked') {
-        const button = document.createElement('button'); button.className = 'btn btn-outline'; button.textContent = 'Revoke reference'; button.onclick = () => review('revoke'); card.append(button);
+      card.append(image);
+      const stored = document.createElement('p'); stored.textContent = 'Photo uploaded successfully'; stored.style.color = '#86efac'; card.append(stored);
+      const detection = document.createElement('p'); detection.textContent = photo.processing.message; card.append(detection);
+      const label = document.createElement('p'); label.textContent = photo.reference_state === 'active' ? 'Approved reference' : photo.reference_state === 'revoked' ? 'Reference revoked' : 'Not yet an approved reference'; card.append(label);
+      const button = (text, path, body, message) => {
+        const control = document.createElement('button'); control.className = 'btn btn-outline'; control.textContent = text;
+        control.onclick = () => action(message, async () => {
+          await api(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({...scope(), ...body})});
+          await loadDogs(dog.dog_id); status('Photo saved. ' + (text === 'Approve reference' ? 'Reference approved and available for matching.' : text === 'Revoke reference' ? 'Reference revoked.' : 'Detection started.'));
+        }); card.append(control);
+      };
+      if (!photo.reference_id && photo.processing.status === 'complete' && photo.processing.dogs_detected === 1) {
+        button('Approve reference', '/api/dogs/photos/' + encodeURIComponent(photo.photo_id) + '/approve', {}, 'Saving reference approval…');
+      }
+      if (photo.reference_state === 'active') {
+        button('Revoke reference', '/api/dogs/references/' + encodeURIComponent(photo.reference_id) + '/review', {decision:'revoke'}, 'Revoking reference…');
+      }
+      if (!photo.reference_id && ['failed','not_started','result_expired'].includes(photo.processing.status)) {
+        button('Run detection', '/api/dogs/photos/' + encodeURIComponent(photo.photo_id) + '/process', {}, 'Starting detection for the stored photo…');
       }
       el('dog-references').append(card);
     });
   }
+
   async function upload(blob) {
     const dogId = el('dog-select').value;
     if (!dogId) throw new Error('Choose a dog first.');
     if (!blob) throw new Error('Choose a photo or take a snapshot first.');
     const form = new FormData(); Object.entries(scope()).forEach(([key, value]) => form.append(key, value));
     form.append('file', blob, blob.type === 'image/png' ? 'dog.png' : 'dog.jpg');
-    await api('/api/dogs/' + encodeURIComponent(dogId) + '/references', {method:'POST', body:form});
-    await loadDogs(dogId); status('Photo uploaded. Review the outlined dog below and approve the reference.');
+    const receipt = await api('/api/dogs/' + encodeURIComponent(dogId) + '/photos', {method:'POST', body:form});
+    status(receipt.message || 'Photo uploaded successfully. Detection is processing separately; the saved photo appears below.');
+    try { await loadDogs(dogId); }
+    catch (error) { status('Photo uploaded successfully. Could not refresh the photo list: ' + error.message, true); }
   }
   el('dog-space').onchange = () => action('Loading dogs…', async () => { await loadDogs(); status('Choose or register a dog.'); });
   el('dog-select').onchange = renderReferences;
@@ -118,7 +146,7 @@
       await loadDogs(result.dog_id); status('Dog registered. Add a clear reference photo.');
     });
   };
-  el('dog-file-upload').onclick = () => action('Processing dog photo…', () => upload(el('dog-file').files[0]));
+  el('dog-file-upload').onclick = () => action('Uploading photo…', () => upload(el('dog-file').files[0]));
   el('dog-camera-start').onclick = async () => {
     try {
       if (stream) return;
@@ -135,14 +163,14 @@
     snapshot = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.9));
     el('dog-camera-upload').disabled = !snapshot;
   };
-  el('dog-camera-upload').onclick = () => action('Processing dog snapshot…', () => upload(snapshot));
+  el('dog-camera-upload').onclick = () => action('Uploading snapshot…', () => upload(snapshot));
   function stopCamera() {
     if (stream) stream.getTracks().forEach(track => track.stop());
     stream = null; el('dog-camera').srcObject = null; el('dog-camera').hidden = true;
     el('dog-camera-snapshot').disabled = true; el('dog-camera-stop').disabled = true;
   }
   el('dog-camera-stop').onclick = stopCamera;
-  window.addEventListener('pagehide', stopCamera);
+  window.addEventListener('pagehide', () => { pageActive = false; clearTimeout(pollTimer); stopCamera(); });
 })();
 </script>
 {% endblock %}

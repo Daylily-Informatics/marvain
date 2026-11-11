@@ -648,6 +648,22 @@ Resources:
               Action: [s3:GetObject, s3:GetObjectVersion]
               Resource: !Sub ${ArtifactBucket.Arn}/private-dogs/*
 
+  DogRecognitionWorkflow:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub ${AWS::StackName}-dog-recognition
+      Type: STANDARD
+      Definition:
+        StartAt: RecognizeDogs
+        States:
+          RecognizeDogs:
+            Type: Task
+            Resource: !GetAtt RecognitionDogFunction.Arn
+            End: true
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref RecognitionDogFunction
+
   HubApiFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -672,7 +688,7 @@ Resources:
           REKOGNITION_FACE_THRESHOLD: '98'
           RECOGNITION_EXECUTION_MODE: lambda_on_demand
           RECOGNITION_QUEUE_URL: !Ref RecognitionQueue
-          DOG_RECOGNITION_FUNCTION_NAME: !Ref RecognitionDogFunction
+          DOG_RECOGNITION_STATE_MACHINE_ARN: !Ref DogRecognitionWorkflow
           DOG_MATCH_SIMILARITY: '0.70'
           DOG_MATCH_MARGIN: '0.05'
           TAPDB_WRITER_QUEUE_URL: !Ref TapdbWriterQueue
@@ -733,7 +749,12 @@ Resources:
               Action: lambda:InvokeFunction
               Resource:
                 - !GetAtt SemanticOutboxDispatcherFunction.Arn
-                - !GetAtt RecognitionDogFunction.Arn
+            - Effect: Allow
+              Action: states:StartExecution
+              Resource: !Ref DogRecognitionWorkflow
+            - Effect: Allow
+              Action: states:DescribeExecution
+              Resource: !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:${AWS::StackName}-dog-recognition:*
         - DynamoDBCrudPolicy:
             TableName: !Ref WsConnectionsTable
         - DynamoDBCrudPolicy:

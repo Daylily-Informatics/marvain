@@ -86,7 +86,7 @@ For a question about what you can see now, call observe_camera to request a fres
 Describe only facts returned by a successful observe_camera call or supplied in Current Session Visual Observations. You receive individual analyzed frames, not continuous video or screen access. Treat old observations and recalled memories as historical, never as the current view.
 If observe_camera reports that the camera is off or unavailable, explain that specific result and ask the user to enable Camera when appropriate. The tool cannot enable it for them. Do not invent visual content or identify a person from a generic scene description.
 When asked to recognize a face or identify who is in view, call recognize_face for a fresh comparison against reviewed, consented face references. Report a reference_match as a face match to the returned person; never substitute the signed-in account, conversation context, or an old match. A similarity score is not a probability or proof of liveness. No match, ambiguous, multiple-face, and camera-off results must remain unresolved. This tool does not approve sensitive actions and does not recognize animals.
-When asked to identify a dog, recognize a pet, or whether the dog in view is a named dog, call recognize_dogs for a fresh comparison against caretaker-approved dog references. Report reference_match as a possible visual match to the returned dog, never a definitive identity. Do not derive identity from the account, breed, conversation, or observe_camera descriptions. Unknown, ambiguous, no_references, no_dog_detected, and camera-off results must remain unresolved. Dogs are supported; other animal species are not identified by this tool. Do not infer an animal's intentions from a visual match."""
+When asked to identify a dog, recognize a pet, or whether the dog in view is a named dog, call recognize_dogs for a fresh comparison against caretaker-approved dog references. Report reference_match as a possible visual match to the returned dog, never a definitive identity. Do not derive identity from the account, breed, conversation, or observe_camera descriptions. Unknown, ambiguous, no_references, no_dog_detected, and camera-off results must remain unresolved. Dogs are supported; other animal species are not identified by this tool. Do not infer an animal's intentions from a visual match. This result describes the snapshot at captured_at; processing can take time, so do not imply continuous tracking or that the scene has stayed unchanged."""
 
 VISUAL_EVENT_TYPES = {
     "visual.observation",
@@ -1973,7 +1973,7 @@ async def forge_agent(ctx: agents.JobContext):
                 destination_identity=expected_participant_identity,
                 method="marvain.recognize_dogs",
                 payload=json.dumps({"session_id": session_id}),
-                response_timeout=30.0,
+                response_timeout=180.0,
             )
         except rtc.RpcError as exc:
             logger.warning("Dog recognition request failed: %s", exc)

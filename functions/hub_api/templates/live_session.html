@@ -538,8 +538,28 @@ async function joinLiveSession() {
     form.append('session_id', cameraSession);
     form.append('file', blob, 'live-dogs.jpg');
     const response = await fetch(Marvain.path('/api/dogs/captures'), {method:'POST', body:form});
-    const result = await response.json();
-    if (!response.ok) return JSON.stringify({ok:false, error:result.detail || 'Dog recognition failed'});
+    const receipt = await response.json();
+    if (!response.ok) return JSON.stringify({ok:false, error:receipt.detail || 'Dog photo upload failed'});
+    appendLog('lifecycle-log', 'Dog camera photo saved; recognition is processing');
+    const scope = {agent_id:selected.getAttribute('data-agent-id'), space_id:selected.value};
+    let processing;
+    do {
+      if (room !== cameraRoom || activeSession !== cameraSession || localVideoTrack !== cameraTrack) {
+        return JSON.stringify({ok:false, error:'camera_or_session_changed'});
+      }
+      const progress = await fetch(Marvain.path('/api/dogs/photos/' + encodeURIComponent(receipt.photo_id) + '?' + new URLSearchParams(scope)));
+      processing = await progress.json();
+      if (!progress.ok) return JSON.stringify({ok:false, error:processing.detail || 'Could not read dog processing status'});
+      if (processing.status === 'processing') await new Promise(resolve => setTimeout(resolve, 3000));
+    } while (processing.status === 'processing');
+    if (processing.status !== 'complete') return JSON.stringify({ok:false, error:processing.message});
+    if (room !== cameraRoom || activeSession !== cameraSession || localVideoTrack !== cameraTrack) {
+      return JSON.stringify({ok:false, error:'camera_or_session_changed'});
+    }
+    const comparison = await fetch(Marvain.path('/api/dogs/captures/' + encodeURIComponent(receipt.photo_id) + '/result'), {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({...scope, session_id:cameraSession})});
+    const result = await comparison.json();
+    if (!comparison.ok) return JSON.stringify({ok:false, error:result.detail || 'Dog comparison failed'});
     if (room !== cameraRoom || activeSession !== cameraSession || localVideoTrack !== cameraTrack) {
       return JSON.stringify({ok:false, error:'camera_or_session_changed'});
     }
