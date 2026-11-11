@@ -1,6 +1,6 @@
 # Progressive Marvain acceptance
 
-This records the real path to an audible reply and recall across distinct sessions. The source tests have been **written, not run**. Human acceptance is recorded in the journey manifest; it is not a passing automated test run.
+This records the real path to an audible reply, recall across distinct sessions, and fresh spoken camera descriptions with camera-off behavior. The source tests have been **written, not run**. Human acceptance is recorded in the journey manifest; it is not a passing automated test run.
 
 The journey includes deployment, Google/Cognito sign-in, existing agent/space, private owner/agent recording policy, canonical browser activation, AWS responder activation, Join, microphone permission, speech, audible reply, and Leave. Infrastructure setup is a fixture prepared through the owning Marvain CLI. The test consumes its recorded success instead of redeploying or probing it again.
 

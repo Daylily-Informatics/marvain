@@ -694,6 +694,12 @@ Resources:
         - VPCAccessPolicy: {}
         - Statement:
             - Effect: Allow
+              Action: cognito-idp:ListUsers
+              Resource: !GetAtt CognitoUserPool.Arn
+            - Effect: Allow
+              Action: s3:GetObjectVersion
+              Resource: !Sub ${ArtifactBucket.Arn}/private-recognition/*
+            - Effect: Allow
               Action: lambda:InvokeFunction
               Resource: !GetAtt SemanticOutboxDispatcherFunction.Arn
         - DynamoDBCrudPolicy:

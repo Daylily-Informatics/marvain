@@ -47,6 +47,26 @@ def require_consent(db, *, agent_id, person_id, modality):
         raise HTTPException(403, f"Active {modality} consent is required")
 
 
+def capture_status(db, *, user, event_id):
+    rows=db.query("""SELECT e.agent_id::text AS agent_id,e.payload,
+        ro.recognition_observation_id::text AS observation_id
+        FROM events e LEFT JOIN recognition_observations ro ON ro.source_event_id=e.event_id
+        WHERE e.event_id=:event::uuid AND e.type IN ('voice.sample','face.snapshot')""",
+        {"event":_uuid(event_id)})
+    if len(rows)!=1:
+        raise HTTPException(404,"Recognition capture not found")
+    row=rows[0]
+    require_admin(db,user,row["agent_id"])
+    payload=_json(row["payload"])
+    processing=payload.get("voice_processing",{})
+    status=processing.get("status","queued")
+    if row["observation_id"]:
+        status="review_required" if payload.get("enroll_person_id") else "observed"
+    return {"event_id":event_id,"status":status,"observation_id":row["observation_id"],
+        "quality":payload.get("voice_quality"),"message":processing.get("message"),
+        "stage":processing.get("stage")}
+
+
 def create_check(db, *, request, user, agent_id, space_id, purpose, target_id, modalities):
     agent_id, space_id, target_id = map(_uuid, (agent_id, space_id, target_id))
     require_admin(db, user, agent_id)

@@ -321,7 +321,9 @@
           <h4 class="card-title"><i class="fas fa-microphone"></i> Voice</h4>
         </div>
         <div class="card-body">
-          <p class="text-muted">Record a short voice clip in the browser. (For best results, capture a clean sample.)</p>
+          <p class="text-muted">Read this aloud in your normal voice, about 15–20 seconds. Record one speaker in a quiet place.</p>
+          <blockquote id="voice-reading-prompt">The morning light falls across the table. I can hear the wind moving through the trees. After a short pause, I will speak clearly and finish this recording in my usual voice.</blockquote>
+          <p class="text-muted text-sm">Enrollment requires at least 5 seconds of detected speech. Short, mostly silent, or heavily clipped recordings are rejected. This checks sample quality, not liveness.</p>
           <div style="display:flex; gap: var(--spacing-sm); flex-wrap: wrap; align-items: center;">
             <button class="btn btn-outline btn-sm" type="button" onclick="startVoiceRecording()" id="voice-start-btn">
               <i class="fas fa-circle"></i> Start
@@ -669,6 +671,8 @@ async function submitLinkAccount(event) {
 let _voiceRecorder = null;
 let _voiceChunks = [];
 let _voiceBlob = null;
+let _voiceStartedAt = null;
+let _voiceCaptureEvent = null;
 let _faceStream = null;
 let _faceBlob = null;
 
@@ -694,6 +698,7 @@ function openEnrollModal(personId, agentId, displayName) {
 }
 
 function closeEnrollModal() {
+  _voiceCaptureEvent = null;
   try { if (_voiceRecorder && _voiceRecorder.state !== 'inactive') _voiceRecorder.stop(); } catch (e) {}
   _voiceRecorder = null;
   _voiceChunks = [];
@@ -709,6 +714,7 @@ function closeEnrollModal() {
 
 async function startVoiceRecording() {
   try {
+    _voiceCaptureEvent = null;
     const stream = await navigator.mediaDevices.getUserMedia({audio: true});
     _voiceChunks = [];
     _voiceBlob = null;
@@ -717,11 +723,16 @@ async function startVoiceRecording() {
     _voiceRecorder.onstop = () => {
       stream.getTracks().forEach(t => t.stop());
       _voiceBlob = new Blob(_voiceChunks, {type: _voiceRecorder.mimeType || 'audio/webm'});
-      document.getElementById('voice-status').textContent = `Recorded ${Math.round(_voiceBlob.size/1024)} KB`;
-      document.getElementById('voice-upload-btn').disabled = false;
+      const seconds = (performance.now() - _voiceStartedAt) / 1000;
+      document.getElementById('voice-status').textContent = seconds < 5
+        ? 'Recording too short. Click Start and read the full prompt aloud.'
+        : `Recorded ${seconds.toFixed(1)} seconds. Upload to check speech quality.`;
+      document.getElementById('voice-upload-btn').disabled = seconds < 5;
+      if (seconds < 5) _voiceBlob = null;
       document.getElementById('voice-start-btn').disabled = false;
       document.getElementById('voice-stop-btn').disabled = true;
     };
+    _voiceStartedAt = performance.now();
     _voiceRecorder.start();
     document.getElementById('voice-status').textContent = 'Recording...';
     document.getElementById('voice-start-btn').disabled = true;
@@ -757,11 +768,35 @@ async function uploadVoiceEnrollment() {
     const response = await fetch(Marvain.path('/api/recognition/captures'), {method:'POST',body:form});
     if (!response.ok) throw new Error((await response.json()).detail || 'Capture failed');
     Marvain.hideLoading();
-    document.getElementById('voice-status').textContent = 'Uploaded and queued';
-    Marvain.showToast('success', 'Queued', 'Voice sample submitted. Review its proposal in Recognition.');
+    const receipt = await response.json();
+    _voiceCaptureEvent = receipt.event_id;
+    document.getElementById('voice-status').textContent = 'Uploaded; checking speech quality and preparing enrollment…';
     document.getElementById('voice-upload-btn').disabled = true;
+    while (_voiceCaptureEvent === receipt.event_id) {
+      const statusResponse = await fetch(Marvain.path('/api/recognition/captures/' + encodeURIComponent(receipt.event_id)));
+      const result = await statusResponse.json();
+      if (!statusResponse.ok) throw new Error(result.detail || 'Cannot read voice processing status');
+      if (_voiceCaptureEvent !== receipt.event_id) return;
+      if (result.status === 'rejected') {
+        _voiceBlob = null;
+        document.getElementById('voice-status').textContent = result.message;
+        Marvain.showToast('error', 'Record again', result.message);
+        _voiceCaptureEvent = null;
+        break;
+      }
+      if (result.status === 'review_required') {
+        const quality = result.quality;
+        document.getElementById('voice-status').textContent = 'Ready for review in Recognition' +
+          (quality ? ` (${quality.detected_speech_seconds} seconds of detected speech)` : '');
+        Marvain.showToast('success', 'Ready for review', 'Review and accept John’s enrollment proposal in Recognition.');
+        _voiceCaptureEvent = null;
+        break;
+      }
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
   } catch (error) {
     Marvain.hideLoading();
+    document.getElementById('voice-status').textContent = error.message;
     Marvain.showToast('error', 'Error', error.message);
   }
 }

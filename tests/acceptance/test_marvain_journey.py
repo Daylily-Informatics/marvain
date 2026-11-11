@@ -31,6 +31,10 @@ def test_cross_session_recall() -> None:
     _run_attended_journey(feature="cross_session_recall")
 
 
+def test_spoken_camera_observation() -> None:
+    _run_attended_journey(feature="spoken_camera_observation")
+
+
 def _run_attended_journey(*, feature: str) -> None:
     if os.environ.get("MARVAIN_ATTENDED_ACCEPTANCE") != "1":
         pytest.skip("Real microphone acceptance requires explicit attended opt-in")
@@ -80,6 +84,13 @@ def _run_attended_journey(*, feature: str) -> None:
             assert page.locator("#btn-camera").inner_text().strip().endswith("Enable Camera")
             human_acceptance = "HEARD MARVAIN REPLY"
             session_ids = []
+            if feature == "spoken_camera_observation":
+                session_ids.append(page.locator("#session-info code").first.inner_text())
+                assert input("Enable Camera in Chrome, ask aloud what is visible, change the view and ask again. Type BOTH VIEWS CORRECT only if both answers match: ").strip() == "BOTH VIEWS CORRECT"
+                steps.append("human_confirmed_two_fresh_spoken_camera_descriptions")
+                assert input("Disable Camera and ask what is visible now. Type CAMERA OFF ACKNOWLEDGED only if Marvain reports no current camera access: ").strip() == "CAMERA OFF ACKNOWLEDGED"
+                steps.append("human_confirmed_camera_off_not_old_view")
+                human_acceptance = "BOTH VIEWS CORRECT; CAMERA OFF ACKNOWLEDGED"
             if feature == "cross_session_recall":
                 session_ids.append(page.locator("#session-info code").first.inner_text())
                 assert input("Tell Marvain a new distinctive fact or marker. After its reply, type FACT SPOKEN: ").strip() == "FACT SPOKEN"
@@ -106,7 +117,8 @@ def _run_attended_journey(*, feature: str) -> None:
                 "hub_release":preparation["hub_release"],"responder_release":preparation["responder_release"],
                 "steps":steps,"human_acceptance":human_acceptance,"session_ids":session_ids,
                 "not_proven":["face","voice_identity","dogs","recording_persistence","two_locations"]
-                             + (["recall"] if feature == "chrome_voice_reply" else [])}
+                             + (["recall"] if feature != "cross_session_recall" else [])
+                             + (["camera"] if feature != "spoken_camera_observation" else [])}
             output.parent.mkdir(parents=True,exist_ok=True)
             output.write_text(json.dumps(receipt,indent=2)+"\n")
         finally:

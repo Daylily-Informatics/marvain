@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 ARG MARVAIN_RELEASE_VERSION
-ENV MARVAIN_RELEASE_VERSION=${MARVAIN_RELEASE_VERSION} PYTHONUNBUFFERED=1 NUMBA_CACHE_DIR=/tmp/numba
+ENV MARVAIN_RELEASE_VERSION=${MARVAIN_RELEASE_VERSION} PYTHONUNBUFFERED=1 NUMBA_DISABLE_JIT=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 WORKDIR /var/task
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg g++ make cmake libcurl4-openssl-dev && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu

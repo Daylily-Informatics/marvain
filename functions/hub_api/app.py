@@ -3967,6 +3967,14 @@ async def api_recognition_capture(request: Request) -> dict:
     return await capture(_get_db(), request=request, user=user, cfg=_cfg, s3=_get_s3(), sqs=_get_sqs())
 
 
+@app.get("/api/recognition/captures/{event_id}", name="api_recognition_capture_status")
+def api_recognition_capture_status(request: Request, event_id: str) -> dict:
+    from recognition_browser import capture_status
+    user = _gui_get_user(request)
+    if not user: raise HTTPException(401, "Not authenticated")
+    return capture_status(_get_db(), user=user, event_id=event_id)
+
+
 def _require_identity_check(*, request, user, agent_id, purpose, target_id):
     from recognition_browser import consume_check
     check_id = request.headers.get("X-Marvain-Identity-Check")
