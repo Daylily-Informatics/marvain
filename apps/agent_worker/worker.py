@@ -84,7 +84,8 @@ logger = logging.getLogger("marvain.agent_worker")
 VISUAL_TRUTHFULNESS_GUARD = """# Vision / Sensor Truthfulness
 For a question about what you can see now, call observe_camera to request a fresh frame from the user's already-enabled camera. Do this for spoken questions as well as typed questions; do not say you cannot see before trying the tool.
 Describe only facts returned by a successful observe_camera call or supplied in Current Session Visual Observations. You receive individual analyzed frames, not continuous video or screen access. Treat old observations and recalled memories as historical, never as the current view.
-If observe_camera reports that the camera is off or unavailable, explain that specific result and ask the user to enable Camera when appropriate. The tool cannot enable it for them. Do not invent visual content or identify a person from a generic scene description; identity recognition is a separate operation."""
+If observe_camera reports that the camera is off or unavailable, explain that specific result and ask the user to enable Camera when appropriate. The tool cannot enable it for them. Do not invent visual content or identify a person from a generic scene description.
+When asked to recognize a face or identify who is in view, call recognize_face for a fresh comparison against reviewed, consented face references. Report a reference_match as a face match to the returned person; never substitute the signed-in account, conversation context, or an old match. A similarity score is not a probability or proof of liveness. No match, ambiguous, multiple-face, and camera-off results must remain unresolved. This tool does not approve sensitive actions and does not recognize animals."""
 
 VISUAL_EVENT_TYPES = {
     "visual.observation",
@@ -1248,11 +1249,13 @@ class PersonaConfig:
 class ForgeAssistant(Agent):
     def __init__(
         self, *, persona: PersonaConfig, scene_euid: str, session_euid: str,
-        camera_observer: Callable[[], Awaitable[dict[str, Any]]], context_block: str = "",
+        camera_observer: Callable[[], Awaitable[dict[str, Any]]],
+        face_recognizer: Callable[[], Awaitable[dict[str, Any]]], context_block: str = "",
     ) -> None:
         self._scene_euid = scene_euid
         self._session_euid = session_euid
         self._camera_observer = camera_observer
+        self._face_recognizer = face_recognizer
         persona_instructions = persona.instructions.strip()
         if not persona_instructions:
             raise RuntimeError("persona instructions are empty")
@@ -1286,6 +1289,11 @@ class ForgeAssistant(Agent):
     async def observe_camera(self) -> dict[str, Any]:
         """Request and describe a fresh frame from the enabled camera. Use for questions about what is visible now."""
         return await self._camera_observer()
+
+    @function_tool()
+    async def recognize_face(self) -> dict[str, Any]:
+        """Compare a fresh enabled-camera face to reviewed references. Use for face recognition, including typed requests."""
+        return await self._face_recognizer()
 
 
 def _resolve_persona(*, agent_id: str | None, space_id: str, session_id: str | None) -> PersonaConfig:
@@ -1939,6 +1947,18 @@ async def forge_agent(ctx: agents.JobContext):
             visual_request_id=str(uuid4()),
         )
 
+    async def _recognize_face() -> dict[str, Any]:
+        try:
+            response = await ctx.room.local_participant.perform_rpc(
+                destination_identity=expected_participant_identity,
+                method="marvain.recognize_face",
+                payload=json.dumps({"session_id": session_id}),
+            )
+        except rtc.RpcError as exc:
+            logger.warning("Face recognition request failed: %s", exc)
+            return {"ok": False, "error": "face_recognition_request_failed", "detail": str(exc)}
+        return json.loads(response)
+
     async def _process_camera_off_message(*, sender: str, message_session_id: str, sent_at: str) -> None:
         try:
             validate_livekit_sender_session(
@@ -2144,7 +2164,8 @@ async def forge_agent(ctx: agents.JobContext):
                 "agent": ForgeAssistant(persona=persona, context_block=context_block,
                                         scene_euid=persisted_session_lifecycle.scene_euid,
                                         session_euid=persisted_session_lifecycle.session_euid,
-                                        camera_observer=_observe_camera),
+                                        camera_observer=_observe_camera,
+                                        face_recognizer=_recognize_face),
                 "room_options": room_io.RoomOptions(
                     audio_input=room_io.AudioInputOptions(
                         noise_cancellation=lambda params: (

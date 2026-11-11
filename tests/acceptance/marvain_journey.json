@@ -51,23 +51,41 @@
       "accepted_on": "2026-11-10",
       "acceptance": [
         "Both views described correctly",
-        "Correctly reports camera off; I’ve left"
+        "Correctly reports camera off; I\u2019ve left"
       ],
       "hub_release": "4.0.14",
       "responder_release": "4.0.14",
       "automated_entrypoint": "test_marvain_journey.py::test_spoken_camera_observation",
       "execution": "attended browser interaction; automated test source written, not run"
-    }
-  ],
-  "pending_features": [
+    },
     {
       "id": "voice_enrollment",
-      "status": "not_accepted"
+      "accepted_on": "2026-11-10",
+      "acceptance": "i approved both voice and face enrollment",
+      "hub_release": "4.0.16",
+      "steps": [
+        "Sign in and open People & Consent.",
+        "Grant the intended consent and select the person and capture space.",
+        "Capture and upload the voice sample.",
+        "Review the enrollment proposal in Recognition and approve it."
+      ],
+      "execution": "attended user capture and approval; not proof of a fresh identity match"
     },
     {
       "id": "rekognition_face_enrollment",
-      "status": "not_accepted"
-    },
+      "accepted_on": "2026-11-10",
+      "acceptance": "i approved both voice and face enrollment",
+      "hub_release": "4.0.16",
+      "steps": [
+        "Sign in and open People & Consent.",
+        "Grant the intended consent and select the person and capture space.",
+        "Capture and upload the face sample.",
+        "Review the enrollment proposal in Recognition and approve it."
+      ],
+      "execution": "attended user capture and approval; not proof of a fresh identity match"
+    }
+  ],
+  "pending_features": [
     {
       "id": "either_modality_identifies_same_person",
       "status": "not_accepted"

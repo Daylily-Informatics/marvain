@@ -73,6 +73,7 @@ def _run_attended_journey(*, feature: str) -> None:
             option = page.locator(f'#space_id option[value="{space_id}"]')
             assert option.get_attribute("data-agent-id") == agent_id
             steps.append("authenticated_existing_agent_and_space")
+            page.locator("#join-mic").check()
             page.locator("#btn-join").click()
             joined = True
             assert input("Allow the microphone in Chrome. Say Hello Marvain, then type SPOKEN: ").strip() == "SPOKEN"

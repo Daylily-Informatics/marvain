@@ -849,8 +849,8 @@ async function uploadFaceEnrollment() {
     const response = await fetch(Marvain.path('/api/recognition/captures'), {method:'POST',body:form});
     if (!response.ok) throw new Error((await response.json()).detail || 'Capture failed');
     Marvain.hideLoading();
-    document.getElementById('face-status').textContent = 'Uploaded and queued';
-    Marvain.showToast('success', 'Queued', 'Face sample submitted. Review its proposal in Recognition.');
+    document.getElementById('face-status').textContent = 'Ready for enrollment review';
+    Marvain.showToast('success', 'Ready for review', 'Review this face enrollment proposal in Recognition.');
     document.getElementById('face-upload-btn').disabled = true;
   } catch (error) {
     Marvain.hideLoading();

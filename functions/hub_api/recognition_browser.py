@@ -127,8 +127,29 @@ async def capture(db, *, request, user, cfg, s3, sqs):
         raise HTTPException(400, "modality must be voice or face")
     person = str(form.get("person_id") or "")
     check_id = str(form.get("check_id") or "")
-    if bool(person)==bool(check_id):
-        raise HTTPException(400, "Select an enrollment person or an identity check")
+    session_id = str(form.get("session_id") or "")
+    if sum(bool(value) for value in (person, check_id, session_id)) != 1:
+        raise HTTPException(400, "Select an enrollment person, an identity check, or a live session")
+    session_links = ()
+    if session_id:
+        session_id = _uuid(session_id)
+        if modality != "face":
+            raise HTTPException(400, "Live recognition currently supports face captures")
+        sessions = db.query("""SELECT metadata FROM sessions WHERE session_id=:session::uuid
+            AND agent_id=:agent::uuid AND space_id=:space::uuid AND ended_at IS NULL
+            AND status NOT IN ('closed','ended','failed')""",
+            {"session":session_id,"agent":agent,"space":space})
+        if len(sessions) != 1:
+            raise HTTPException(404, "Open recognition session not found")
+        metadata = _json(sessions[0]["metadata"])
+        if metadata.get("actor_type") != "user" or metadata.get("actor_id") != str(user.user_id):
+            raise HTTPException(403, "Recognition session belongs to another principal")
+        from api_app import _scene_for_session
+        scene, canonical_session = _scene_for_session(session_id=session_id, agent_id=agent)
+        session_links = (
+            GraphLinkWrite(GraphObjectRef(key="event"),GraphObjectRef(semantic_id=scene),"IN_SCENE"),
+            GraphLinkWrite(GraphObjectRef(key="event"),GraphObjectRef(semantic_id=canonical_session),"IN_SESSION"),
+        )
     if person:
         person = _uuid(person)
         require_consent(db, agent_id=agent, person_id=person, modality=modality)
@@ -161,24 +182,26 @@ async def capture(db, *, request, user, cfg, s3, sqs):
         uri = f"s3://{cfg.artifact_bucket}/{key}"
         params = {"id": artifact_id,"agent": agent,"space": space,"device": binding["device_id"],
                   "filename": filename,"bucket": cfg.artifact_bucket,"key": key,"uri": uri,
-                  "media": content_type,"sha": sha,"size": len(content),"version": result["VersionId"],"etag": result["ETag"]}
-        db.execute("""INSERT INTO artifact_references(artifact_id,agent_id,space_id,device_id,purpose,filename,bucket,
+                  "media": content_type,"sha": sha,"size": len(content),"version": result["VersionId"],"etag": result["ETag"],
+                  "session": session_id}
+        db.execute("""INSERT INTO artifact_references(artifact_id,agent_id,space_id,device_id,session_id,purpose,filename,bucket,
             object_key,uri,media_type,expected_sha256,actual_sha256,expected_byte_count,actual_byte_count,
             lifecycle_state,upload_expires_at,verification_observed_at,completed_at,s3_version_id,s3_etag)
-            VALUES (:id::uuid,:agent::uuid,:space::uuid,:device::uuid,'recognition',:filename,:bucket,:key,:uri,
+            VALUES (:id::uuid,:agent::uuid,:space::uuid,:device::uuid,NULLIF(:session,'')::uuid,'recognition',:filename,:bucket,:key,:uri,
                     :media,:sha,:sha,:size,:size,'available',now()+interval '1 hour',now(),now(),:version,:etag)""",
             params, transaction_id=tx)
         payload = {"artifact_bucket": cfg.artifact_bucket,"artifact_key": key,"artifact_sha256": sha,
                    "content_type": content_type,"captured_at": datetime.now(timezone.utc).isoformat(),
-                   "source": "browser_enrollment" if person else "identity_check"}
+                   "source": "browser_enrollment" if person else ("live_face_recognition" if session_id else "identity_check")}
         if person: payload["enroll_person_id"] = person
         if check_id: payload["check_id"] = check_id
+        if session_id: payload["session_id"] = session_id
         event = {"event_id": event_id,"agent_id": agent,"space_id": space,"device_id": binding["device_id"],
-                 "type": "voice.sample" if modality=="voice" else "face.snapshot","payload": payload}
-        db.execute("""INSERT INTO events(event_id,agent_id,space_id,device_id,artifact_id,type,payload)
-            VALUES (:id::uuid,:agent::uuid,:space::uuid,:device::uuid,:artifact::uuid,:type,:payload::jsonb)""",
+                 "session_id":session_id or None,"type": "voice.sample" if modality=="voice" else "face.snapshot","payload": payload}
+        db.execute("""INSERT INTO events(event_id,agent_id,space_id,device_id,session_id,artifact_id,type,payload)
+            VALUES (:id::uuid,:agent::uuid,:space::uuid,:device::uuid,NULLIF(:session,'')::uuid,:artifact::uuid,:type,:payload::jsonb)""",
             {"id": event_id,"agent": agent,"space": space,"device": binding["device_id"],"artifact": artifact_id,
-             "type": event["type"],"payload": json.dumps(payload)}, transaction_id=tx)
+             "session":session_id,"type": event["type"],"payload": json.dumps(payload)}, transaction_id=tx)
         db.execute("UPDATE artifact_references SET source_event_id=:event::uuid WHERE artifact_id=:artifact::uuid",
                    {"event": event_id,"artifact": artifact_id}, transaction_id=tx)
         ref = GraphObjectRef(key="event")
@@ -193,7 +216,7 @@ async def capture(db, *, request, user, cfg, s3, sqs):
             links=(GraphLinkWrite(ref,GraphObjectRef(key="artifact"),"HAS_ARTIFACT"),
                    GraphLinkWrite(GraphObjectRef(key="artifact"),GraphObjectRef(key="external"),"has_external_reference"),
                    GraphLinkWrite(ref,GraphObjectRef(semantic_id=route.device_euid),"FROM_DEVICE"),
-                   GraphLinkWrite(ref,GraphObjectRef(semantic_id=route.policy.owner_principal_id),"OWNER_PRINCIPAL")))
+                   GraphLinkWrite(ref,GraphObjectRef(semantic_id=route.policy.owner_principal_id),"OWNER_PRINCIPAL")) + session_links)
         if check:
             captures[modality] = event_id
             db.execute("UPDATE identity_checks SET captures=:captures::jsonb WHERE check_id=:id::uuid",

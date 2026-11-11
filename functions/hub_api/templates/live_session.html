@@ -6,7 +6,7 @@
 <div class="page-header">
   <div>
     <h1 class="page-title"><i class="fas fa-video"></i> Live Session</h1>
-    <p class="text-muted">Join your space to speak with Marvain. Microphone and enabled camera media are retained under your space policy.</p>
+    <p class="text-muted">Type or speak to Marvain and listen to replies. The microphone stays off unless you enable it. Enabled media is retained under your space policy.</p>
   </div>
   <a class="btn btn-outline" href="{{ url_for('gui_sessions') }}"><i class="fas fa-comments"></i> Sessions</a>
 </div>
@@ -26,6 +26,7 @@
       </option>
       {% endfor %}
     </select>
+    <label class="mt-md"><input type="checkbox" id="join-mic" /> Turn microphone on when joining</label>
     <div class="mt-md">
       <button class="btn btn-primary" id="btn-join">Join</button>
       <button class="btn btn-outline" id="btn-leave" disabled>Leave</button>
@@ -435,6 +436,7 @@ async function joinLiveSession() {
     return;
   }
   if (room) throw new Error('Leave the current session before joining again');
+  const startWithMicrophone = document.getElementById('join-mic').checked;
   document.getElementById('btn-join').disabled = true;
   let data;
   let pendingSession = null;
@@ -454,7 +456,7 @@ async function joinLiveSession() {
     throw error;
   }
   retainSessionMedia = data.record_media === true;
-  await enumerateDevices({requireAudio: true});
+  await enumerateDevices({requireAudio: startWithMicrophone});
   document.getElementById('session-info').innerHTML =
     '<div><strong>Session</strong> <code>' + (data.session_id || '—') + '</code></div>' +
     '<div><strong>Room</strong> <code>' + data.room + '</code></div>';
@@ -487,6 +489,36 @@ async function joinLiveSession() {
     return JSON.stringify({
       ok: true, session_id: cameraSession, artifact_uri: upload.uri, captured_at: capturedAt
     });
+  });
+  cameraRoom.localParticipant.registerRpcMethod('marvain.recognize_face', async function(data) {
+    const caller = cameraRoom.remoteParticipants.get(data.callerIdentity);
+    if (!caller || caller.isAgent !== true) {
+      return JSON.stringify({ok: false, error: 'face_request_requires_agent'});
+    }
+    const request = JSON.parse(data.payload);
+    if (room !== cameraRoom || activeSession !== cameraSession || request.session_id !== cameraSession) {
+      return JSON.stringify({ok: false, error: 'stale_session'});
+    }
+    const cameraTrack = localVideoTrack;
+    if (!cameraTrack) return JSON.stringify({ok: false, error: 'camera_is_off'});
+    const blob = await captureCameraBlob();
+    if (!blob) throw new Error('Camera produced an empty frame');
+    const selected = document.getElementById('space_id').selectedOptions[0];
+    const form = new FormData();
+    form.append('agent_id', selected.getAttribute('data-agent-id'));
+    form.append('space_id', selected.value);
+    form.append('session_id', cameraSession);
+    form.append('modality', 'face');
+    form.append('file', blob, 'live-face.jpg');
+    const response = await fetch(Marvain.path('/api/recognition/captures'), {method: 'POST', body: form});
+    const result = await response.json();
+    if (!response.ok) return JSON.stringify({ok: false, error: result.detail || 'Face recognition failed'});
+    if (room !== cameraRoom || activeSession !== cameraSession || localVideoTrack !== cameraTrack) {
+      return JSON.stringify({ok: false, error: 'camera_or_session_changed'});
+    }
+    const label = result.candidate_person ? result.candidate_person.display_name : result.result;
+    appendLog('lifecycle-log', 'Fresh face comparison: ' + label);
+    return JSON.stringify({ok: true, ...result});
   });
   room.on(lk.RoomEvent.Disconnected, function(reason) {
     appendLog('lifecycle-log', 'LiveKit disconnected' + (reason ? ': ' + reason : ''));
@@ -526,7 +558,8 @@ async function joinLiveSession() {
   await room.connect(data.url, data.token);
   appendLog('lifecycle-log', 'Joined LiveKit room ' + data.room);
   wireExistingRemoteTracks();
-  await publishMicrophone();
+  if (startWithMicrophone) await publishMicrophone();
+  else stopMicrophone();
 
 	  document.getElementById('btn-send-chat').disabled = false;
 	  document.getElementById('btn-leave').disabled = false;
