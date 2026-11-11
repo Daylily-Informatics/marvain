@@ -39,11 +39,14 @@ def test_visual_guard_is_always_added_to_agent_instructions() -> None:
                 name="Test",
                 instructions="Base persona.",
                 source="test",
-            )
+            ),
+            scene_euid="test-scene",
+            session_euid="test-session",
+            camera_observer=mock.AsyncMock(return_value={"ok": False, "error": "camera_is_off"}),
         )
 
     assert "Vision / Sensor Truthfulness" in captured["text"]
-    assert "do not claim that you can see" in captured["text"]
+    assert "call observe_camera" in captured["text"]
     assert "Current Session Visual Observations" in captured["text"]
 
 

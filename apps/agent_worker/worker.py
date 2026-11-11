@@ -19,10 +19,12 @@ import inspect
 import json
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
+from uuid import uuid4
 
 import requests
 from agent_hub.livekit_tokens import (
@@ -80,9 +82,9 @@ _ensure_stdio_open_and_inheritable()
 logger = logging.getLogger("marvain.agent_worker")
 
 VISUAL_TRUTHFULNESS_GUARD = """# Vision / Sensor Truthfulness
-You do not have direct video, screenshot, image, or file visual access in this session unless the prompt includes a section named "Current Session Visual Observations".
-If that section is absent, do not claim that you can see the room, screen, camera feed, screenshot, image, video, or file contents. If asked about visual content, say that no current visual observation context is available and ask the user to provide one.
-If that section is present, describe only the visual observations stated there. Do not infer unseen details, live camera access, screen access, or file inspection beyond that context."""
+For a question about what you can see now, call observe_camera to request a fresh frame from the user's already-enabled camera. Do this for spoken questions as well as typed questions; do not say you cannot see before trying the tool.
+Describe only facts returned by a successful observe_camera call or supplied in Current Session Visual Observations. You receive individual analyzed frames, not continuous video or screen access. Treat old observations and recalled memories as historical, never as the current view.
+If observe_camera reports that the camera is off or unavailable, explain that specific result and ask the user to enable Camera when appropriate. The tool cannot enable it for them. Do not invent visual content or identify a person from a generic scene description; identity recognition is a separate operation."""
 
 VISUAL_EVENT_TYPES = {
     "visual.observation",
@@ -1244,9 +1246,13 @@ class PersonaConfig:
 
 
 class ForgeAssistant(Agent):
-    def __init__(self, *, persona: PersonaConfig, scene_euid: str, session_euid: str, context_block: str = "") -> None:
+    def __init__(
+        self, *, persona: PersonaConfig, scene_euid: str, session_euid: str,
+        camera_observer: Callable[[], Awaitable[dict[str, Any]]], context_block: str = "",
+    ) -> None:
         self._scene_euid = scene_euid
         self._session_euid = session_euid
+        self._camera_observer = camera_observer
         persona_instructions = persona.instructions.strip()
         if not persona_instructions:
             raise RuntimeError("persona instructions are empty")
@@ -1275,6 +1281,11 @@ class ForgeAssistant(Agent):
             session_euid=self._session_euid, query=query,
         )
         return {"memories": memories, "scope": "authorized Marvain memories across sessions"}
+
+    @function_tool()
+    async def observe_camera(self) -> dict[str, Any]:
+        """Request and describe a fresh frame from the enabled camera. Use for questions about what is visible now."""
+        return await self._camera_observer()
 
 
 def _resolve_persona(*, agent_id: str | None, space_id: str, session_id: str | None) -> PersonaConfig:
@@ -1786,7 +1797,7 @@ async def forge_agent(ctx: agents.JobContext):
         artifact_uri: str,
         captured_at: str,
         visual_request_id: str,
-    ) -> None:
+    ) -> dict[str, Any]:
         visual_request_id = _require_runtime_text(visual_request_id, "visual_request_id")
         try:
             validate_livekit_sender_session(
@@ -1827,7 +1838,7 @@ async def forge_agent(ctx: agents.JobContext):
                     "request_sender_identity": sender,
                 }
             )
-            return
+            return {"ok": False, "error": exc.code}
 
         observation = ""
         if not observation and artifact_uri:
@@ -1860,7 +1871,7 @@ async def forge_agent(ctx: agents.JobContext):
                     "captured_at": captured_at,
                 }
             )
-            return
+            return {"ok": False, "error": "camera_enabled_but_visual_analysis_unavailable"}
 
         observation = observation[:800]
         source_event_id = hub_ingest_event(
@@ -1874,7 +1885,7 @@ async def forge_agent(ctx: agents.JobContext):
                 "visual_request_id": visual_request_id,
                 "participant_identity": sender,
                 "session_id": session_id,
-                "model": os.getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini") if artifact_uri else None,
+                "model": os.environ["OPENAI_VISION_MODEL"],
             },
             session_id=session_id,
         )
@@ -1898,6 +1909,34 @@ async def forge_agent(ctx: agents.JobContext):
                 "artifact_uri": artifact_uri,
                 "captured_at": captured_at,
             }
+        )
+        return {
+            "ok": True,
+            "description": observation,
+            "captured_at": captured_at,
+            "source_event_id": source_event_id,
+            "scope": "one current camera frame, not continuous video or identity recognition",
+        }
+
+    async def _observe_camera() -> dict[str, Any]:
+        try:
+            response = await ctx.room.local_participant.perform_rpc(
+                destination_identity=expected_participant_identity,
+                method="marvain.camera_frame",
+                payload=json.dumps({"session_id": session_id}),
+            )
+        except rtc.RpcError as exc:
+            logger.warning("Camera frame request failed: %s", exc)
+            return {"ok": False, "error": "camera_frame_request_failed", "detail": str(exc)}
+        frame = json.loads(response)
+        if frame.get("ok") is not True:
+            return {"ok": False, "error": str(frame.get("error") or "camera_frame_unavailable")}
+        return await _process_visual_observation_message(
+            sender=expected_participant_identity,
+            message_session_id=_require_runtime_text(frame.get("session_id"), "camera session_id"),
+            artifact_uri=_require_runtime_text(frame.get("artifact_uri"), "camera artifact_uri"),
+            captured_at=_require_runtime_text(frame.get("captured_at"), "camera captured_at"),
+            visual_request_id=str(uuid4()),
         )
 
     async def _process_camera_off_message(*, sender: str, message_session_id: str, sent_at: str) -> None:
@@ -2104,7 +2143,8 @@ async def forge_agent(ctx: agents.JobContext):
                 "room": ctx.room,
                 "agent": ForgeAssistant(persona=persona, context_block=context_block,
                                         scene_euid=persisted_session_lifecycle.scene_euid,
-                                        session_euid=persisted_session_lifecycle.session_euid),
+                                        session_euid=persisted_session_lifecycle.session_euid,
+                                        camera_observer=_observe_camera),
                 "room_options": room_io.RoomOptions(
                     audio_input=room_io.AudioInputOptions(
                         noise_cancellation=lambda params: (

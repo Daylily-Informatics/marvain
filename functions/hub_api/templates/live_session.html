@@ -463,6 +463,31 @@ async function joinLiveSession() {
 
   const lk = livekitClient();
   room = new lk.Room({adaptiveStream: true, dynacast: true});
+  const cameraRoom = room;
+  const cameraSession = activeSession;
+  cameraRoom.localParticipant.registerRpcMethod('marvain.camera_frame', async function(data) {
+    const caller = cameraRoom.remoteParticipants.get(data.callerIdentity);
+    if (!caller || caller.isAgent !== true) {
+      return JSON.stringify({ok: false, error: 'camera_request_requires_agent'});
+    }
+    const request = JSON.parse(data.payload);
+    if (room !== cameraRoom || activeSession !== cameraSession || request.session_id !== cameraSession) {
+      return JSON.stringify({ok: false, error: 'stale_session'});
+    }
+    const cameraTrack = localVideoTrack;
+    if (!cameraTrack) return JSON.stringify({ok: false, error: 'camera_is_off'});
+    const blob = await captureCameraBlob();
+    const capturedAt = new Date().toISOString();
+    if (!blob) throw new Error('Camera produced an empty frame');
+    const upload = await uploadVisualFrame(blob);
+    if (room !== cameraRoom || activeSession !== cameraSession || localVideoTrack !== cameraTrack) {
+      return JSON.stringify({ok: false, error: 'camera_or_session_changed'});
+    }
+    appendLog('lifecycle-log', 'Sent a fresh camera frame for the agent’s visual question');
+    return JSON.stringify({
+      ok: true, session_id: cameraSession, artifact_uri: upload.uri, captured_at: capturedAt
+    });
+  });
   room.on(lk.RoomEvent.Disconnected, function(reason) {
     appendLog('lifecycle-log', 'LiveKit disconnected' + (reason ? ': ' + reason : ''));
   });

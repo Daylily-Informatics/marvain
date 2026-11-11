@@ -2,19 +2,19 @@
 
 **Revision:** 1  
 **Prepared:** 9 November 2026  
-**Status:** Hub/responder 4.0.12 (3de4989) deployed successfully; recognition image remains 4.0.9. Attended cross-session, camera and linked-recognition acceptance pending.
+**Status:** Hub 4.0.13 and responder 4.0.12 deployed; cross-session recall accepted. Camera preview/analysis work, but spoken use failed; 4.0.14 repair prepared. Recognition image remains 4.0.9.
 
 ## Current continuation state
 
-10 November 2026: interactive repair ACTIVE. Hub/responder 4.0.12 deployed; John confirms cross-session recall “this works great” but reports slow Leave/Join. Fix latency next while he tests camera in the already-connected session. Voice/face enrollment and linked recognition acceptance remain pending. Stop condition: tagged fixes deployed and attended recall/camera/recognition results recorded. User controls capture/consent. No automated suite, lint, CI, PR/merge, destructive cleanup or local container builds.
+10 November 2026: interactive repair ACTIVE. User accepted cross-session recall (“this works great”) and reports camera preview stays on but agent says it cannot see. Source confirms only typed chat received visual descriptions. Stop condition: tagged fixes deployed and attended recall/camera/recognition results recorded. User controls capture/consent. No automated suite, lint, CI, PR/merge, destructive cleanup or local container builds.
 
-Workspace /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain; branch codex/marvain-interactive-resume. HEAD 9cebcb6 is pushed; source tag 4.0.12 at 3de4989. Preserve original checkout's unrelated local files. Target lsmc / 108782052779 / us-east-2 / marvain4-prod; config /Users/jmajor/.config/marvain/marvain-lsmc-us-east-2.yaml. Hub/responder 4.0.12, recognition image 4.0.9. EC2 build exit 0 and deployment exit 0; builder i-0325430bfec70e41e stop accepted (running → stopping), last IP 3.145.163.69. Do not reuse IP after another start without the owning lifecycle result.
+Workspace /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain; branch codex/marvain-interactive-resume. Published HEAD 662161c / annotated tag 4.0.13; prior source tag 4.0.12 at 3de4989. Preserve original checkout's unrelated local files. Target lsmc / 108782052779 / us-east-2 / marvain4-prod; config /Users/jmajor/.config/marvain/marvain-lsmc-us-east-2.yaml. Hub 4.0.13 deployment returned exit 0; responder 4.0.12, recognition image 4.0.9. Builder i-0325430bfec70e41e stop accepted (running → stopping), last IP 18.191.67.124. Resolve its current IP through owning lifecycle command after restart.
 
-Completed: camera missing boto3 and S3 visual read permission corrected; explicit model/bucket/agent artifact scope. Canonical recall now searches agent sessions with current-audience/source policy filtering, attributed startup context and a LiveKit recall tool. Model evidence quotes are selected from transcript text. Owning worker-logs CLI added; SAM log child errors propagate. Exact artifacts/receipts /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/build/releases/4.0.12/.
+Completed: 4.0.12 fixed missing boto3/S3 permission and explicit vision model/bucket/agent artifact scope; canonical recall searches authorized agent sessions with attributed startup context and recall tool; model evidence quotes come from source text. Worker log CLI and SAM error propagation fixed. 4.0.13 targets the committed scene outbox row through existing dispatcher leases/retries and disconnects media before final uploads finish. Existing schedule unchanged. Receipts /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/build/releases/4.0.12/ and /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/build/releases/4.0.13/. Join/Leave timing acceptance pending new page load.
 
-Attended evidence: first session 1badf345-7fdc-4682-a38a-5c189ea2630f recorded a distinctive marker, then second c14ea07a-2435-4339-aeaa-3bfd4e30d477 correctly recalled it at 20:31:19 ET. User explicitly confirms success. Worker log shows initial hydration of 15 prior memories. Several new memories queued successfully; one assistant-utterance classifier provider request failed at 20:28:54 (not an ungrounded-quote error). No unsupported claim of complete capture. Progressive recall test and manifest being extended, source only.
+Attended evidence: session 1badf345-7fdc-4682-a38a-5c189ea2630f recorded a marker; c14ea07a-2435-4339-aeaa-3bfd4e30d477 correctly recalled it at 20:31:19 ET, user accepted. Initial hydration had 15 memories. One classifier provider request failed at 20:28:54; other captures succeeded. At 20:41:14, camera frame analysis succeeded and browser acknowledged it, but voice agent lacked the observation. Recall test source and manifest extended, not executed.
 
-Latency defects: Join waits for scheduled one-minute outbox dispatch and can sit behind other rows; Leave awaits serial media uploads before disconnecting. Source change in progress: target the committed scene outbox row through the existing dispatcher immediately, with its native leases/retries unchanged; disconnect media promptly while final uploads continue in-tab. Existing schedule unchanged; no new monitor or cutoff. Intended Hub-only release 4.0.13, retaining responder 4.0.12 and recognition 4.0.9. Next: finish source/ledger, tag, final EC2 Hub package, deploy and stop builder, then attended timing and recognition. Camera question pending for the current connected Chrome session. DAY-142 Active; DAY-22 second login binding and two-location demo incomplete.
+Next release 4.0.14 adds observe_camera as a LiveKit function tool and marvain.camera_frame browser RPC. A spoken visual question requests a fresh frame only from the enabled camera in the bound session, then reuses existing artifact analysis/persistence and returns the description to the voice model. No continuous sampling, automatic camera activation or identity inference. Official contract https://docs.livekit.io/transport/data/rpc/. Next: publish exact tag, build worker + Hub on designated EC2, deploy through owning CLI, stop builder, then reload/rejoin for attended camera and Join/Leave timing. User told to Leave and retain tab for final recordings. Voice/face enrollment/recognition, DAY-22 second login binding and two-location demo remain incomplete; DAY-142 Active.
 
 ## Interactive recall and camera repair — 10 November 2026
 
@@ -23,8 +23,10 @@ Latency defects: Join waits for scheduled one-minute outbox dispatch and can sit
 | WP-25 | Repair past-session recall | SUCCESS | A0 | Source and deployment 4.0.12 complete; attended behavior tracked separately in WP-28. |
 | WP-26 | Repair camera analysis | SUCCESS | A0 | Source and deployment 4.0.12 complete; attended camera behavior tracked in WP-28. |
 | WP-27 | Preserve grounded memory extraction | SUCCESS | A0 | Deployed source quote selection through Structured Outputs enum; no deterministic fallback or relaxed grounding. Live capture acceptance remains WP-28. |
-| WP-28 | Attended continuity and linked recognition | IN_PROGRESS | John + A0 | Cross-session recall accepted by John on 4.0.12; current camera question pending. Explicit voice/face enrollment and separate identity checks remain. |
-| WP-29 | Prompt Leave and Join | IN_PROGRESS | A0 | User reports latency; immediate targeted outbox dispatch and non-blocking recording finalization implemented for Hub-only 4.0.13. |
+| WP-28 | Attended continuity and linked recognition | IN_PROGRESS | John + A0 | Cross-session recall accepted by John on 4.0.12; preview/analysis work but spoken camera use failed and is being repaired in WP-30. Explicit voice/face enrollment and separate identity checks remain. |
+| WP-29 | Prompt Leave and Join | IN_PROGRESS | A0 | Hub-only 4.0.13 deployed successfully; immediate outbox dispatch and prompt media disconnection implemented. User timing acceptance pending new page load. |
+
+| WP-30 | Fresh camera observations in spoken conversation | IN_PROGRESS | A0 | observe_camera function tool and enabled-camera browser RPC prepared for 4.0.14; attended acceptance pending. |
 
 ```mermaid
 flowchart LR
@@ -35,7 +37,11 @@ flowchart LR
   TapDB --> Policy[Current audience and source policies]
   Policy --> Context[Attributed historical context]
   Context --> Talk
-  Camera[User enables camera] --> Frame[Private visual artifact]
+  Camera[User enables camera] --> Enabled[Enabled camera]
+  Talk --> CameraTool[observe_camera tool]
+  CameraTool --> RPC[Browser frame RPC]
+  Enabled --> RPC
+  RPC --> Frame[Private visual artifact]
   Frame --> Worker[Worker reads agent frame]
   Worker --> Vision[Vision description]
   Vision --> Talk

@@ -42,6 +42,19 @@
   ],
   "pending_features": [
     {
+      "id": "spoken_camera_observation",
+      "status": "not_accepted",
+      "last_attended_result": "camera on showing live preview, but agent says cant see",
+      "repair_release": "4.0.14",
+      "steps": [
+        "Join a new session after loading the released Live Session page.",
+        "Enable Camera and confirm the live preview stays visible.",
+        "Ask aloud what Marvain can see; confirm its description matches visible content.",
+        "Change the view and ask again; confirm it describes the new frame.",
+        "Disable Camera and ask again; confirm it reports that the camera is off."
+      ]
+    },
+    {
       "id": "voice_enrollment",
       "status": "not_accepted"
     },
