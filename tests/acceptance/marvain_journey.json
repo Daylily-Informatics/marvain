@@ -83,6 +83,33 @@
         "Review the enrollment proposal in Recognition and approve it."
       ],
       "execution": "attended user capture and approval; not proof of a fresh identity match"
+    },
+    {
+      "id": "quiet_typed_face_recognition",
+      "accepted_on": "2026-11-10",
+      "acceptance": "Yes, I heard it",
+      "hub_release": "4.0.18",
+      "responder_release": "4.0.17",
+      "session_ids": [
+        "3ae26881-c572-48d8-83fa-3e08b76d36a4"
+      ],
+      "steps": [
+        "Use the existing approved face reference and active consent.",
+        "Join the laptop space with Turn microphone on when joining unchecked.",
+        "Type a greeting and hear the reply while Mic Off remains enabled.",
+        "Enable Camera with the enrolled face alone in view.",
+        "Type Recognize my face from the camera using the approved face reference.",
+        "Observe Fresh face comparison: John in the lifecycle events and hear the matching reply."
+      ],
+      "automated_entrypoint": "test_marvain_journey.py::test_quiet_typed_face_recognition",
+      "execution": "attended browser interaction and explicit human audio acceptance; automated test source written, not run",
+      "not_proven": [
+        "liveness",
+        "sensitive_action_authorization",
+        "face_mismatch_handling",
+        "voice_identity",
+        "dog_identity"
+      ]
     }
   ],
   "pending_features": [

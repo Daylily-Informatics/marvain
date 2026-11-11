@@ -1,6 +1,6 @@
 # Progressive Marvain acceptance
 
-This records the real path to an audible reply, recall across distinct sessions, and fresh spoken camera descriptions with camera-off behavior. The source tests have been **written, not run**. Human acceptance is recorded in the journey manifest; it is not a passing automated test run.
+This records the real path to an audible reply, recall across distinct sessions, fresh spoken camera descriptions with camera-off behavior, and quiet typed face recognition with an audible reply. The source tests have been **written, not run**. Human acceptance is recorded in the journey manifest; it is not a passing automated test run.
 
 The journey includes deployment, Google/Cognito sign-in, existing agent/space, private owner/agent recording policy, canonical browser activation, AWS responder activation, Join, microphone permission, speech, audible reply, and Leave. Infrastructure setup is a fixture prepared through the owning Marvain CLI. The test consumes its recorded success instead of redeploying or probing it again.
 
@@ -21,3 +21,5 @@ python -m pytest -s /Users/jmajor/projects/marvain/tests/acceptance/test_marvain
 ```
 
 Extend the manifest and add one attended test per newly accepted capability. Keep unaccepted features pending. For biometrics, include enrollment consent, review, a new matching sample, a different person's mismatch, simultaneous voice/face conflict, revocation, stale/reused challenge rejection, and the exact selected export/action. Do not make physical actions, enrollment, exports, or message sends part of the voice test implicitly.
+
+The quiet face journey keeps the microphone off, consumes an existing approved reference, and asks the human to enable the camera. It accepts the fresh comparison lifecycle result plus human confirmation of the audible reply. It does not claim liveness, mismatch performance, or authorization for sensitive actions. The 4.0.18 Hub / 4.0.17 responder attended result is recorded; the automated entrypoint remains unrun.
