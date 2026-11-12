@@ -2,9 +2,54 @@
 
 **Revision:** 1  
 **Prepared:** 9 November 2026  
-**Status:** LIVE SESSION RESUMED at the user’s request. Production responder 4.0.21 is ready in Chrome LSMC with microphone and camera off. Git checkpoint 4.0.22 remains published; individual dog matching and further implementation remain pending.
+**Status:** IMPLEMENTING space-scoped saved moments. Production remains 4.0.21; Git checkpoint 4.0.22 is published. The current live session remains open with microphone and camera off.
 
 ## Current continuation state
+
+11 November 2026: implementing John's request for per-space modes and explicit grants to save snapshots and short video clips. John selected “On request or a relevant event; no continuous recording.” Feature name: Saved moments. Modes: Off / Snapshots / Snapshots + silent clips, with an owner-selected maximum of 3, 5 or 10 seconds. No periodic capture, camera scan or look-back buffer. Existing separately authorized enabled-session archival is unchanged and labelled separately. No grant has been activated and no media captured for this feature.
+
+Repo /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain; branch codex/marvain-interactive-resume. Gate 0 was clean at 11ec9e4. Local source now implements owner/person-agent-space TapDB grants, private versioned S3 artifacts, grant/device/scene/session provenance, a space gallery, visible live capture/cancel controls, responder policy/capture/recall tools and pending attended journey steps. Grant enforcement is server-side; camera capture requires the already enabled track and current session. Existing space privacy/raw-media policy blocks capture. No new dependency or infrastructure service.
+
+Release target: immutable annotated 4.0.23; final build only on EC2 i-0325430bfec70e41e (owning state returned stopped). Script /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/docs/plans/20261111_marvain_4x_release_4_0_23.sh. Production target remains lsmc/account 108782052779/us-east-2/stack marvain4-prod, config /Users/jmajor/.config/marvain/marvain-lsmc-us-east-2.yaml. Production Hub/responder still 4.0.21; recognition remains pinned 4.0.19. Published 4.0.22 was documentation only. No source release/build/deploy yet for Saved moments.
+
+Chrome LSMC tab 762569453 remains on the earlier active session 4f8f682e-015b-441a-b460-16bf4d1fcbcc, last observed microphone and camera off. New code requires a new page/session after deployment. Deliver the Saved moments page without submitting a grant or enabling capture for the user. Stop condition: exact tagged revision deployed and concrete grant/capture UI delivered; user acceptance remains a separately reported gate.
+
+| Row | Work | State |
+| --- | --- | --- |
+| SM-1 | Canonical grants, private artifacts, authorization and gallery | Local implementation complete |
+| SM-2 | Space/Live Session UI and request/event responder tools | Local implementation complete |
+| SM-3 | Annotated release, final EC2 build, same-stack deployment | Next |
+| SM-4 | User grant, snapshot/clip/event/recall acceptance | Pending user interaction after delivery |
+
+Controls: no tests/lint/CI/extra QC, PR/merge, local container builds, automatic grants/camera activation, new schedules or destructive cleanup. DAY-27 is the canonical requirement record. Existing accepted face, voice reply, cross-session recall and camera observations remain valid. Fresh dog identity, fresh voice identity, multi-person attribution and the broader two-location demonstration remain pending.
+
+## Saved moments design and prior live-session context — 11 November 2026
+
+
+11 November 2026: John requested space-specific modes and permissive grants for snapshots and short video clips, then explicitly selected “On request or a relevant event; no continuous recording.” Implement Saved moments: Off / Snapshots / Snapshots and silent clips up to 10 seconds, with owner-issued canonical grants scoped by person, agent and space. Requests and relevant conversation/observed events may trigger capture during an attended live session only, using an already enabled camera. No periodic camera scan or schedule. Relevant event reasons must be recorded; a grant can optionally restrict event topics or allow requests only. Existing enabled-session archival is separate and unchanged, following the earlier explicit “store it all” direction. Off for saved moments must not imply all session archival is off.
+
+Gate 0: branch codex/marvain-interactive-resume at 11ec9e4, clean before implementation. Existing browser route controls raw-media retention; TapDB typed consent/artifact objects and lineage are reusable. Private S3 already holds versioned media. Existing LiveKit camera RPCs provide current camera frames; add saved-moment RPCs/tools and a space gallery. Changes stay within this repo and the same selected production stack/builder. No tests, extra QC, PR/merge, local container builds, automatic grant/camera activation or new schedules. Stop condition: final tagged release deployed; concrete grant/capture UI delivered for user acceptance. Grant creation and real media capture remain user actions. Track source, release, deployment and attended acceptance separately under DAY-27.
+
+| Row | Work | State |
+| --- | --- | --- |
+| SM-1 | Canonical space grants, private artifacts, authorization and gallery | Implementing |
+| SM-2 | Space/Live Session UI and request/event-triggered responder tools | Pending |
+| SM-3 | Annotated release, final EC2 build, same-stack deployment | Pending |
+| SM-4 | User grant, snapshot and short-clip acceptance | Pending user interaction after delivery |
+
+```mermaid
+flowchart LR
+  Owner[Authenticated space owner] --> Grant[TapDB capture grant]
+  Grant --> Scope[Agent and space lineage]
+  Trigger[Request or relevant event] --> Camera[Already enabled camera]
+  Grant --> Camera
+  Camera --> Bytes[Private S3 snapshot or silent short clip]
+  Bytes --> Artifact[TapDB artifact and typed external reference]
+  Artifact --> Provenance[Grant, device, scene and session lineage]
+  Artifact --> Gallery[Saved moments gallery and recall tool]
+```
+
+The following startup and earlier acceptance notes remain historical/current-runtime evidence; new implementation does not change them until the recorded deployment receipt.
 
 11 November 2026, 20:23 EST: John requested “canyou pleae start up the4 marvain agent”, superseding the earlier pause for live-session startup. Owning worker-status returned desired=1, running=1, pending=0, so no AWS start or deployment was needed. Chrome LSMC tab 762569453 opened Live Session; selected INITagent / laptop and joined with microphone and camera off. Session 4f8f682e-015b-441a-b460-16bf4d1fcbcc joined room 6375476a-8498-49a0-8a7d-98722392de34:4f8f682e015b at 20:23:30 EST. Worker 4.0.21 emitted ready at 20:23:39 EST; UI showed Responder ready, attached audio and Agent speaking. Tab kept open. No automatic camera capture, recognition request, new release, build or other implementation work was started.
 

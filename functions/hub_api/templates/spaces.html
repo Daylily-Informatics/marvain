@@ -83,6 +83,7 @@
         <a href="{{ url_for('gui_live_session') }}?space_id={{ space.space_id }}" class="btn btn-sm btn-primary">
           <i class="fas fa-video"></i> Join
         </a>
+        <a href="{{ url_for('gui_saved_moments') }}?space_id={{ space.space_id }}" class="btn btn-sm btn-outline">Saved moments</a>
         <button class="btn btn-sm btn-outline" onclick="editSpace('{{ space.space_id }}')" title="Edit space" aria-label="Edit {{ space.name }}">
           <i class="fas fa-cog"></i>
         </button>

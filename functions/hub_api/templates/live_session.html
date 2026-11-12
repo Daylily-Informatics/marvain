@@ -95,6 +95,23 @@
   </div>
 </div>
 
+<div class="card mb-lg">
+  <div class="card-header"><h3 class="card-title">Saved moments</h3>
+    <a id="moment-settings-link" class="btn btn-outline" href="{{ url_for('gui_saved_moments') }}" target="_blank" rel="noopener">Mode, grant & gallery</a></div>
+  <p id="moment-mode-status" role="status">Select a space to see its capture mode.</p>
+  <p class="text-muted">Save on request or a relevant event, only from an enabled camera. Silent clips start now; there is no look-back buffer. Session archival is separate.</p>
+  <label for="moment-reason">Reason for saving</label>
+  <input id="moment-reason" maxlength="1000" placeholder="What would you like to remember?">
+  <div class="mt-md">
+    <button id="moment-snapshot" class="btn btn-outline" type="button">Save snapshot</button>
+    <select id="moment-clip-length" aria-label="Clip length"><option value="3">3 seconds</option><option value="5" selected>5 seconds</option><option value="10">10 seconds</option></select>
+    <button id="moment-clip" class="btn btn-outline" type="button">Save silent clip</button>
+    <button id="moment-cancel" class="btn btn-outline" type="button" hidden>Cancel clip</button>
+    <button id="moment-mode-refresh" class="btn btn-outline" type="button">Refresh mode</button>
+  </div>
+  <p id="moment-capture-status" role="status" aria-live="polite">No saved-moment capture in progress.</p>
+</div>
+
 <div class="grid grid-2">
   <div class="card">
     <div class="card-header"><h3 class="card-title">Transcript & Chat</h3></div>
@@ -126,7 +143,105 @@ let localVideoTrack = null;
 let pendingVisualAck = null;
 let latestVisualObservation = null;
 let selectedSpeakerId = '';
+let liveMomentScope = null;
+let momentBusy = false;
+let cancelMomentClip = null;
 const CAMERA_VISUAL_ACCESS_ERROR = 'camera_enabled_but_visual_analysis_unavailable';
+
+function momentScope() {
+  if (liveMomentScope) return {...liveMomentScope};
+  const selected = document.getElementById('space_id').selectedOptions[0];
+  if (!selected || !selected.value) throw new Error('Select a space first');
+  return {space_id:selected.value, agent_id:selected.dataset.agentId};
+}
+
+async function momentApi(path, options={}) {
+  const response = await fetch(Marvain.path(path), options);
+  const result = await response.json();
+  if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : 'Saved moment request failed: ' + response.status);
+  return result;
+}
+
+async function momentMode() {
+  const scope = momentScope();
+  document.getElementById('moment-settings-link').href = Marvain.path('/saved-moments?' + new URLSearchParams({space_id:scope.space_id}));
+  const data = await momentApi('/api/saved-moments/mode?' + new URLSearchParams(scope));
+  document.getElementById('moment-mode-status').textContent = data.privacy_mode ? 'Space privacy mode blocks saved moments.' :
+    'Mode: ' + data.mode.replaceAll('_', ' ') + (data.mode === 'off' ? '' : ' · ' + data.trigger.replaceAll('_', ' ') + ' · clips up to ' + data.max_clip_seconds + 's');
+  return data;
+}
+
+function clipFromCamera(native, seconds) {
+  const mime = 'video/webm;codecs=vp8';
+  if (!window.MediaRecorder || !MediaRecorder.isTypeSupported(mime)) throw new Error('This browser does not support silent WebM clips');
+  return new Promise((resolve, reject) => {
+    const recorder = new MediaRecorder(new MediaStream([native]), {mimeType:mime, videoBitsPerSecond:800000});
+    const parts = [];
+    let failure = null, timer = null;
+    const cancel = () => {
+      failure = new Error('Clip cancelled; no saved moment was uploaded');
+      if (recorder.state !== 'inactive') recorder.stop();
+    };
+    const cleanup = () => {
+      clearTimeout(timer); native.removeEventListener('ended', cancel);
+      cancelMomentClip = null; document.getElementById('moment-cancel').hidden = true;
+    };
+    recorder.ondataavailable = event => { if (event.data.size) parts.push(event.data); };
+    recorder.onerror = event => {failure = event.error || new Error('Clip recording failed'); cleanup(); reject(failure);};
+    recorder.onstop = () => {cleanup(); if (failure) reject(failure); else resolve(new Blob(parts, {type:'video/webm'}));};
+    native.addEventListener('ended', cancel, {once:true});
+    cancelMomentClip = cancel; document.getElementById('moment-cancel').hidden = false;
+    try { recorder.start(); timer = setTimeout(() => {if (recorder.state !== 'inactive') recorder.stop();}, seconds * 1000); }
+    catch (error) {cleanup(); reject(error);}
+  });
+}
+
+async function saveCameraMoment({kind, trigger, reason, duration_seconds}) {
+  if (momentBusy) throw new Error('A saved-moment capture is already in progress');
+  if (!room || !activeSession || !localVideoTrack) throw new Error('Join a session and enable Camera first');
+  momentBusy = true;
+  const status = document.getElementById('moment-capture-status');
+  const cameraRoom = room, sessionId = activeSession, cameraTrack = localVideoTrack;
+  const native = cameraTrack.mediaStreamTrack;
+  const scope = momentScope();
+  const unchanged = () => room === cameraRoom && activeSession === sessionId && localVideoTrack === cameraTrack &&
+    cameraTrack.mediaStreamTrack === native && native.readyState === 'live';
+  try {
+    status.textContent = 'Checking the space capture grant…';
+    const request = {...scope, session_id:sessionId, kind, trigger, reason, duration_seconds};
+    const grant = await momentApi('/api/saved-moments/authorize', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(request)});
+    if (!unchanged()) throw new Error('Camera or session changed before capture');
+    const capturedAt = new Date().toISOString();
+    status.textContent = kind === 'clip' ? 'Recording a silent ' + duration_seconds + '-second clip…' : 'Capturing snapshot…';
+    const blob = kind === 'clip' ? await clipFromCamera(native, duration_seconds) : await captureCameraBlob();
+    if (!unchanged()) throw new Error('Camera or session changed; the moment was not uploaded');
+    if (!blob || !blob.size) throw new Error('Camera produced no media');
+    status.textContent = 'Saving moment…';
+    const form = new FormData();
+    Object.entries({...request, grant_id:grant.grant_id, captured_at:capturedAt}).forEach(([key,value]) => form.append(key, String(value)));
+    form.append('file', blob, kind === 'clip' ? 'moment.webm' : 'moment.jpg');
+    const receipt = await momentApi('/api/saved-moments', {method:'POST', body:form});
+    status.textContent = 'Saved ' + kind + ' · ' + receipt.moment_id + ' · ' + receipt.reason;
+    appendLog('lifecycle-log', status.textContent);
+    return {ok:true, ...receipt};
+  } catch (error) {status.textContent = error.message; throw error;}
+  finally {momentBusy = false;}
+}
+
+document.getElementById('moment-snapshot').addEventListener('click', () => saveCameraMoment({kind:'snapshot',trigger:'request',
+  reason:document.getElementById('moment-reason').value,duration_seconds:0}).catch(error => appendError(error.message)));
+document.getElementById('moment-clip').addEventListener('click', () => saveCameraMoment({kind:'clip',trigger:'request',
+  reason:document.getElementById('moment-reason').value,duration_seconds:Number(document.getElementById('moment-clip-length').value)}).catch(error => appendError(error.message)));
+document.getElementById('moment-cancel').addEventListener('click', () => {if (cancelMomentClip) cancelMomentClip();});
+document.getElementById('moment-mode-refresh').addEventListener('click', () => momentMode().catch(error => {
+  document.getElementById('moment-mode-status').textContent = error.message;
+}));
+document.getElementById('space_id').addEventListener('change', () => momentMode().catch(error => {
+  document.getElementById('moment-mode-status').textContent = error.message;
+}));
+if (document.getElementById('space_id').value) momentMode().catch(error => {
+  document.getElementById('moment-mode-status').textContent = error.message;
+});
 
 function appendLog(id, message, kind) {
   const el = document.getElementById(id);
@@ -211,7 +326,7 @@ document.getElementById('retry-recordings').addEventListener('click', async () =
   for (const segment of Array.from(unsavedSegments.values())) queueSegment(segment);
 });
 window.addEventListener('beforeunload', event => {
-  if (room || unsavedSegments.size) { event.preventDefault(); event.returnValue = ''; }
+  if (room || unsavedSegments.size || momentBusy) { event.preventDefault(); event.returnValue = ''; }
 });
 
 function setVisualState(text, kind) {
@@ -422,6 +537,7 @@ async function changeMicrophone(deviceId) {
 
 async function changeCamera(deviceId) {
   if (!room || !localVideoTrack) return;
+  if (cancelMomentClip) cancelMomentClip();
   setVisualState('Switching camera', 'info');
   await room.switchActiveDevice('videoinput', deviceId || 'default');
   appendLog('lifecycle-log', 'Camera switched to ' + (deviceId || 'default'));
@@ -461,12 +577,34 @@ async function joinLiveSession() {
     '<div><strong>Session</strong> <code>' + (data.session_id || '—') + '</code></div>' +
     '<div><strong>Room</strong> <code>' + data.room + '</code></div>';
   activeSession = data.session_id || null;
+  const selectedSpace = document.getElementById('space_id').selectedOptions[0];
+  liveMomentScope = {space_id:spaceId, agent_id:selectedSpace.dataset.agentId};
+  document.getElementById('space_id').disabled = true;
   appendLog('lifecycle-log', 'Minted LiveKit token for room ' + data.room);
 
   const lk = livekitClient();
   room = new lk.Room({adaptiveStream: true, dynacast: true});
   const cameraRoom = room;
   const cameraSession = activeSession;
+  cameraRoom.localParticipant.registerRpcMethod('marvain.saved_moments', async function(data) {
+    const caller = cameraRoom.remoteParticipants.get(data.callerIdentity);
+    if (!caller || caller.isAgent !== true) return JSON.stringify({ok:false, error:'capture_requires_session_agent'});
+    try {
+      const request = JSON.parse(data.payload);
+      if (room !== cameraRoom || activeSession !== cameraSession || request.session_id !== cameraSession) {
+        return JSON.stringify({ok:false, error:'stale_session'});
+      }
+      if (request.operation === 'mode') return JSON.stringify({ok:true, ...await momentMode()});
+      if (request.operation === 'list') {
+        const result = await momentApi('/api/saved-moments?' + new URLSearchParams({...momentScope(), include_media:'false'}));
+        // LiveKit RPC responses are bounded; the gallery exposes the longer list and full reasons.
+        return JSON.stringify({ok:true, moments:result.moments.slice(0,8).map(item => ({...item, reason:item.reason.slice(0,500)})),
+          scope:'Latest 8 authorized saved moments in this space; reasons limited to 500 characters. Full records are in the gallery.'});
+      }
+      if (request.operation === 'save') return JSON.stringify(await saveCameraMoment(request));
+      return JSON.stringify({ok:false, error:'unknown_saved_moment_operation'});
+    } catch (error) {return JSON.stringify({ok:false, error:error.message});}
+  });
   cameraRoom.localParticipant.registerRpcMethod('marvain.camera_frame', async function(data) {
     const caller = cameraRoom.remoteParticipants.get(data.callerIdentity);
     if (!caller || caller.isAgent !== true) {
@@ -568,6 +706,7 @@ async function joinLiveSession() {
     return JSON.stringify({ok:true, ...result});
   });
   room.on(lk.RoomEvent.Disconnected, function(reason) {
+    if (cancelMomentClip) cancelMomentClip();
     appendLog('lifecycle-log', 'LiveKit disconnected' + (reason ? ': ' + reason : ''));
   });
   room.on(lk.RoomEvent.ParticipantConnected, function(participant) {
@@ -617,6 +756,7 @@ async function joinLiveSession() {
 	}
 
 async function leaveLiveSession() {
+  if (cancelMomentClip) cancelMomentClip();
   document.getElementById('btn-leave').disabled = true;
   const finalRecordings = stopRecorders();
   if (eventsTimer) window.clearInterval(eventsTimer);
@@ -625,6 +765,8 @@ async function leaveLiveSession() {
   if (room) room.disconnect();
   room = null;
   activeSession = null;
+  liveMomentScope = null;
+  document.getElementById('space_id').disabled = false;
   stopMicrophone();
   const remoteMedia = document.getElementById('remote-media');
   if (remoteMedia) remoteMedia.innerHTML = '<em class="text-muted">Remote audio tracks will attach here.</em>';
@@ -781,6 +923,7 @@ async function enableCamera() {
 }
 
 function stopCamera() {
+  if (cancelMomentClip) cancelMomentClip();
   if (pendingVisualAck) {
     window.clearTimeout(pendingVisualAck.timer);
     pendingVisualAck = null;

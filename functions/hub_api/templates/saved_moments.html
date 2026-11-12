@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Saved moments - Marvain{% endblock %}
+{% block content %}
+<div class="page-header"><div><h1 class="page-title">Saved moments</h1>
+<p class="text-muted">Choose what Marvain may save from an enabled camera in each space, then review those moments here.</p></div>
+<a class="btn btn-outline" href="{{ url_for('gui_spaces') }}">Spaces</a></div>
+<div class="card mb-lg"><div class="card-body">
+  <label for="moment-space">Space</label>
+  <select id="moment-space"><option value="">Choose a space</option>{% for space in spaces %}
+  <option value="{{ space.space_id }}" data-agent-id="{{ space.agent_id }}">{{ space.name }} — {{ space.agent_name }}</option>
+  {% endfor %}</select>
+  <p id="moment-status" role="status" aria-live="polite">Choose a space.</p>
+</div></div>
+<div class="card mb-lg"><div class="card-header"><h2>Capture grant</h2></div><div class="card-body">
+<form id="moment-grant"><fieldset id="moment-settings" disabled>
+  <label for="moment-mode">Mode</label>
+  <select id="moment-mode"><option value="off">Off</option><option value="snapshots">Snapshots</option>
+    <option value="snapshots_and_clips">Snapshots + short clips</option></select>
+  <label for="moment-trigger">When to save</label>
+  <select id="moment-trigger"><option value="request_or_event">On request or a relevant event</option>
+    <option value="request_only">Only when I request it</option></select>
+  <label for="moment-duration">Maximum clip length</label>
+  <select id="moment-duration"><option value="3">3 seconds</option><option value="5">5 seconds</option><option value="10">10 seconds</option></select>
+  <label for="moment-guidance">What counts as a relevant event? (optional)</label>
+  <textarea id="moment-guidance" maxlength="1000" rows="3" placeholder="For example: a dog interaction or a demonstration I am showing you."></textarea>
+  <p>Marvain uses this guidance when a conversation or a fresh observation reveals a relevant event. It does not scan or record periodically. Clips are silent and begin when capture is requested; there is no look-back buffer.</p>
+  <p><label><input id="moment-confirmed" type="checkbox"> I have permission to save camera media in this space and grant the selected mode to its agent.</label></p>
+  <p id="moment-retention" class="text-muted"></p>
+  <button type="submit" class="btn btn-primary">Save mode and grant</button>
+  <button type="button" id="moment-revoke" class="btn btn-outline">Turn saved moments off</button>
+</fieldset></form>
+<p class="text-muted">Off stops new saved moments. Previously saved moments keep their existing retention policy. Session media archival is a separate setting: enabled session media may still be retained under your existing recording policy.</p>
+<a id="moment-live" class="btn btn-outline" href="{{ url_for('gui_live_session') }}">Open Live Session</a>
+</div></div>
+<div class="card"><div class="card-header"><h2>Recent saved moments</h2><button id="moment-refresh" class="btn btn-outline" disabled>Refresh</button></div>
+<div class="card-body"><p>Latest 50 authorized moments in this space. A capture reason describes why it was saved; it is not a verified description of the image.</p>
+<div id="moment-gallery" style="display:flex;flex-wrap:wrap;gap:1rem"></div></div></div>
+{% endblock %}
+{% block scripts %}
+<script>
+(() => {
+  const el = id => document.getElementById(id);
+  let busy = false;
+  function scope() {
+    const selected = el('moment-space').selectedOptions[0];
+    if (!selected || !selected.value) throw new Error('Choose a space first.');
+    return {space_id:selected.value, agent_id:selected.dataset.agentId};
+  }
+  function status(text, error=false) {
+    el('moment-status').textContent = text;
+    el('moment-status').style.color = error ? '#f87171' : '';
+  }
+  async function api(path, options={}) {
+    const response = await fetch(Marvain.path(path), options);
+    const data = await response.json();
+    if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Request failed: ' + response.status);
+    return data;
+  }
+  async function action(fn) {
+    if (busy) return;
+    busy = true; el('moment-settings').disabled = true; el('moment-space').disabled = true;
+    el('moment-refresh').disabled = true;
+    try { await fn(); } catch (error) { status(error.message, true); }
+    finally { busy = false; el('moment-space').disabled = false;
+      el('moment-settings').disabled = !el('moment-space').value; el('moment-refresh').disabled = !el('moment-space').value; }
+  }
+  function showMode(data) {
+    el('moment-mode').value = data.mode;
+    el('moment-trigger').value = data.trigger || 'request_or_event';
+    el('moment-duration').value = String(data.max_clip_seconds || 5);
+    el('moment-guidance').value = data.event_guidance;
+    el('moment-confirmed').checked = false;
+  }
+  async function gallery() {
+    const data = await api('/api/saved-moments?' + new URLSearchParams(scope()));
+    el('moment-gallery').replaceChildren();
+    if (!data.moments.length) { el('moment-gallery').textContent = 'No saved moments yet.'; return; }
+    data.moments.forEach(item => {
+      const card = document.createElement('article'); card.style.width = '320px';
+      const media = document.createElement(item.kind === 'clip' ? 'video' : 'img');
+      media.src = item.media_url; media.style.cssText = 'width:100%;border-radius:8px';
+      if (item.kind === 'clip') { media.controls = true; media.preload = 'metadata'; media.playsInline = true; }
+      else { media.alt = 'Saved camera snapshot'; media.loading = 'lazy'; }
+      const title = document.createElement('p'); title.textContent = item.reason;
+      const details = document.createElement('p'); details.className = 'text-muted';
+      details.textContent = new Date(item.captured_at).toLocaleString() + ' · ' + item.trigger + ' · ' +
+        (item.kind === 'clip' ? item.duration_seconds + 's silent clip' : 'snapshot');
+      const receipt = document.createElement('small'); receipt.textContent = 'Saved moment ' + item.moment_id;
+      card.append(media, title, details, receipt); el('moment-gallery').append(card);
+    });
+  }
+  async function load() {
+    el('moment-gallery').replaceChildren();
+    if (!el('moment-space').value) { status('Choose a space.'); return; }
+    status('Loading capture mode…');
+    const data = await api('/api/saved-moments/mode?' + new URLSearchParams(scope()));
+    showMode(data);
+    el('moment-live').href = Marvain.path('/live-session?' + new URLSearchParams({space_id:scope().space_id}));
+    el('moment-retention').textContent = data.retention.retain_until_revoked ?
+      'Media is private to the current authorized owner/readers and retained until its memory policy is revoked.' :
+      'Media access expires under the space policy at ' + data.retention.expires_at + '.';
+    status(data.privacy_mode ? 'Space privacy mode blocks new saved moments.' : 'Current mode: ' + data.mode.replaceAll('_', ' '));
+    await gallery();
+  }
+  async function save(mode) {
+    status('Saving capture grant…');
+    const data = await api('/api/saved-moments/mode', {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({...scope(), mode, trigger:el('moment-trigger').value,
+        max_clip_seconds:Number(el('moment-duration').value), event_guidance:el('moment-guidance').value,
+        confirmed:el('moment-confirmed').checked})});
+    showMode(data); status('Saved. Current mode: ' + data.mode.replaceAll('_', ' '));
+  }
+  el('moment-space').addEventListener('change', () => action(load));
+  el('moment-grant').addEventListener('submit', event => {event.preventDefault(); action(() => save(el('moment-mode').value));});
+  el('moment-revoke').addEventListener('click', () => action(() => save('off')));
+  el('moment-refresh').addEventListener('click', () => action(async () => {await gallery(); status('Gallery refreshed.');}));
+  const selected = new URLSearchParams(location.search).get('space_id');
+  if (selected) {el('moment-space').value = selected; action(load);}
+})();
+</script>
+{% endblock %}

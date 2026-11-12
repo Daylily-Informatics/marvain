@@ -6070,6 +6070,65 @@ def api_observability_failure_scenarios(request: Request) -> JSONResponse:
     return JSONResponse({"failure_scenarios": failure_catalog()})
 
 
+@app.get("/saved-moments", name="gui_saved_moments")
+def gui_saved_moments(request: Request) -> Response:
+    user = _gui_get_user(request)
+    if not user:
+        return _gui_redirect_to_login(request=request, next_path="/saved-moments")
+    spaces = list_spaces_for_user(_get_db(), user_id=user.user_id)
+    return templates.TemplateResponse(request, "saved_moments.html", {
+        "user": {"email": user.email, "user_id": str(user.user_id)},
+        "stage": _cfg.stage, "active_page": "spaces",
+        "spaces": [{"space_id": sp.space_id, "agent_id": sp.agent_id,
+                    "name": sp.name, "agent_name": sp.agent_name} for sp in spaces],
+        **_get_ws_context(request),
+    })
+
+
+def _moment_user(request):
+    user = _gui_get_user(request)
+    if not user:
+        raise HTTPException(401, "Not authenticated")
+    return user
+
+
+@app.get("/api/saved-moments/mode")
+def api_moment_mode(request: Request, agent_id: str, space_id: str):
+    from saved_moments import context, state
+    return state(context(_get_db(), user=_moment_user(request), agent_id=agent_id, space_id=space_id))
+
+
+@app.post("/api/saved-moments/mode")
+async def api_moment_mode_update(request: Request):
+    from saved_moments import context, update_grant
+    body = await request.json()
+    ctx = context(_get_db(), user=_moment_user(request), agent_id=body.get("agent_id"), space_id=body.get("space_id"))
+    return update_grant(ctx, body)
+
+
+@app.post("/api/saved-moments/authorize")
+async def api_moment_authorize(request: Request):
+    from saved_moments import context, authorize
+    user = _moment_user(request)
+    body = await request.json()
+    db = _get_db()
+    ctx = context(db, user=user, agent_id=body.get("agent_id"), space_id=body.get("space_id"))
+    return authorize(db, ctx=ctx, user=user, body=body)
+
+
+@app.get("/api/saved-moments")
+def api_moments(request: Request, agent_id: str, space_id: str, include_media: bool = True):
+    from saved_moments import context, list_moments
+    ctx = context(_get_db(), user=_moment_user(request), agent_id=agent_id, space_id=space_id)
+    return list_moments(ctx, bucket=_cfg.artifact_bucket, s3=_get_s3(), include_media=include_media)
+
+
+@app.post("/api/saved-moments")
+async def api_moment_save(request: Request):
+    from saved_moments import save
+    return await save(_get_db(), request=request, user=_moment_user(request), cfg=_cfg, s3=_get_s3())
+
+
 @app.get("/dogs", name="gui_dogs")
 def gui_dogs(request: Request) -> Response:
     user = _gui_get_user(request)

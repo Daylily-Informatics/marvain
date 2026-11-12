@@ -114,6 +114,21 @@
   ],
   "pending_features": [
     {
+      "id": "space_granted_saved_moments",
+      "status": "not_accepted",
+      "steps": [
+        "Open Spaces then Saved moments for laptop; explicitly grant Snapshots + short clips, request or relevant event, and a chosen maximum clip duration.",
+        "Load the new Live Session page, Join with Mic Off, and enable Camera yourself.",
+        "Type Save a snapshot of this with a reason; observe a stored receipt and the photo in the gallery.",
+        "Request a five-second silent clip, observe the capture status, then play the saved clip in the gallery.",
+        "Use a relevant conversation event within the granted guidance and confirm the capture records trigger=event and its concrete reason.",
+        "Rejoin the same space and ask which camera moments were saved; retain reasons as intent rather than visual facts.",
+        "Turn saved moments Off and request another capture; expect refusal. Another space has no inherited grant.",
+        "Cancel a clip or disable Camera during capture; no saved moment should be uploaded. Existing separate session archival is unchanged."
+      ],
+      "execution": "Pending user grant and attended acceptance; no automated run"
+    },
+    {
       "id": "either_modality_identifies_same_person",
       "status": "not_accepted"
     },
