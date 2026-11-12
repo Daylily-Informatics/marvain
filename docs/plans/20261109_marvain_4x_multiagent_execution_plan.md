@@ -2,7 +2,7 @@
 
 **Revision:** 1  
 **Prepared:** 9 November 2026  
-**Status:** IMPLEMENTING space-scoped saved moments. Production remains 4.0.21; Git checkpoint 4.0.22 is published. The current live session remains open with microphone and camera off.
+**Status:** DEPLOYED space-scoped saved moments in 4.0.23. Chrome delivery is ready; grant creation and attended snapshot/clip acceptance remain pending. No capture was activated automatically.
 
 ## Current continuation state
 
@@ -10,18 +10,28 @@
 
 Repo /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain; branch codex/marvain-interactive-resume. Gate 0 was clean at 11ec9e4. Local source now implements owner/person-agent-space TapDB grants, private versioned S3 artifacts, grant/device/scene/session provenance, a space gallery, visible live capture/cancel controls, responder policy/capture/recall tools and pending attended journey steps. Grant enforcement is server-side; camera capture requires the already enabled track and current session. Existing space privacy/raw-media policy blocks capture. No new dependency or infrastructure service.
 
-Release target: immutable annotated 4.0.23; final build only on EC2 i-0325430bfec70e41e (owning state returned stopped). Script /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/docs/plans/20261111_marvain_4x_release_4_0_23.sh. Production target remains lsmc/account 108782052779/us-east-2/stack marvain4-prod, config /Users/jmajor/.config/marvain/marvain-lsmc-us-east-2.yaml. Production Hub/responder still 4.0.21; recognition remains pinned 4.0.19. Published 4.0.22 was documentation only. No source release/build/deploy yet for Saved moments.
+Release target: immutable annotated 4.0.23; final build only on EC2 i-0325430bfec70e41e (owning state returned stopped). Script /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/docs/plans/20261111_marvain_4x_release_4_0_23.sh. Production target remains lsmc/account 108782052779/us-east-2/stack marvain4-prod, config /Users/jmajor/.config/marvain/marvain-lsmc-us-east-2.yaml. Production Hub/responder are now 4.0.23; recognition remains pinned 4.0.19. Published 4.0.22 was documentation only. Annotated immutable 4.0.23 at ebc9d77 and the feature branch were pushed successfully; GitHub release is published. Final EC2 build in tmux marvain-4-0-23-release completed with native pane exit 0. Responder image publication returned published. Artifact/log transfer succeeded; builder stop returned running -> stopping. Owning deploy session 45506 exited 0; SAM reported Successfully created/updated stack - marvain4-prod in us-east-2. Recognition remains the pinned 4.0.19 image.
 
-Chrome LSMC tab 762569453 remains on the earlier active session 4f8f682e-015b-441a-b460-16bf4d1fcbcc, last observed microphone and camera off. New code requires a new page/session after deployment. Deliver the Saved moments page without submitting a grant or enabling capture for the user. Stop condition: exact tagged revision deployed and concrete grant/capture UI delivered; user acceptance remains a separately reported gate.
+Chrome LSMC tab 762569453 has since been navigated by the user to Ursa; no current Marvain session state is inferred. New deliverable tab 762569457 is open at https://1kuwpk5zj7.execute-api.us-east-2.amazonaws.com/prod/saved-moments with laptop selected. Native UI shows Current mode: off and No saved moments yet; permission checkbox unchecked. No grant or capture was submitted. New responder tools require a new Live Session after rollout. Stop condition: exact tagged revision deployed and concrete grant/capture UI delivered; user acceptance remains a separately reported gate.
 
 | Row | Work | State |
 | --- | --- | --- |
 | SM-1 | Canonical grants, private artifacts, authorization and gallery | Local implementation complete |
 | SM-2 | Space/Live Session UI and request/event responder tools | Local implementation complete |
-| SM-3 | Annotated release, final EC2 build, same-stack deployment | Next |
+| SM-3 | Annotated release, final EC2 build, same-stack deployment | Complete: deploy session 45506 exit 0 |
 | SM-4 | User grant, snapshot/clip/event/recall acceptance | Pending user interaction after delivery |
 
 Controls: no tests/lint/CI/extra QC, PR/merge, local container builds, automatic grants/camera activation, new schedules or destructive cleanup. DAY-27 is the canonical requirement record. Existing accepted face, voice reply, cross-session recall and camera observations remain valid. Fresh dog identity, fresh voice identity, multi-person attribution and the broader two-location demonstration remain pending.
+
+## 4.0.23 saved moments deployment receipt — 11 November 2026
+
+- Source: ebc9d77; annotated immutable 4.0.23 and codex/marvain-interactive-resume pushed. GitHub release: https://github.com/Daylily-Informatics/marvain/releases/tag/4.0.23.
+- Final EC2 build: i-0325430bfec70e41e, ubuntu, tmux marvain-4-0-23-release. Native pane dead=1 exit=0. Responder publication returned published; SAM build/package completed.
+- Worker image: 108782052779.dkr.ecr.us-east-2.amazonaws.com/marvain4-prod-release-prerequisites-workerrepository-fdisivyobf3k@sha256:ac4a62cb246223002254e4c70e78da768c71e6e0fc6249832e87ba5d8b8dab29.
+- Artifact/log transfer succeeded; stop-builder returned running -> stopping. No redundant power-state readback. No new always-running service.
+- Same-stack deployment session 45506 exited 0. Native SAM result: Successfully created/updated stack - marvain4-prod in us-east-2. Receipt: /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain/build/releases/4.0.23/deploy.log. Build/package logs are beside it. Recognition remains 4.0.19.
+- Chrome LSMC delivery tab 762569457: https://1kuwpk5zj7.execute-api.us-east-2.amazonaws.com/prod/saved-moments. Laptop selected; native page returned Current mode: off and No saved moments yet. Permission checkbox remains unchecked. No grant, snapshot, video, microphone or recognition interaction was submitted. User's former Marvain tab had been navigated to Ursa and was not altered.
+- SM-1, SM-2 and SM-3 are complete. SM-4 remains pending: real owner grant, snapshot, silent clip, event capture, later-session receipt recall, cancellation and scope/revocation behavior. These are not claimed accepted. No tests/lint/CI/extra QC, PR/merge, local build or new schedule ran.
 
 ## Saved moments design and prior live-session context — 11 November 2026
 
