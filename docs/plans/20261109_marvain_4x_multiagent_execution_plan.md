@@ -2,11 +2,13 @@
 
 **Revision:** 1  
 **Prepared:** 9 November 2026  
-**Status:** PAUSED for the night at the user’s request. Production Hub/responder 4.0.21 and recognition image 4.0.19 remain deployed. Live session disconnected, camera and microphone off. Git checkpoint 4.0.22 records the stopping point; individual dog matching remains pending.
+**Status:** LIVE SESSION RESUMED at the user’s request. Production responder 4.0.21 is ready in Chrome LSMC with microphone and camera off. Git checkpoint 4.0.22 remains published; individual dog matching and further implementation remain pending.
 
 ## Current continuation state
 
-11 November 2026, 01:58 EST: John explicitly said “great! now we will stop for the night”, then requested commit, push and a new tagged Git release. Work is PAUSED; do not resume recognition or create an automatic reminder without a new user instruction. Requested Git checkpoint: 4.0.22 from codex/marvain-interactive-resume, including this pause record and release notes. No runtime changes or new deployment are part of the checkpoint.
+11 November 2026, 20:23 EST: John requested “canyou pleae start up the4 marvain agent”, superseding the earlier pause for live-session startup. Owning worker-status returned desired=1, running=1, pending=0, so no AWS start or deployment was needed. Chrome LSMC tab 762569453 opened Live Session; selected INITagent / laptop and joined with microphone and camera off. Session 4f8f682e-015b-441a-b460-16bf4d1fcbcc joined room 6375476a-8498-49a0-8a7d-98722392de34:4f8f682e015b at 20:23:30 EST. Worker 4.0.21 emitted ready at 20:23:39 EST; UI showed Responder ready, attached audio and Agent speaking. Tab kept open. No automatic camera capture, recognition request, new release, build or other implementation work was started.
+
+Earlier overnight checkpoint: John paused at 01:58 EST and then requested commit/push/new tagged Git release. Annotated 4.0.22 at dd940ea and GitHub release were published from codex/marvain-interactive-resume, including the pause record and release notes. No runtime changes or deployment accompanied that checkpoint. The prior pause action below is historical; the new live session above is the current state.
 
 Repo: /Users/jmajor/.codex/worktrees/marvain-interactive-resume/marvain. Production: AWS profile lsmc, account 108782052779, us-east-2, stack marvain4-prod; config /Users/jmajor/.config/marvain/marvain-lsmc-us-east-2.yaml. Hub/responder remain 4.0.21 (runtime source 064d1a9); recognition remains the pinned 4.0.19 image. Native deploy session 6896 exited 0. EC2 builder i-0325430bfec70e41e received a successful stop request (running -> stopping); no additional AWS change was made during the pause. Existing hosted services remain under the previously accepted overnight cost arrangement.
 
